@@ -1,0 +1,215 @@
+"""
+Generic subprocess execution + progress streaming + staged temp-file output.
+
+This module has no knowledge of FFmpeg command-building, ProcessingDecision,
+or forge jobs — it is pure infrastructure for "run a command, optionally
+stream -progress pipe:1 key=value lines to a callback, then move one or more
+temp output files to their final destinations on success."
+
+Used by both the main remux/extract pipeline (app/core/ffmpeg.py) and the
+AC3 forge feature (app/core/forge.py), which previously each maintained
+their own separate, near-identical copy of this logic.
+"""
+
+import asyncio
+import os
+import shutil
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from app.config import settings as app_settings
+
+
+# ── Data classes ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class StagedOutput:
+    """One temp→final file pair to move after a successful subprocess run."""
+    temp_path: str
+    final_path: str
+
+
+@dataclass
+class SubprocessRunResult:
+    success: bool
+    error: str | None
+    returncode: int | None = None
+
+
+# ── Progress parsing ─────────────────────────────────────────────────────────
+
+
+def parse_out_time_seconds(progress_kv: dict[str, str]) -> float:
+    """
+    Convert the 'out_time_us' field from an FFmpeg `-progress pipe:1` line
+    into seconds.  Guards against FFmpeg emitting "N/A" before the first frame.
+    """
+    try:
+        time_us = int(progress_kv.get("out_time_us", "0") or "0")
+    except (ValueError, TypeError):
+        time_us = 0
+    return time_us / 1_000_000
+
+
+# ── File helpers ──────────────────────────────────────────────────────────────
+
+
+def cleanup_temp_file(path: str) -> None:
+    """Remove a temp file if it exists. Never raises — best-effort cleanup."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+async def probe_duration(path: str) -> float | None:
+    """
+    Quick ffprobe call to get duration in seconds.
+    Returns None on any failure — callers must handle None gracefully.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            app_settings.FFPROBE_PATH,
+            "-v", "quiet",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        return float(stdout.decode().strip())
+    except Exception:
+        return None
+
+
+# ── The generic executor ─────────────────────────────────────────────────────
+
+
+async def run_staged_subprocess(
+    cmd: list[str],
+    outputs: list[StagedOutput],
+    *,
+    on_progress_line: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+    stderr_tail_lines: int = 30,
+    timeout_seconds: float | None = None,
+) -> SubprocessRunResult:
+    """
+    Run `cmd` as a subprocess, stream progress, then stage output files.
+
+    timeout_seconds: if set and > 0, the entire subprocess (drain + wait) is
+    wrapped in asyncio.wait_for() with this limit.  On timeout the process is
+    killed and a clean failure result is returned.  Set to None or 0 to disable.
+
+    All outputs succeed together or all fail together — any failure cleans up
+    all temp paths.  On exception temp paths are cleaned and the exception is
+    re-raised so the caller's job-failure logic runs normally.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stderr_lines: list[str] = []
+        progress_kv: dict[str, str] = {}
+
+        async def drain_stderr() -> None:
+            assert proc.stderr
+            async for raw in proc.stderr:
+                line = raw.decode(errors="replace").strip()
+                if line:
+                    stderr_lines.append(line)
+
+        async def drain_progress() -> None:
+            assert proc.stdout
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").strip()
+                if "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                progress_kv[key.strip()] = val.strip()
+                if key.strip() == "progress" and on_progress_line:
+                    await on_progress_line(dict(progress_kv))
+
+        async def _run() -> None:
+            await asyncio.gather(drain_stderr(), drain_progress())
+            await proc.wait()
+
+        # ── Timeout guard ─────────────────────────────────────────────────
+        effective_timeout = float(timeout_seconds) if timeout_seconds else None
+        try:
+            if effective_timeout:
+                await asyncio.wait_for(_run(), timeout=effective_timeout)
+            else:
+                await _run()
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            minutes = int(effective_timeout // 60)
+            return SubprocessRunResult(
+                success=False,
+                error=f"Job timed out after {minutes} minute(s) — process killed",
+                returncode=None,
+            )
+        except asyncio.CancelledError:
+            # The OUTER task (the one wrapping this whole job) was cancelled
+            # — e.g. the user pressed Abort. asyncio.wait_for propagates a
+            # cancelled parent task's CancelledError rather than converting
+            # it to a TimeoutError, so this branch is what actually fires
+            # for a manual abort. Without this handler, the coroutine
+            # unwinds past proc.kill() entirely, leaving an orphaned FFmpeg
+            # process still writing to the temp file.
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            raise   # re-raise so the cancellation still propagates to the caller
+
+        if proc.returncode != 0:
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            error = (
+                "\n".join(stderr_lines[-stderr_tail_lines:])
+                or "Unknown error (no stderr output)"
+            )
+            return SubprocessRunResult(
+                success=False, error=error, returncode=proc.returncode
+            )
+
+        missing = [o.temp_path for o in outputs if not os.path.exists(o.temp_path)]
+        if missing:
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            return SubprocessRunResult(
+                success=False,
+                error=f"Temp file(s) missing after command completed: {', '.join(missing)}",
+                returncode=proc.returncode,
+            )
+
+        for o in outputs:
+            if os.path.exists(o.final_path):
+                os.remove(o.final_path)
+            shutil.move(o.temp_path, o.final_path)
+
+        return SubprocessRunResult(success=True, error=None, returncode=proc.returncode)
+
+    except asyncio.CancelledError:
+        for o in outputs:
+            cleanup_temp_file(o.temp_path)
+        raise
+    except Exception:
+        for o in outputs:
+            cleanup_temp_file(o.temp_path)
+        raise

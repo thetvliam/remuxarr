@@ -1,0 +1,526 @@
+import json
+import os
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.core.decision import analyze_file
+from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _get_forged_ac3_audio_index, _track_to_dict
+from app.database.models import MediaFile, PlannedAction, QueueItem, Track
+from app.database.session import get_app_settings, get_db
+
+router = APIRouter(prefix="/api/queue", tags=["queue"])
+
+
+# ── Shared helpers ─────────────────────────────────────────────────────────────
+
+def _current_dry_run_mode(db: Session) -> bool:
+    """
+    Read the global dry_run_mode setting as it stands RIGHT NOW.
+
+    Used whenever an item transitions back to "pending" for (re)processing
+    via a user action (approve, resolve-subtitles, retry) — the item's
+    is_dry_run flag must reflect the setting at the moment processing
+    actually happens, not whatever the setting was when the item was
+    originally queued by a scan. Otherwise an item queued during a dry-run
+    scan stays a "dry run" forever, even after the user turns dry run off
+    and explicitly approves/retries it for real processing.
+    """
+    return get_app_settings(db).get("dry_run_mode", False)
+
+
+def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
+    """
+    Re-queue a failed / cancelled / dry-run item by deleting it and
+    re-running the scanner's per-file evaluation with force_probe=True.
+
+    Why re-probe on retry?
+    -----------------------
+    A "failed" item's planned actions (and the Track rows they were derived
+    from) were computed from the LAST probe of the file. If the failure was
+    caused by something the decision engine or FFmpeg command builder
+    mishandled — e.g. an embedded cover-art stream being mapped as a second
+    video track — simply flipping status back to "pending" re-runs the
+    exact same (broken) plan and fails identically, even after the
+    underlying bug has been fixed. Re-probing picks up:
+
+      • Application bugfixes (corrected track extraction, decision logic, …)
+      • Settings changes made since the original scan
+      • Any on-disk changes to the file itself
+
+    If re-probing determines no action is needed at all (e.g. the file is
+    now fully compliant), no new QueueItem is created — that is itself a
+    valid and correct outcome of "retry".
+    """
+    media = item.media_file
+    if not media:
+        raise HTTPException(404, "Associated media file not found")
+    if not os.path.exists(media.path):
+        raise HTTPException(400, f"File no longer exists on disk: {media.path}")
+
+    if item.status == "dry_run":
+        # Explicit "Process Now" override — regardless of current setting.
+        dry_run = False
+    else:
+        # failed / cancelled — honor dry_run_mode as it stands NOW.
+        dry_run = _current_dry_run_mode(db)
+
+    file_path        = media.path
+    file_id          = media.id
+    # Preserve arr IDs so the notification chain fires after the re-processed
+    # job completes — Sonarr/Radarr run RescanSeries/RescanMovie, which tells
+    # Plex the file changed.  Both are None for manually-scanned files, in
+    # which case the notification is simply skipped as normal.
+    sonarr_series_id = item.sonarr_series_id
+    radarr_movie_id  = item.radarr_movie_id
+
+    # Remove the stale item (and its PlannedActions, via cascade) — the
+    # re-probe below creates a fresh QueueItem if one is actually needed.
+    db.delete(item)
+    db.flush()
+
+    app_cfg = get_app_settings(db)
+    stats   = ScanStats()
+    _process_file(
+        db, file_path, app_cfg,
+        force_probe      = True,
+        dry_run          = dry_run,
+        stats            = stats,
+        sonarr_series_id = sonarr_series_id,
+        radarr_movie_id  = radarr_movie_id,
+    )
+    db.commit()  # ensure the deletion above is persisted even on early-return paths
+
+    new_item = (
+        db.query(QueueItem)
+        .filter(QueueItem.file_id == file_id)
+        .order_by(QueueItem.created_at.desc())
+        .first()
+    )
+    if new_item and new_item.status in ("pending", "manual_review"):
+        return _serialize(new_item, include_actions=True)
+
+    media_after = db.get(MediaFile, file_id)
+    return {
+        "success": True,
+        "message": "File re-evaluated — no further action needed.",
+        "media_status": media_after.status if media_after else None,
+    }
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@router.get("/")
+def list_queue(db: Session = Depends(get_db)):
+    """All pending + processing items (the queue panel)."""
+    items = (
+        db.query(QueueItem)
+        .filter(QueueItem.status.in_(["pending", "processing"]))
+        .order_by(QueueItem.priority.asc(), QueueItem.created_at.asc())
+        .all()
+    )
+    return [_serialize(item) for item in items]
+
+
+@router.get("/active")
+def get_active(db: Session = Depends(get_db)):
+    """All currently-processing items (active panel of the UI)."""
+    items = (
+        db.query(QueueItem)
+        .filter(QueueItem.status == "processing")
+        .order_by(QueueItem.started_at.asc())
+        .all()
+    )
+    return [_serialize(item, include_actions=True) for item in items]
+
+
+@router.get("/manual-review")
+def list_manual_review(db: Session = Depends(get_db)):
+    """Items waiting for human approval."""
+    items = (
+        db.query(QueueItem)
+        .filter(QueueItem.status == "manual_review")
+        .order_by(QueueItem.created_at.asc())
+        .all()
+    )
+    return [_serialize(item, include_actions=True) for item in items]
+
+
+@router.get("/stats")
+def queue_stats(db: Session = Depends(get_db)):
+    """Quick counts for the UI header badges."""
+    rows = (
+        db.query(QueueItem.status, func.count(QueueItem.id))
+        .group_by(QueueItem.status)
+        .all()
+    )
+    return {status: count for status, count in rows}
+
+
+@router.get("/{item_id}")
+def get_queue_item(item_id: int, db: Session = Depends(get_db)):
+    """Single item with full planned-action breakdown (modal detail view)."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    return _serialize(item, include_actions=True)
+
+
+@router.delete("/")
+def clear_pending(db: Session = Depends(get_db)):
+    """Cancel all pending (not yet started) items."""
+    count = (
+        db.query(QueueItem)
+        .filter(QueueItem.status == "pending")
+        .update({"status": "cancelled"})
+    )
+    db.commit()
+    return {"cancelled": count}
+
+
+@router.delete("/dry-run")
+def clear_dry_run(db: Session = Depends(get_db)):
+    """
+    Remove all dry-run preview items.
+
+    dry_run is a separate terminal status set by _finish_job — it is NOT
+    "pending", so clear_pending() above never touches these. Without this
+    endpoint there was no way to discard a dry-run batch the user reviewed
+    and decided against; they'd sit in the History panel's Dry Run tab
+    indefinitely (or until the same files got re-scanned, which overwrites
+    them one at a time rather than clearing the batch).
+
+    Deletes the QueueItem rows outright (rather than marking them
+    cancelled) since a discarded preview has no ongoing significance to
+    keep around — unlike a real cancelled job, there's no "this file used
+    to be queued" history worth preserving.
+    """
+    items = db.query(QueueItem).filter(QueueItem.status == "dry_run").all()
+    count = len(items)
+    for item in items:
+        if item.media_file:
+            # Reset size/mtime to sentinel values (real files never have a
+            # negative size or mtime) so the scanner's delta check in
+            # _process_file — which compares ONLY size/mtime against the
+            # current on-disk stat(), and has no awareness of .status at
+            # all — cannot see them as "unchanged" and skip re-evaluation.
+            #
+            # Without this, a plain re-scan (force_probe=False) would see
+            # the file's actual bytes are identical to what was stamped
+            # during the dry-run probe and return immediately, never
+            # calling analyze_file() again — so the cleared preview would
+            # simply never reappear on any future scan until the file's
+            # bytes genuinely changed on disk.
+            item.media_file.size   = -1
+            item.media_file.mtime  = -1.0
+            item.media_file.status = "skipped"
+        db.delete(item)
+    db.commit()
+    return {"cleared": count}
+
+
+@router.delete("/{item_id}")
+def cancel_item(item_id: int, db: Session = Depends(get_db)):
+    """Cancel a specific pending item."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status not in ("pending", "manual_review"):
+        raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
+
+    item.status = "cancelled"
+    if item.media_file:
+        item.media_file.status = "skipped"
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/{item_id}/retry")
+def retry_item(item_id: int, db: Session = Depends(get_db)):
+    """
+    Re-evaluate and re-queue a failed or cancelled item, or — for a dry-run
+    preview — queue it for REAL processing. The file is re-probed first
+    (force_probe=True) so the retry reflects the current code, settings,
+    and on-disk state rather than repeating a stale, possibly-broken plan.
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status not in ("failed", "cancelled", "dry_run", "success", "skipped"):
+        raise HTTPException(400, "Only failed, cancelled, dry-run, success, or skipped items can be retried")
+
+    return _retry_with_reprobe(db, item)
+
+
+@router.post("/retry-all")
+def retry_all_failed(db: Session = Depends(get_db)):
+    """
+    Re-queue every failed and cancelled item in one call.
+
+    Each item is re-probed with force_probe=True — the same behaviour as
+    single-item retry — so the retry picks up any settings changes, code
+    fixes, or on-disk changes since the original failure.
+
+    Items whose source file no longer exists on disk are silently skipped
+    rather than failing the whole operation.
+    """
+    items = (
+        db.query(QueueItem)
+        .filter(QueueItem.status.in_(["failed", "cancelled"]))
+        .all()
+    )
+
+    if not items:
+        return {"retried": 0, "skipped": 0}
+
+    app_cfg = get_app_settings(db)
+    dry_run = _current_dry_run_mode(db)
+    retried = 0
+    skipped = 0
+
+    for item in items:
+        media = item.media_file
+        if not media or not os.path.exists(media.path):
+            skipped += 1
+            continue
+
+        file_path = media.path
+        db.delete(item)
+        db.flush()
+
+        _process_file(
+            db, file_path, app_cfg,
+            force_probe = True,
+            dry_run     = dry_run,
+            stats       = ScanStats(),
+        )
+        retried += 1
+
+    return {"retried": retried, "skipped": skipped}
+
+
+class SubtitleOverridesRequest(BaseModel):
+    # Maps stream_index -> "keep" | "remove"
+    overrides: dict[int, str]
+
+
+@router.post("/{item_id}/resolve-subtitles")
+def resolve_subtitles(
+    item_id: int,
+    body: SubtitleOverridesRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Apply per-track keep/remove choices for a manual_review item flagged
+    because of non-convertible (image-based) subtitle tracks.
+
+    The choices are merged into MediaFile.subtitle_overrides (persisted, so
+    they survive future re-scans) and the decision engine is re-run
+    immediately:
+
+      • If unresolved flagged tracks remain (e.g. the user only resolved
+        some of several), the item stays in manual_review with an updated
+        flagged_subtitles list.
+      • If the new decision requires changes, the item moves to "pending"
+        with freshly-generated planned actions.
+      • If the new decision needs no changes at all (e.g. the user chose
+        "keep" and nothing else needs fixing), the item is marked "skipped".
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "manual_review":
+        raise HTTPException(400, "Item is not in manual review")
+
+    media = item.media_file
+    if not media:
+        raise HTTPException(404, "Associated media file not found")
+
+    for stream_index, choice in body.overrides.items():
+        if choice not in ("keep", "remove"):
+            raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep' or 'remove')")
+
+    # ── Merge new overrides into the persisted set ──────────────────────────
+    existing_overrides = _load_subtitle_overrides(media)
+    existing_overrides.update(body.overrides)
+    media.subtitle_overrides = json.dumps({str(k): v for k, v in existing_overrides.items()})
+
+    # ── Re-run the decision engine with the updated overrides ───────────────
+    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+    tracks = [_track_to_dict(t) for t in tracks_raw]
+
+    app_cfg   = get_app_settings(db)
+    file_info = {"path": media.path, "container": media.container,
+                  "video_codec": media.video_codec}
+    forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
+    decision  = analyze_file(
+        file_info, tracks, app_cfg,
+        subtitle_overrides=existing_overrides,
+        forged_ac3_audio_index=forged_ac3_audio_index,
+    )
+
+    if decision.is_manual_review:
+        # Still unresolved tracks (or a different gate fired) — stay in review
+        item.reason = decision.reason
+        item.review_subtitles = (
+            json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
+        )
+        db.commit()
+        return _serialize(item, include_actions=True)
+
+    if not decision.should_process:
+        # Nothing left to do — the file is fine as-is with these choices
+        item.status = "skipped"
+        item.reason = decision.reason
+        item.review_subtitles = None
+        media.status = "skipped"
+        db.commit()
+        return _serialize(item, include_actions=True)
+
+    # Changes are needed — move to the normal queue with fresh planned actions
+    db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
+
+    item.status = "pending"
+    item.reason = decision.reason
+    item.review_subtitles = None
+    # Same reasoning as approve_manual_review: honor dry_run_mode as it
+    # stands NOW, not as it was when the file was originally scanned.
+    item.is_dry_run = _current_dry_run_mode(db)
+    media.status = "queued"
+
+    db.flush()
+    for i, action in enumerate(decision.actions):
+        db.add(PlannedAction(
+            queue_item_id = item.id,
+            order         = i,
+            action_type   = action.action_type,
+            description   = action.description,
+            track_type    = action.track_type,
+            stream_index  = action.stream_index,
+        ))
+
+    db.commit()
+    return _serialize(item, include_actions=True)
+
+
+@router.post("/{item_id}/approve")
+def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
+    """Approve a manual-review item — moves it into the normal queue."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "manual_review":
+        raise HTTPException(400, "Item is not in manual review")
+
+    item.status     = "pending"
+    # The item's is_dry_run flag was set when the SCAN originally created it,
+    # which may have been while Dry Run was enabled. Approval happens later,
+    # potentially after the user has toggled Dry Run off — processing should
+    # honor the CURRENT setting, not the stale one captured at scan time.
+    item.is_dry_run  = _current_dry_run_mode(db)
+    if item.media_file:
+        item.media_file.status = "queued"
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/{item_id}/priority")
+def set_priority(item_id: int, priority: int, db: Session = Depends(get_db)):
+    """Adjust priority (1 = highest, 10 = lowest)."""
+    if not 1 <= priority <= 10:
+        raise HTTPException(400, "Priority must be 1–10")
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "pending":
+        raise HTTPException(400, "Can only re-prioritise pending items")
+
+    item.priority = priority
+    db.commit()
+    return {"success": True, "priority": priority}
+
+
+@router.post("/{item_id}/prioritize")
+def prioritize_item(item_id: int, db: Session = Depends(get_db)):
+    """
+    Move a pending item to the top of the queue.
+
+    Sets its priority to one below the current minimum so the worker's
+    ORDER BY priority ASC picks it up before everything else.  Works
+    regardless of how many times the button is clicked — each call
+    recalculates the minimum across all OTHER pending items so repeated
+    presses on different items always produce a deterministic order.
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    if item.status != "pending":
+        raise HTTPException(400, "Only pending items can be moved to the top")
+
+    current_min = (
+        db.query(func.min(QueueItem.priority))
+        .filter(QueueItem.status == "pending", QueueItem.id != item_id)
+        .scalar()
+    )
+    # If no other pending items exist, reset to default priority 5.
+    # Otherwise go one lower than the current minimum.
+    item.priority = (current_min - 1) if current_min is not None else 5
+    db.commit()
+    return {"id": item_id, "priority": item.priority}
+
+
+# ── Serialiser ─────────────────────────────────────────────────────────────────
+
+def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
+    media = item.media_file
+
+    flagged_subtitles = None
+    if item.review_subtitles:
+        try:
+            flagged_subtitles = json.loads(item.review_subtitles)
+        except (ValueError, TypeError):
+            flagged_subtitles = None
+
+    out: dict = {
+        "id":             item.id,
+        "status":         item.status,
+        "is_dry_run":     item.is_dry_run,
+        "reason":         item.reason,
+        "progress":       item.progress,
+        "current_action": item.current_action,
+        "priority":       item.priority,
+        "created_at":     _iso(item.created_at),
+        "started_at":     _iso(item.started_at),
+        "completed_at":   _iso(item.completed_at),
+        "error_message":  item.error_message,
+        "flagged_subtitles": flagged_subtitles,
+        "file": {
+            "id":        media.id,
+            "filename":  media.filename,
+            "path":      media.path,
+            "container": media.container,
+            "size":      media.size,
+            "duration":  media.duration,
+        } if media else None,
+    }
+
+    if include_actions:
+        out["planned_actions"] = [
+            {
+                "order":        a.order,
+                "action_type":  a.action_type,
+                "description":  a.description,
+                "track_type":   a.track_type,
+                "stream_index": a.stream_index,
+            }
+            for a in item.planned_actions   # already ordered by PlannedAction.order
+        ]
+
+    return out
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return dt.isoformat() if dt else None

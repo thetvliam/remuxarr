@@ -1,0 +1,52 @@
+src/
+├── App.jsx                          # Root orchestrator only (~130 lines)
+├── constants.js                     # C, STATUS_COLOR, ACTION_CFG
+├── utils.js                         # fmtSize, fmtDur, toUtcDate, fmtTime, fmtRel, basename
+│
+├── hooks/
+│   ├── useWebSocket.js              # Self-contained WS hook with ping, reconnect, isFirstConnect
+│   ├── useAppData.js                # All server state, fetchAll, fetchForge, toast
+│   └── useActions.js                # toggleDryRun, togglePause, triggerScan, openDetail, etc.
+│
+├── components/
+│   ├── atoms/
+│   │   ├── LED.jsx
+│   │   ├── Btn.jsx
+│   │   ├── Stat.jsx
+│   │   ├── StatusBadge.jsx
+│   │   ├── ActionBadge.jsx
+│   │   └── EmptyState.jsx
+│   │
+│   ├── bars/
+│   │   ├── SegBar.jsx
+│   │   └── MiniBar.jsx
+│   │
+│   ├── layout/
+│   │   ├── PanelHeader.jsx
+│   │   └── Toasts.jsx
+│   │
+│   ├── header/
+│   │   ├── AppHeader.jsx            # All header controls + nav + responsive hamburger
+│   │   └── ApiBar.jsx
+│   │
+│   ├── dashboard/
+│   │   ├── ActivePanel.jsx
+│   │   ├── QueuePanel.jsx           # Contains QueueRow
+│   │   └── HistoryPanel.jsx         # Contains HistoryRow (tabs are local state here)
+│   │
+│   ├── DetailModal.jsx              # Shared by queue and history
+│   │
+│   ├── settings/
+│   │   ├── SettingsPage.jsx
+│   │   ├── SettingInput.jsx
+│   │   ├── TagInput.jsx
+│   │   └── DangerZone.jsx
+│   │
+│   ├── review/
+│   │   └── ReviewPage.jsx
+│   │
+│   └── forge/
+│       ├── ForgePage.jsx
+│       ├── ForgeActivePanel.jsx
+│       ├── CandidatesPanel.jsx      # Contains CandidateRow
+│       └── ForgeProcessedPanel.jsx  # Contains ForgeProcessedRow

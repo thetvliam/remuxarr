@@ -1,0 +1,32 @@
+# ── Secrets & local config ──────────────────────────────────────────────────
+# docker-compose.yml mounts ./config:/config, and the app stores
+# Sonarr/Radarr API keys, the Plex token, and the SMTP password inside
+# /config/remuxarr.db — running the stack from this folder creates that
+# file right here. Never commit it.
+config/
+*.db
+*.sqlite
+*.sqlite3
+.env
+
+# ── Python ───────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── Node / frontend build ───────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# ── Runtime / temp ───────────────────────────────────────────────────────
+/tmp/remuxarr/
+*.remuxarr_tmp
+
+# ── Editor / OS cruft ────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+*.swp
