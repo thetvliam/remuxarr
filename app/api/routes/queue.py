@@ -394,12 +394,13 @@ def resolve_subtitles(
     db.flush()
     for i, action in enumerate(decision.actions):
         db.add(PlannedAction(
-            queue_item_id = item.id,
-            order         = i,
-            action_type   = action.action_type,
-            description   = action.description,
-            track_type    = action.track_type,
-            stream_index  = action.stream_index,
+            queue_item_id    = item.id,
+            order            = i,
+            action_type      = action.action_type,
+            description      = action.description,
+            track_type       = action.track_type,
+            stream_index     = action.stream_index,
+            target_language  = getattr(action, "target_language", None),
         ))
 
     db.commit()

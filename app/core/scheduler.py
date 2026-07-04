@@ -123,7 +123,8 @@ async def _drain_tick() -> None:
         # Capture everything needed for the network call before deleting
         # the row — deletion happens regardless of outcome (best-effort,
         # matching the rest of the Plex integration's philosophy).
-        local_path = media.path if media else None
+        local_path        = media.path if media else None
+        expected_language = entry.expected_language
         db.delete(entry)
         db.commit()
 
@@ -142,7 +143,8 @@ async def _drain_tick() -> None:
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(
-            None, notify_plex_reprocessed_file, url, token, mappings, local_path,
+            None, notify_plex_reprocessed_file,
+            url, token, mappings, local_path, expected_language,
         )
     except Exception:
         logger.exception("Plex backlog: analyze failed for %s", local_path)

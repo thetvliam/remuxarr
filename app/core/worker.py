@@ -26,7 +26,7 @@ from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
 from app.core.scanner import _load_subtitle_overrides, _get_forged_ac3_audio_index, _track_to_dict
 from app.core.sonarr import notify_sonarr
-from app.database.models import MediaFile, NotificationState, PlexAnalyzeBacklog, QueueItem, Track
+from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -1140,12 +1140,35 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
             .first()
         )
         if not existing:
-            db.add(PlexAnalyzeBacklog(file_id=job.file_id))
+            # If this job involved a language-tag fix, record which
+            # language was set so the drain loop can check whether Plex's
+            # own scheduled maintenance already picked it up before
+            # bothering with an explicit Analyze call. Confirmed (via
+            # manual testing) that Plex's own maintenance does often catch
+            # these on its own, just not reliably for every file — this
+            # lets Remuxarr skip the redundant Analyze call for the files
+            # Plex already got right, while still guaranteeing correctness
+            # via the fallback for the ones it missed.
+            lang_action = (
+                db.query(PlannedAction)
+                .filter(
+                    PlannedAction.queue_item_id == job.id,
+                    PlannedAction.target_language.isnot(None),
+                )
+                .first()
+            )
+            expected_language = lang_action.target_language if lang_action else None
+
+            db.add(PlexAnalyzeBacklog(
+                file_id=job.file_id,
+                expected_language=expected_language,
+            ))
             db.commit()
             logger.info(
                 "Plex: queued %s for backlog analyze (drains during the "
-                "configured window)",
+                "configured window)%s",
                 job.output_path,
+                f" — will verify language={expected_language} first" if expected_language else "",
             )
         return refresh_data
 

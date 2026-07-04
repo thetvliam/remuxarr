@@ -187,6 +187,12 @@ class PlannedAction(Base):
     description = Column(String, nullable=False)   # human-readable
     track_type  = Column(String)                   # audio | subtitle | video | None
     stream_index = Column(Integer)
+    # ISO 639-2/B code this track's language was rewritten to, if the
+    # language-fix feature touched it (e.g. "eng"). NULL for actions that
+    # didn't involve a language rewrite. Used to let the Plex backlog drain
+    # verify whether Plex's own maintenance has already picked up the
+    # change before falling back to an explicit Analyze call.
+    target_language = Column(String, nullable=True)
 
     queue_item = relationship("QueueItem", back_populates="planned_actions")
 
@@ -263,6 +269,20 @@ class PlexAnalyzeBacklog(Base):
     id      = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
                      nullable=False)
+
+    # Set only when this reprocess involved a language-tag fix (copied from
+    # the job's PlannedAction rows at queue-time). NULL for any other kind
+    # of reprocess (track removal, container change, etc.) — in that case
+    # there's no cheap way to verify Plex already caught up, so the drain
+    # loop skips the verification check and goes straight to Analyze,
+    # exactly as before this feature existed.
+    #
+    # When set, the drain loop checks Plex's own metadata for this file
+    # before firing an explicit Analyze — if Plex's own scheduled
+    # maintenance has already picked up the change (confirmed to happen
+    # for most files, just not reliably every time), the Analyze call is
+    # skipped entirely as unnecessary.
+    expected_language = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

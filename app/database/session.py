@@ -199,6 +199,10 @@ def _migrate_schema() -> None:
          "ALTER TABLE queue_items ADD COLUMN radarr_movie_id INTEGER"),
         ("queue_items", "is_new_file",
          "ALTER TABLE queue_items ADD COLUMN is_new_file BOOLEAN DEFAULT 1"),
+        ("planned_actions", "target_language",
+         "ALTER TABLE planned_actions ADD COLUMN target_language TEXT"),
+        ("plex_analyze_backlog", "expected_language",
+         "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
     ]
 
     inspector = inspect(engine)

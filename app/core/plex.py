@@ -185,6 +185,71 @@ def _find_rating_key_for_path(
     return mapping.get(plex_path)
 
 
+def _audio_language_matches(
+    base_url: str, token: str, rating_key: int, expected_language: str,
+) -> bool | None:
+    """
+    Check whether ANY audio stream on this Plex item already reports the
+    expected language, by fetching the item's own full metadata directly —
+    the same data Plex's "View XML" option shows.
+
+    Plex exposes THREE separate language fields per stream once analyzed:
+      language     — full human-readable name, e.g. "English"
+      languageTag  — ISO 639-1 two-letter code, e.g. "en"
+      languageCode — ISO 639-2/B three-letter code, e.g. "eng"
+    Confirmed directly by comparing a user's before/after "View XML" dumps
+    of the same file. Remuxarr writes ISO 639-2/B codes (e.g. "eng") via
+    ffmpeg's -metadata:s:a:N language=eng flag, so languageCode is the only
+    one of the three that's directly comparable without a name/code lookup
+    table — checking "language" (the full name) would never match and this
+    verification would silently never succeed, always falling through to
+    the explicit Analyze call with zero actual benefit.
+
+    An unanalyzed stream has NONE of these three keys present at all
+    (confirmed: the same file's "before" XML omits all three), so a plain
+    dict .get() correctly returns None/empty for a not-yet-analyzed file.
+
+    Returns:
+      True  — at least one audio stream already matches expected_language.
+              Plex's own maintenance already caught this file; no need for
+              Remuxarr to force an explicit Analyze.
+      False — no audio stream matches yet. Plex hasn't picked it up (or
+              hasn't gotten to it yet) — fall back to an explicit Analyze.
+      None  — the check itself failed (network error, item not found,
+              unexpected response shape). Caller should treat this the
+              same as False — when in doubt, do the explicit Analyze
+              rather than silently skipping it.
+
+    streamType is compared as a string since Plex's JSON API has been
+    observed to represent some numeric fields inconsistently across
+    versions/endpoints — comparing as a string avoids a brittle int-only
+    match. The language comparison is case-insensitive for the same reason.
+    """
+    try:
+        data = _plex_request(base_url, token, f"/library/metadata/{rating_key}")
+    except Exception as exc:
+        logger.warning(
+            "Plex: language check failed for ratingKey %d: %s", rating_key, exc,
+        )
+        return None
+
+    items = data.get("MediaContainer", {}).get("Metadata", [])
+    if not items:
+        return None
+
+    expected = expected_language.strip().lower()
+    for item in items:
+        for media in item.get("Media", []):
+            for part in media.get("Part", []):
+                for stream in part.get("Stream", []):
+                    if str(stream.get("streamType")) != "2":
+                        continue   # not an audio stream
+                    lang_code = (stream.get("languageCode") or "").strip().lower()
+                    if lang_code == expected:
+                        return True
+    return False
+
+
 def notify_plex_new_file(
     base_url: str, token: str, mappings: list[str], local_path: str,
 ) -> None:
@@ -225,11 +290,22 @@ def notify_plex_new_file(
 
 def notify_plex_reprocessed_file(
     base_url: str, token: str, mappings: list[str], local_path: str,
+    expected_language: str | None = None,
 ) -> None:
     """
     Fire-and-forget explicit Analyze call for a file at a path Plex has
     already indexed. Finds the matching item by file path, then issues
     PUT /library/metadata/{ratingKey}/analyze.
+
+    If expected_language is provided (this reprocess was a language-tag
+    fix), first checks whether Plex's own scheduled maintenance has
+    already picked up the change — confirmed via manual testing to happen
+    for most files, just not reliably every single one. If it already
+    matches, the explicit Analyze is skipped as unnecessary. If the check
+    is inconclusive (network error, item not found) or doesn't match yet,
+    falls through to the same explicit Analyze as before this existed —
+    correctness is never traded away for the optimization; a failed or
+    uncertain check just means doing the guaranteed-correct thing.
 
     Best-effort — failures are logged but never affect the Remuxarr job's
     recorded status.
@@ -261,6 +337,20 @@ def notify_plex_reprocessed_file(
         # is a reasonable best-effort substitute for an explicit analyze.
         notify_plex_new_file(base_url, token, mappings, local_path)
         return
+
+    if expected_language:
+        already_correct = _audio_language_matches(
+            base_url, token, rating_key, expected_language,
+        )
+        if already_correct:
+            logger.info(
+                "Plex: %s already shows language=%s — Plex's own "
+                "maintenance already caught this, skipping analyze",
+                plex_path, expected_language,
+            )
+            return
+        # already_correct is False or None (check failed/inconclusive) —
+        # fall through to the explicit analyze below, same as always.
 
     logger.info("Plex: triggering Analyze for ratingKey %d (%s)", rating_key, plex_path)
     try:
