@@ -121,6 +121,17 @@ engine = create_engine(
         # collide and immediately fail with "database is locked".
         "timeout": 30,
     },
+    # SQLite only ever serves one writer at a time regardless of pool size —
+    # a bigger pool doesn't buy real write parallelism. Its value here is
+    # purely headroom: with many independent short-lived sessions now open
+    # across the worker's per-job notification loaders, the Plex backlog
+    # drain, and the scheduler, a burst of near-simultaneous activity can
+    # occasionally need more than the default 5+10=15 slots even though
+    # each individual session is short-lived and well-behaved. Raising this
+    # doesn't fix contention — see _load_post_job_data's docstring for the
+    # actual fix — it just gives more room before hitting the ceiling.
+    pool_size=10,
+    max_overflow=20,
     echo=settings.DEBUG,
 )
 

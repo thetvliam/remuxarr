@@ -1,0 +1,19 @@
+services:
+  remuxarr:
+    # No published image yet — build from source. Once CI publishes images
+    # (see .github/workflows/ci.yml), this can switch to `image: ghcr.io/thetvliam/remuxarr:latest`.
+    build: .
+    container_name: remuxarr
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Holds remuxarr.db (settings, scan history, queue). Must persist.
+      - ./config:/config
+      # Your media library. Mount whatever paths need scanning; the actual
+      # scan paths are configured inside the app after first start.
+      - /path/to/media:/media
+    environment:
+      - REMUXARR_MAX_CONCURRENT_JOBS=1
+      - REMUXARR_WEBHOOK_DEBOUNCE_SECONDS=10
+      # - REMUXARR_DEBUG=true

@@ -242,8 +242,9 @@ async def _run_and_broadcast(
     except Exception:
         logger.exception("_run_job raised for job %d — attempting emergency cleanup", job_id)
     finally:
-        final = await loop.run_in_executor(None, _load_final_state, job_id)
-        if final:
+        post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
+        if post_job:
+            final = post_job["final"]
             # Safety net: if the job is still "processing" after _run_job
             # returned (e.g. _finish_job's commit failed and the rollback
             # left the row unchanged), force it to "failed" via a minimal
@@ -271,25 +272,17 @@ async def _run_and_broadcast(
             })
 
             # Post-job *arr notifications — only for real successes.
+            # sonarr/radarr data was already read in the same session as
+            # `final` above (see _load_post_job_data) rather than each
+            # opening its own separate connection here.
             if final.get("status") == "success":
-                notify_data = await loop.run_in_executor(
-                    None, _load_arr_notify_data, job_id,
-                    "sonarr_series_id", "sonarr_enabled",
-                    "sonarr_url", "sonarr_api_key", "Sonarr",
-                )
-                if notify_data:
+                if post_job["sonarr"]:
                     asyncio.create_task(
-                        _trigger_arr_notify(notify_data, loop, notify_sonarr, "Sonarr")
+                        _trigger_arr_notify(post_job["sonarr"], loop, notify_sonarr, "Sonarr")
                     )
-
-                radarr_data = await loop.run_in_executor(
-                    None, _load_arr_notify_data, job_id,
-                    "radarr_movie_id", "radarr_enabled",
-                    "radarr_url", "radarr_api_key", "Radarr",
-                )
-                if radarr_data:
+                if post_job["radarr"]:
                     asyncio.create_task(
-                        _trigger_arr_notify(radarr_data, loop, notify_radarr, "Radarr")
+                        _trigger_arr_notify(post_job["radarr"], loop, notify_radarr, "Radarr")
                     )
 
                 # Plex — independent of Sonarr/Radarr. Fires a lightweight
@@ -971,56 +964,74 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
         )
 
 
-def _load_final_state(job_id: int) -> dict | None:
-    db = SessionLocal()
-    try:
-        job = db.get(QueueItem, job_id)
+def _load_post_job_data(job_id: int) -> dict | None:
+    """
+    Consolidated read for everything _run_and_broadcast needs after a job
+    finishes: the final status/filename/error for the WebSocket broadcast,
+    plus Sonarr and Radarr notification data if applicable.
+
+    This replaces what used to be three separate sequential SessionLocal()
+    opens (_load_final_state, then _load_arr_notify_data called once for
+    Sonarr and again for Radarr) with one. All three were pure reads with
+    no mutation, so merging them changes no observable behavior — it only
+    reduces how many times this, the highest-frequency code path in the
+    app (runs after every single completed job), checks a connection out
+    of the pool. Under a busy scan with several jobs completing close
+    together, each additional sequential session open is one more chance
+    to collide with SQLite's single-writer lock and sit blocked holding a
+    pool slot for up to the 30s busy_timeout — cutting three opens down to
+    one directly reduces that exposure.
+
+    Sonarr/Radarr data is computed unconditionally here (previously it was
+    only fetched when the job succeeded) since the extra in-session reads
+    are effectively free once the session is already open — the caller
+    still only acts on them when final["status"] == "success", so this
+    changes no observable output, only when the read happens.
+    """
+    with SessionLocal() as db:
+        job: QueueItem | None = db.get(QueueItem, job_id)
         if job is None:
             return None
-        return {
+
+        final = {
             "status":      job.status,
             "filename":    job.media_file.filename if job.media_file else "",
             "error":       job.error_message,
             "is_new_file": job.is_new_file,
             "output_path": job.output_path,
         }
-    finally:
-        db.close()
 
-
-def _load_arr_notify_data(
-    job_id:          int,
-    id_attr:         str,   # QueueItem attribute: "sonarr_series_id" or "radarr_movie_id"
-    enabled_key:     str,   # settings key: "sonarr_enabled" / "radarr_enabled"
-    url_key:         str,   # settings key: "sonarr_url" / "radarr_url"
-    api_key_setting: str,   # settings key: "sonarr_api_key" / "radarr_api_key"
-    service_name:    str,   # human-readable name for warning messages
-) -> dict | None:
-    """
-    Load *arr service connection details for a post-job notification.
-    Returns a dict with keys {entity_id, url, api_key} or None if the
-    notification should be skipped (disabled, unconfigured, or not applicable).
-    """
-    with SessionLocal() as db:
-        job = db.get(QueueItem, job_id)
-        if not job or not getattr(job, id_attr):
-            return None
         cfg = get_app_settings(db)
-        if not cfg.get(enabled_key, False):
-            return None
-        url     = (cfg.get(url_key) or "").rstrip("/")
-        api_key = (cfg.get(api_key_setting) or "")
-        if not url or not api_key:
-            logger.warning(
-                "%s notification skipped for job %d: %s or %s not configured",
-                service_name, job_id, url_key, api_key_setting,
-            )
-            return None
-        return {
-            "entity_id": getattr(job, id_attr),
-            "url":       url,
-            "api_key":   api_key,
-        }
+
+        def _arr_data(id_attr, enabled_key, url_key, api_key_setting, service_name):
+            if not getattr(job, id_attr):
+                return None
+            if not cfg.get(enabled_key, False):
+                return None
+            url     = (cfg.get(url_key) or "").rstrip("/")
+            api_key = (cfg.get(api_key_setting) or "")
+            if not url or not api_key:
+                logger.warning(
+                    "%s notification skipped for job %d: %s or %s not configured",
+                    service_name, job_id, url_key, api_key_setting,
+                )
+                return None
+            return {
+                "entity_id": getattr(job, id_attr),
+                "url":       url,
+                "api_key":   api_key,
+            }
+
+        sonarr = _arr_data(
+            "sonarr_series_id", "sonarr_enabled",
+            "sonarr_url", "sonarr_api_key", "Sonarr",
+        )
+        radarr = _arr_data(
+            "radarr_movie_id", "radarr_enabled",
+            "radarr_url", "radarr_api_key", "Radarr",
+        )
+
+        return {"final": final, "sonarr": sonarr, "radarr": radarr}
 
 
 async def _trigger_arr_notify(
