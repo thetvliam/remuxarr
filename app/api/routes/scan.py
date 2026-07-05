@@ -7,6 +7,7 @@ POST /api/scan/file             — re-scan + re-queue a single file path
 """
 import asyncio
 import logging
+import os
 import threading
 
 from fastapi import APIRouter, Depends, HTTPException
