@@ -67,7 +67,21 @@ def get_active_job_count() -> int:
 
 def abort_job(job_id: int) -> bool:
     """
-    Cancel a currently-processing job immediately.
+    Cancel a currently-processing job immediately, AND stop the worker
+    from claiming the next pending job.
+
+    The second half matters as much as the first: the scenario this
+    exists for is a new user seeing the very first file do the wrong
+    thing (bad settings, wrong language, etc.) — cancelling that one file
+    alone doesn't help if the worker just claims the next item on its very
+    next loop tick. Calling pause_worker() here sets the actual in-memory
+    flag the live loop checks (_paused), which is distinct from the
+    auto_start_jobs database setting the API route also updates — that
+    setting is only ever read at container startup and before a new scan
+    begins, so writing it alone has no effect on a worker loop that's
+    already running. Both are needed: pause_worker() stops the current
+    session immediately, auto_start_jobs prevents auto-resuming on a
+    future restart or scan.
 
     Marks the DB row "cancelled" (reusing the existing status rather than
     inventing a new one, so every existing filter/tab/badge that already
@@ -88,6 +102,8 @@ def abort_job(job_id: int) -> bool:
     task = _active_task_registry.get(job_id)
     if task is None or task.done():
         return False
+
+    pause_worker()
 
     with SessionLocal() as db:
         job = db.get(QueueItem, job_id)

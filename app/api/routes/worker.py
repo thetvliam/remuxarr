@@ -44,15 +44,22 @@ def resume():
 @router.post("/abort/{job_id}")
 def abort(job_id: int, db: Session = Depends(get_db)):
     """
-    Cancel a currently-processing job immediately AND disable auto-start.
+    Cancel a currently-processing job immediately AND stop the queue.
+
+    abort_job() itself now calls pause_worker() internally, which is what
+    actually stops the live worker loop from claiming the next job. The
+    auto_start_jobs update here is a separate, additional piece: it
+    prevents the worker from auto-resuming on a future container restart
+    or the next scheduled scan — pause_worker() alone only affects the
+    currently-running session.
 
     The combined action exists specifically for the scenario a new user is
     most likely to hit: a scan runs without dry-run enabled, auto-start is
     on, and the very first file being processed turns out to not be what
     they wanted (wrong settings, wrong language, etc.). Aborting the file
     alone wouldn't help if the next queued file starts immediately after —
-    auto-start is switched off in the same action so the queue pauses,
-    giving the user a chance to review settings before resuming manually.
+    the queue now actually pauses, giving the user a chance to review
+    settings before resuming manually.
     """
     aborted = abort_job(job_id)
     if not aborted:
