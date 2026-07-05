@@ -186,7 +186,32 @@ def analyze_file(
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
 
-    current_container = (file_info.get("container") or "mkv").lower()
+    raw_container = file_info.get("container")
+    if not raw_container:
+        # We genuinely don't know this file's container — proceeding would
+        # mean guessing, and a wrong guess here is exactly what can turn a
+        # working file into a corrupted one (this replaces a previous
+        # `or "mkv"` default that silently treated "unknown" identically
+        # to "confirmed MKV" — plausible root cause of a real incident
+        # where a genuinely-MP4 file was rewritten as Matroska while
+        # keeping its .mp4 extension). Raising here is caught by the
+        # scanner's per-file exception handler (logged, counted as an
+        # error, scan continues) and by the worker's job-completion
+        # handler (job marked failed with this message as the visible
+        # error) — a clear, actionable failure instead of a silent wrong
+        # guess producing a corrupted file.
+        raise ValueError(
+            f"Cannot determine container format for "
+            f"{file_info.get('path', '<unknown path>')} — container info "
+            f"is missing or empty. Refusing to guess rather than risk "
+            f"writing the wrong format."
+        )
+    current_container = raw_container.lower()
+    logger.info(
+        "analyze_file: file_info.get('container')=%r -> current_container=%r "
+        "(path=%s)",
+        file_info.get("container"), current_container, file_info.get("path"),
+    )
 
     video_tracks = [t for t in tracks if t["track_type"] == "video"]
     audio_tracks = [t for t in tracks if t["track_type"] == "audio"]

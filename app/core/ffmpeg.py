@@ -160,6 +160,11 @@ def build_ffmpeg_command(
         "mov": "mov",
     }
     out_fmt = _CONTAINER_FORMAT.get(decision.target_container or "mkv", "matroska")
+    logger.info(
+        "build_ffmpeg_command: decision.target_container=%r -> out_fmt=%r "
+        "(output_path=%s)",
+        decision.target_container, out_fmt, output_path,
+    )
     cmd += ["-f", out_fmt]
 
     # Apply +faststart when the output is MP4 — this covers two cases:

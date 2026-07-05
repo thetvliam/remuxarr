@@ -24,7 +24,7 @@ from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpe
 from app.core.probe import is_faststart_mp4
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
-from app.core.scanner import _load_subtitle_overrides, _get_forged_ac3_audio_index, _track_to_dict
+from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _get_forged_ac3_audio_index, _track_to_dict
 from app.core.sonarr import notify_sonarr
 from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -784,6 +784,7 @@ def _load_job_data(job_id: int):
         file_info  = {"path": media.path, "container": media.container,
                       "video_codec": media.video_codec}
         overrides  = _load_subtitle_overrides(media)
+        audio_lang_overrides = _load_audio_language_overrides(media)
         faststart  = (
             is_faststart_mp4(media.path)
             if (media.container or "").lower() == "mp4"
@@ -793,6 +794,7 @@ def _load_job_data(job_id: int):
         decision   = analyze_file(
             file_info, tracks, app_cfg,
             subtitle_overrides=overrides,
+            audio_language_overrides=audio_lang_overrides,
             has_faststart=faststart,
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
