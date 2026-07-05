@@ -279,6 +279,38 @@ def analyze_file(
         for t in audio_tracks
     )
 
+    # Absolute last-resort fallback. The keep_default_audio guard above
+    # protects files where the best-available track happens to also carry
+    # the default flag — but that flag is only ever set by whatever
+    # encoded/muxed the source file, and plenty of releases simply never
+    # set it on any track. Confirmed in production: a single-track file
+    # whose only audio was mistagged with a non-preferred, non-"und"
+    # language (e.g. an English sitcom with its sole track mislabeled
+    # "dan") AND never flagged default fails every check above — lang not
+    # in keep list, lang not "und", and is_default is False on every
+    # track — leaving the file with zero audio tracks after the drop
+    # pass runs. That's not an acceptable outcome under any configuration.
+    #
+    # This only ever activates when NEITHER of the two normal tiers has
+    # anything to offer — it does not override a real preferred-language
+    # match or a genuine default flag, only fires when both are absent —
+    # and force-keeps the first audio track by stream index as the
+    # unconditional floor: a file may end up with the wrong language
+    # audible, but it will never end up with none at all.
+    has_default_audio = any(track.get("is_default") for track in audio_tracks)
+    absolute_fallback_stream_index = None
+    if audio_tracks and not has_preferred_audio and not has_default_audio:
+        absolute_fallback_stream_index = min(
+            t["stream_index"] for t in audio_tracks
+        )
+        logger.warning(
+            "No preferred-language or default-flagged audio track found — "
+            "force-keeping stream %d as a last resort to avoid a silent "
+            "output file. This file should be checked: its audio language "
+            "tag is likely wrong.",
+            absolute_fallback_stream_index,
+        )
+
     for track in audio_tracks:
         lang     = track["language"] or "und"
         codec    = (track["codec"] or "").lower()
@@ -292,6 +324,7 @@ def analyze_file(
             # overriding the language filter when English (or any other
             # preferred language) is already present.
             or (keep_default_audio and track.get("is_default") and not has_preferred_audio)
+            or track["stream_index"] == absolute_fallback_stream_index
         )
 
         if not should_keep:
