@@ -55,6 +55,21 @@ class MediaFile(Base):
     # the decision engine can act on it instead of re-flagging the same track.
     subtitle_overrides = Column(Text)
 
+    # JSON dict mapping stream_index (as string) -> ISO 639-2/B language
+    # code, set via the Audio Language Review section when a track has a
+    # DEFINED but wrong language (e.g. an English show whose only audio
+    # track is mistagged "dut"). Distinct from the "fix undefined language"
+    # feature, which only ever touches "und" tracks — this handles the
+    # opposite case: a language tag that's present but incorrect.
+    audio_language_overrides = Column(Text)
+
+    # Set when a human has explicitly confirmed the file's current audio
+    # language is correct despite not matching keep_audio_languages (e.g.
+    # anime that's genuinely, correctly Japanese). Once set, the file is
+    # never re-flagged in Audio Language Review again, regardless of what
+    # else changes about it on future scans.
+    audio_language_ignored = Column(Boolean, default=False)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -309,3 +324,46 @@ class NotificationState(Base):
     id                   = Column(Integer, primary_key=True)
     consecutive_failures = Column(Integer, default=0)
     breaker_tripped       = Column(Boolean, default=False)
+
+
+class AudioLanguageFlag(Base):
+    """
+    One row per file whose kept audio track has a DEFINED but non-preferred
+    language — e.g. an English sitcom whose only audio track is mistagged
+    "dut", or a Danish tag on an American show. Distinct from the
+    "undefined language" manual-review gate: this is specifically for
+    tracks that already have a language set, just an incorrect one.
+
+    Unlike the existing manual_review QueueItem status, a flagged file
+    here is NOT held back from processing — it's fully processed and
+    playable (using whatever audio survived the normal keep/drop and
+    safety-net logic) the whole time it sits flagged. The flag is purely
+    informational, surfaced in the Audio Language Review section, until
+    the user either relabels the track (via MediaFile.audio_language_overrides)
+    or confirms it's already correct (via MediaFile.audio_language_ignored)
+    — either action removes this row.
+
+    One row per file (file_id is unique) — re-detecting the same mismatch
+    on a later scan updates detected_language in place rather than creating
+    a duplicate entry.
+    """
+    __tablename__ = "audio_language_flags"
+
+    id      = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
+                     nullable=False, unique=True)
+
+    # Which audio track this refers to — needed so the "apply" action
+    # knows exactly which stream to write the corrected language to; the
+    # detected language alone isn't enough to reliably re-identify the
+    # track later (a file could have multiple tracks sharing a language).
+    stream_index = Column(Integer, nullable=False)
+
+    # The language code currently on that track at the moment it was
+    # flagged (e.g. "dut") — shown to the user so they can tell at a
+    # glance what's actually on the file without opening it.
+    detected_language = Column(String)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    media_file = relationship("MediaFile", backref="audio_language_flag")

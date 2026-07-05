@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.decision import analyze_file
-from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _get_forged_ac3_audio_index, _track_to_dict
+from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _get_forged_ac3_audio_index, _track_to_dict
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import get_app_settings, get_db
 
@@ -359,6 +359,7 @@ def resolve_subtitles(
     decision  = analyze_file(
         file_info, tracks, app_cfg,
         subtitle_overrides=existing_overrides,
+        audio_language_overrides=_load_audio_language_overrides(media),
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
 

@@ -106,6 +106,18 @@ class ProcessingDecision:
     #   {stream_index, language, codec, is_forced, title}
     # The UI uses this to render per-track Keep/Remove choices.
     flagged_subtitles: list[dict] | None = None
+    # Set when the file's surviving (kept) audio track has a DEFINED but
+    # non-preferred language — e.g. "dut" on an English show. Shape:
+    # {"stream_index": int, "language": str}. None means either everything
+    # matched, or the surviving track is "und" (that case belongs to
+    # fix_undefined_language, not this). The scanner reads this to
+    # upsert/clear an AudioLanguageFlag row — informational only, never
+    # blocks should_process the way is_manual_review does. stream_index is
+    # included (not just the language) because the Audio Language Review
+    # "apply" action needs to know exactly which track to target when
+    # writing the corrected language — the language alone isn't enough to
+    # reliably identify the track again later.
+    audio_language_mismatch: dict | None = None
 
 
 # ── Main function ──────────────────────────────────────────────────────────────
@@ -115,6 +127,7 @@ def analyze_file(
     tracks:    list[dict],
     settings:  dict,
     subtitle_overrides: dict[int, str] | None = None,
+    audio_language_overrides: dict[int, str] | None = None,
     has_faststart: bool | None = None,
     forged_ac3_audio_index: int | None = None,
 ) -> ProcessingDecision:
@@ -136,6 +149,13 @@ def analyze_file(
         on MediaFile.subtitle_overrides. A track with an override skips
         the non-convertible-subtitle manual-review gate entirely and is
         either embedded as-is ("keep") or dropped ("remove").
+    audio_language_overrides : dict[int, str] | None
+        Per-track language corrections from the Audio Language Review
+        section, keyed by stream_index with value an ISO 639-2/B code
+        (e.g. "eng"). Set by the user when a track has a DEFINED but
+        wrong language — distinct from fix_undefined_language, which only
+        ever touches "und" tracks. Persisted on
+        MediaFile.audio_language_overrides.
     has_faststart : bool | None
         Result of is_faststart_mp4() for this file.  None means unknown
         (non-MP4 container, probe failed, or setting disabled).  Only
@@ -155,6 +175,7 @@ def analyze_file(
         kept — there's nothing for a human to actually decide.
     """
     subtitle_overrides = subtitle_overrides or {}
+    audio_language_overrides = audio_language_overrides or {}
     keep_audio_langs    = set(settings.get("keep_audio_languages",   ["eng"]))
     keep_sub_langs      = set(settings.get("keep_subtitle_languages", ["eng"]))
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
@@ -375,6 +396,30 @@ def analyze_file(
             ))
         kept_audio.append(track)
         order += 1
+
+    # ── Audio language mismatch detection (for Audio Language Review) ───────
+    # Distinct from is_manual_review above — this never blocks processing,
+    # it's purely informational. Surfaced separately so a human can
+    # optionally relabel a wrong-but-defined language tag (e.g. an English
+    # show mistagged "dut") or confirm it's already correct (e.g. anime
+    # that's genuinely, correctly Japanese) without holding up the file.
+    #
+    # Iterates every surviving track rather than assuming exactly one,
+    # since a file could have "und" tracks alongside the one non-"und"
+    # survivor — "und" is deliberately skipped here, that's
+    # fix_undefined_language's domain, not this one. Also skips a track
+    # that already has a pending override, since the pass below will
+    # correct it — nothing left to flag.
+    audio_language_mismatch = None
+    if not has_preferred_audio:
+        for t in kept_audio:
+            lang = t["language"] or "und"
+            if lang != "und" and t["stream_index"] not in audio_language_overrides:
+                audio_language_mismatch = {
+                    "stream_index": t["stream_index"],
+                    "language":     lang,
+                }
+                break
 
     # ── Subtitle keep/drop/extract decision ─────────────────────────────────
     # For each subtitle track:
@@ -602,6 +647,33 @@ def analyze_file(
                     actions[i] = dc_replace(action, target_language=lang_value)
                     has_language_fix = True
 
+    # ── Audio language override pass ─────────────────────────────────────────
+    # Per-track, user-directed corrections from the Audio Language Review
+    # section — distinct from the bulk pass above, which only ever touches
+    # "und" tracks. This handles the opposite case: a track that already
+    # has a DEFINED but WRONG language (e.g. an English show whose only
+    # audio track is mistagged "dut"). Persisted on
+    # MediaFile.audio_language_overrides, keyed by stream_index.
+    #
+    # Only ever applies to a track that's still present as copy/transcode
+    # at this point — if the override's target track ended up dropped for
+    # some other reason, there's nothing to relabel and this is a no-op
+    # for it, which is the correct, safe outcome rather than an error.
+    if audio_language_overrides:
+        dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
+        for i, action in enumerate(actions):
+            if (
+                action.track_type == "audio"
+                and action.stream_index in audio_language_overrides
+                and action.stream_index not in dropped_si
+                and action.action_type in ("copy_track", "transcode_track")
+            ):
+                actions[i] = dc_replace(
+                    action,
+                    target_language=audio_language_overrides[action.stream_index],
+                )
+                has_language_fix = True
+
     # ── Is there anything to do? ───────────────────────────────────────────
     has_drops       = any(a.action_type == "drop_track" for a in actions)
     has_transcode   = any(a.action_type == "transcode_track" for a in actions)
@@ -615,6 +687,7 @@ def analyze_file(
             should_process=False,
             reason="File already meets all configured criteria — no changes needed.",
             actions=[],
+            audio_language_mismatch=audio_language_mismatch,
         )
 
     # ── Build human-readable reason ────────────────────────────────────────
@@ -645,6 +718,7 @@ def analyze_file(
         actions=actions,
         target_container=target_container,
         output_extension=output_extension,
+        audio_language_mismatch=audio_language_mismatch,
     )
 
 

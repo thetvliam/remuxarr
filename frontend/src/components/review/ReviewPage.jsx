@@ -3,6 +3,7 @@ import { fmtSize, fmtDur } from "../../utils";
 import { Stat } from "../atoms/Stat";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
+import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MANUAL REVIEW PAGE
@@ -169,6 +170,8 @@ export const ReviewPage = ({ api, items, onRefresh }) => {
                     );
                 })
             }
+
+            <AudioLanguageReviewSection api={api} />
             </div>
     );
 };

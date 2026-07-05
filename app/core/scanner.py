@@ -31,7 +31,7 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, MediaFile, PlannedAction, QueueItem, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -391,6 +391,7 @@ def _process_file(
         "video_codec": primary_video_codec,
     }
     overrides = _load_subtitle_overrides(media_file)
+    audio_lang_overrides = _load_audio_language_overrides(media_file)
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media_file.id)
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
@@ -405,6 +406,7 @@ def _process_file(
     decision = analyze_file(
         file_info_dict, track_list, app_cfg,
         subtitle_overrides=overrides,
+        audio_language_overrides=audio_lang_overrides,
         has_faststart=faststart,
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
@@ -437,6 +439,33 @@ def _process_file(
 
         db.commit()
         return
+
+    # ── Audio language mismatch flag ─────────────────────────────────────────
+    # Runs regardless of whether the file below ends up skipped or queued —
+    # a mismatch can exist on either path (e.g. a file that's otherwise
+    # fully correct but has a mistagged audio track sitting on the "skip"
+    # path). Never applies to a file the user has explicitly confirmed is
+    # correct via Ignore, and never blocks processing either way — this is
+    # purely bookkeeping for the Audio Language Review section.
+    existing_flag = (
+        db.query(AudioLanguageFlag)
+        .filter(AudioLanguageFlag.file_id == media_file.id)
+        .first()
+    )
+    if decision.audio_language_mismatch and not media_file.audio_language_ignored:
+        mismatch = decision.audio_language_mismatch
+        if existing_flag:
+            existing_flag.stream_index      = mismatch["stream_index"]
+            existing_flag.detected_language = mismatch["language"]
+        else:
+            db.add(AudioLanguageFlag(
+                file_id=media_file.id,
+                stream_index=mismatch["stream_index"],
+                detected_language=mismatch["language"],
+            ))
+    elif existing_flag:
+        # No longer mismatched (or now ignored) — clear any stale flag.
+        db.delete(existing_flag)
 
     # ── Skip ───────────────────────────────────────────────────────────────
     if not decision.should_process:
@@ -529,6 +558,25 @@ def _load_subtitle_overrides(media_file: MediaFile) -> dict[int, str]:
     except (ValueError, AttributeError, TypeError):
         logger.warning(
             "Invalid subtitle_overrides JSON for file %d — ignoring", media_file.id
+        )
+        return {}
+
+
+def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
+    """
+    Parse MediaFile.audio_language_overrides (same JSON-dict-with-string-keys
+    shape as _load_subtitle_overrides above) into a dict[int, str] keyed by
+    stream_index, as expected by analyze_file().
+    """
+    if not media_file.audio_language_overrides:
+        return {}
+    try:
+        raw = json.loads(media_file.audio_language_overrides)
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, AttributeError, TypeError):
+        logger.warning(
+            "Invalid audio_language_overrides JSON for file %d — ignoring",
+            media_file.id,
         )
         return {}
 
