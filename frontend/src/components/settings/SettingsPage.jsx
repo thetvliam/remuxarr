@@ -307,7 +307,7 @@ export const SettingsPage = ({ api, toast, isMobile = false }) => {
       {(groupName === "Sonarr" || groupName === "Radarr" || groupName === "Plex" || groupName === "Email") && (
         <TestConnectionButton api={api} service={groupName.toLowerCase()} />
       )}
-      {groupName === "Plex" && <PlexBacklogStatus api={api} />}
+      {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
       {groupName === "Email" && <EmailBreakerStatus api={api} />}
       </div>
     ))}

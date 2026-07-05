@@ -62,11 +62,21 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # Each entry: "remuxarr_local_prefix=plex_container_prefix"
     # e.g. "/media/movies=/Media/Movies"
     "plex_path_mappings":   [],
+    # ── Plex Analyze Backlog (separate opt-in — see settings.py) ────────────
+    # Off by default. Confirmed via direct testing across a 1,300-item
+    # backlog that Plex's own scheduled maintenance, combined with the
+    # immediate refresh above, already catches the overwhelming majority
+    # of reprocessed files on its own — this backlog only exists to catch
+    # the rare remainder. Most installs will never need to turn this on;
+    # it's here for large backfills or if files are noticed sitting with
+    # stale Plex metadata longer than expected.
+    "plex_analyze_backlog_enabled": False,
     # Reprocessed files (RE-PROCESS / retry / replaced-in-place) are queued
     # rather than analyzed immediately — drained only within this window,
     # one item every few seconds, so a large backfill doesn't burst-fire
     # hundreds of calls at once. Defaults roughly match Plex's own default
-    # maintenance window (2 AM–5 AM).
+    # maintenance window (2 AM–5 AM). Irrelevant while the toggle above is
+    # off.
     "plex_analyze_window_start": "02:00",
     "plex_analyze_window_end":   "06:00",
     # ── Email ──────────────────────────────────────────────────────────────

@@ -136,6 +136,11 @@ async def _drain_tick() -> bool:
         cfg = get_app_settings(db)
         if not cfg.get("plex_enabled", False):
             return False
+        if not cfg.get("plex_analyze_backlog_enabled", False):
+            # Feature is off — leave any leftover entries untouched rather
+            # than draining them. Re-enabling resumes exactly where the
+            # queue left off, in the same oldest-first order as always.
+            return False
 
         window_start = cfg.get("plex_analyze_window_start", "02:00")
         window_end   = cfg.get("plex_analyze_window_end",   "06:00")

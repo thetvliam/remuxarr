@@ -8,6 +8,9 @@ PUT  /api/settings        — bulk update (body = {key: value, ...})
 
 Values are arbitrary JSON (string, list, bool, int).
 """
+import json
+import urllib.error
+import urllib.request
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -15,13 +18,41 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database.session import get_app_settings, get_db, update_app_setting
-from app.database.models import AppSetting
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 class SettingValue(BaseModel):
     value: Any
+
+
+def _test_arr_connection(url: str, api_key: str, app_name_fallback: str) -> dict:
+    """
+    Call /api/v3/system/status on an *arr instance and return a standard
+    {success, version, app} / {success, error} dict.  Shared by the
+    test-sonarr and test-radarr endpoints, which were previously identical
+    apart from the settings keys they read and the appName fallback string.
+    """
+    if not url or not api_key:
+        return {"success": False, "error": "URL or API key not configured"}
+    try:
+        req = urllib.request.Request(
+            f"{url}/api/v3/system/status",
+            headers={"X-Api-Key": api_key},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        return {
+            "success": True,
+            "version": data.get("version", "?"),
+            "app":     data.get("appName", app_name_fallback),
+        }
+    except urllib.error.HTTPError as e:
+        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
+    except urllib.error.URLError as e:
+        return {"success": False, "error": f"Connection failed: {e.reason}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @router.get("/")
@@ -57,55 +88,23 @@ def update_bulk(
 @router.get("/test-sonarr")
 def test_sonarr(db: Session = Depends(get_db)):
     """Test the configured Sonarr connection by calling /api/v3/system/status."""
-    import json as _json
-    import urllib.error
-    import urllib.request
-    cfg     = get_app_settings(db)
-    url     = (cfg.get("sonarr_url") or "").rstrip("/")
-    api_key = cfg.get("sonarr_api_key") or ""
-    if not url or not api_key:
-        return {"success": False, "error": "URL or API key not configured"}
-    try:
-        req = urllib.request.Request(
-            f"{url}/api/v3/system/status",
-            headers={"X-Api-Key": api_key},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = _json.loads(resp.read())
-        return {"success": True, "version": data.get("version", "?"), "app": data.get("appName", "Sonarr")}
-    except urllib.error.HTTPError as e:
-        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
-    except urllib.error.URLError as e:
-        return {"success": False, "error": f"Connection failed: {e.reason}"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    cfg = get_app_settings(db)
+    return _test_arr_connection(
+        (cfg.get("sonarr_url") or "").rstrip("/"),
+        cfg.get("sonarr_api_key") or "",
+        "Sonarr",
+    )
 
 
 @router.get("/test-radarr")
 def test_radarr(db: Session = Depends(get_db)):
     """Test the configured Radarr connection by calling /api/v3/system/status."""
-    import json as _json
-    import urllib.error
-    import urllib.request
-    cfg     = get_app_settings(db)
-    url     = (cfg.get("radarr_url") or "").rstrip("/")
-    api_key = cfg.get("radarr_api_key") or ""
-    if not url or not api_key:
-        return {"success": False, "error": "URL or API key not configured"}
-    try:
-        req = urllib.request.Request(
-            f"{url}/api/v3/system/status",
-            headers={"X-Api-Key": api_key},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = _json.loads(resp.read())
-        return {"success": True, "version": data.get("version", "?"), "app": data.get("appName", "Radarr")}
-    except urllib.error.HTTPError as e:
-        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
-    except urllib.error.URLError as e:
-        return {"success": False, "error": f"Connection failed: {e.reason}"}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    cfg = get_app_settings(db)
+    return _test_arr_connection(
+        (cfg.get("radarr_url") or "").rstrip("/"),
+        cfg.get("radarr_api_key") or "",
+        "Radarr",
+    )
 
 
 @router.get("/test-plex")
@@ -195,6 +194,7 @@ KNOWN_KEYS = {
     "plex_url",
     "plex_token",
     "plex_path_mappings",
+    "plex_analyze_backlog_enabled",
     "plex_analyze_window_start",
     "plex_analyze_window_end",
     "email_enabled",
@@ -513,13 +513,15 @@ SETTINGS_SCHEMA = [
         "label":       "Enable Plex Notifications",
         "type":        "boolean",
         "description": "When enabled, Remuxarr notifies Plex directly after "
-                       "every successful job — a lightweight library refresh "
-                       "for files Plex has never seen before, or an explicit "
-                       "re-analyze call for files at a path Plex already has "
-                       "indexed (such as a RE-PROCESS or retry). This is "
-                       "independent of Sonarr/Radarr — if you remove Plex's "
-                       "own connection inside Sonarr/Radarr, enable this so "
-                       "Plex still gets notified.",
+                       "every successful job with a lightweight, path-scoped "
+                       "library refresh — confirmed via testing to reliably "
+                       "pick up most changes on its own, including files "
+                       "Plex already had indexed. This is independent of "
+                       "Sonarr/Radarr — if you remove Plex's own connection "
+                       "inside Sonarr/Radarr, enable this so Plex still gets "
+                       "notified. For the rare cases this refresh doesn't "
+                       "catch, see the separate Plex Analyze Backlog section "
+                       "below — most installs won't need it.",
     },
     {
         "key":         "plex_url",
@@ -553,23 +555,44 @@ SETTINGS_SCHEMA = [
                        "matching mapping, notifications for that path are "
                        "skipped.",
     },
+    # ── Plex Analyze Backlog ─────────────────────────────────────────────────
+    # Split out from the main Plex section deliberately — this is an opt-in
+    # safety net, not part of everyday operation. Direct testing across a
+    # 1,300-item backlog showed the refresh above (combined with Plex's own
+    # scheduled maintenance) already catches the overwhelming majority of
+    # reprocessed files on its own; this only exists for the rare remainder.
+    {
+        "key":         "plex_analyze_backlog_enabled",
+        "group":       "Plex Analyze Backlog",
+        "label":       "Enable Analyze Backlog",
+        "type":        "boolean",
+        "description": "Off by default. When enabled, reprocessed files "
+                       "(RE-PROCESS, retry, or a file replaced in place) are "
+                       "queued and, during the window below, checked against "
+                       "Plex's current data — if Plex hasn't already picked "
+                       "up the change on its own, an explicit re-analyze is "
+                       "sent to force it. Most installs won't need this: the "
+                       "plain refresh above already handles the vast "
+                       "majority of cases. Worth turning on temporarily "
+                       "during a large backfill, or if you notice specific "
+                       "files sitting with stale Plex metadata longer than "
+                       "expected.",
+    },
     {
         "key":         "plex_analyze_window_start",
-        "group":       "Plex",
+        "group":       "Plex Analyze Backlog",
         "label":       "Analyze Window Start",
         "type":        "string",
         "placeholder": "02:00",
-        "description": "24-hour HH:MM time. Files that need an explicit Plex "
-                       "re-analyze (RE-PROCESS, retry, or a file replaced in "
-                       "place) are queued rather than analyzed immediately — "
-                       "see the queue status below. This avoids bursting "
-                       "hundreds of Plex API calls at once during a large "
-                       "backfill. The queue only drains between this start "
-                       "time and the end time below.",
+        "description": "24-hour HH:MM time. Only relevant while the toggle "
+                       "above is enabled. This avoids bursting hundreds of "
+                       "Plex API calls at once during a large backfill — the "
+                       "queue only drains between this start time and the "
+                       "end time below.",
     },
     {
         "key":         "plex_analyze_window_end",
-        "group":       "Plex",
+        "group":       "Plex Analyze Backlog",
         "label":       "Analyze Window End",
         "type":        "string",
         "placeholder": "06:00",

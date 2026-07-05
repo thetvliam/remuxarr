@@ -1062,10 +1062,18 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
     """
     Load Plex notification parameters — an immediate lightweight library
     refresh is returned for EVERY successful job, regardless of whether it
-    was classified as new or reprocessed. For reprocessed files, this ALSO
-    enqueues a PlexAnalyzeBacklog row so a delayed explicit Analyze runs
-    later (during the configured window) to fix stream metadata that a
-    plain refresh alone won't force Plex to re-read.
+    was classified as new or reprocessed, and regardless of the backlog
+    toggle below. For reprocessed files, IF plex_analyze_backlog_enabled
+    is on (off by default), this ALSO enqueues a PlexAnalyzeBacklog row so
+    a delayed explicit Analyze runs later (during the configured window)
+    to fix stream metadata that a plain refresh alone won't force Plex to
+    re-read.
+
+    The backlog is a separate, opt-in safety net rather than something
+    that runs unconditionally: direct testing across a 1,300-item backlog
+    showed the refresh below (combined with Plex's own scheduled
+    maintenance) already catches the overwhelming majority of reprocessed
+    files on its own. Most installs won't need the backlog at all.
 
     Returning the refresh data unconditionally (rather than only for
     is_new_file cases) is what protects against is_new_file being wrong —
@@ -1133,12 +1141,23 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
         if job.is_new_file:
             return refresh_data
 
-        # Reprocessed file — ALSO queue for the backlog drain so a delayed
-        # explicit Analyze runs later to catch the case where Plex DOES
-        # already have this path indexed with now-stale stream metadata
-        # (the refresh above alone won't force that re-read). Dedup: skip
-        # if this file already has a pending backlog entry (e.g. retried
-        # twice before the previous entry drained).
+        # Reprocessed file. Whether this ALSO queues for the backlog drain
+        # is gated by its own separate toggle, off by default — direct
+        # testing across a 1,300-item backlog showed the refresh above
+        # (plus Plex's own scheduled maintenance) already catches the
+        # overwhelming majority of reprocessed files on its own, so this
+        # queue is an opt-in safety net rather than something that should
+        # run unconditionally for every reprocess. See settings.py's
+        # "Plex Analyze Backlog" group.
+        if not cfg.get("plex_analyze_backlog_enabled", False):
+            return refresh_data
+
+        # Queue for the backlog drain so a delayed explicit Analyze runs
+        # later to catch the case where Plex DOES already have this path
+        # indexed with now-stale stream metadata (the refresh above alone
+        # won't force that re-read). Dedup: skip if this file already has
+        # a pending backlog entry (e.g. retried twice before the previous
+        # entry drained).
         existing = (
             db.query(PlexAnalyzeBacklog)
             .filter(PlexAnalyzeBacklog.file_id == job.file_id)
