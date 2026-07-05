@@ -590,6 +590,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 decision            = decision,
                 all_tracks          = tracks,
                 subtitle_extractions= subtitle_pairs,
+                job_id              = job_id,
                 progress_callback   = on_progress,
                 timeout_seconds     = timeout_seconds,
             )
@@ -636,6 +637,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     decision             = retry_decision,
                     all_tracks           = tracks,
                     subtitle_extractions = subtitle_pairs,
+                    job_id               = job_id,
                     progress_callback    = on_progress,
                     timeout_seconds      = timeout_seconds,
                 )
@@ -665,6 +667,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     input_path     = input_path,
                     stream_index   = action.stream_index,
                     output_srt_path= action.external_path,
+                    job_id         = job_id,
                 )
                 if not ext_result.success:
                     await loop.run_in_executor(
@@ -678,6 +681,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 output_path       = output_path,
                 decision          = decision,
                 all_tracks        = tracks,
+                job_id            = job_id,
                 progress_callback = on_progress,
                 timeout_seconds   = timeout_seconds,
             )
@@ -694,6 +698,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     output_path       = output_path,
                     decision          = retry_decision,
                     all_tracks        = tracks,
+                    job_id            = job_id,
                     progress_callback = on_progress,
                     timeout_seconds   = timeout_seconds,
                 )
@@ -1158,6 +1163,19 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
                 .first()
             )
             expected_language = lang_action.target_language if lang_action else None
+
+            # Deliberately explicit rather than folded into the queued-for-
+            # backlog message below — this is the one line that tells us,
+            # unambiguously, whether the capture at THIS end worked. If
+            # this ever logs "no target_language found on any PlannedAction"
+            # for a job whose reason clearly says "Fix undefined language
+            # tag", the bug is here (or upstream in how actions are
+            # persisted) — not in the Plex-side verification check.
+            logger.info(
+                "Plex: backlog capture for job %d (reason=%r) — "
+                "expected_language=%r",
+                job.id, job.reason, expected_language,
+            )
 
             db.add(PlexAnalyzeBacklog(
                 file_id=job.file_id,

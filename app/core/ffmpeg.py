@@ -207,6 +207,7 @@ async def execute_ffmpeg(
     output_path: str,
     decision: ProcessingDecision,
     all_tracks: list[dict],
+    job_id: int,
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds: float | None = None,
 ) -> FFmpegResult:
@@ -230,9 +231,20 @@ async def execute_ffmpeg(
     """
     # Stage in TEMP_DIR (e.g. /tmp/remuxarr) when space allows; fall back
     # to the output file's own directory when TEMP_DIR is too full.
-    safe_name   = os.path.basename(output_path).replace("/", "_")
+    #
+    # The temp filename is derived from job_id, NOT the source/output
+    # filename — deliberately. Appending ".remuxarr_tmp" (13 bytes) to an
+    # already-long filename can push it past the 255-byte NAME_MAX most
+    # Linux filesystems enforce per path component, even when the FINAL
+    # filename (without the suffix) is comfortably under that limit. A
+    # multi-episode file with several episode titles joined together by
+    # Sonarr's naming format is exactly the kind of filename this hits —
+    # confirmed in production: a 247-byte original filename failed with
+    # "File name too long" purely because of the 260-byte temp version.
+    # job_id is always short and always unique, so this eliminates the
+    # whole class of failure rather than just raising the threshold.
     tmp_dir     = _pick_temp_dir(input_path)
-    temp_output = os.path.join(tmp_dir, safe_name + ".remuxarr_tmp")
+    temp_output = os.path.join(tmp_dir, f"job_{job_id}.remuxarr_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks)
 
@@ -292,6 +304,7 @@ async def execute_subtitle_extraction(
     input_path: str,
     stream_index: int,
     output_srt_path: str,
+    job_id: int,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -310,9 +323,12 @@ async def execute_subtitle_extraction(
     two-pass fallback path calls this in a loop and checks the result
     object — it expects a result, not a raised exception.
     """
-    safe_name   = os.path.basename(output_srt_path).replace("/", "_")
+    # See execute_ffmpeg's docstring for why the temp name is derived from
+    # job_id rather than the destination filename. stream_index (already
+    # unique per subtitle track) distinguishes multiple SRT extractions
+    # within the same job from each other.
     tmp_dir     = _pick_temp_dir(input_path)
-    temp_output = os.path.join(tmp_dir, safe_name + ".remuxarr_tmp")
+    temp_output = os.path.join(tmp_dir, f"job_{job_id}_srt_{stream_index}.remuxarr_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     cmd = build_extract_subtitle_command(input_path, stream_index, temp_output)
 
@@ -418,6 +434,7 @@ async def execute_ffmpeg_combined(
     decision:             ProcessingDecision,
     all_tracks:           list[dict],
     subtitle_extractions: list[tuple[int, str]],  # (stream_index, srt_dest_path)
+    job_id:               int,
     progress_callback:    Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds:      float | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
@@ -451,18 +468,21 @@ async def execute_ffmpeg_combined(
     os.makedirs(tmp_dir, exist_ok=True)
 
     # ── Build the combined command ─────────────────────────────────────────
-    safe_name = os.path.basename(output_path).replace("/", "_")
-    temp_main = os.path.join(tmp_dir, safe_name + ".remuxarr_tmp")
+    # See execute_ffmpeg's docstring for why this is derived from job_id
+    # rather than the destination filename.
+    temp_main = os.path.join(tmp_dir, f"job_{job_id}.remuxarr_tmp")
 
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks)
 
     # Append subtitle output specs after the main output.
-    # Each gets its own temp path in the same tmp_dir.
+    # Each gets its own temp path in the same tmp_dir. stream_idx is
+    # already unique per subtitle track, distinguishing multiple SRT
+    # extractions within the same job from each other and from the main
+    # video temp above.
     srt_temps: list[str] = []
     for stream_idx, srt_dest in subtitle_extractions:
-        srt_safe = os.path.basename(srt_dest).replace("/", "_")
-        srt_tmp  = os.path.join(tmp_dir, srt_safe + ".remuxarr_tmp")
+        srt_tmp = os.path.join(tmp_dir, f"job_{job_id}_srt_{stream_idx}.remuxarr_tmp")
         srt_temps.append(srt_tmp)
         main_cmd += [
             "-map", f"0:{stream_idx}",
