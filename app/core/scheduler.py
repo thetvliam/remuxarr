@@ -30,11 +30,24 @@ logger = logging.getLogger(__name__)
 # Resets on restart — intentional.
 _last_triggered_minute: str = ""
 
-# Seconds between each backlog item processed during the analyze window.
-# Not user-configurable — a sensible fixed pace that drains a few hundred
-# items comfortably within a multi-hour window without bursting Plex with
-# requests. At this rate a 4-hour window can clear roughly 1,500 items.
+# Seconds between each backlog item processed during the analyze window,
+# when that item actually triggers a real Analyze call — the genuinely
+# expensive operation on Plex's side. Not user-configurable — a sensible
+# fixed pace that drains a few hundred real analyzes comfortably within a
+# multi-hour window without bursting Plex with requests.
 PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS = 8
+
+# Seconds to wait after an item that did NOT trigger a real Analyze —
+# already correct (Plex's own maintenance got there first), a plain
+# refresh fallback, or nothing to send at all. None of these involve the
+# expensive operation the interval above exists to pace, so there's no
+# reason to wait as long between them. Kept at a small non-zero value
+# rather than 0 as cheap insurance — a skip usually costs nothing beyond
+# a local cache lookup, but if that section's cache happens to need
+# refreshing at that exact moment, it's still one real (lightweight)
+# request to Plex, and a back-to-back flood of even lightweight requests
+# is worth avoiding on principle.
+PLEX_BACKLOG_SKIP_INTERVAL_SECONDS = 1
 
 
 async def run_scheduler(ws_manager) -> None:
@@ -85,31 +98,49 @@ async def run_plex_backlog_drain() -> None:
     the matching item. Queuing and draining slowly within a quiet-hours
     window avoids that, and matches the timing pattern Plex itself uses
     for its own nightly maintenance.
+
+    _drain_tick() reports back whether it actually sent a real Analyze
+    call for the item it just processed. Only that outcome uses the full
+    interval — an item that was already correct (or had nothing to send
+    at all) moves on almost immediately, since none of those involve the
+    expensive operation the interval exists to pace.
     """
     logger.info(
-        "Plex backlog drain started — checking every %d s within the "
-        "configured window",
-        PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS,
+        "Plex backlog drain started — %ds between real analyzes, %ds "
+        "between everything else, within the configured window",
+        PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS, PLEX_BACKLOG_SKIP_INTERVAL_SECONDS,
     )
     while True:
         try:
-            await _drain_tick()
+            analyzed = await _drain_tick()
         except Exception:
             logger.exception("Plex backlog drain tick raised an unexpected error")
-        await asyncio.sleep(PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS)
+            analyzed = False
+        await asyncio.sleep(
+            PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS if analyzed
+            else PLEX_BACKLOG_SKIP_INTERVAL_SECONDS
+        )
 
 
-async def _drain_tick() -> None:
+async def _drain_tick() -> bool:
+    """
+    Process at most one backlog entry, if the window is open and one exists.
+
+    Returns True only if a real Analyze call was sent for that entry —
+    False for every other outcome (idle, missing file, missing config, or
+    any skip/fallback inside notify_plex_reprocessed_file itself). The
+    caller uses this to decide how long to wait before the next tick.
+    """
     db = SessionLocal()
     try:
         cfg = get_app_settings(db)
         if not cfg.get("plex_enabled", False):
-            return
+            return False
 
         window_start = cfg.get("plex_analyze_window_start", "02:00")
         window_end   = cfg.get("plex_analyze_window_end",   "06:00")
         if not _within_window(window_start, window_end):
-            return
+            return False
 
         entry = (
             db.query(PlexAnalyzeBacklog)
@@ -117,7 +148,7 @@ async def _drain_tick() -> None:
             .first()
         )
         if not entry:
-            return
+            return False
 
         media = entry.media_file
         # Capture everything needed for the network call before deleting
@@ -130,24 +161,29 @@ async def _drain_tick() -> None:
 
         if not media or not local_path or not os.path.exists(local_path):
             logger.debug("Plex backlog: skipping missing/deleted file (entry %d)", entry.id)
-            return
+            return False
 
         url      = (cfg.get("plex_url") or "").rstrip("/")
         token    = cfg.get("plex_token") or ""
         mappings = cfg.get("plex_path_mappings", [])
         if not url or not token or not mappings:
-            return
+            return False
     finally:
         db.close()
 
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(
+        analyzed = await loop.run_in_executor(
             None, notify_plex_reprocessed_file,
             url, token, mappings, local_path, expected_language,
         )
+        return bool(analyzed)
     except Exception:
         logger.exception("Plex backlog: analyze failed for %s", local_path)
+        # Unknown whether a real analyze was sent before the failure —
+        # assume not, so the next tick comes quickly rather than
+        # potentially waiting the full interval for no reason.
+        return False
 
 
 async def _tick(ws_manager) -> None:

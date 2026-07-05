@@ -14,7 +14,15 @@ Two distinct operations, used for two distinct situations:
       retry, or a normal rescan that replaced the file in place). A plain
       refresh does NOT force re-analysis of an already-known path, so this
       finds the matching item by file path and issues an explicit Analyze
-      call on it directly.
+      call on it directly — unless a language-fix verification check
+      (see _audio_language_matches) finds Plex's own scheduled maintenance
+      already caught it, in which case the Analyze call is skipped as
+      unnecessary. That check makes its own dedicated per-item request —
+      an earlier version tried reading language data from the same bulk
+      listing used to resolve the ratingKey, but direct testing showed
+      that listing doesn't reliably carry Stream-level detail on every
+      server, so the check reverted to the single-item endpoint confirmed
+      to work.
 
 Why no library-section-ID setting is needed:
   Plex's /library/sections listing includes each section's configured
@@ -40,17 +48,29 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 # ── Section item cache ─────────────────────────────────────────────────────
-# _find_rating_key_for_path must fetch EVERY item in a library section to
-# match by file path — Plex has no server-side "search by path" endpoint.
-# During a large backlog drain (e.g. 939 movies, one every 8 seconds) that
-# would mean 939 full-section fetches from the same section, most returning
+# The ratingKey lookup must fetch every item in a library section to match
+# by file path — Plex has no server-side "search by path" endpoint. During
+# a large backlog drain (e.g. 939 movies, one every 8 seconds) that would
+# mean 939 full-section fetches from the same section, most returning
 # identical data.
 #
-# This cache stores the most recently fetched {plex_path → rating_key}
-# mapping per section, keyed by (base_url, section_id). It expires after
-# SECTION_CACHE_TTL seconds so a new import that lands mid-drain still
-# gets picked up on the next fetch cycle, rather than sitting invisible
-# in a stale cache for hours.
+# This cache stores the most recently fetched {plex_path: rating_key}
+# mapping per section, keyed by (base_url, section_id). For TV sections,
+# building this mapping requires one additional request per show to pull
+# episode-level file paths (see _get_section_items) — top-level section
+# listings only return shows, not episodes.
+#
+# Does NOT also cache audio language data — an earlier version tried
+# extracting that from this same bulk response too, on the assumption it
+# carried the same Stream-level detail as a single-item lookup. Direct
+# A/B testing showed that assumption didn't hold (the bulk listing didn't
+# reliably return usable Stream data, causing the language check to
+# silently never find a match for any file). Language verification makes
+# its own dedicated per-item request instead — see _audio_language_matches.
+#
+# Expires after SECTION_CACHE_TTL seconds so a new import that lands
+# mid-drain still gets picked up on the next fetch cycle, rather than
+# sitting invisible in a stale cache for hours.
 #
 # Thread-safety: drain ticks run sequentially (one every 8 s in a single
 # asyncio task), so concurrent writes are not a concern.
@@ -138,51 +158,108 @@ def _find_section_for_path(base_url: str, token: str, plex_path: str) -> int | N
     return None
 
 
-def _find_rating_key_for_path(
-    base_url: str, token: str, section_id: int, plex_path: str,
-) -> int | None:
+def _get_section_items(
+    base_url: str, token: str, section_id: int,
+) -> dict[str, dict]:
     """
-    Return the ratingKey of the Plex item whose file path matches plex_path.
+    Return {plex_path: {"rating_key": int}} for every item in the given
+    library section, using the cache above.
 
-    Plex has no server-side "search by exact file path" endpoint, so this
-    must fetch every item in the section and match client-side. The result
-    is cached in _SECTION_CACHE for _SECTION_CACHE_TTL seconds so repeated
-    calls during a large backlog drain (hundreds of items in the same section)
-    only pay the full-fetch cost once per TTL window rather than once per item.
+    Handles two different section shapes:
+
+      Movie sections — /library/sections/{id}/all returns each movie
+      directly, with its own Media/Part/file data attached. No further
+      requests needed.
+
+      TV show sections — /library/sections/{id}/all returns each SHOW,
+      not each episode. A show's own Metadata entry has no Media/Part/
+      file at all (confirmed against Plex's own community-documented
+      example responses); the actual video files only exist on episodes,
+      nested two levels deeper (show → season → episode). Any top-level
+      item found with no direct file is treated as a show and drilled
+      into via /library/metadata/{ratingKey}/grandchildren — Plex's own
+      developer documentation describes this endpoint family explicitly
+      for "browsing a hierarchical tree of media (e.g. show to
+      episodes)". This costs one extra request per show (not per
+      episode) the first time a section's cache is built or refreshed,
+      which is still far cheaper than a request per file for a library
+      the size of a long-running anime or TV catalog.
     """
     cache_key = (base_url, section_id)
     now       = time.monotonic()
     entry     = _SECTION_CACHE.get(cache_key)
 
-    if entry is None or entry["expires"] < now:
-        # Cache miss or expired — fetch fresh data from Plex
+    if entry is not None and entry["expires"] >= now:
+        return entry["items"]
+
+    # Cache miss or expired — fetch fresh data from Plex
+    try:
+        data = _plex_request(
+            base_url, token, f"/library/sections/{section_id}/all",
+        )
+    except Exception as exc:
+        logger.error("Plex: failed to list items in section %d: %s", section_id, exc)
+        return {}
+
+    items: dict[str, dict] = {}
+    show_rating_keys: list[int] = []
+
+    for item in data.get("MediaContainer", {}).get("Metadata", []):
+        rating_key = item.get("ratingKey")
+        if rating_key is None:
+            continue
+        found_leaf = False
+        for media in item.get("Media", []):
+            for part in media.get("Part", []):
+                file_path = part.get("file")
+                if file_path:
+                    items[file_path] = {"rating_key": int(rating_key)}
+                    found_leaf = True
+        if not found_leaf:
+            # No direct file at this level. A movie always has one; a TV
+            # show never does (its episodes carry the files instead) —
+            # queue this ratingKey for the grandchildren drill-down below.
+            show_rating_keys.append(int(rating_key))
+
+    for show_key in show_rating_keys:
         try:
-            data = _plex_request(
-                base_url, token, f"/library/sections/{section_id}/all",
+            ep_data = _plex_request(
+                base_url, token, f"/library/metadata/{show_key}/grandchildren",
             )
         except Exception as exc:
-            logger.error("Plex: failed to list items in section %d: %s", section_id, exc)
-            return None
-
-        mapping: dict[str, int] = {}
-        for item in data.get("MediaContainer", {}).get("Metadata", []):
-            for media in item.get("Media", []):
+            logger.warning(
+                "Plex: failed to list episodes for show ratingKey %d: %s",
+                show_key, exc,
+            )
+            continue
+        for ep in ep_data.get("MediaContainer", {}).get("Metadata", []):
+            ep_rating_key = ep.get("ratingKey")
+            if ep_rating_key is None:
+                continue
+            for media in ep.get("Media", []):
                 for part in media.get("Part", []):
-                    if part.get("file"):
-                        mapping[part["file"]] = int(item["ratingKey"])
+                    file_path = part.get("file")
+                    if file_path:
+                        items[file_path] = {"rating_key": int(ep_rating_key)}
 
-        _SECTION_CACHE[cache_key] = {
-            "expires": now + _SECTION_CACHE_TTL,
-            "mapping": mapping,
-        }
-        logger.debug(
-            "Plex: section %d cache refreshed (%d items, TTL %ds)",
-            section_id, len(mapping), _SECTION_CACHE_TTL,
-        )
-    else:
-        mapping = entry["mapping"]
+    _SECTION_CACHE[cache_key] = {"expires": now + _SECTION_CACHE_TTL, "items": items}
+    logger.debug(
+        "Plex: section %d cache refreshed (%d shows drilled into, %d "
+        "total file entries, TTL %ds)",
+        section_id, len(show_rating_keys), len(items), _SECTION_CACHE_TTL,
+    )
+    return items
 
-    return mapping.get(plex_path)
+
+def _find_rating_key_for_path(
+    base_url: str, token: str, section_id: int, plex_path: str,
+) -> int | None:
+    """
+    Return the ratingKey of the Plex item whose file path matches plex_path,
+    or None if no item in the section matches.
+    """
+    entry = _get_section_items(base_url, token, section_id).get(plex_path)
+    return entry["rating_key"] if entry else None
 
 
 def _audio_language_matches(
@@ -193,21 +270,31 @@ def _audio_language_matches(
     expected language, by fetching the item's own full metadata directly —
     the same data Plex's "View XML" option shows.
 
+    IMPORTANT: this makes its own dedicated /library/metadata/{ratingKey}
+    request rather than reading from the shared section-listing cache.
+    An earlier version tried reading Stream/language data from the bulk
+    /library/sections/{id}/all response instead, on the assumption
+    (based on a Plex support article) that it carried the same detail as
+    this single-item endpoint. Direct testing disproved that: the bulk
+    listing did not return usable Stream data on the server it was tested
+    against, so the language check silently never found a match for any
+    file — correct or not — always falling through to an explicit
+    Analyze. The single-item endpoint here is the one confirmed, via
+    direct "View XML" comparison across multiple real files, to reliably
+    include languageCode. Only the ratingKey lookup benefits from the
+    shared bulk-listing cache; this check does not.
+
     Plex exposes THREE separate language fields per stream once analyzed:
       language     — full human-readable name, e.g. "English"
       languageTag  — ISO 639-1 two-letter code, e.g. "en"
       languageCode — ISO 639-2/B three-letter code, e.g. "eng"
-    Confirmed directly by comparing a user's before/after "View XML" dumps
-    of the same file. Remuxarr writes ISO 639-2/B codes (e.g. "eng") via
-    ffmpeg's -metadata:s:a:N language=eng flag, so languageCode is the only
-    one of the three that's directly comparable without a name/code lookup
-    table — checking "language" (the full name) would never match and this
-    verification would silently never succeed, always falling through to
-    the explicit Analyze call with zero actual benefit.
+    Remuxarr writes ISO 639-2/B codes (e.g. "eng") via ffmpeg's
+    -metadata:s:a:N language=eng flag, so languageCode is the only one of
+    the three directly comparable without a name/code lookup table.
 
-    An unanalyzed stream has NONE of these three keys present at all
-    (confirmed: the same file's "before" XML omits all three), so a plain
-    dict .get() correctly returns None/empty for a not-yet-analyzed file.
+    An unanalyzed stream has NONE of these three keys present at all, so
+    a plain dict .get() correctly returns None/empty for a not-yet-
+    analyzed file.
 
     Returns:
       True  — at least one audio stream already matches expected_language.
@@ -235,9 +322,16 @@ def _audio_language_matches(
 
     items = data.get("MediaContainer", {}).get("Metadata", [])
     if not items:
+        logger.warning(
+            "Plex: language check for ratingKey %d — no Metadata in "
+            "response (raw keys: %s)",
+            rating_key, list(data.get("MediaContainer", {}).keys()),
+        )
         return None
 
     expected = expected_language.strip().lower()
+    found_audio_codes: list[str] = []
+
     for item in items:
         for media in item.get("Media", []):
             for part in media.get("Part", []):
@@ -245,8 +339,20 @@ def _audio_language_matches(
                     if str(stream.get("streamType")) != "2":
                         continue   # not an audio stream
                     lang_code = (stream.get("languageCode") or "").strip().lower()
+                    found_audio_codes.append(lang_code or "(none)")
                     if lang_code == expected:
+                        logger.debug(
+                            "Plex: language check for ratingKey %d — match "
+                            "found (languageCode=%r)",
+                            rating_key, lang_code,
+                        )
                         return True
+
+    logger.info(
+        "Plex: language check for ratingKey %d — no match. "
+        "expected=%r, found audio languageCode(s)=%s",
+        rating_key, expected, found_audio_codes or "(none)",
+    )
     return False
 
 
@@ -291,7 +397,7 @@ def notify_plex_new_file(
 def notify_plex_reprocessed_file(
     base_url: str, token: str, mappings: list[str], local_path: str,
     expected_language: str | None = None,
-) -> None:
+) -> bool:
     """
     Fire-and-forget explicit Analyze call for a file at a path Plex has
     already indexed. Finds the matching item by file path, then issues
@@ -307,6 +413,13 @@ def notify_plex_reprocessed_file(
     correctness is never traded away for the optimization; a failed or
     uncertain check just means doing the guaranteed-correct thing.
 
+    Returns True only when the actual analyze command was attempted —
+    False for every skip, fallback, or early-exit path. The drain loop
+    uses this to pace itself: the full interval only applies after a real
+    analyze (the genuinely expensive operation on Plex's side); a skip or
+    a plain refresh fallback is cheap and can move on to the next item
+    almost immediately.
+
     Best-effort — failures are logged but never affect the Remuxarr job's
     recorded status.
     """
@@ -316,7 +429,7 @@ def notify_plex_reprocessed_file(
             "Plex: no path mapping matched %s — skipping analyze "
             "(check Plex Path Mappings in Settings)", local_path,
         )
-        return
+        return False
 
     section_id = _find_section_for_path(base_url, token, plex_path)
     if section_id is None:
@@ -324,7 +437,7 @@ def notify_plex_reprocessed_file(
             "Plex: no library section found for %s — skipping analyze",
             plex_path,
         )
-        return
+        return False
 
     rating_key = _find_rating_key_for_path(base_url, token, section_id, plex_path)
     if rating_key is None:
@@ -336,7 +449,7 @@ def notify_plex_reprocessed_file(
         # was deleted and re-added outside Plex's awareness) — a refresh
         # is a reasonable best-effort substitute for an explicit analyze.
         notify_plex_new_file(base_url, token, mappings, local_path)
-        return
+        return False
 
     if expected_language:
         already_correct = _audio_language_matches(
@@ -348,7 +461,7 @@ def notify_plex_reprocessed_file(
                 "maintenance already caught this, skipping analyze",
                 plex_path, expected_language,
             )
-            return
+            return False
         # already_correct is False or None (check failed/inconclusive) —
         # fall through to the explicit analyze below, same as always.
 
@@ -365,6 +478,14 @@ def notify_plex_reprocessed_file(
         )
     except Exception as exc:
         logger.error("Plex: analyze failed for ratingKey %d: %s", rating_key, exc)
+
+    # Reached here regardless of whether the PUT succeeded or raised a
+    # caught exception above — either way, the analyze was attempted, so
+    # the caller should still apply the full pacing interval rather than
+    # the fast one. A network-level failure that never reached Plex at
+    # all is the only case where this is overly conservative, and that's
+    # the safe direction to be wrong in.
+    return True
 
 
 def test_plex_connection(base_url: str, token: str) -> dict:
