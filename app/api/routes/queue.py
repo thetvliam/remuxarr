@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from datetime import datetime
 
@@ -12,6 +13,7 @@ from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides,
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import get_app_settings, get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/queue", tags=["queue"])
 
 
@@ -280,6 +282,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
     dry_run = _current_dry_run_mode(db)
     retried = 0
     skipped = 0
+    errors: list[dict] = []
 
     for item in items:
         media = item.media_file
@@ -291,15 +294,31 @@ def retry_all_failed(db: Session = Depends(get_db)):
         db.delete(item)
         db.flush()
 
-        _process_file(
-            db, file_path, app_cfg,
-            force_probe = True,
-            dry_run     = dry_run,
-            stats       = ScanStats(),
-        )
-        retried += 1
+        try:
+            _process_file(
+                db, file_path, app_cfg,
+                force_probe = True,
+                dry_run     = dry_run,
+                stats       = ScanStats(),
+            )
+            retried += 1
+        except Exception as exc:
+            # Mirrors scan_library()'s own per-file protection — without
+            # this, one bad file (e.g. the ValueError decision.py raises
+            # for genuinely unknown container info) kills the whole
+            # request with an unhandled 500, silently abandoning every
+            # item still queued behind it with no indication of where the
+            # batch actually stopped.
+            logger.exception("Retry failed for %s", file_path)
+            errors.append({"path": file_path, "error": str(exc)})
+            # Only undoes THIS item's own not-yet-committed partial work
+            # (the delete above, plus whatever _process_file started
+            # before raising) — every earlier item in this same loop
+            # already committed internally inside _process_file, so their
+            # results are unaffected.
+            db.rollback()
 
-    return {"retried": retried, "skipped": skipped}
+    return {"retried": retried, "skipped": skipped, "errors": errors}
 
 
 class SubtitleOverridesRequest(BaseModel):

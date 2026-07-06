@@ -14,6 +14,7 @@ existing tag is already correct (e.g. anime that's genuinely, correctly
 Japanese) at their own pace.
 """
 import json
+import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +25,7 @@ from app.core.scanner import ScanStats, _process_file, _load_audio_language_over
 from app.database.models import AudioLanguageFlag, MediaFile, QueueItem
 from app.database.session import get_app_settings, get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/audio-language-review", tags=["audio-language-review"])
 
 
@@ -122,8 +124,13 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
             results["errors"].append({"file_id": file_id, "error": "No flag found for this file"})
             continue
 
-        # Merge into the persisted override set — same JSON-dict-with-
-        # string-keys shape as subtitle_overrides.
+        # Persist the override and commit it on its own, separately from
+        # the reprocess attempt below. The user's language CHOICE should
+        # stick even if this specific attempt to act on it fails for some
+        # unrelated reason (a transient probe error, a genuinely broken
+        # file, etc.) — a later retry, or the next scheduled scan, will
+        # then pick the override up automatically without the user
+        # needing to re-select it.
         existing_overrides = _load_audio_language_overrides(media)
         existing_overrides[flag.stream_index] = lang
         media.audio_language_overrides = json.dumps(
@@ -132,6 +139,7 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         # A previous Ignore shouldn't stick once the user has explicitly
         # chosen a language — that's a more specific, more recent decision.
         media.audio_language_ignored = False
+        db.commit()
 
         # Clear any existing QueueItem so _process_file starts fresh,
         # exactly as _retry_with_reprobe does for the same reason.
@@ -144,14 +152,27 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
             db.delete(existing_item)
         db.flush()
 
-        stats = ScanStats()
-        _process_file(
-            db, media.path, app_cfg,
-            force_probe=True,
-            dry_run=dry_run,
-            stats=stats,
-        )
-        results["applied"] += 1
+        try:
+            stats = ScanStats()
+            _process_file(
+                db, media.path, app_cfg,
+                force_probe=True,
+                dry_run=dry_run,
+                stats=stats,
+            )
+            results["applied"] += 1
+        except Exception as exc:
+            # Without this, one bad file (e.g. the ValueError decision.py
+            # raises for genuinely unknown container info) kills the whole
+            # request with an unhandled 500, silently abandoning every
+            # file still selected behind it — defeating the per-file error
+            # collection this endpoint is otherwise built around.
+            logger.exception("Failed to apply language to %s", media.path)
+            results["errors"].append({"file_id": file_id, "error": str(exc)})
+            # Only undoes the delete-old-item step above plus whatever
+            # _process_file started before raising — the override commit
+            # a few lines up already landed and is unaffected by this.
+            db.rollback()
 
     db.commit()
     return results
