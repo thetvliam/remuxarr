@@ -285,13 +285,36 @@ def _process_file(
         mtime_match = abs(existing.mtime - current_mtime) < 1.0
 
         if size_match and mtime_match:
-            # File is identical on disk.  If its status is still "queued" it
-            # means the last run was a dry run — fall through so it gets
-            # re-queued with the current dry_run setting (which may now be off).
+            # File is identical on disk. media_file.status == "queued" is
+            # set in TWO different situations that look identical from
+            # this field alone: (a) the file is simply still pending its
+            # first attempt (queued for real processing, hasn't run yet
+            # — set in this same function when the file is first queued),
+            # or (b) a dry-run job already finished and _finish_job
+            # deliberately left it as "queued" so the next real scan
+            # re-evaluates it with dry_run_mode as it now stands.
+            #
+            # Checking the file's most recent QueueItem disambiguates —
+            # its own status is "dry_run" for a genuinely completed
+            # preview, or "pending" for a file that's simply still
+            # waiting its turn. Only the former should trigger a
+            # re-probe here; treating an ordinary pending item the same
+            # way wastes a probe and logs a misleading "post-dry-run"
+            # message for something that never actually happened.
             if existing.status == "queued":
-                logger.info(
-                    "Post-dry-run re-evaluation (file unchanged on disk): %s", path
+                latest_item = (
+                    db.query(QueueItem)
+                    .filter(QueueItem.file_id == existing.id)
+                    .order_by(QueueItem.id.desc())
+                    .first()
                 )
+                if latest_item and latest_item.status == "dry_run":
+                    logger.info(
+                        "Post-dry-run re-evaluation (file unchanged on disk): %s", path
+                    )
+                else:
+                    stats.unchanged += 1
+                    return
             else:
                 stats.unchanged += 1
                 return
@@ -638,3 +661,5 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
+
+
