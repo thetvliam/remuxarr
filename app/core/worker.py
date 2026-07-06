@@ -21,7 +21,7 @@ from app.config import settings as app_settings
 from app.core.decision import Action, ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
-from app.core.probe import is_faststart_mp4
+from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _get_forged_ac3_audio_index, _track_to_dict
@@ -933,6 +933,81 @@ def _finish_job(
                         media.mtime = st.st_mtime
                     except OSError:
                         pass  # non-critical — worst case next scan re-probes
+
+                    # Re-probe and replace this file's Track rows to match
+                    # what's actually on disk now.
+                    #
+                    # This step exists because of a real, confirmed gap:
+                    # syncing size/mtime above (needed to fix a DIFFERENT
+                    # bug — a restored original file looking "unchanged")
+                    # is exactly what makes every future DELTA scan (the
+                    # default mode, and what the scheduler always uses)
+                    # see this file as unchanged and skip re-probing it —
+                    # permanently, until someone runs a full/forced
+                    # rescan. Without refreshing Track rows here, they'd
+                    # keep describing the PRE-processing file forever.
+                    #
+                    # Concrete impact this was causing: if
+                    # transcode_aac_51_to_ac3 converts a track from AAC
+                    # 5.1 to AC3, the stale Track row still says
+                    # codec="aac" — so AC3 Forge's own candidate query
+                    # (files with an AAC 5.1 track and no forge job) kept
+                    # offering that file indefinitely, and forging onto it
+                    # would transcode whatever's ACTUALLY at that stream
+                    # index (now AC3) into a redundant AC3-from-AC3 track.
+                    #
+                    # A probe failure here is non-critical in the same
+                    # spirit as the size/mtime OSError above — the actual
+                    # FFmpeg work already succeeded and the file is
+                    # correctly on disk; this is best-effort bookkeeping,
+                    # not something that should turn a real success into
+                    # a failure. Worst case, a future full rescan corrects it.
+                    try:
+                        probe_data = probe_file(final_path, app_settings.FFPROBE_PATH)
+                        fmt_info   = extract_format_info(probe_data)
+                        track_list = extract_tracks(probe_data)
+
+                        db.query(Track).filter(Track.file_id == media.id).delete()
+                        for td in track_list:
+                            db.add(Track(
+                                file_id        = media.id,
+                                stream_index   = td["stream_index"],
+                                track_type     = td["track_type"],
+                                codec          = td["codec"],
+                                language       = td["language"],
+                                channels       = td.get("channels"),
+                                channel_layout = td.get("channel_layout"),
+                                is_default          = td.get("is_default", False),
+                                is_forced           = td.get("is_forced", False),
+                                is_hearing_impaired = td.get("is_hearing_impaired", False),
+                                is_dub              = td.get("is_dub", False),
+                                title          = td.get("title"),
+                                codec_long  = td.get("codec_long"),
+                                raw_ffprobe = td.get("raw_ffprobe"),
+                                sample_rate = td.get("sample_rate"),
+                                bit_rate    = td.get("bit_rate"),
+                            ))
+
+                        primary_video_codec = next(
+                            (t["codec"] for t in track_list if t["track_type"] == "video"),
+                            None,
+                        )
+                        media.duration    = fmt_info.get("duration")
+                        media.video_codec = primary_video_codec
+                        # Always wins over the extension-based guess above
+                        # (used when the path changed) — an actual fresh
+                        # probe is strictly more reliable than inferring
+                        # the container from a filename extension.
+                        fresh_container = fmt_info.get("container")
+                        if fresh_container:
+                            media.container = fresh_container
+                    except ProbeError as exc:
+                        logger.warning(
+                            "Post-job track refresh failed for %s: %s — "
+                            "Track rows may be stale until the next full "
+                            "rescan",
+                            final_path, exc,
+                        )
             else:
                 media.status = "error"
 
