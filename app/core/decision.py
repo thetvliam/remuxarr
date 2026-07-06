@@ -182,7 +182,14 @@ def analyze_file(
     keep_default_audio  = settings.get("keep_default_audio",      True)
     transcode_aac_51    = settings.get("transcode_aac_51_to_ac3", True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
-    und_threshold       = settings.get("und_audio_threshold",     2)
+    # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
+    # or more undefined-language tracks" true for every file, including
+    # ones with none at all, silently forcing the whole pipeline into
+    # manual review. 0 is never a meaningful value for a ">=" comparison
+    # like this one; 1 is the lowest threshold that actually means
+    # something. Same defensive pattern already used for
+    # max_concurrent_jobs elsewhere in this file.
+    und_threshold       = max(1, int(settings.get("und_audio_threshold", 2)))
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
 

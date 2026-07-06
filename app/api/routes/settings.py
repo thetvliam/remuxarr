@@ -339,8 +339,11 @@ SETTINGS_SCHEMA = [
         "group":       "Audio",
         "label":       "Undefined Audio Track Threshold",
         "type":        "integer",
+        "min":         1,
         "description": "Flag a file for manual review when it contains this "
-                       "many or more audio tracks with an undefined language.",
+                       "many or more audio tracks with an undefined language. "
+                       "Minimum 1 — a threshold of 0 would match every file, "
+                       "including ones with no undefined tracks at all.",
     },
     # ── Subtitles ──────────────────────────────────────────────────────────
     {
