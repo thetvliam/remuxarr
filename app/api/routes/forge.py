@@ -47,8 +47,26 @@ def list_candidates(
 
 @router.get("/active")
 def get_active(db: Session = Depends(get_db)):
-    """The currently-processing forge job, or null if idle."""
-    job = db.query(Ac3ForgeJob).filter(Ac3ForgeJob.status == "processing").first()
+    """
+    The currently-processing OR queued-but-not-yet-started forge job, or
+    null if idle.
+
+    Includes "pending" alongside "processing" — previously this only
+    matched "processing", meaning a job sitting queued (added via
+    add_to_queue, not yet picked up by the worker's forge-priority check)
+    was invisible here AND in list_processed below (which already covers
+    undo_pending but never plain pending). A user who'd just clicked
+    "add to queue" would see nothing happen in the UI until the worker
+    loop actually got to it — which, under a busy main-queue backlog,
+    could be a long, silent wait with zero visible confirmation anything
+    was queued at all.
+    """
+    job = (
+        db.query(Ac3ForgeJob)
+        .filter(Ac3ForgeJob.status.in_(["processing", "pending"]))
+        .order_by(Ac3ForgeJob.created_at.asc())
+        .first()
+    )
     return _serialize(job, include_file=True) if job else None
 
 

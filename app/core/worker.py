@@ -202,42 +202,53 @@ async def _loop() -> None:
             max_jobs = max(1, int(cfg.get("max_concurrent_jobs", 1)))
 
             if not _paused:
-                # ── Forge gets first priority on an empty slot ──────────────
-                # IMPORTANT: this check must run BEFORE the main-queue claim
-                # loop below. Previously it ran after, which meant that with
-                # a large main-queue backlog, `active_tasks` was refilled
-                # every single iteration before this check ever saw it empty
-                # — starving forge jobs (including user-initiated undo
-                # requests) indefinitely. They'd sit at "undo_pending"
-                # showing "REMOVING…" in the UI forever, surviving restarts,
-                # because the backlog that caused the starvation also
-                # survives restarts. Checking forge first guarantees it gets
-                # the very next available slot rather than waiting for the
-                # entire backlog to drain (which could be hours).
-                if not active_tasks and forge_task is None:
+                total_active = len(active_tasks) + (1 if forge_task is not None else 0)
+
+                # ── Forge gets first priority on any available slot ─────────
+                # Checked whenever there's room for at least one more task
+                # overall (regular + forge combined), not only when ALL
+                # regular slots are simultaneously empty. At
+                # max_concurrent_jobs > 1, requiring complete emptiness of
+                # active_tasks meant the exact starvation this check exists
+                # to prevent could still happen: under a continuous
+                # main-queue backlog, the very same iteration's regular-claim
+                # loop below refilled any freed slot the moment
+                # len(active_tasks) < max_jobs held true — which is true
+                # the instant even ONE slot frees up, well before
+                # active_tasks could ever become fully empty. Forge
+                # priority effectively never fired above
+                # max_concurrent_jobs=1, reappearing under a different
+                # concurrency setting. Tracking total_active explicitly
+                # (rather than checking active_tasks in isolation) fixes
+                # this at any concurrency level.
+                if total_active < max_jobs and forge_task is None:
                     forge_result = await loop.run_in_executor(None, _has_pending_forge)
                     if forge_result:
                         forge_task = asyncio.create_task(
                             _process_next_forge(ws_manager)
                         )
+                        total_active += 1
 
                 # ── Claim regular jobs up to the concurrency limit ─────────
-                # Skipped this iteration if a forge task was just started
-                # above, so the forge job actually gets to run rather than
-                # immediately sharing the "slot" with a freshly-claimed main
-                # job (which would defeat the priority ordering and also
-                # double up on HDD I/O).
-                if forge_task is None:
-                    while len(active_tasks) < max_jobs:
-                        job_id = await loop.run_in_executor(None, _claim_next)
-                        if job_id is None:
-                            break
-                        logger.info("Worker picked up job %d", job_id)
-                        _active_jobs.add(job_id)
-                        await ws_manager.broadcast_json({"event": "job_started", "job_id": job_id})
-                        task = asyncio.create_task(_run_and_broadcast(job_id, ws_manager, loop))
-                        active_tasks[job_id] = task
-                        _active_task_registry[job_id] = task
+                # total_active already accounts for a forge task started
+                # above this iteration, so regular claims correctly stop
+                # one slot short of max_jobs when forge just took one —
+                # rather than the old skip-entirely-if-forge-started
+                # approach, which under-utilised remaining slots at
+                # max_concurrent_jobs > 2 (forge taking 1 of 3 slots should
+                # still leave room to claim 2 regular jobs the same
+                # iteration, not zero).
+                while total_active < max_jobs:
+                    job_id = await loop.run_in_executor(None, _claim_next)
+                    if job_id is None:
+                        break
+                    logger.info("Worker picked up job %d", job_id)
+                    _active_jobs.add(job_id)
+                    await ws_manager.broadcast_json({"event": "job_started", "job_id": job_id})
+                    task = asyncio.create_task(_run_and_broadcast(job_id, ws_manager, loop))
+                    active_tasks[job_id] = task
+                    _active_task_registry[job_id] = task
+                    total_active += 1
 
         except asyncio.CancelledError:
             break
