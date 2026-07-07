@@ -37,9 +37,16 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to
     # an external .srt sidecar file (Plex naming: Movie.en.srt /
     # Movie.en.forced.srt) and remove them from the muxed output. Kept
-    # image-based subtitles (PGS, VOBSUB, DVD/DVB) can't be converted and
-    # trigger a manual-review flag instead.
+    # image-based subtitles (PGS, VOBSUB, DVD/DVB) can't be converted —
+    # see image_subtitle_handling below for how that's resolved.
     "extract_text_subtitles_to_srt": True,
+    # What to do with a KEPT image-based subtitle track (PGS, VOBSUB,
+    # DVD/DVB) when extraction above is enabled and it can't be converted:
+    #   "always_ask"    — flag for manual review (the original, and still
+    #                      the default, behavior)
+    #   "always_keep"    — leave it embedded, no review needed
+    #   "always_remove"  — drop it, no review needed
+    "image_subtitle_handling": "always_ask",
     # Detect MP4 files missing the moov atom at the front (i.e. not
     # web-optimised / fast-start) and rewrite them with -movflags +faststart
     # so that players and Plex can begin streaming before the full download.

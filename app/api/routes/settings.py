@@ -183,6 +183,7 @@ KNOWN_KEYS = {
     "scan_paths",
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
+    "image_subtitle_handling",
     "add_faststart_to_mp4",
     "max_concurrent_jobs",
     "auto_start_jobs",
@@ -370,8 +371,35 @@ SETTINGS_SCHEMA = [
                        "the media (e.g. Movie.en.srt, Movie.en.forced.srt) "
                        "and remove them from the file — improves Plex direct "
                        "play compatibility. Kept image-based subtitles (PGS, "
-                       "VOBSUB, DVD/DVB) can't be converted and will be "
-                       "flagged for manual review instead.",
+                       "VOBSUB, DVD/DVB) can't be converted — see Image-Based "
+                       "Subtitle Handling below for how that's resolved.",
+    },
+    {
+        "key":     "image_subtitle_handling",
+        "group":   "Subtitles",
+        "label":   "Image-Based Subtitle Handling",
+        "type":    "select",
+        "options": [
+            {
+                "value": "always_ask",
+                "label": "Always ask (flag for manual review)",
+            },
+            {
+                "value": "always_keep",
+                "label": "Always keep (leave embedded)",
+            },
+            {
+                "value": "always_remove",
+                "label": "Always remove (drop the track)",
+            },
+        ],
+        "description": "What to do with a kept image-based subtitle track "
+                       "(PGS, VOBSUB, DVD/DVB) when extraction above is "
+                       "enabled and it can't be converted to SRT. Only "
+                       "applies going forward — existing items already "
+                       "sitting in manual review for this reason can be "
+                       "resolved in bulk from the Review tab once this is "
+                       "set to Always Keep or Always Remove.",
     },
     # ── Worker ─────────────────────────────────────────────────────────────
     {

@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { C } from "../../constants";
 import { fmtSize, fmtDur } from "../../utils";
 import { Stat } from "../atoms/Stat";
@@ -10,7 +11,40 @@ import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const ReviewPage = ({ api, items, onRefresh }) => {
+export const ReviewPage = ({ api, items, onRefresh, toast }) => {
+    const [imgSubSetting, setImgSubSetting] = useState("always_ask");
+    const [bulkResolving, setBulkResolving] = useState(false);
+
+    useEffect(() => {
+        fetch(`${api}/api/settings/image_subtitle_handling`)
+        .then(r => r.json())
+        .then(data => setImgSubSetting(data.value || "always_ask"))
+        .catch(() => {});
+    }, [api]);
+
+    const subtitleItemCount = items.filter(i => i.flagged_subtitles?.length > 0).length;
+
+    const resolveAllSubtitles = async () => {
+        setBulkResolving(true);
+        try {
+            const r = await fetch(`${api}/api/queue/resolve-subtitles-bulk`, { method: "POST" });
+            if (r.ok) {
+                const data = await r.json();
+                toast?.(
+                    `Resolved ${data.resolved}${data.still_unresolved ? `, ${data.still_unresolved} still needed review` : ""}`,
+                    C.blue,
+                );
+                onRefresh();
+            } else {
+                toast?.("Bulk resolve failed", C.red);
+            }
+        } catch (_) {
+            toast?.("Bulk resolve failed", C.red);
+        } finally {
+            setBulkResolving(false);
+        }
+    };
+
     const approve = async (id) => {
         await fetch(`${api}/api/queue/${id}/approve`, { method: "POST" }).catch(() => {});
         onRefresh();
@@ -46,12 +80,28 @@ export const ReviewPage = ({ api, items, onRefresh }) => {
         }}>
         {items.length}
         </span>
+
+        {subtitleItemCount > 0 && imgSubSetting !== "always_ask" && (
+            <Btn
+            label={bulkResolving ? "RESOLVING…" : `RESOLVE ALL ${subtitleItemCount} SUBTITLE ITEMS`}
+            color={C.blue}
+            bg={C.blue + "18"}
+            onClick={resolveAllSubtitles}
+            disabled={bulkResolving}
+            />
+        )}
         </div>
         <p style={{ color: C.muted, fontSize: 11, margin: 0, lineHeight: 1.65 }}>
         Files end up here for two reasons: two or more audio tracks with an
         undefined language (approve to process anyway, or skip to dismiss),
             or subtitle tracks that can't be converted to external SRT — choose
             KEEP or REMOVE for each flagged track below.
+            {subtitleItemCount > 0 && imgSubSetting !== "always_ask" && (
+                <> Image-Based Subtitle Handling is currently set to{" "}
+                {imgSubSetting === "always_keep" ? "Always Keep" : "Always Remove"} — use
+                the button above to resolve every subtitle-flagged item at once instead
+                of choosing individually.</>
+            )}
             </p>
             </div>
 

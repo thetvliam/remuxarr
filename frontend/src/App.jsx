@@ -179,7 +179,7 @@ export default function App() {
 
         {page === "review" && (
           <div style={{ flex: 1, overflowY: "auto" }}>
-          <ReviewPage api={api} items={review} onRefresh={fetchAll} />
+          <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} />
           </div>
         )}
 

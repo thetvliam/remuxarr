@@ -174,7 +174,12 @@ def analyze_file(
         subsequent scan even though both tracks are always meant to be
         kept — there's nothing for a human to actually decide.
     """
-    subtitle_overrides = subtitle_overrides or {}
+    # A fresh copy, not a reference to the caller's own dict — the
+    # image_subtitle_handling gate below may inject synthetic "keep"/
+    # "remove" entries for always_keep/always_remove, and this module's
+    # own docstring guarantees it touches nothing outside itself; mutating
+    # a caller-owned dict would quietly violate that.
+    subtitle_overrides = dict(subtitle_overrides) if subtitle_overrides else {}
     audio_language_overrides = audio_language_overrides or {}
     keep_audio_langs    = set(settings.get("keep_audio_languages",   ["eng"]))
     keep_sub_langs      = set(settings.get("keep_subtitle_languages", ["eng"]))
@@ -276,38 +281,55 @@ def analyze_file(
             and t["stream_index"] not in subtitle_overrides
         ]
         if non_convertible:
-            details = ", ".join(
-                f"{(t['language'] or 'und').upper()} {t.get('codec', '?')}"
-                f"{' (forced)' if t.get('is_forced') else ''}"
-                for t in non_convertible
-            )
-            n = len(non_convertible)
-            msg = (
-                f"Contains {n} image-based subtitle track{'s' if n > 1 else ''} "
-                f"({details}) that cannot be converted to external SRT — "
-                f"manual review required to decide whether to keep or remove "
-                f"{'them' if n > 1 else 'it'}."
-            )
-            flagged = [
-                {
-                    "stream_index": t["stream_index"],
-                    "language":     t["language"] or "und",
-                    "codec":        t.get("codec") or "",
-                    "is_forced":    t.get("is_forced", False),
-                    "title":        t.get("title"),
-                }
-                for t in non_convertible
-            ]
-            return ProcessingDecision(
-                should_process=False,
-                is_manual_review=True,
-                reason=msg,
-                actions=[Action(
-                    action_type="flag_manual_review",
-                    description=msg,
-                )],
-                flagged_subtitles=flagged,
-            )
+            image_subtitle_handling = settings.get("image_subtitle_handling", "always_ask")
+
+            if image_subtitle_handling in ("always_keep", "always_remove"):
+                # Inject synthetic overrides into the LOCAL copy (see the
+                # comment where subtitle_overrides was copied above) rather
+                # than building drop_track/copy_track actions directly here
+                # — this reuses the exact same, already-correct keep/drop
+                # logic further down instead of duplicating it, and these
+                # synthetic entries are never confused with the user's own
+                # explicit per-file choices since they're never persisted
+                # to MediaFile.subtitle_overrides.
+                choice = "keep" if image_subtitle_handling == "always_keep" else "remove"
+                for t in non_convertible:
+                    subtitle_overrides[t["stream_index"]] = choice
+                # Falls through to the normal subtitle loop below — no
+                # early return, no manual review.
+            else:
+                details = ", ".join(
+                    f"{(t['language'] or 'und').upper()} {t.get('codec', '?')}"
+                    f"{' (forced)' if t.get('is_forced') else ''}"
+                    for t in non_convertible
+                )
+                n = len(non_convertible)
+                msg = (
+                    f"Contains {n} image-based subtitle track{'s' if n > 1 else ''} "
+                    f"({details}) that cannot be converted to external SRT — "
+                    f"manual review required to decide whether to keep or remove "
+                    f"{'them' if n > 1 else 'it'}."
+                )
+                flagged = [
+                    {
+                        "stream_index": t["stream_index"],
+                        "language":     t["language"] or "und",
+                        "codec":        t.get("codec") or "",
+                        "is_forced":    t.get("is_forced", False),
+                        "title":        t.get("title"),
+                    }
+                    for t in non_convertible
+                ]
+                return ProcessingDecision(
+                    should_process=False,
+                    is_manual_review=True,
+                    reason=msg,
+                    actions=[Action(
+                        action_type="flag_manual_review",
+                        description=msg,
+                    )],
+                    flagged_subtitles=flagged,
+                )
 
     # ── Audio analysis ─────────────────────────────────────────────────────
     actions: list[Action] = []
@@ -632,7 +654,10 @@ def analyze_file(
     # that are actually being kept (copy_track or transcode_track).
     # Video tracks are intentionally skipped — players don't use video
     # language tags for track selection.
-    has_language_fix = False
+    has_language_fix    = False   # overall flag — either pass counts for should_process
+    und_fixed_indices:      set[int] = set()   # tracks fixed by THIS pass specifically
+    override_fixed_indices: set[int] = set()   # tracks fixed by the override pass below
+
     if settings.get("fix_undefined_language", False):
         lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
         lang_mode  = settings.get("undefined_language_mode", "all_undefined_per_type")
@@ -678,6 +703,7 @@ def analyze_file(
                 ):
                     actions[i] = dc_replace(action, target_language=lang_value)
                     has_language_fix = True
+                    und_fixed_indices.add(action.stream_index)
 
     # ── Audio language override pass ─────────────────────────────────────────
     # Per-track, user-directed corrections from the Audio Language Review
@@ -705,6 +731,7 @@ def analyze_file(
                     target_language=audio_language_overrides[action.stream_index],
                 )
                 has_language_fix = True
+                override_fixed_indices.add(action.stream_index)
 
     # ── Is there anything to do? ───────────────────────────────────────────
     has_drops       = any(a.action_type == "drop_track" for a in actions)
@@ -740,9 +767,12 @@ def analyze_file(
         parts.append(f"Extract {n} subtitle{'s' if n > 1 else ''} to external SRT")
     if has_faststart_a:
         parts.append("Add fast start (web-optimised streaming)")
-    if has_language_fix:
-        n = sum(1 for a in actions if a.target_language)
+    if und_fixed_indices:
+        n = len(und_fixed_indices)
         parts.append(f"Fix undefined language tag{'s' if n > 1 else ''} on {n} track{'s' if n > 1 else ''}")
+    if override_fixed_indices:
+        n = len(override_fixed_indices)
+        parts.append(f"Correct language tag{'s' if n > 1 else ''} on {n} track{'s' if n > 1 else ''}")
 
     return ProcessingDecision(
         should_process=True,

@@ -427,6 +427,111 @@ def resolve_subtitles(
     return _serialize(item, include_actions=True)
 
 
+@router.post("/resolve-subtitles-bulk")
+def resolve_subtitles_bulk(db: Session = Depends(get_db)):
+    """
+    Re-run the decision engine for every manual_review item flagged
+    specifically for non-convertible (image-based) subtitle tracks,
+    letting image_subtitle_handling (when set to always_keep or
+    always_remove) resolve them automatically — no per-item choice
+    required. Built for exactly the scenario of a large backlog of these
+    (e.g. hundreds) sitting in review, where clicking through each one
+    individually isn't practical.
+
+    Scoped specifically to review_subtitles IS NOT NULL — reliably,
+    exclusively populated by the image-based-subtitle gate and no other
+    manual-review trigger (e.g. the separate undefined-audio-count gate
+    never touches it), so this can never accidentally resolve an
+    unrelated manual-review item.
+
+    If image_subtitle_handling is still "always_ask", every item re-runs
+    and lands right back in manual_review, unresolved — harmless, but
+    pointless; the frontend only surfaces this action once the setting is
+    actually set to a resolving value.
+
+    Commits per-item, same reasoning as retry_all_failed and
+    apply_language: with a batch this size, one bad item raising an
+    exception must not roll back every earlier item that already
+    succeeded.
+    """
+    items = (
+        db.query(QueueItem)
+        .filter(
+            QueueItem.status == "manual_review",
+            QueueItem.review_subtitles.isnot(None),
+        )
+        .all()
+    )
+
+    app_cfg    = get_app_settings(db)
+    resolved   = 0
+    unresolved = 0
+    errors: list[dict] = []
+
+    for item in items:
+        media = item.media_file
+        if not media:
+            continue
+
+        try:
+            tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+            tracks = [_track_to_dict(t) for t in tracks_raw]
+            file_info = {"path": media.path, "container": media.container,
+                         "video_codec": media.video_codec}
+            forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
+            decision = analyze_file(
+                file_info, tracks, app_cfg,
+                subtitle_overrides=_load_subtitle_overrides(media),
+                audio_language_overrides=_load_audio_language_overrides(media),
+                forged_ac3_audio_index=forged_ac3_audio_index,
+            )
+
+            if decision.is_manual_review:
+                # Still unresolved (always_ask, or a different gate fired
+                # this time) — refresh in place, stays in review.
+                item.reason = decision.reason
+                item.review_subtitles = (
+                    json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
+                )
+                unresolved += 1
+
+            elif not decision.should_process:
+                item.status = "skipped"
+                item.reason = decision.reason
+                item.review_subtitles = None
+                media.status = "skipped"
+                resolved += 1
+
+            else:
+                db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
+                item.status = "pending"
+                item.reason = decision.reason
+                item.review_subtitles = None
+                item.is_dry_run = _current_dry_run_mode(db)
+                media.status = "queued"
+                db.flush()
+                for i, action in enumerate(decision.actions):
+                    db.add(PlannedAction(
+                        queue_item_id   = item.id,
+                        order           = i,
+                        action_type     = action.action_type,
+                        description     = action.description,
+                        track_type      = action.track_type,
+                        stream_index    = action.stream_index,
+                        target_language = getattr(action, "target_language", None),
+                    ))
+                resolved += 1
+
+            db.commit()
+
+        except Exception as exc:
+            logger.exception("Bulk subtitle resolve failed for item %d", item.id)
+            errors.append({"item_id": item.id, "error": str(exc)})
+            db.rollback()
+
+    return {"resolved": resolved, "still_unresolved": unresolved, "errors": errors}
+
+
 @router.post("/{item_id}/approve")
 def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     """Approve a manual-review item — moves it into the normal queue."""
