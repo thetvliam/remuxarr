@@ -1,5 +1,11 @@
 # ── Stage 1: build the React frontend ────────────────────────────────────────
-FROM node:20-slim AS ui-builder
+# Node 24 — Node 20 reached its official end-of-life on April 30, 2026 (no
+# further security patches from upstream) and its bundled npm version is
+# the source of the punycode/url.parse deprecation warnings seen in CI;
+# confirmed via direct dependency-tree search that neither warning traces
+# to anything in this project's own package.json — it's npm's own
+# internals. Node 24 is the current recommended LTS target for new work.
+FROM node:24-slim AS ui-builder
 
 WORKDIR /ui
 COPY frontend/package.json frontend/package-lock.json* ./
