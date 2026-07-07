@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.ws_manager import ws_manager
-from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files
+from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files, find_orphaned_media_files, remove_orphaned_media_files
 from app.core.worker import pause_worker
 from app.database.session import SessionLocal, get_app_settings, get_db
 
@@ -36,6 +36,10 @@ class ScanRequest(BaseModel):
 
 class FileScanRequest(BaseModel):
     path: str
+
+
+class RemoveOrphanedRequest(BaseModel):
+    file_ids: list[int]
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -136,6 +140,65 @@ async def run_cleanup(db: Session = Depends(get_db)):
         "removed": removed,
     })
 
+    return {"removed": removed}
+
+
+@router.get("/orphaned")
+def list_orphaned(db: Session = Depends(get_db)):
+    """
+    List every MediaFile row whose path falls outside every currently
+    configured scan path.
+
+    This is a real gap in the regular cleanup mechanism, not a bug in it —
+    cleanup_deleted_files() is deliberately scoped to only ever touch
+    scan_paths, so a file scanned under a path that's since been removed
+    from configuration becomes permanently invisible to it, regardless of
+    whether the underlying file still exists. This surfaces those rows
+    directly so they're visible instead of silently accumulating.
+
+    on_disk in the response is informational only — it does not affect
+    whether a row is considered orphaned, only whether the file happens
+    to still physically exist at that no-longer-configured path.
+    """
+    app_cfg    = get_app_settings(db)
+    scan_paths = app_cfg.get("scan_paths", [])
+
+    orphaned = find_orphaned_media_files(db, scan_paths)
+    return {
+        "total": len(orphaned),
+        "items": [
+            {
+                "id":       m.id,
+                "filename": m.filename,
+                "path":     m.path,
+                "size":     m.size,
+                "on_disk":  os.path.exists(m.path),
+            }
+            for m in orphaned
+        ],
+    }
+
+
+@router.post("/orphaned/remove")
+async def remove_orphaned(body: RemoveOrphanedRequest, db: Session = Depends(get_db)):
+    """
+    Remove specific orphaned MediaFile rows by ID (and every row across
+    the codebase that references them — see
+    scanner._delete_media_file_and_related).
+
+    Deliberately does not re-check scan_paths membership or disk
+    existence here — the row was already surfaced via GET /orphaned as
+    being outside the configured library, which is the only thing that
+    matters for this action. Removing the database row never touches
+    the actual file on disk, regardless of whether it still exists.
+    """
+    if not body.file_ids:
+        raise HTTPException(400, "No file IDs provided")
+
+    loop = asyncio.get_running_loop()
+    removed = await loop.run_in_executor(
+        None, remove_orphaned_media_files, db, body.file_ids
+    )
     return {"removed": removed}
 
 

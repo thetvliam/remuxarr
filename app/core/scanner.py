@@ -31,7 +31,7 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, QueueItem, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
 from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,48 @@ def queue_single_file(
     )
 
 
+def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
+    """
+    Fully remove a MediaFile row and every row across the codebase that
+    references it — does NOT commit; the caller controls the transaction.
+
+    tracks and queue_items (and queue_items' own planned_actions) DO
+    cascade correctly via SQLAlchemy's own cascade="all, delete-orphan"
+    on those specific relationships. Ac3ForgeJob, PlexAnalyzeBacklog, and
+    AudioLanguageFlag do NOT have that configured, and their
+    ondelete="CASCADE" foreign keys are not actually enforced either —
+    SQLite only respects that when PRAGMA foreign_keys=ON is set
+    per-connection, which this project does not do. Deleting all three
+    explicitly here, rather than assuming cascade behavior that doesn't
+    actually apply to them, is what prevents them from being silently
+    orphaned — confirmed this was a real, pre-existing gap for
+    PlexAnalyzeBacklog and AudioLanguageFlag specifically: this function
+    was written before either table existed and was never updated when
+    they were added.
+    """
+    db.query(PlannedAction).filter(
+        PlannedAction.queue_item_id.in_(
+            db.query(QueueItem.id).filter(QueueItem.file_id == media.id)
+        )
+    ).delete(synchronize_session=False)
+    db.query(QueueItem).filter(
+        QueueItem.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.query(Ac3ForgeJob).filter(
+        Ac3ForgeJob.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.query(PlexAnalyzeBacklog).filter(
+        PlexAnalyzeBacklog.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.query(AudioLanguageFlag).filter(
+        AudioLanguageFlag.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.query(Track).filter(
+        Track.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.delete(media)
+
+
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     """
     Remove MediaFile rows (and all related rows) for files that no longer
@@ -225,28 +267,65 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
             continue
 
         logger.info("Cleanup: removing deleted file from DB — %s", media.path)
-
-        # Delete child rows before the parent (FK constraints)
-        db.query(PlannedAction).filter(
-            PlannedAction.queue_item_id.in_(
-                db.query(QueueItem.id).filter(QueueItem.file_id == media.id)
-            )
-        ).delete(synchronize_session=False)
-        db.query(QueueItem).filter(
-            QueueItem.file_id == media.id
-        ).delete(synchronize_session=False)
-        db.query(Ac3ForgeJob).filter(
-            Ac3ForgeJob.file_id == media.id
-        ).delete(synchronize_session=False)
-        db.query(Track).filter(
-            Track.file_id == media.id
-        ).delete(synchronize_session=False)
-        db.delete(media)
+        _delete_media_file_and_related(db, media)
         removed += 1
 
     if removed:
         db.commit()
         logger.info("Cleanup: removed %d deleted file(s) from database", removed)
+
+    return removed
+
+
+def find_orphaned_media_files(db: Session, scan_paths: list[str]) -> list[MediaFile]:
+    """
+    Return every MediaFile row whose path does NOT fall under any
+    currently-configured scan path.
+
+    This is the inverse of cleanup_deleted_files' own scoping: that
+    function is deliberately scoped to ONLY ever touch files inside
+    scan_paths, to avoid accidentally reaching outside the configured
+    library. That safety property has a real consequence, though — if a
+    scan path is ever removed from settings after files under it were
+    scanned, the resulting MediaFile rows become permanently invisible
+    to cleanup, since it will never again consider a path outside the
+    current configuration. This function surfaces exactly those rows,
+    regardless of whether the underlying file still exists on disk —
+    membership outside the configured library is the criterion here,
+    not whether the file happens to still be there.
+    """
+    prefixes = tuple(
+        p if p.endswith(os.sep) else p + os.sep
+        for p in scan_paths
+    )
+    all_media: list[MediaFile] = db.query(MediaFile).all()
+    return [
+        m for m in all_media
+        if not scan_paths or not any(m.path.startswith(p) for p in prefixes)
+    ]
+
+
+def remove_orphaned_media_files(db: Session, file_ids: list[int]) -> int:
+    """
+    Remove specific MediaFile rows by ID, using the same complete
+    deletion helper cleanup_deleted_files relies on. Intended for
+    orphaned rows found via find_orphaned_media_files above — deliberately
+    does NOT check scan_paths membership or disk existence itself, since
+    the caller has already made that determination (and the whole point
+    of this path is to remove rows for files outside the configured
+    library, which by definition cleanup_deleted_files can never reach).
+    """
+    removed = 0
+    for file_id in file_ids:
+        media = db.get(MediaFile, file_id)
+        if not media:
+            continue
+        logger.info("Orphaned file cleanup: removing %s (id=%d)", media.path, media.id)
+        _delete_media_file_and_related(db, media)
+        removed += 1
+
+    if removed:
+        db.commit()
 
     return removed
 
@@ -662,5 +741,3 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
-
-

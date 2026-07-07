@@ -177,6 +177,20 @@ export const MaintenanceSection = ({ api, toast }) => {
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupResult,  setCleanupResult]  = useState(null); // null | number
 
+  // Orphaned files — fetched on demand, not on mount, since this is a
+  // rare-use maintenance check, not something that needs to stay live.
+  const [orphanedChecked,  setOrphanedChecked]  = useState(false);
+  const [orphanedLoading,  setOrphanedLoading]  = useState(false);
+  const [orphanedItems,    setOrphanedItems]    = useState([]);
+  const [orphanedSelected, setOrphanedSelected] = useState(new Set());
+  const [orphanedRemoving, setOrphanedRemoving] = useState(false);
+  const [orphanedRemoveArmed, setOrphanedRemoveArmed] = useState(false);
+  useEffect(() => {
+    if (!orphanedRemoveArmed) return;
+    const t = setTimeout(() => setOrphanedRemoveArmed(false), 3000);
+    return () => clearTimeout(t);
+  }, [orphanedRemoveArmed]);
+
   // Two-click confirmation for Force Full Rescan — auto-disarms after 3 s
   const [forceScanArmed, setForceScanArmed] = useState(false);
   useEffect(() => {
@@ -262,6 +276,73 @@ export const MaintenanceSection = ({ api, toast }) => {
       }
     } catch (_) {
       toast?.("Failed to start rescan", C.red);
+    }
+  };
+
+  const checkOrphaned = async () => {
+    setOrphanedLoading(true);
+    setOrphanedChecked(false);
+    setOrphanedSelected(new Set());
+    try {
+      const r = await fetch(`${api}/api/scan/orphaned`);
+      if (r.ok) {
+        const data = await r.json();
+        setOrphanedItems(data.items || []);
+        setOrphanedChecked(true);
+      } else {
+        toast?.("Failed to check for orphaned files", C.red);
+      }
+    } catch (_) {
+      toast?.("Failed to check for orphaned files", C.red);
+    } finally {
+      setOrphanedLoading(false);
+    }
+  };
+
+  const toggleOrphaned = (id) => {
+    setOrphanedSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allOrphanedSelected = orphanedItems.length > 0 &&
+  orphanedItems.every(i => orphanedSelected.has(i.id));
+  const toggleAllOrphaned = () => {
+    setOrphanedSelected(allOrphanedSelected ? new Set() : new Set(orphanedItems.map(i => i.id)));
+  };
+
+  const removeSelectedOrphaned = async () => {
+    if (orphanedSelected.size === 0) return;
+    if (!orphanedRemoveArmed) {
+      setOrphanedRemoveArmed(true);
+      return;
+    }
+    setOrphanedRemoveArmed(false);
+    setOrphanedRemoving(true);
+    try {
+      const r = await fetch(`${api}/api/scan/orphaned/remove`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ file_ids: Array.from(orphanedSelected) }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        toast?.(
+          `Removed ${data.removed} orphaned ${data.removed === 1 ? "entry" : "entries"}`,
+          C.blue,
+        );
+        // Re-check rather than assume — reflects the real current state
+        await checkOrphaned();
+      } else {
+        toast?.("Failed to remove orphaned files", C.red);
+      }
+    } catch (_) {
+      toast?.("Failed to remove orphaned files", C.red);
+    } finally {
+      setOrphanedRemoving(false);
     }
   };
 
@@ -414,6 +495,152 @@ export const MaintenanceSection = ({ api, toast }) => {
     {forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
     </button>
     </div>
+    </div>
+
+    {/* ── Card 4: Orphaned Files ──────────────────────────────────────── */}
+    <div style={{
+      padding: "16px",
+      border: `1px solid ${C.border}`,
+      marginTop: 16,
+    }}>
+    <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 14 }}>
+    Orphaned Files
+    </div>
+
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 20, marginBottom: orphanedChecked ? 14 : 0 }}>
+    <div style={{ flex: 1 }}>
+    <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65 }}>
+    Manual Cleanup above only ever checks files inside your currently
+    configured Media Library Paths, by design — it never touches
+    anything outside them. If a path is ever removed from that list
+    after files under it were scanned, those database entries become
+    permanently invisible to Manual Cleanup, even if the files are
+    long gone. This checks for exactly that — entries sitting outside
+    every currently configured path — so they're visible instead of
+    silently accumulating. Only removes the database entry; never
+    touches anything on disk.
+    </div>
+    </div>
+
+    <button
+    onClick={checkOrphaned}
+    disabled={orphanedLoading}
+    style={{
+      flexShrink: 0,
+      padding: "6px 14px",
+      background: "transparent",
+      border: `1px solid ${orphanedLoading ? C.muted : C.blue}`,
+      color: orphanedLoading ? C.muted : C.blue,
+      fontSize: 10,
+      fontFamily: "inherit",
+      fontWeight: 700,
+      letterSpacing: "0.1em",
+      cursor: orphanedLoading ? "not-allowed" : "pointer",
+      whiteSpace: "nowrap",
+    }}
+    >
+    {orphanedLoading ? "CHECKING…" : "CHECK FOR ORPHANED FILES"}
+    </button>
+    </div>
+
+    {orphanedChecked && orphanedItems.length === 0 && (
+      <div style={{ color: C.blue, fontSize: 11 }}>
+      No orphaned entries found ✓
+      </div>
+    )}
+
+    {orphanedChecked && orphanedItems.length > 0 && (
+      <div>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "6px 12px",
+        background: C.card,
+        border: `1px solid ${C.border}`,
+        borderBottom: "none",
+      }}>
+      <input type="checkbox" checked={allOrphanedSelected} onChange={toggleAllOrphaned} />
+      <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.08em" }}>
+      SELECT ALL ({orphanedItems.length})
+      </span>
+      </div>
+
+      <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${C.border}` }}>
+      {orphanedItems.map(item => (
+        <div
+        key={item.id}
+        onClick={() => toggleOrphaned(item.id)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 12px",
+          borderBottom: `1px solid ${C.border}`,
+          cursor: "pointer",
+          background: orphanedSelected.has(item.id) ? "#ffffff08" : "transparent",
+        }}
+        >
+        <input
+        type="checkbox"
+        checked={orphanedSelected.has(item.id)}
+        onChange={() => toggleOrphaned(item.id)}
+        onClick={e => e.stopPropagation()}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          color: C.text, fontSize: 11,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+        {item.filename}
+        </div>
+        <div style={{
+          color: C.muted, fontSize: 10,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+        {item.path}
+        </div>
+        </div>
+        <span style={{
+          flexShrink: 0,
+          padding: "1px 6px",
+          background: item.on_disk ? (C.blue + "18") : (C.dim + "18"),
+                                  border: `1px solid ${item.on_disk ? C.blue : C.dim}44`,
+                                  color: item.on_disk ? C.blue : C.dim,
+                                  fontSize: 9,
+                                  letterSpacing: "0.08em",
+        }}>
+        {item.on_disk ? "STILL ON DISK" : "FILE GONE"}
+        </span>
+        </div>
+      ))}
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+      <button
+      onClick={removeSelectedOrphaned}
+      disabled={orphanedRemoving || orphanedSelected.size === 0}
+      style={{
+        padding: "6px 14px",
+        background: orphanedRemoveArmed ? C.red + "22" : "transparent",
+        border: `1px solid ${orphanedSelected.size === 0 ? C.muted : C.red}`,
+        color: orphanedSelected.size === 0 ? C.muted : C.red,
+        fontSize: 10,
+        fontFamily: "inherit",
+        fontWeight: 700,
+        letterSpacing: "0.1em",
+        cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
+      }}
+      >
+      {orphanedRemoving
+        ? "REMOVING…"
+        : orphanedRemoveArmed
+        ? "CLICK AGAIN TO CONFIRM"
+        : `REMOVE SELECTED (${orphanedSelected.size})`}
+        </button>
+        </div>
+        </div>
+    )}
     </div>
     </div>
   );
