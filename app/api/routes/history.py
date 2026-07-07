@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc
+from sqlalchemy import case as sa_case, desc, func
 from sqlalchemy.orm import Session
 
-from app.api.routes.queue import _iso, _retry_with_reprobe, _serialize
+from app.api.routes.queue import _retry_with_reprobe, _serialize
 from app.database.models import MediaFile, QueueItem
 from app.database.session import get_db
 
@@ -53,14 +53,13 @@ def list_history(
     # starting with the search term appear first, ahead of entries that
     # merely contain the term somewhere in the middle.
     #
-    # Rank 0: filename starts with the search term          "Bottom - S01…"
-    # Rank 1: a word in the filename starts with the term  "SpongeBob … Rock Bottom"
-    # Rank 2: match anywhere else                          "…Bottomless…"
+    # Rank 0: filename starts with the search term          "Wanderers - S01…"
+    # Rank 1: a word in the filename starts with the term   "The Long Wanderers"
+    # Rank 2: match anywhere else                            "…Wander…"
     #
     # Within each rank group, most-recently completed items appear first.
     if search.strip():
         s = search.strip()
-        from sqlalchemy import case as sa_case
         relevance = sa_case(
             (MediaFile.filename.ilike(f"{s}%"),   0),
             (MediaFile.filename.ilike(f"% {s}%"), 1),
@@ -92,8 +91,6 @@ def history_summary(db: Session = Depends(get_db)):
     Aggregate stats: total processed, bytes saved, success rate.
     Useful for a dashboard card.
     """
-    from sqlalchemy import func
-
     rows = (
         db.query(QueueItem.status, func.count(QueueItem.id))
         .filter(QueueItem.status.in_(TERMINAL_STATUSES))

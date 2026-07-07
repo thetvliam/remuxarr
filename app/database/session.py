@@ -24,12 +24,25 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_forced_subtitles": True,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
-    # Transcode AAC 5.1 → AC3 5.1 for AVR passthrough compatibility
-    "transcode_aac_51_to_ac3": True,
+    # Transcode AAC 5.1 → AC3 5.1 for AVR passthrough compatibility. Off by
+    # default — this is a real transcode (audio, not video), and only
+    # matters for a specific hardware limitation: older/cheaper AV
+    # receivers that support AC3/DTS bitstream passthrough but not AAC.
+    # Most setups (smart TVs, soundbars, modern receivers, direct computer
+    # playback) handle AAC 5.1 natively — enabling this unconditionally
+    # for every new install would mean an unnecessary re-encode, with a
+    # real chance of being lower quality than the source at an equivalent
+    # bitrate, for a hardware need most users don't have.
+    "transcode_aac_51_to_ac3": False,
     # Remux to MP4 when all tracks are container-compatible
     "prefer_mp4_container": True,
-    # Global dry-run toggle — no files are modified when True
-    "dry_run_mode": False,
+    # Global dry-run toggle — no files are modified when True. Defaults to
+    # True: a brand-new install's first scan should produce a complete,
+    # safe preview of every planned action across the whole library
+    # before anything real is touched — the user reviews it and makes a
+    # deliberate, informed choice to turn this off once they're
+    # confident the decisions match what they actually want.
+    "dry_run_mode": True,
     # Directories to scan (populated via UI or env)
     "scan_paths": [],
     # How many "und" audio tracks trigger a manual-review flag
