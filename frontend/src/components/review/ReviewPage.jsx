@@ -11,7 +11,7 @@ import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const ReviewPage = ({ api, items, onRefresh, toast }) => {
+export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey }) => {
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
 
@@ -221,7 +221,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast }) => {
                 })
             }
 
-            <AudioLanguageReviewSection api={api} />
+            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} />
             </div>
     );
 };

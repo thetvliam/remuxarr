@@ -31,7 +31,7 @@ export default function App() {
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
       toast, fetchAll,
-      pendingQueue, wsConnected, historyRefreshKey,
+      pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey,
   } = data;
 
   const {
@@ -179,7 +179,7 @@ export default function App() {
 
         {page === "review" && (
           <div style={{ flex: 1, overflowY: "auto" }}>
-          <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} />
+          <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} />
           </div>
         )}
 

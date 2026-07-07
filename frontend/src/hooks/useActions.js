@@ -1,12 +1,12 @@
 import { C } from "../constants";
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   useActions
-   Collection of functions that call the backend API and update state via
-   the setters passed in from useAppData. Has no state of its own — accepts
-   the full data bundle returned by useAppData() and destructures what it
-   needs, so the call site can simply do `useActions(data)`.
-═══════════════════════════════════════════════════════════════════════════ */
+ *  useActions
+ *  Collection of functions that call the backend API and update state via
+ *  the setters passed in from useAppData. Has no state of its own — accepts
+ *  the full data bundle returned by useAppData() and destructures what it
+ *  needs, so the call site can simply do `useActions(data)`.
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useActions({
   api,
   dryRun, setDryRun,
@@ -65,8 +65,8 @@ export function useActions({
       const { cleared } = await r.json();
       toast(
         cleared > 0
-          ? `Cleared ${cleared} dry-run preview${cleared === 1 ? "" : "s"}`
-          : "No dry-run previews to clear",
+        ? `Cleared ${cleared} dry-run preview${cleared === 1 ? "" : "s"}`
+        : "No dry-run previews to clear",
         C.muted,
       );
       fetchAll();
@@ -113,9 +113,9 @@ export function useActions({
   const openDetail = (item, endpoint) => {
     setModal(item); // show immediately with basic data
     fetch(`${api}${endpoint}/${item.id}`)
-      .then(r => r.json())
-      .then(full => setModal(full))
-      .catch(() => {}); // keep basic modal if fetch fails
+    .then(r => r.json())
+    .then(full => setModal(full))
+    .catch(() => {}); // keep basic modal if fetch fails
   };
 
   // Re-queue a failed/cancelled item and close the modal
@@ -123,6 +123,14 @@ export function useActions({
     await fetch(`${api}/api/history/${item.id}/retry`, { method: "POST" }).catch(() => {});
     setModal(null);
     fetchAll();
+    // Same reasoning as clearDryRun above: retrying deletes the old failed
+    // QueueItem immediately, synchronously, with no WS event of its own —
+    // the only event that WOULD eventually fire is job_completed once the
+    // retried job finishes, which could be seconds or minutes away, and
+    // wouldn't fire at all if the retry lands on success rather than
+    // failure. Bump directly so the Failed tab reflects the removal now,
+    // regardless of what the retry eventually resolves to.
+    setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
     toast(`Re-queued: ${item.file?.filename || "file"}`, C.amber);
   };
 
@@ -169,8 +177,8 @@ export function useActions({
       const { cancelled } = await r.json();
       toast(
         cancelled > 0
-          ? `Queue cleared — ${cancelled} item${cancelled === 1 ? "" : "s"} removed`
-          : "Queue is already empty",
+        ? `Queue cleared — ${cancelled} item${cancelled === 1 ? "" : "s"} removed`
+        : "Queue is already empty",
         C.muted,
       );
       fetchAll();
@@ -202,9 +210,16 @@ export function useActions({
       if (skipped > 0) parts.push(`${skipped} skipped (file missing)`);
       toast(
         parts.length ? `Retry all: ${parts.join(", ")}` : "No failed items to retry",
-        retried > 0 ? C.amber : C.muted,
+            retried > 0 ? C.amber : C.muted,
       );
       fetchAll();
+      // Same reasoning as retryItem above, just for the bulk case — every
+      // retried item's old QueueItem is already deleted by the time this
+      // response comes back, and nothing else will tell the Failed tab
+      // that until (and unless) each one individually completes later.
+      if (retried > 0) {
+        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
+      }
     } catch (_) {
       toast("Retry all failed", C.red);
     }

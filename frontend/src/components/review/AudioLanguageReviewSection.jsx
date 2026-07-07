@@ -10,7 +10,7 @@ import { useAudioLanguageReviewData } from "../../hooks/useAudioLanguageReviewDa
  * from the manual-review list above it — files here are already fully
  * processed and playable; this is purely an optional correction workflow.
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const AudioLanguageReviewSection = ({ api }) => {
+export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [selected,        setSelected]        = useState(new Set());
@@ -75,6 +75,16 @@ export const AudioLanguageReviewSection = ({ api }) => {
                 body:    JSON.stringify({ file_ids: Array.from(selected), target_language: lang }),
             });
             setRefreshKey(k => k + 1);
+            // This section's own refreshKey above only re-queries ITS OWN
+            // flagged-items list — it has no way to tell the main dashboard's
+            // queue view, or the History panel's tabs, that anything changed.
+            // Applying a correction deletes the file's existing QueueItem and
+            // creates a fresh pending one — onRefresh (fetchAll) picks that up
+            // for the queue; setHistoryRefreshKey covers History, since the
+            // file was most likely sitting in the Success tab already (having
+            // been processed once before, just with the wrong language tag).
+            onRefresh?.();
+            setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
         } finally {
             setBusy(false);
         }
