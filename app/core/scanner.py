@@ -32,7 +32,7 @@ from app.core.probe import (
     probe_file,
 )
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, QueueItem, Track
-from app.database.session import SessionLocal, get_app_settings
+from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -380,11 +380,12 @@ def _process_file(
             is_hearing_impaired = td.get("is_hearing_impaired", False),
             is_dub              = td.get("is_dub", False),
             title          = td.get("title"),
-            # ── Write-only — removal candidates (see models.py Track) ─────
-            codec_long  = td.get("codec_long"),
-            raw_ffprobe = td.get("raw_ffprobe"),
-            sample_rate = td.get("sample_rate"),
-            bit_rate    = td.get("bit_rate"),
+            # codec_long/raw_ffprobe/sample_rate/bit_rate deliberately NOT
+            # populated — confirmed genuinely write-only (nothing in the
+            # codebase ever reads them). Columns kept in the schema in
+            # case a future feature wants them (raw_ffprobe especially,
+            # for debugging), but there's no reason to spend the write
+            # cost until something actually consumes them.
         ))
 
     db.flush()

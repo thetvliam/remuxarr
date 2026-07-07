@@ -98,9 +98,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "scheduled_scan_times":   [],     # list of "HH:MM" times in 24-hour format
     # ── Sonarr integration ─────────────────────────────────────────────────
     # When enabled, Remuxarr accepts On Import / On Upgrade webhooks from
-    # Sonarr and — after a job completes — calls Sonarr's RescanSeries then
-    # RenameFiles so Sonarr updates its DB and renames the processed file.
-    # Requires Sonarr's own "Rename Episodes" auto-rename to be DISABLED.
+    # Sonarr and — after a job completes — calls Sonarr's RescanSeries so
+    # Sonarr picks up the processed file. RenameFiles is NOT called (it was
+    # in an earlier version — see sonarr.py's own module docstring for why
+    # it was removed).
     "sonarr_enabled": False,
     "sonarr_url":     "",   # e.g. http://sonarr:8989
     "sonarr_api_key": "",   # Settings → General → API Key

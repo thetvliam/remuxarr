@@ -448,22 +448,6 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.post("/{item_id}/priority")
-def set_priority(item_id: int, priority: int, db: Session = Depends(get_db)):
-    """Adjust priority (1 = highest, 10 = lowest)."""
-    if not 1 <= priority <= 10:
-        raise HTTPException(400, "Priority must be 1–10")
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status != "pending":
-        raise HTTPException(400, "Can only re-prioritise pending items")
-
-    item.priority = priority
-    db.commit()
-    return {"success": True, "priority": priority}
-
-
 @router.post("/{item_id}/prioritize")
 def prioritize_item(item_id: int, db: Session = Depends(get_db)):
     """

@@ -18,7 +18,7 @@ from dataclasses import replace as dc_replace
 from datetime import datetime
 
 from app.config import settings as app_settings
-from app.core.decision import Action, ProcessingDecision, analyze_file
+from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
@@ -993,10 +993,9 @@ def _finish_job(
                                 is_hearing_impaired = td.get("is_hearing_impaired", False),
                                 is_dub              = td.get("is_dub", False),
                                 title          = td.get("title"),
-                                codec_long  = td.get("codec_long"),
-                                raw_ffprobe = td.get("raw_ffprobe"),
-                                sample_rate = td.get("sample_rate"),
-                                bit_rate    = td.get("bit_rate"),
+                                # codec_long/raw_ffprobe/sample_rate/bit_rate
+                                # deliberately not populated — see the matching
+                                # comment in scanner.py's own Track creation.
                             ))
 
                         primary_video_codec = next(

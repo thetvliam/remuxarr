@@ -51,10 +51,5 @@ class WebSocketManager:
         for ws in dead:
             self.disconnect(ws)
 
-    async def send_to(self, ws: WebSocket, data: dict) -> None:
-        """Send a JSON message to a single client."""
-        await ws.send_text(json.dumps(data))
-
-
 # Global singleton — imported by worker and routes
 ws_manager = WebSocketManager()

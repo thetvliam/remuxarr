@@ -34,7 +34,6 @@ from app.config import settings as app_settings
 from app.database.session import SessionLocal
 from app.core.subprocess_runner import (
     StagedOutput,
-    cleanup_temp_file,
     parse_out_time_seconds,
     probe_duration,
     run_staged_subprocess,
