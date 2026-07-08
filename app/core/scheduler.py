@@ -105,11 +105,35 @@ async def run_plex_backlog_drain() -> None:
     at all) moves on almost immediately, since none of those involve the
     expensive operation the interval exists to pace.
     """
-    logger.info(
-        "Plex backlog drain started — %ds between real analyzes, %ds "
-        "between everything else, within the configured window",
-        PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS, PLEX_BACKLOG_SKIP_INTERVAL_SECONDS,
-    )
+    db = SessionLocal()
+    try:
+        cfg = get_app_settings(db)
+    finally:
+        db.close()
+
+    if cfg.get("plex_enabled", False) and cfg.get("plex_analyze_backlog_enabled", False):
+        logger.info(
+            "Plex backlog drain started — %ds between real analyzes, %ds "
+            "between everything else, within the configured window",
+            PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS, PLEX_BACKLOG_SKIP_INTERVAL_SECONDS,
+        )
+    else:
+        # This task always starts at boot regardless of the setting — the
+        # loop below checks fresh on every tick via _drain_tick(), so
+        # toggling the setting later takes effect immediately without a
+        # restart. This message only reflects the setting's state at THIS
+        # exact moment, though: if it's later turned on, this won't print
+        # again, since the task doesn't restart — it was already right
+        # here, quietly polling. Worded separately from the message above
+        # specifically so the log doesn't describe active analyze timing
+        # for a task that will actually do nothing right now.
+        logger.info(
+            "Plex backlog drain task started, but idle — plex_enabled and/or "
+            "plex_analyze_backlog_enabled is currently off, so no analyzes "
+            "will be sent until both are enabled in Settings > Plex Analyze "
+            "Backlog."
+        )
+
     while True:
         try:
             analyzed = await _drain_tick()
