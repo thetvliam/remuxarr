@@ -8,18 +8,9 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
 
 ## Screenshots
 
-<!--
-  Suggested set, roughly in this order:
-    docs/screenshots/dashboard.png       — active job + queue
-    docs/screenshots/history.png         — history tabs (success/failed/skipped/dry run)
-    docs/screenshots/detail-modal.png    — a file's planned actions breakdown
-    docs/screenshots/review.png          — manual review, including the bulk-resolve action
-    docs/screenshots/settings.png        — the grouped settings page
-    docs/screenshots/forge.png           — AC3 Forge candidates/active/processed
-    docs/screenshots/processing.gif      — a file actually being processed, progress bar included
--->
+![screenshots of dashboard](https://github.com/thetvliam/remuxarr/blob/e9bb7dabbfbf8fe6261dbbfc79dbe0568b900475/images_and_demo/screenshot.png)
 
-*(screenshots and a demo GIF go here)*
+![demo video](https://github.com/thetvliam/remuxarr/blob/e9bb7dabbfbf8fe6261dbbfc79dbe0568b900475/images_and_demo/demo_video.mp4)
 
 ---
 
