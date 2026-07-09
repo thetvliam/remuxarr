@@ -13,8 +13,8 @@ import { HistoryPanel } from "./components/dashboard/HistoryPanel";
 import { DetailModal } from "./components/DetailModal";
 
 /* ═══════════════════════════════════════════════════════════════════════════
- *  ROOT APP
- ═ *══════════════════════════════════════════════════════════════════════════ */
+   ROOT APP
+═══════════════════════════════════════════════════════════════════════════ */
 export default function App() {
   const data = useAppData();
   const { isMobile } = data;
@@ -30,8 +30,8 @@ export default function App() {
     workerPaused,
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
-      toast, fetchAll,
-      pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey,
+    toast, fetchAll,
+    pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey,
   } = data;
 
   const {
@@ -54,43 +54,47 @@ export default function App() {
       fontSize: 13,
     }}>
 
-    {/* ╔══════════════════════════════════════════════╗
-      ║  HEADER                                      ║
-      ╚══════════════════════════════════════════════╝ */}
+      {/* ╔══════════════════════════════════════════════╗
+          ║  HEADER                                      ║
+          ╚══════════════════════════════════════════════╝ */}
       <AppHeader
-      page={page} setPage={setPage}
-      reviewCount={review.length}
-      api={api} setApi={setApi} showApiBar={showApiBar} setShowApiBar={setShowApiBar}
-      dryRun={dryRun} onToggleDryRun={toggleDryRun}
-      autoStart={autoStart} onToggleAutoStart={toggleAutoStart}
-      workerPaused={workerPaused} onTogglePause={togglePause}
-      scanning={scanning} scanProgress={scanProgress} onTriggerScan={triggerScan}
-      wsConnected={wsConnected}
-      isMobile={isMobile}
+        page={page} setPage={setPage}
+        reviewCount={review.length}
+        api={api} setApi={setApi} showApiBar={showApiBar} setShowApiBar={setShowApiBar}
+        dryRun={dryRun} onToggleDryRun={toggleDryRun}
+        autoStart={autoStart} onToggleAutoStart={toggleAutoStart}
+        workerPaused={workerPaused} onTogglePause={togglePause}
+        scanning={scanning} scanProgress={scanProgress} onTriggerScan={triggerScan}
+        wsConnected={wsConnected}
+        isMobile={isMobile}
       />
 
       {/* ╔══════════════════════════════════════════════╗
-        ║  PAGES                                       ║
-        ╚══════════════════════════════════════════════╝ */}
+          ║  PAGES                                       ║
+          ╚══════════════════════════════════════════════╝ */}
 
-        {page === "dashboard" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {page === "dashboard" && (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {/* Top strip — active worker */}
           {activeJobs.length === 0 ? (
-            <ActivePanel job={null} isMobile={isMobile} />
+            <ActivePanel
+              job={null}
+              isMobile={isMobile}
+              transitioning={!workerPaused && pendingQueue.length > 0}
+            />
           ) : (
             activeJobs.map(job => <ActivePanel key={job.id} job={job} isMobile={isMobile} onAbort={abortJob} />)
           )}
 
           {/* Bottom half — queue + history
-            Desktop: side by side. Mobile: tab-switched. */}
-            <div style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-              borderTop: `1px solid ${C.border}`,
-            }}>
+              Desktop: side by side. Mobile: tab-switched. */}
+          <div style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            borderTop: `1px solid ${C.border}`,
+          }}>
             {/* Mobile tab bar */}
             {isMobile && (
               <div style={{
@@ -99,28 +103,28 @@ export default function App() {
                 borderBottom: `1px solid ${C.border}`,
                 background: C.card,
               }}>
-              {[["queue", "QUEUE"], ["history", "HISTORY"]].map(([k, l]) => (
-                <button
-                key={k}
-                onClick={() => setQueueTab(k)}
-                style={{
-                  flex: 1,
-                  padding: "10px 0",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: queueTab === k
-                  ? `2px solid ${C.amber}` : "2px solid transparent",
-                  color: queueTab === k ? C.amber : C.dim,
-                  fontSize: 9,
-                  fontFamily: "inherit",
-                  letterSpacing: "0.14em",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-                >
-                {l}
-                </button>
-              ))}
+                {[["queue", "QUEUE"], ["history", "HISTORY"]].map(([k, l]) => (
+                  <button
+                    key={k}
+                    onClick={() => setQueueTab(k)}
+                    style={{
+                      flex: 1,
+                      padding: "10px 0",
+                      background: "transparent",
+                      border: "none",
+                      borderBottom: queueTab === k
+                        ? `2px solid ${C.amber}` : "2px solid transparent",
+                      color: queueTab === k ? C.amber : C.dim,
+                      fontSize: 9,
+                      fontFamily: "inherit",
+                      letterSpacing: "0.14em",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {l}
+                  </button>
+                ))}
               </div>
             )}
 
@@ -130,89 +134,90 @@ export default function App() {
               display: "flex",
               overflow: "hidden",
             }}>
-            {/* Queue panel — always shown desktop; shown on mobile when queueTab=queue */}
-            {(!isMobile || queueTab === "queue") && (
-              <div style={{
-                flex: 1,
-                borderRight: !isMobile ? `1px solid ${C.border}` : "none",
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-              }}>
-              <QueuePanel
-              items={pendingQueue}
-              onSelect={item => openDetail(item, "/api/queue")}
-              onDismiss={dismissQueueItem}
-              onClear={clearQueue}
-              onPrioritize={prioritizeItem}
-              />
-              </div>
-            )}
+              {/* Queue panel — always shown desktop; shown on mobile when queueTab=queue */}
+              {(!isMobile || queueTab === "queue") && (
+                <div style={{
+                  flex: 1,
+                  borderRight: !isMobile ? `1px solid ${C.border}` : "none",
+                  overflow: "hidden",
+                  display: "flex",
+                  flexDirection: "column",
+                }}>
+                  <QueuePanel
+                    items={pendingQueue}
+                    onSelect={item => openDetail(item, "/api/queue")}
+                    onDismiss={dismissQueueItem}
+                    onClear={clearQueue}
+                    onPrioritize={prioritizeItem}
+                  />
+                </div>
+              )}
 
-            {/* History panel — always shown desktop; shown on mobile when queueTab=history */}
-            {(!isMobile || queueTab === "history") && (
-              <div style={{
-                flex: 1,
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-              }}>
-              <HistoryPanel
-              api={api}
-              historyRefreshKey={historyRefreshKey}
-              onSelect={item => openDetail(item, "/api/history")}
-              onRetryAll={retryAllFailed}
-              onClearDryRun={clearDryRun}
-              />
-              </div>
-            )}
+              {/* History panel — always shown desktop; shown on mobile when queueTab=history */}
+              {(!isMobile || queueTab === "history") && (
+                <div style={{
+                  flex: 1,
+                  overflow: "hidden",
+                  display: "flex",
+                  flexDirection: "column",
+                }}>
+                  <HistoryPanel
+                    api={api}
+                    historyRefreshKey={historyRefreshKey}
+                    onSelect={item => openDetail(item, "/api/history")}
+                    onRetryAll={retryAllFailed}
+                    onClearDryRun={clearDryRun}
+                  />
+                </div>
+              )}
             </div>
-            </div>
-            </div>
-        )}
+          </div>
+        </div>
+      )}
 
-        {page === "settings" && (
-          <div style={{ flex: 1, overflowY: "auto" }}>
+      {page === "settings" && (
+        <div style={{ flex: 1, overflowY: "auto" }}>
           <SettingsPage api={api} toast={toast} isMobile={isMobile} />
-          </div>
-        )}
+        </div>
+      )}
 
-        {page === "review" && (
-          <div style={{ flex: 1, overflowY: "auto" }}>
+      {page === "review" && (
+        <div style={{ flex: 1, overflowY: "auto" }}>
           <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} />
-          </div>
-        )}
+        </div>
+      )}
 
-        {page === "forge" && (
-          <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {page === "forge" && (
+        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <ForgePage
-          api={api}
-          forgeRefreshKey={forgeRefreshKey}
-          active={forgeActive}
-          processed={forgeProcessed}
-          onAdd={forgeAdd}
-          onUndo={forgeUndo}
-          isMobile={isMobile}
+            api={api}
+            forgeRefreshKey={forgeRefreshKey}
+            active={forgeActive}
+            processed={forgeProcessed}
+            onAdd={forgeAdd}
+            onUndo={forgeUndo}
+            isMobile={isMobile}
           />
-          </div>
-        )}
+        </div>
+      )}
 
-        {/* ╔══════════════════════════════════════════════╗
+      {/* ╔══════════════════════════════════════════════╗
           ║  OVERLAYS                                    ║
           ╚══════════════════════════════════════════════╝ */}
-          {modal && (
-            <DetailModal
-            item={modal}
-            isMobile={isMobile}
-            onClose={() => setModal(null)}
-            onRetry={["failed", "cancelled", "dry_run", "success", "skipped"].includes(modal.status)
-              ? () => retryItem(modal) : null}
-              retryLabel={["success", "skipped"].includes(modal.status) ? "RE-PROCESS" : "RETRY"}
-              onDismiss={["success", "failed", "skipped", "cancelled", "dry_run"].includes(modal.status)
-                ? () => dismissItem(modal) : null}
-                />
-          )}
-          <Toasts items={toasts} isMobile={isMobile} />
-          </div>
+      {modal && (
+        <DetailModal
+          item={modal}
+          isMobile={isMobile}
+          onClose={() => setModal(null)}
+          onRetry={["failed", "cancelled", "dry_run", "success", "skipped"].includes(modal.status)
+            ? () => retryItem(modal) : null}
+          retryLabel={["success", "skipped"].includes(modal.status) ? "RE-PROCESS" : "RETRY"}
+          onDismiss={["success", "failed", "skipped", "cancelled", "dry_run"].includes(modal.status)
+            ? () => dismissItem(modal) : null}
+        />
+      )}
+      <Toasts items={toasts} isMobile={isMobile} />
+    </div>
   );
 }
+
