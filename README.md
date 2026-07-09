@@ -43,30 +43,36 @@ This application was generated entirely using Claude. I acted as the architect, 
 
 ## Installation
 
-Docker Compose is the primary supported path:
+Docker Compose is the primary supported path. For Unraid specifically, see [`UNRAID_DEPLOYMENT.md`](UNRAID_DEPLOYMENT.md) for a step-by-step GUI walkthrough instead — the steps below are for a standalone Docker host.
 
-```bash
-git clone https://github.com/thetvliam/remuxarr.git
-cd remuxarr
-cp .env.example .env   # adjust as needed
-docker compose up -d
-```
+1. Clone the repo and enter it:
+   ```bash
+   git clone https://github.com/thetvliam/remuxarr.git
+   cd remuxarr
+   ```
+2. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+   Every value in it already matches the app's own built-in default — you only need to edit this if you want to change something specific (see the comments in the file itself).
+3. Edit [`docker-compose.yml`](docker-compose.yml)'s volume paths to point at your own media library — the defaults (`/path/to/your/movies`, `/path/to/your/tv`) are placeholders and won't exist on your system. At minimum you need a persistent `/config` volume and your actual movie/TV paths.
+4. Start it:
+   ```bash
+   docker compose up -d
+   ```
+   The first run builds the image from scratch (installing dependencies, building the frontend, fetching FFmpeg) — this can take a few minutes. Subsequent starts are fast.
+5. Open `http://<your-host-ip>:8000`.
 
-See [`docker-compose.yml`](docker-compose.yml) for the exact volume mounts expected - at minimum, a persistent `/config` volume and your actual media paths (e.g. `/media/movies`, `/media/tv`).
+## First-time configuration
 
-For Unraid specifically, see [`UNRAID_DEPLOYMENT.md`](UNRAID_DEPLOYMENT.md) for a step-by-step GUI walkthrough.
+Everything from here happens in the web UI, not in any config file:
 
-Once running, the web UI is available on port 8000 by default.
-
-## Configuration
-
-Everything is configured from Settings in the web UI - no config files to hand-edit. A few things worth knowing before your first real scan:
-
-- **Dry run is on by default.** Your first scan will show you exactly what would happen to every file, without touching anything. Review the Dry Run tab, and once you're confident the decisions match what you actually want, turn dry run off in Settings → Library.
-- **Set your scan paths** in Settings → Library before scanning - this is empty on a fresh install, deliberately, so nothing happens until you point it at your actual library.
-- **Set your kept audio/subtitle languages** in Settings → Audio / Subtitles - defaults to English; change this if that's not what you want kept.
-- **Auto-start is on by default**, meaning the queue processes itself once dry run is off. If you'd rather review the queue manually before anything runs, turn this off in Settings → Worker.
-- Sonarr, Radarr, Plex, and email integrations are all off until you provide real connection details - nothing is assumed enabled.
+1. Go to **Settings → Library** and set your scan paths — this is empty on a fresh install, deliberately, so nothing happens until you point it at your actual library. Use the *container-side* paths (e.g. `/media/movies`, `/media/tv`), not your host paths.
+2. If you keep audio/subtitles in a language other than English, set that in **Settings → Audio** / **Settings → Subtitles** — defaults to English.
+3. Trigger a scan. **Dry run is on by default** — this first scan shows you exactly what would happen to every file, without touching anything.
+4. Review the **Dry Run** tab. Once the planned actions look right, turn dry run off in **Settings → Library** — real processing begins from here.
+5. **Auto-start is on by default**, meaning the queue processes itself once dry run is off. If you'd rather review the queue manually before anything runs, turn this off in **Settings → Worker**.
+6. Sonarr, Radarr, Plex, and email integrations are all off until you provide real connection details — nothing is assumed enabled.
 
 ## Development
 

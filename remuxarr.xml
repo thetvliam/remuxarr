@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Remuxarr</Name>
+  <Repository>ghcr.io/thetvliam/remuxarr:latest</Repository>
+  <Registry>https://github.com/thetvliam/remuxarr/pkgs/container/remuxarr</Registry>
+  <Github>https://github.com/thetvliam/remuxarr</Github>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/thetvliam/remuxarr/issues</Support>
+  <Project>https://github.com/thetvliam/remuxarr</Project>
+  <Overview>
+Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying. Video is never touched.
+
+Set your scan paths and preferred languages in Settings after first start. Dry run is on by default, so the first scan shows you exactly what would happen before anything real is touched.
+  </Overview>
+  <Category>MediaApp:Video Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/unraid-template/remuxarr.xml</TemplateURL>
+  <Icon></Icon>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+  <DonateImg/>
+  <Beta>true</Beta>
+  <Description>
+Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying.
+  </Description>
+
+  <!-- Persistent config + database -->
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config and database — must survive container updates/restarts" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
+
+  <!-- Media library — adjust to your own share paths -->
+  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/movies</Config>
+  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/tv</Config>
+
+  <!-- Temp staging for FFmpeg output before the final move. Unraid's own
+       /tmp is RAM-backed by default, so this host path avoids writing
+       intermediate files to your array during processing. -->
+  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory — leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
+
+  <!-- Web UI -->
+  <Config Name="WebUI" Target="8000" Default="8000" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+
+  <!-- The one setting genuinely worth surfacing here — everything else
+       already matches this app's own built-in default, and is better
+       left to Settings in the web UI once it's running. -->
+  <Config Name="Webhook Debounce Seconds" Target="REMUXARR_WEBHOOK_DEBOUNCE_SECONDS" Default="10" Mode="" Description="Seconds to wait after the last Sonarr/Radarr webhook for a file before queuing it. Increase for very large season packs on slow disks." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+</Container>
