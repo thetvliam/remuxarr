@@ -18,7 +18,13 @@ class Settings(BaseSettings):
     FFPROBE_PATH: str = "ffprobe"
 
     # Worker
-    MAX_CONCURRENT_JOBS: int = 1
+    # Note: worker concurrency (max concurrent jobs) is deliberately NOT
+    # here — it's a runtime setting, read exclusively from the
+    # database-backed app settings (Settings > Worker in the web UI, see
+    # app/database/session.py), not an environment variable. A
+    # MAX_CONCURRENT_JOBS field used to live here but was never actually
+    # read by anything — confirmed via a full codebase search before
+    # removing it.
     TEMP_DIR: str = "/tmp/remuxarr"
 
     # Webhook debounce — how long to wait after the last trigger before
