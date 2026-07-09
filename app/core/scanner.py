@@ -50,6 +50,7 @@ class ScanStats:
     skipped:       int = 0
     errors:        int = 0
     removed:       int = 0   # files removed from DB because they no longer exist on disk
+    cancelled:     bool = False   # True if the scan was stopped early by the user
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ def scan_library(
     paths:       list[str],
     force_probe: bool = False,
     progress_callback=None,   # optional: callable(scanned: int, total: int)
+    cancel_check=None,        # optional: callable() -> bool, checked per-file; True = stop
 ) -> ScanStats:
     """
     Walk every path and process each media file.
@@ -71,6 +73,14 @@ def scan_library(
     progress_callback : callable | None
         Called after each file is processed with (scanned, total) ints.
         Used by the scan API route to broadcast WebSocket progress updates.
+    cancel_check : callable | None
+        Called after each file, same checkpoint as progress_callback. If it
+        returns truthy, the scan stops cleanly after the current file —
+        whatever's already been processed stays committed exactly as-is,
+        since _process_file() commits per-file already; nothing about
+        cancelling mid-scan can leave a partial or corrupt state. Sets
+        ScanStats.cancelled so the caller can distinguish an early stop
+        from a normal, complete finish.
     """
     stats    = ScanStats()
     app_cfg  = get_app_settings(db)
@@ -89,16 +99,23 @@ def scan_library(
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             total_files += sum(1 for f in files if is_media_file(f))
 
-    scanned = 0
+    scanned   = 0
+    cancelled = False
     for scan_path in paths:
+        if cancelled:
+            break
         if not os.path.isdir(scan_path):
             logger.warning("Scan path not found or not a directory: %s", scan_path)
             continue
 
         for root, dirs, files in os.walk(scan_path, followlinks=True):
+            if cancelled:
+                break
             dirs[:] = [d for d in dirs if not d.startswith(".")]   # skip hidden
 
             for filename in files:
+                if cancelled:
+                    break
                 if not is_media_file(filename):
                     continue
 
@@ -115,21 +132,36 @@ def scan_library(
                 if progress_callback:
                     progress_callback(scanned, total_files)
 
+                if cancel_check and cancel_check():
+                    cancelled = True
+                    logger.info(
+                        "Scan cancelled by user after %d/%d files",
+                        scanned, total_files,
+                    )
+
                 # Yield to Python's thread scheduler so HTTP handler threads
                 # (sync route handlers) can run between files.  Without this
                 # the scanner thread can hold the GIL or block on I/O for
                 # long stretches, starving other threads.
                 time.sleep(0)
 
+    stats.cancelled = cancelled
+
     # ── Cleanup pass ───────────────────────────────────────────────────────
     # After the directory walk, remove DB rows for files that no longer exist
-    # on disk — but only if the setting is enabled (default: True).
-    if app_cfg.get("auto_cleanup_on_scan", True):
+    # on disk — but only if the setting is enabled (default: True), and only
+    # if the scan actually completed. Skipped on cancellation: not because
+    # it would be incorrect to run (it checks each file's real existence on
+    # disk directly, independent of how far the scan itself got), but
+    # because the user explicitly asked to stop, and running one more
+    # library-wide pass right after that doesn't honor that request fully.
+    if not cancelled and app_cfg.get("auto_cleanup_on_scan", True):
         stats.removed = cleanup_deleted_files(db, [p for p in paths if os.path.isdir(p)])
 
     logger.info(
-        "Scan done — total=%d new=%d changed=%d unchanged=%d "
+        "Scan %s — total=%d new=%d changed=%d unchanged=%d "
         "queued=%d review=%d skipped=%d errors=%d removed=%d",
+        "cancelled by user" if cancelled else "done",
         stats.total, stats.new, stats.changed, stats.unchanged,
         stats.queued, stats.manual_review, stats.skipped, stats.errors,
         stats.removed,

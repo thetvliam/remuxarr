@@ -109,6 +109,22 @@ export function useActions({
     }
   };
 
+  const cancelScan = async () => {
+    const r = await fetch(`${api}/api/scan/cancel`, { method: "POST" }).catch(() => null);
+    if (r?.ok) {
+      toast("Stopping scan…", C.amber);
+      // Deliberately not setScanning(false) here — the scan loop takes a
+      // moment to actually notice the flag (it's checked once per file,
+      // right after whatever file it's currently on finishes) and the
+      // eventual scan_completed WS event, now carrying cancelled: true,
+      // is what correctly clears scanning/scanProgress once it genuinely
+      // stops. Clearing it here early would show "idle" while the scan
+      // is, for a brief moment, still actually running.
+    } else {
+      toast("Failed to stop scan", C.red);
+    }
+  };
+
   // Open detail modal — fetch full record (with planned_actions) then show
   const openDetail = (item, endpoint) => {
     setModal(item); // show immediately with basic data
@@ -226,7 +242,7 @@ export function useActions({
   };
 
   return {
-    toggleDryRun, togglePause, toggleAutoStart, triggerScan,
+    toggleDryRun, togglePause, toggleAutoStart, triggerScan, cancelScan,
     openDetail, retryItem, dismissItem, retryAllFailed,
     dismissQueueItem, clearQueue, prioritizeItem,
     abortJob, clearDryRun,

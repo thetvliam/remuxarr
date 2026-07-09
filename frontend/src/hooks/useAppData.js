@@ -17,22 +17,22 @@ const _pageFromHash = () => {
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   useAppData
-   Owns all server-derived state, the WebSocket connection, and the data
-   fetching functions (fetchAll, fetchForge). This is the single source of
-   truth the rest of the app reads from — components and useActions consume
-   the values this hook returns rather than managing their own copies.
-
-   Client-side routing is implemented here via the browser History API.
-   Two pieces of state contribute history entries:
-
-   • Page navigation  →  #dashboard, #settings, #review, #forge
-   • Modal open/close →  same URL, different state object ({ modal: true })
-
-   Wrapping setPage and setModal here means every caller (AppHeader,
-   useActions, App.jsx) gets correct back-button behaviour automatically —
-   nothing else in the codebase needs to change.
-═══════════════════════════════════════════════════════════════════════════ */
+ *  useAppData
+ *  Owns all server-derived state, the WebSocket connection, and the data
+ *  fetching functions (fetchAll, fetchForge). This is the single source of
+ *  truth the rest of the app reads from — components and useActions consume
+ *  the values this hook returns rather than managing their own copies.
+ *
+ *  Client-side routing is implemented here via the browser History API.
+ *  Two pieces of state contribute history entries:
+ *
+ *  • Page navigation  →  #dashboard, #settings, #review, #forge
+ *  • Modal open/close →  same URL, different state object ({ modal: true })
+ *
+ *  Wrapping setPage and setModal here means every caller (AppHeader,
+ *  useActions, App.jsx) gets correct back-button behaviour automatically —
+ *  nothing else in the codebase needs to change.
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -80,9 +80,9 @@ export function useAppData() {
   const [forgeRefreshKey, setForgeRefreshKey] = useState(0);
 
   /* ── Routing: initial replaceState ───────────────────────────────────────
-     Replace the browser's very first history entry with a state object so
-     that pressing Back to the initial entry gives event.state = { page, modal }
-     rather than null (which would prevent us from restoring the correct page). */
+   *    Replace the browser's very first history entry with a state object so
+   *    that pressing Back to the initial entry gives event.state = { page, modal }
+   *    rather than null (which would prevent us from restoring the correct page). */
   useEffect(() => {
     const initial = _pageFromHash();
     pageRef.current = initial;
@@ -95,9 +95,9 @@ export function useAppData() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Routing: popstate (browser/Android back button) ─────────────────────
-     Handles two cases:
-     1. Back from modal state  → close the modal, stay on the same page
-     2. Back from page navigation → navigate to the previous page            */
+   *    Handles two cases:
+   *    1. Back from modal state  → close the modal, stay on the same page
+   *    2. Back from page navigation → navigate to the previous page            */
   useEffect(() => {
     const handler = (event) => {
       // The closedByUserRef flag is set when setModal(null) calls
@@ -130,8 +130,8 @@ export function useAppData() {
   }, []);
 
   /* ── Routing: wrapped setPage ────────────────────────────────────────────
-     Called by AppHeader nav tabs. Pushes a new history entry so the back
-     button can return to the previous tab. */
+   *    Called by AppHeader nav tabs. Pushes a new history entry so the back
+   *    button can return to the previous tab. */
   const setPage = useCallback((newPage) => {
     pageRef.current = newPage;
     setPageState(newPage);
@@ -143,10 +143,10 @@ export function useAppData() {
   }, []);
 
   /* ── Routing: wrapped setModal ───────────────────────────────────────────
-     Handles three cases:
-     • Opening a new modal  → push a history entry (modal: true)
-     • Enriching an open modal (openDetail's second fetch) → no push
-     • Closing the modal    → history.back() removes the modal history entry  */
+   *    Handles three cases:
+   *    • Opening a new modal  → push a history entry (modal: true)
+   *    • Enriching an open modal (openDetail's second fetch) → no push
+   *    • Closing the modal    → history.back() removes the modal history entry  */
   const setModal = useCallback((item) => {
     if (item === null) {
       // Only act if a modal is currently open.
@@ -186,14 +186,14 @@ export function useAppData() {
     // Global resets + keyframes
     const style       = document.createElement("style");
     style.textContent = `
-      *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: ${C.bg}; }
-      ::-webkit-scrollbar        { width: 3px; }
-      ::-webkit-scrollbar-track  { background: transparent; }
-      ::-webkit-scrollbar-thumb  { background: ${C.border}; }
-      @keyframes ledPulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
-      @keyframes toastIn  { from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:none} }
-      @keyframes modalIn  { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: ${C.bg}; }
+    ::-webkit-scrollbar        { width: 3px; }
+    ::-webkit-scrollbar-track  { background: transparent; }
+    ::-webkit-scrollbar-thumb  { background: ${C.border}; }
+    @keyframes ledPulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+    @keyframes toastIn  { from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:none} }
+    @keyframes modalIn  { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
     `;
     document.head.appendChild(style);
     document.title = "Remuxarr";
@@ -213,11 +213,11 @@ export function useAppData() {
   const fetchAll = useCallback(async () => {
     const [a, q, r, w, s, sc] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
-      fetch(`${api}/api/queue`).then(r => r.json()),
-      fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
-      fetch(`${api}/api/worker/status`).then(r => r.json()),
-      fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
-      fetch(`${api}/api/scan/status`).then(r => r.json()),
+                                                         fetch(`${api}/api/queue`).then(r => r.json()),
+                                                         fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
+                                                         fetch(`${api}/api/worker/status`).then(r => r.json()),
+                                                         fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
+                                                         fetch(`${api}/api/scan/status`).then(r => r.json()),
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);
@@ -239,157 +239,157 @@ export function useAppData() {
   const fetchForge = useCallback(async () => {
     const [a, p] = await Promise.allSettled([
       fetch(`${api}/api/forge/active`).then(r => r.json()),
-      fetch(`${api}/api/forge/processed/`).then(r => r.json()),
+                                            fetch(`${api}/api/forge/processed/`).then(r => r.json()),
     ]);
     if (a.status === "fulfilled") setForgeActive(a.value);
     if (p.status === "fulfilled") setForgeProcessed(Array.isArray(p.value) ? p.value : []);
   }, [api]);
 
-  useEffect(() => {
-    if (page === "forge") fetchForge();
-  }, [page, fetchForge]);
+    useEffect(() => {
+      if (page === "forge") fetchForge();
+    }, [page, fetchForge]);
 
-  useEffect(() => {
-    if (!scanning) return;
-    const id = setInterval(() => {
-      fetch(`${api}/api/scan/status`)
-        .then(r => r.json())
-        .then(d => { if (!d.running) setScanning(false); })
-        .catch(() => {});
-    }, 3000);
-    return () => clearInterval(id);
-  }, [scanning, api]);
-
-  useEffect(() => {
-    fetch(`${api}/api/settings/dry_run_mode`)
-      .then(r => r.json())
-      .then(d => setDryRun(!!d.value))
-      .catch(() => {});
-  }, [api]);
-
-  /* ── WebSocket event handler ──────────────────────────────────────────── */
-  const onWsMsg = useCallback((msg) => {
-    switch (msg.event) {
-      case "job_started":
-        fetchAll();
-        break;
-
-      case "job_progress":
-        setActiveJobs(prev =>
-          prev.map(j =>
-            j.id === msg.job_id
-              ? { ...j, progress: msg.progress, current_action: msg.current_action }
-              : j
-          )
-        );
-        setQueue(prev =>
-          prev.map(i =>
-            i.id === msg.job_id
-              ? { ...i, progress: msg.progress, status: "processing" }
-              : i
-          )
-        );
-        break;
-
-      case "job_completed":
-        toast(
-          msg.status === "dry_run"
-            ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
-            : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
-              (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
-          msg.status === "success" ? C.green
-            : msg.status === "dry_run" ? C.violet
-            : C.red,
-        );
-        fetchAll();
-        setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
-        break;
-
-      case "file_queued":
-        toast(`Queued: ${basename(msg.file_path)}`, C.blue);
-        fetchAll();
-        break;
-
-      case "scan_started":
-        setScanning(true);
-        setScanProgress(null);
-        break;
-
-      case "scan_progress":
-        setScanProgress({ scanned: msg.scanned, total: msg.total });
-        fetch(`${api}/api/queue`).then(r => r.json())
-          .then(d => { if (Array.isArray(d)) setQueue(d); })
+      useEffect(() => {
+        if (!scanning) return;
+        const id = setInterval(() => {
+          fetch(`${api}/api/scan/status`)
+          .then(r => r.json())
+          .then(d => { if (!d.running) setScanning(false); })
           .catch(() => {});
-        break;
+        }, 3000);
+        return () => clearInterval(id);
+      }, [scanning, api]);
 
-      case "scan_completed":
-        setScanning(false);
-        setScanProgress(null);
-        toast(
-          `Scan complete — ${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
-          (msg.removed ? `, ${msg.removed} removed` : ""),
-          C.amber,
-        );
-        fetchAll();
-        setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
-        break;
+      useEffect(() => {
+        fetch(`${api}/api/settings/dry_run_mode`)
+        .then(r => r.json())
+        .then(d => setDryRun(!!d.value))
+        .catch(() => {});
+      }, [api]);
 
-      case "cleanup_completed":
-        toast(
-          msg.removed === 0
-            ? "Cleanup complete — no stale entries found"
-            : `Cleanup complete — ${msg.removed} stale ${msg.removed === 1 ? "entry" : "entries"} removed`,
-          C.blue,
-        );
-        fetchAll();
-        setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
-        break;
+      /* ── WebSocket event handler ──────────────────────────────────────────── */
+      const onWsMsg = useCallback((msg) => {
+        switch (msg.event) {
+          case "job_started":
+            fetchAll();
+            break;
 
-      case "forge_job_started":
-        fetchForge();
-        setForgeRefreshKey(k => k + 1);
-        break;
-      case "forge_job_progress":
-        setForgeActive(prev =>
-          prev?.id === msg.job_id
+          case "job_progress":
+            setActiveJobs(prev =>
+            prev.map(j =>
+            j.id === msg.job_id
+            ? { ...j, progress: msg.progress, current_action: msg.current_action }
+            : j
+            )
+            );
+            setQueue(prev =>
+            prev.map(i =>
+            i.id === msg.job_id
+            ? { ...i, progress: msg.progress, status: "processing" }
+            : i
+            )
+            );
+            break;
+
+          case "job_completed":
+            toast(
+              msg.status === "dry_run"
+              ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
+              : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
+              (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
+                  msg.status === "success" ? C.green
+                  : msg.status === "dry_run" ? C.violet
+                  : C.red,
+            );
+            fetchAll();
+            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            break;
+
+          case "file_queued":
+            toast(`Queued: ${basename(msg.file_path)}`, C.blue);
+            fetchAll();
+            break;
+
+          case "scan_started":
+            setScanning(true);
+            setScanProgress(null);
+            break;
+
+          case "scan_progress":
+            setScanProgress({ scanned: msg.scanned, total: msg.total });
+            fetch(`${api}/api/queue`).then(r => r.json())
+            .then(d => { if (Array.isArray(d)) setQueue(d); })
+            .catch(() => {});
+            break;
+
+          case "scan_completed":
+            setScanning(false);
+            setScanProgress(null);
+            toast(
+              (msg.cancelled ? "Scan stopped — " : "Scan complete — ") +
+              `${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
+              (msg.removed ? `, ${msg.removed} removed` : ""),
+                  C.amber,
+            );
+            fetchAll();
+            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            break;
+
+          case "cleanup_completed":
+            toast(
+              msg.removed === 0
+              ? "Cleanup complete — no stale entries found"
+              : `Cleanup complete — ${msg.removed} stale ${msg.removed === 1 ? "entry" : "entries"} removed`,
+              C.blue,
+            );
+            fetchAll();
+            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            break;
+
+          case "forge_job_started":
+            fetchForge();
+            setForgeRefreshKey(k => k + 1);
+            break;
+          case "forge_job_progress":
+            setForgeActive(prev =>
+            prev?.id === msg.job_id
             ? { ...prev, progress: msg.progress, current_action: msg.current_action }
             : prev
-        );
-        break;
-      case "forge_job_completed":
-        toast(
-          `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
-          (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
-          msg.status === "success" ? C.green
-            : msg.status === "undone" ? C.blue
-            : C.red,
-        );
-        fetchForge();
-        setForgeRefreshKey(k => k + 1);
-        break;
-    }
-  }, [fetchAll, fetchForge, toast]);
+            );
+            break;
+          case "forge_job_completed":
+            toast(
+              `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
+              (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
+                  msg.status === "success" ? C.green
+                  : msg.status === "undone" ? C.blue
+                  : C.red,
+            );
+            fetchForge();
+            setForgeRefreshKey(k => k + 1);
+            break;
+        }
+      }, [fetchAll, fetchForge, toast]);
 
-  const wsUrl       = api.replace(/^http/, "ws") + "/ws";
-  const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
-  const { isMobile } = useBreakpoint();
+      const wsUrl       = api.replace(/^http/, "ws") + "/ws";
+      const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
+      const { isMobile } = useBreakpoint();
 
-  const pendingQueue = queue.filter(i => i.status !== "processing");
+      const pendingQueue = queue.filter(i => i.status !== "processing");
 
-  return {
-    api, setApi, page, setPage,
-    activeJobs, queue, review,
-    modal, setModal,
-    toasts,
-    dryRun, setDryRun,
-    scanning, setScanning, scanProgress,
-    showApiBar, setShowApiBar,
-    workerPaused, setWorkerPaused,
-    autoStart, setAutoStart,
-    historyRefreshKey, setHistoryRefreshKey,
-    forgeActive, forgeProcessed, forgeRefreshKey,
-    toast, fetchAll, fetchForge,
-    pendingQueue, wsConnected, isMobile,
-  };
+      return {
+        api, setApi, page, setPage,
+        activeJobs, queue, review,
+        modal, setModal,
+        toasts,
+        dryRun, setDryRun,
+        scanning, setScanning, scanProgress,
+        showApiBar, setShowApiBar,
+        workerPaused, setWorkerPaused,
+        autoStart, setAutoStart,
+        historyRefreshKey, setHistoryRefreshKey,
+        forgeActive, forgeProcessed, forgeRefreshKey,
+          toast, fetchAll, fetchForge,
+          pendingQueue, wsConnected, isMobile,
+      };
 }
-

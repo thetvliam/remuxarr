@@ -25,6 +25,7 @@ router = APIRouter(prefix="/api/scan", tags=["scan"])
 # Simple flag — only one scan at a time
 _scan_running  = False
 _scan_progress = {"scanned": 0, "total": 0}  # exposed via GET /status
+_scan_cancel_requested = False
 
 
 # ── Request models ─────────────────────────────────────────────────────────────
@@ -90,6 +91,26 @@ def scan_status():
         "scanned": _scan_progress["scanned"],
         "total":   _scan_progress["total"],
     }
+
+
+@router.post("/cancel")
+def cancel_scan():
+    """
+    Request the currently-running scan to stop.
+
+    Doesn't stop anything immediately — sets a flag the scan loop checks
+    once per file, right after that file finishes (see scan_library's
+    cancel_check parameter). Whatever's already been processed stays
+    exactly as committed; nothing about this can leave a partial or
+    corrupt state, since each file is already committed individually as
+    the scan goes.
+    """
+    global _scan_cancel_requested
+    if not _scan_running:
+        raise HTTPException(400, "No scan is currently running")
+
+    _scan_cancel_requested = True
+    return {"cancelling": True}
 
 
 @router.post("/file")
@@ -216,9 +237,10 @@ def _run_scan(
     asyncio.run_coroutine_threadsafe() can reliably schedule WebSocket
     broadcasts back onto the main event loop from this sync thread.
     """
-    global _scan_running, _scan_progress
+    global _scan_running, _scan_progress, _scan_cancel_requested
     _scan_running  = True
     _scan_progress = {"scanned": 0, "total": 0}
+    _scan_cancel_requested = False
 
     def _broadcast(data: dict) -> None:
         """Fire-and-forget WebSocket broadcast from a sync thread."""
@@ -258,8 +280,12 @@ def _run_scan(
                     "total":   total,
                 })
 
+        def _check_cancel() -> bool:
+            return _scan_cancel_requested
+
         stats = scan_library(db, paths, force_probe=force_probe,
-                             progress_callback=_on_progress)
+                             progress_callback=_on_progress,
+                             cancel_check=_check_cancel)
         _broadcast({
             "event":         "scan_completed",
             "queued":        stats.queued,
@@ -267,6 +293,7 @@ def _run_scan(
             "errors":        stats.errors,
             "total":         stats.total,
             "removed":       stats.removed,
+            "cancelled":     stats.cancelled,
         })
     except Exception:
         logger.exception("Scan failed")
