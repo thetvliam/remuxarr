@@ -1,19 +1,37 @@
 services:
   remuxarr:
-    # No published image yet — build from source. Once CI publishes images
-    # (see .github/workflows/ci.yml), this can switch to `image: ghcr.io/thetvliam/remuxarr:latest`.
     build: .
     container_name: remuxarr
     restart: unless-stopped
+
     ports:
-      - "8000:8000"
+      - "8000:8000"   # Web UI + API
+
     volumes:
-      # Holds remuxarr.db (settings, scan history, queue). Must persist.
+      # Persistent config/DB — map to a host path that survives updates
       - ./config:/config
-      # Your media library. Mount whatever paths need scanning; the actual
-      # scan paths are configured inside the app after first start.
-      - /path/to/media:/media
-    environment:
-      - REMUXARR_MAX_CONCURRENT_JOBS=1
-      - REMUXARR_WEBHOOK_DEBOUNCE_SECONDS=10
-      # - REMUXARR_DEBUG=true
+
+      # Your media library — adjust to match your own library paths
+      - /path/to/your/movies:/media/movies:rw
+      - /path/to/your/tv:/media/tv:rw
+
+    # Reads from .env (see .env.example). Every variable there already
+    # matches this app's own built-in default (see app/config.py) — an
+    # untouched .env with nothing uncommented is completely fine, this
+    # is only for the handful of cases you actually want to override.
+    env_file:
+      - .env
+
+    # Stages FFmpeg's temp output here before the final move (see
+    # _pick_temp_dir in app/core/ffmpeg.py) — tmpfs (RAM-backed) so
+    # processing never writes intermediate files to your media disk.
+    # Safe to remove this block entirely if you'd rather it just use
+    # regular container storage — still works, just slower, since the
+    # app falls back to the output file's own directory automatically
+    # whenever this path isn't usable.
+    tmpfs:
+      - /tmp/remuxarr
+
+    # Give FFmpeg enough room — adjust to your hardware
+    # cpus: "2.0"
+    # mem_limit: 4g
