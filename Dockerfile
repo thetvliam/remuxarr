@@ -63,6 +63,10 @@ RUN FFMPEG_URL=$(wget -qO- --header="Accept: application/vnd.github+json" \
 # ── Stage 3: Python runtime ───────────────────────────────────────────────────
 FROM python:3.12-slim
 
+# Links the published GHCR package back to this repository — shows up on
+# the repo's own Packages sidebar, uses this README as its description.
+LABEL org.opencontainers.image.source="https://github.com/thetvliam/remuxarr"
+
 # Copy static ffmpeg/ffprobe from the downloader stage — no apt dependency
 COPY --from=ffmpeg-downloader /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
 COPY --from=ffmpeg-downloader /usr/local/bin/ffprobe /usr/local/bin/ffprobe
