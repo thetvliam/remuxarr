@@ -1,42 +1,45 @@
 # Remuxarr — Unraid Deployment Guide
 
-## Before you start
-
-Remuxarr's Unraid template pulls its image from GitHub Container Registry.
-If that image hasn't been published yet, the steps below will get all the
-way through adding and configuring the container, then fail at the final
-step when Unraid tries to actually pull it. If you hit that, the image
-isn't published yet — this isn't something wrong with your setup.
-
-## 1. Add the template repository
-
-This is a one-time step — it tells Unraid where to find Remuxarr's template,
-so it shows up as an option the normal way, instead of needing to be
-configured by hand field by field.
+## 1. Add the container
 
 1. Go to the **Docker** tab.
-2. Click **Docker Repositories** (near the bottom of the page).
-3. Under **Template repositories**, paste:
-   ```
-   https://github.com/thetvliam/remuxarr
-   ```
-4. Click **Save**.
+2. Click **Add Container**.
+3. Fill in these fields directly — this is the exact, confirmed-working
+   configuration:
 
-## 2. Add the container
+   | Field | Value |
+   |---|---|
+   | Name | `Remuxarr` |
+   | Repository | `ghcr.io/thetvliam/remuxarr:latest` |
+   | Network Type | `Bridge` |
 
-1. Back on the **Docker** tab, click **Add Container**.
-2. Click the **Template** dropdown and select **Remuxarr**.
-3. Every field is pre-filled with sensible defaults. Two are worth checking
-   before you click Apply:
-   - **Movies** / **TV Shows** — these default to `/mnt/user/media/movies`
-     and `/mnt/user/media/tv`. Adjust to match your own share names if
-     they're different.
-   - **WebUI** port — defaults to `8000`. Change the host-side port if
-     you're already running something else on it.
-4. Click **Apply**. Unraid pulls the image and starts the container — the
+4. Add four path mappings (**Add another Path, Port, Variable, or
+   Device**):
+
+   | Container Path | Host Path |
+   |---|---|
+   | `/config` | `/mnt/user/appdata/remuxarr/config` |
+   | `/media/movies` | your movies share, e.g. `/mnt/user/Media/Movies` |
+   | `/media/tv` | your TV share, e.g. `/mnt/user/Media/TV` |
+   | `/tmp/remuxarr` | `/tmp/remuxarr-temp` (RAM-backed on Unraid — avoids writing FFmpeg's intermediate output to your array) |
+
+5. Add one port mapping:
+
+   | Container Port | Host Port |
+   |---|---|
+   | `8000` | `8000` (or whichever host port you prefer) |
+
+6. Click **Apply**. Unraid pulls the image and starts the container — the
    first pull can take a minute or two.
 
-## 3. First-time configuration
+There's also a template at [`unraid-template/remuxarr.xml`](unraid-template/remuxarr.xml)
+in this repo, loadable via the **Select a template** dropdown if you place
+the file in `/boot/config/plugins/dockerMan/templates-user/` first. Worth
+trying — it does correctly pre-fill Name and Repository — but in practice
+the path/port fields above may still need entering by hand regardless, so
+the table above is the version to actually rely on.
+
+## 2. First-time configuration
 
 This part is identical no matter how you deployed Remuxarr — it all happens
 in the web UI, not in Unraid itself.
@@ -70,17 +73,14 @@ this process.
 ## Quick reference
 
 ```
-Image:    ghcr.io/thetvliam/remuxarr:latest
-Port:     8000  →  8000/tcp
+Name:       Remuxarr
+Image:      ghcr.io/thetvliam/remuxarr:latest
+Network:    Bridge
+Port:       8000  →  8000/tcp   (host port is your choice)
 
 Paths:
   /mnt/user/appdata/remuxarr/config  →  /config          (rw)
-  /mnt/user/media/movies             →  /media/movies    (rw)
-  /mnt/user/media/tv                 →  /media/tv        (rw)
+  <your movies share>                →  /media/movies    (rw)
+  <your TV share>                    →  /media/tv        (rw)
   /tmp/remuxarr-temp                 →  /tmp/remuxarr    (rw)
-
-The only setting exposed directly in the template is webhook debounce
-(REMUXARR_WEBHOOK_DEBOUNCE_SECONDS, default 10s) — everything else that's
-actually worth adjusting lives in the web UI's own Settings, not as
-environment variables.
 ```
