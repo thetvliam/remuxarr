@@ -7,7 +7,9 @@ name: Build and Publish Docker Image
 # would be a real security concern, not just noise.
 on:
   push:
-    branches: [main]
+    branches:
+      - main      # Triggers for stable updates
+      - testing   # Triggers for dev updates
   workflow_dispatch:   # allows a manual, on-demand run from the Actions tab
 
 env:
