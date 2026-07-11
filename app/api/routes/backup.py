@@ -230,6 +230,24 @@ async def import_backup(file: UploadFile = File(...)):
         shutil.copy2(new_db_path, staging_path)
         os.replace(staging_path, live_path)
 
+        # Critical: also remove any stale WAL/SHM sidecar files left over
+        # from the database we just replaced. The live app's own
+        # connection to the OLD database is necessarily still open at
+        # this exact moment — it's what's serving this very request — so
+        # the old database's -wal file is very likely still populated
+        # with recent writes (e.g. whatever Clear Database or a settings
+        # change just wrote). Without removing it here, SQLite sees that
+        # leftover WAL sitting next to the freshly-restored main file on
+        # next startup and replays it, silently re-applying the OLD
+        # state right back on top of the restore. Verified this exact
+        # failure mode directly, and confirmed this fix resolves it,
+        # before shipping it.
+        for suffix in ("-wal", "-shm"):
+            sidecar = live_path + suffix
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+                logger.info("Removed stale %s file from the replaced database", suffix)
+
         logger.warning(
             "Database replaced via import. Previous database backed up to "
             "%s. A container restart is required for this to take effect.",
