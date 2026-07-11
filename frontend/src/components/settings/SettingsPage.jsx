@@ -3,6 +3,7 @@ import { C } from "../../constants";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
 import { DangerZone } from "./DangerZone";
+import { BackupRestoreSection } from "./BackupRestoreSection";
 import { MaintenanceSection } from "./MaintenanceSection";
 import { LogViewer } from "./LogViewer";
 
@@ -314,6 +315,7 @@ export const SettingsPage = ({ api, toast, isMobile = false }) => {
 
     <MaintenanceSection api={api} toast={toast} />
     <LogViewer api={api} />
+    <BackupRestoreSection api={api} toast={toast} />
     <DangerZone api={api} toast={toast} />
     </div>
   );

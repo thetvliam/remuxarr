@@ -11,9 +11,10 @@ Values are arbitrary JSON (string, list, bool, int).
 import json
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -83,6 +84,102 @@ def update_bulk(
     for key, value in updates.items():
         update_app_setting(db, key, value)
     return updates
+
+
+# Genuine credentials only — not URLs, not email_username (typically just an
+# address, not a credential on its own), not email_recipients (notification
+# targets, not something that grants access to anything).
+SECRET_KEYS = {"sonarr_api_key", "radarr_api_key", "plex_token", "email_password"}
+
+
+@router.get("/export")
+def export_settings(include_secrets: bool = True, db: Session = Depends(get_db)):
+    """
+    Export all current settings as a downloadable JSON file.
+
+    include_secrets controls whether Sonarr/Radarr API keys, the Plex
+    token, and the email password are included — defaults to True, since
+    the primary use case is genuine migration to a new system, where you
+    want the target working immediately without re-entering credentials.
+    The exported file is exactly as sensitive as those credentials
+    themselves when included, and should be handled the same way you'd
+    handle any file containing API keys.
+
+    With include_secrets=false, those four fields are OMITTED from the
+    export entirely — not blanked, omitted — so importing this file later
+    never touches whatever's already configured for them on the target
+    system (see import's merge semantics below).
+    """
+    cfg = get_app_settings(db)
+    settings_out = {
+        k: v for k, v in cfg.items()
+        if include_secrets or k not in SECRET_KEYS
+    }
+
+    payload = {
+        "remuxarr_export": "settings",
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "includes_secrets": include_secrets,
+        "settings": settings_out,
+    }
+
+    return Response(
+        content=json.dumps(payload, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="remuxarr-settings.json"'},
+    )
+
+
+@router.post("/import")
+async def import_settings(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Import settings from a previously exported file.
+
+    Merge, not replace: only keys actually present in the uploaded file
+    are applied. Anything not present — most notably secrets that were
+    deliberately excluded from the export — is left completely untouched
+    on this system, so importing a secrets-free export can never wipe out
+    credentials already configured on the target.
+
+    Unrecognized keys (e.g. from an older or newer export whose schema
+    has since changed) are silently skipped rather than failing the
+    whole import — deliberately more forgiving than _validate_key's
+    hard-reject used elsewhere, since schema drift between versions is a
+    realistic, expected scenario for this specific endpoint. Skipped
+    keys are reported back in the response so nothing is lost silently.
+    """
+    try:
+        raw = await file.read()
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "That file isn't valid JSON.")
+
+    if not isinstance(payload, dict) or payload.get("remuxarr_export") != "settings":
+        raise HTTPException(
+            400,
+            "This doesn't look like a Remuxarr settings export "
+            "(missing or incorrect 'remuxarr_export' marker).",
+        )
+
+    settings_in = payload.get("settings")
+    if not isinstance(settings_in, dict):
+        raise HTTPException(400, "Malformed export — missing 'settings' object.")
+
+    applied: list[str] = []
+    skipped: list[str] = []
+    for key, value in settings_in.items():
+        if key in KNOWN_KEYS:
+            update_app_setting(db, key, value)
+            applied.append(key)
+        else:
+            skipped.append(key)
+
+    return {
+        "applied":      len(applied),
+        "applied_keys": sorted(applied),
+        "skipped":      len(skipped),
+        "skipped_keys": sorted(skipped),
+    }
 
 
 @router.get("/test-sonarr")
