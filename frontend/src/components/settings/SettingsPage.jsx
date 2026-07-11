@@ -4,6 +4,7 @@ import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
 import { DangerZone } from "./DangerZone";
 import { BackupRestoreSection } from "./BackupRestoreSection";
+import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
 import { LogViewer } from "./LogViewer";
 
@@ -19,14 +20,14 @@ const SectionHeader = ({ label }) => (
     paddingBottom: 8,
     borderBottom: `1px solid ${C.border}`,
   }}>
-  <span style={{
-    color: C.amber,
-    fontSize: 9,
-    letterSpacing: "0.18em",
-    fontWeight: 700,
-  }}>
-  {label.toUpperCase()}
-  </span>
+    <span style={{
+      color: C.amber,
+      fontSize: 9,
+      letterSpacing: "0.18em",
+      fontWeight: 700,
+    }}>
+      {label.toUpperCase()}
+    </span>
   </div>
 );
 
@@ -70,28 +71,28 @@ const TestConnectionButton = ({ api, service }) => {
       justifyContent: "flex-end",
       padding: "12px 0 4px",
     }}>
-    <button
-    onClick={run}
-    disabled={state === "loading"}
-    style={{
-      padding: "5px 14px",
-      background: state === "idle" ? "transparent" : `${color}18`,
-      border: `1px solid ${color}`,
-      color,
-      fontSize: 10,
-      fontFamily: "inherit",
-      fontWeight: 700,
-      letterSpacing: "0.08em",
-      cursor: state === "loading" ? "not-allowed" : "pointer",
-      transition: "all 0.15s",
-      maxWidth: 320,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {label}
-    </button>
+      <button
+        onClick={run}
+        disabled={state === "loading"}
+        style={{
+          padding: "5px 14px",
+          background: state === "idle" ? "transparent" : `${color}18`,
+          border: `1px solid ${color}`,
+          color,
+          fontSize: 10,
+          fontFamily: "inherit",
+          fontWeight: 700,
+          letterSpacing: "0.08em",
+          cursor: state === "loading" ? "not-allowed" : "pointer",
+          transition: "all 0.15s",
+          maxWidth: 320,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </button>
     </div>
   );
 };
@@ -103,9 +104,9 @@ const PlexBacklogStatus = ({ api }) => {
   useEffect(() => {
     const poll = () => {
       fetch(`${api}/api/plex/backlog`)
-      .then(r => r.json())
-      .then(d => setCount(d.count ?? 0))
-      .catch(() => {});
+        .then(r => r.json())
+        .then(d => setCount(d.count ?? 0))
+        .catch(() => {});
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -123,24 +124,24 @@ const PlexBacklogStatus = ({ api }) => {
       color: C.muted,
       fontSize: 11,
     }}>
-    <span style={{
-      padding: "1px 7px",
-      background: count > 0 ? C.amber + "18" : "transparent",
-      border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
-      color: count > 0 ? C.amber : C.dim,
-      fontSize: 10,
-      fontWeight: 700,
-    }}
-    title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
-    >
-    {fmtCount(count)}
-    </span>
-    <span>
-    {count === 0
-      ? "files queued for Plex re-analysis"
-      : `${count === 1 ? "file" : "files"} queued for Plex re-analysis — drains during the configured window`
-    }
-    </span>
+      <span style={{
+        padding: "1px 7px",
+        background: count > 0 ? C.amber + "18" : "transparent",
+        border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
+        color: count > 0 ? C.amber : C.dim,
+        fontSize: 10,
+        fontWeight: 700,
+      }}
+        title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
+      >
+        {fmtCount(count)}
+      </span>
+      <span>
+        {count === 0
+          ? "files queued for Plex re-analysis"
+          : `${count === 1 ? "file" : "files"} queued for Plex re-analysis — drains during the configured window`
+        }
+      </span>
     </div>
   );
 };
@@ -152,9 +153,9 @@ const EmailBreakerStatus = ({ api }) => {
   useEffect(() => {
     const poll = () => {
       fetch(`${api}/api/notifications/state`)
-      .then(r => r.json())
-      .then(setState)
-      .catch(() => {});
+        .then(r => r.json())
+        .then(setState)
+        .catch(() => {});
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -176,12 +177,12 @@ const EmailBreakerStatus = ({ api }) => {
       fontSize: 11,
       lineHeight: 1.6,
     }}>
-    <span style={{ flexShrink: 0 }}>⚠</span>
-    <span>
-    Failure notifications are paused after {state.consecutive_failures} consecutive
-    job failures. No further emails will be sent until a job completes successfully —
-    check the History panel's Failed tab to diagnose the issue.
-    </span>
+      <span style={{ flexShrink: 0 }}>⚠</span>
+      <span>
+        Failure notifications are paused after {state.consecutive_failures} consecutive
+        job failures. No further emails will be sent until a job completes successfully —
+        check the History panel's Failed tab to diagnose the issue.
+      </span>
     </div>
   );
 };
@@ -196,23 +197,23 @@ const FieldRow = ({ field, value, onChange, isMobile }) => (
     padding: "16px 0",
     borderBottom: `1px solid ${C.border}`,
   }}>
-  <div style={{ flex: 1 }}>
-  <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-  {field.label}
-  </div>
-  <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65 }}>
-  {field.description}
-  </div>
-  </div>
-  <div style={{ flexShrink: 0, paddingTop: 2 }}>
-  <SettingInput field={field} value={value} onChange={onChange} />
-  </div>
+    <div style={{ flex: 1 }}>
+      <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
+        {field.label}
+      </div>
+      <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65 }}>
+        {field.description}
+      </div>
+    </div>
+    <div style={{ flexShrink: 0, paddingTop: 2 }}>
+      <SettingInput field={field} value={value} onChange={onChange} />
+    </div>
   </div>
 );
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * SETTINGS PAGE
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+   SETTINGS PAGE
+═══════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false }) => {
   const [schema, setSchema] = useState([]);
   const [values, setValues] = useState({});
@@ -221,10 +222,10 @@ export const SettingsPage = ({ api, toast, isMobile = false }) => {
   useEffect(() => {
     Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                fetch(`${api}/api/settings`).then(r => r.json()),
+      fetch(`${api}/api/settings`).then(r => r.json()),
     ])
-    .then(([s, v]) => { setSchema(s); setValues(v); })
-    .catch(() => {});
+      .then(([s, v]) => { setSchema(s); setValues(v); })
+      .catch(() => {});
   }, [api]);
 
   const save = async () => {
@@ -262,61 +263,62 @@ export const SettingsPage = ({ api, toast, isMobile = false }) => {
 
   return (
     <div style={{ maxWidth: 700, margin: "0 auto", padding: "28px 22px" }}>
-    {/* Page header */}
-    <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
-    <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
-    CONFIGURATION
-    </span>
-    <button
-    onClick={save}
-    disabled={status === "saving"}
-    style={{
-      marginLeft: "auto",
-      padding: "6px 18px",
-      background: btnColor + "22",
-      border: `1px solid ${btnColor}`,
-      color: btnColor,
-      fontSize: 10,
-      fontFamily: "inherit",
-      fontWeight: 700,
-      letterSpacing: "0.1em",
-      cursor: status === "saving" ? "not-allowed" : "pointer",
-    }}
-    >
-    {SAVE_LABEL[status]}
-    </button>
-    </div>
-
-    {schema.length === 0 && (
-      <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: 32 }}>
-      Connect to the backend to load settings…
+      {/* Page header */}
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
+          CONFIGURATION
+        </span>
+        <button
+          onClick={save}
+          disabled={status === "saving"}
+          style={{
+            marginLeft: "auto",
+            padding: "6px 18px",
+            background: btnColor + "22",
+            border: `1px solid ${btnColor}`,
+            color: btnColor,
+            fontSize: 10,
+            fontFamily: "inherit",
+            fontWeight: 700,
+            letterSpacing: "0.1em",
+            cursor: status === "saving" ? "not-allowed" : "pointer",
+          }}
+        >
+          {SAVE_LABEL[status]}
+        </button>
       </div>
-    )}
 
-    {groups.map(([groupName, fields]) => (
-      <div key={groupName}>
-      <SectionHeader label={groupName} />
-      {fields.map(field => (
-        <FieldRow
-        key={field.key}
-        field={field}
-        value={values[field.key]}
-        onChange={v => set(field.key, v)}
-        isMobile={isMobile}
-        />
-      ))}
-      {(groupName === "Sonarr" || groupName === "Radarr" || groupName === "Plex" || groupName === "Email") && (
-        <TestConnectionButton api={api} service={groupName.toLowerCase()} />
+      {schema.length === 0 && (
+        <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: 32 }}>
+          Connect to the backend to load settings…
+        </div>
       )}
-      {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
-      {groupName === "Email" && <EmailBreakerStatus api={api} />}
-      </div>
-    ))}
 
-    <MaintenanceSection api={api} toast={toast} />
-    <LogViewer api={api} />
-    <BackupRestoreSection api={api} toast={toast} />
-    <DangerZone api={api} toast={toast} />
+      {groups.map(([groupName, fields]) => (
+        <div key={groupName}>
+          <SectionHeader label={groupName} />
+          {fields.map(field => (
+            <FieldRow
+              key={field.key}
+              field={field}
+              value={values[field.key]}
+              onChange={v => set(field.key, v)}
+              isMobile={isMobile}
+            />
+          ))}
+          {(groupName === "Sonarr" || groupName === "Radarr" || groupName === "Plex" || groupName === "Email") && (
+            <TestConnectionButton api={api} service={groupName.toLowerCase()} />
+          )}
+          {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
+          {groupName === "Email" && <EmailBreakerStatus api={api} />}
+        </div>
+      ))}
+
+      <MaintenanceSection api={api} toast={toast} />
+      <LogViewer api={api} />
+      <BackupRestoreSection api={api} toast={toast} />
+      <FullBackupSection api={api} toast={toast} />
+      <DangerZone api={api} toast={toast} />
     </div>
   );
 };
