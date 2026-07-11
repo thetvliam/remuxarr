@@ -42,7 +42,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # If on main, it gets :latest. If on testing, it gets :testing.
+            # :latest ONLY on the default branch (main) — type=ref,event=branch
+            # does NOT imply this on its own; that auto-latest behavior is
+            # reserved for version-tag pushes (semver etc.), not branches.
+            type=raw,value=latest,enable={{is_default_branch}}
+            # main -> :main, testing -> :testing, any-branch -> :any-branch
             type=ref,event=branch
             # Keeps your commit SHA for safe rollbacks
             type=sha,prefix=,format=short
