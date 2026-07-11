@@ -7,7 +7,9 @@ name: Build and Publish Docker Image
 # would be a real security concern, not just noise.
 on:
   push:
-    branches: [main]
+    branches:
+      - main      # Triggers for stable updates
+      - testing   # Triggers for dev updates
   workflow_dispatch:   # allows a manual, on-demand run from the Actions tab
 
 env:
@@ -40,7 +42,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            # If on main, it gets :latest. If on testing, it gets :testing.
+            type=ref,event=branch
+            # Keeps your commit SHA for safe rollbacks
             type=sha,prefix=,format=short
           # Produces e.g. ghcr.io/thetvliam/remuxarr:latest and
           # ghcr.io/thetvliam/remuxarr:a1b2c3d — the short commit SHA tag
