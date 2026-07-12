@@ -168,9 +168,23 @@ def build_ffmpeg_command(
     cmd += ["-f", out_fmt]
 
     # Apply +faststart when the output is MP4 — this covers two cases:
-    #   1. Container conversion (MKV → MP4): always web-optimise the new file
-    #   2. add_faststart action: rewriting an existing MP4 that was missing it
-    if decision.target_container == "mp4":
+    #   1. Container conversion (MKV → MP4): always web-optimise the new
+    #      file, regardless of add_faststart_to_mp4 — a genuinely new MP4
+    #      should always be web-optimised.
+    #   2. add_faststart action: rewriting an EXISTING MP4 that was
+    #      missing it. Gated on decision actually having generated that
+    #      action, which decision.py only does when add_faststart_to_mp4
+    #      is enabled AND the existing file genuinely needs it.
+    #
+    # Previously this only checked target_container == "mp4", which is
+    # true for every MP4 output regardless of the setting's value or
+    # whether an add_faststart action was ever generated — meaning the
+    # setting had no effect at all and every MP4 got +faststart
+    # unconditionally, including plain in-place edits (e.g. a pure
+    # language-tag fix) on files that already had it correctly disabled.
+    has_container_conversion = any(a.action_type == "change_container" for a in decision.actions)
+    has_faststart_action     = any(a.action_type == "add_faststart"    for a in decision.actions)
+    if decision.target_container == "mp4" and (has_container_conversion or has_faststart_action):
         cmd += ["-movflags", "+faststart"]
 
     cmd.append(output_path)

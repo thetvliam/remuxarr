@@ -14,11 +14,11 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
 
 ---
 
-## Why this exists
+## Why this exists 
 
 Most media coming out of Sonarr/Radarr carries far more than you actually need - five or six audio languages, subtitle tracks for every region, sometimes a container your TV or Plex client doesn't handle as cleanly as it could. Re-encoding to "fix" this wastes CPU, time, and quality for no benefit, since the video itself was already fine.
 
-Remuxarr only ever touches what's cheap and lossless to touch:
+Remuxarr only ever touches what's cheap and lossless to touch: 
 
 - **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding video to do it.
