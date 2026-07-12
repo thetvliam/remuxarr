@@ -372,6 +372,49 @@ def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
     )
 
 
+def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
+    """
+    Sibling to _is_corrupt_audio_copy_failure above — same remediation
+    (retry with the audio transcoded instead of copied), but a genuinely
+    different root cause, so kept as a separate, narrowly-scoped function
+    rather than folded into that one's conditions, which specifically and
+    accurately claim to identify corrupt packet DATA — not this.
+
+    This one is source audio packets that simply have no usable timestamp
+    at all — most often seen in older/non-standard AVI files, where the
+    container itself doesn't reliably carry per-packet timing the way
+    more modern formats do. A pure stream copy has nothing to preserve in
+    that case; transcoding sidesteps the problem entirely, since the
+    decoder generates fresh, internally-consistent timestamps of its own
+    rather than needing to trust absent source ones. Confirmed via
+    verified reports that -fflags +genpts is NOT a reliable fix for this
+    specific error text — including an FFmpeg maintainer's own
+    acknowledgment that this class of H.264/timestamp issue is a known,
+    difficult-to-fix deficiency — which is why this goes straight to the
+    transcode retry rather than trying a timestamp-generation flag first.
+
+    All three conditions must be present:
+      "aost#"      — audio output stream (not vost# video, not sost# subtitle)
+      "/copy"      — the codec was copy, not a transcoder like aac or ac3
+      "error submitting a packet to the muxer" — the muxer rejected the packet
+      "can't write packet with unknown timestamp" — the specific reason:
+        no usable timestamp, not corrupt data (that's the sibling function)
+
+    Safe to retry for the same reason as the sibling function: the retry
+    uses -c:a aac (no /copy), so even if the retry also fails, the error
+    will not match this pattern either, preventing any loop.
+    """
+    if not error:
+        return False
+    lower = error.lower()
+    return (
+        "aost#" in lower
+        and "/copy" in lower
+        and "error submitting a packet to the muxer" in lower
+        and "can't write packet with unknown timestamp" in lower
+    )
+
+
 def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
     """
     Return a copy of the decision where every audio copy_track action is
@@ -648,13 +691,22 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 )
                 return
 
-            if not result.success and _is_corrupt_audio_copy_failure(result.error):
-                # The source file has corrupt audio frames that the MP4 muxer
-                # rejects when copying.  Retry the combined pass with AAC
-                # transcoding for all audio tracks instead of copying them.
+            audio_copy_failed = (
+                _is_corrupt_audio_copy_failure(result.error)
+                or _is_unknown_timestamp_audio_failure(result.error)
+            )
+            if not result.success and audio_copy_failed:
+                # Two distinct root causes land here — genuinely corrupt
+                # packet data, or source packets with no usable timestamp
+                # at all (common in older/non-standard AVI files) — but
+                # the same fix resolves both: retry the combined pass with
+                # AAC transcoding for all audio tracks instead of copying
+                # them, since transcoding generates fresh timestamps of
+                # its own regardless of which problem the source had.
                 logger.warning(
-                    "Job %d (%s): corrupt audio frames detected in source — "
-                    "retrying combined pass with AAC transcoding",
+                    "Job %d (%s): audio copy failed (corrupt frames or "
+                    "unusable source timestamps) — retrying combined pass "
+                    "with AAC transcoding",
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
@@ -713,10 +765,15 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds   = timeout_seconds,
             )
 
-            if not result.success and _is_corrupt_audio_copy_failure(result.error):
+            audio_copy_failed = (
+                _is_corrupt_audio_copy_failure(result.error)
+                or _is_unknown_timestamp_audio_failure(result.error)
+            )
+            if not result.success and audio_copy_failed:
                 logger.warning(
-                    "Job %d (%s): corrupt audio frames detected in source — "
-                    "retrying with AAC transcoding",
+                    "Job %d (%s): audio copy failed (corrupt frames or "
+                    "unusable source timestamps) — retrying with AAC "
+                    "transcoding",
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
