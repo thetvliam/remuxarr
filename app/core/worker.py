@@ -958,14 +958,14 @@ def _finish_job(
                     # rescan. Without refreshing Track rows here, they'd
                     # keep describing the PRE-processing file forever.
                     #
-                    # Concrete impact this was causing: if
-                    # transcode_aac_51_to_ac3 converts a track from AAC
-                    # 5.1 to AC3, the stale Track row still says
-                    # codec="aac" — so AC3 Forge's own candidate query
-                    # (files with an AAC 5.1 track and no forge job) kept
-                    # offering that file indefinitely, and forging onto it
-                    # would transcode whatever's ACTUALLY at that stream
-                    # index (now AC3) into a redundant AC3-from-AC3 track.
+                    # Concrete impact this was causing: AC3 Forge's own
+                    # candidate query (files with an AAC 5.1 track and no
+                    # existing forge job) depends entirely on the Track
+                    # table's codec/channels fields staying accurate. A
+                    # stale row can point that query wrong in either
+                    # direction — still offering a file whose audio isn't
+                    # actually AAC anymore, or failing to offer one that
+                    # now is, depending on what the pipeline just changed.
                     #
                     # A probe failure here is non-critical in the same
                     # spirit as the size/mtime OSError above — the actual

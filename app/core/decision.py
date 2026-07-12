@@ -185,7 +185,6 @@ def analyze_file(
     keep_sub_langs      = set(settings.get("keep_subtitle_languages", ["eng"]))
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
     keep_default_audio  = settings.get("keep_default_audio",      True)
-    transcode_aac_51    = settings.get("transcode_aac_51_to_ac3", True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
     # or more undefined-language tracks" true for every file, including
@@ -417,37 +416,18 @@ def analyze_file(
             order += 1
             continue
 
-        # Kept — check for the AAC 5.1 → AC3 transcode rule
-        if transcode_aac_51 and codec == "aac" and channels == 6:
-            actions.append(Action(
-                action_type="transcode_track",
-                description=(
-                    f"Transcode AAC 5.1 → AC3 5.1 [{lang}] "
-                    f"(stream {track['stream_index']})"
-                ),
-                track_type="audio",
-                stream_index=track["stream_index"],
-                order=order,
-                output_codec="ac3",
-                # "ac": "6" forces 5.1 channel count on the output — kept
-                # here in output_codec_options rather than hardcoded in
-                # build_ffmpeg_command so the corrupt-audio AAC retry can
-                # use output_codec_options={} and naturally preserve the
-                # source channel count without a separate code path.
-                output_codec_options={"b:a": "640k", "ac": "6"},
-            ))
-        else:
-            actions.append(Action(
-                action_type="copy_track",
-                description=(
-                    f"Copy audio [{lang}] {codec} "
-                    f"{track.get('channel_layout', '')} "
-                    f"(stream {track['stream_index']})"
-                ),
-                track_type="audio",
-                stream_index=track["stream_index"],
-                order=order,
-            ))
+        # Kept — always a lossless copy, never a transcode.
+        actions.append(Action(
+            action_type="copy_track",
+            description=(
+                f"Copy audio [{lang}] {codec} "
+                f"{track.get('channel_layout', '')} "
+                f"(stream {track['stream_index']})"
+            ),
+            track_type="audio",
+            stream_index=track["stream_index"],
+            order=order,
+        ))
         kept_audio.append(track)
         order += 1
 

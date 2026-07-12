@@ -274,7 +274,6 @@ KNOWN_KEYS = {
     "keep_subtitle_languages",
     "keep_forced_subtitles",
     "keep_default_audio",
-    "transcode_aac_51_to_ac3",
     "prefer_mp4_container",
     "dry_run_mode",
     "scan_paths",
@@ -424,13 +423,6 @@ SETTINGS_SCHEMA = [
                        "when no preferred-language track exists — prevents "
                        "accidentally removing the only audio from a file. Has "
                        "no effect when a preferred-language track is present.",
-    },
-    {
-        "key":         "transcode_aac_51_to_ac3",
-        "group":       "Audio",
-        "label":       "Transcode AAC 5.1 → AC3 5.1",
-        "type":        "boolean",
-        "description": "Converts AAC 5.1 tracks to AC3 for AVR bitstream passthrough.",
     },
     {
         "key":         "und_audio_threshold",

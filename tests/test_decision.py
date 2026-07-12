@@ -100,7 +100,7 @@ def test_normal_multi_language_file_unaffected(settings):
 
     dropped = {a.stream_index for a in decision.actions if a.action_type == "drop_track"}
     kept    = {a.stream_index for a in decision.actions
-               if a.track_type == "audio" and a.action_type in ("copy_track", "transcode_track")}
+               if a.track_type == "audio" and a.action_type == "copy_track"}
     assert 2 in dropped   # French correctly dropped
     assert 1 in kept      # English correctly kept
     assert decision.audio_language_mismatch is None
