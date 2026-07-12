@@ -70,6 +70,21 @@ class MediaFile(Base):
     # else changes about it on future scans.
     audio_language_ignored = Column(Boolean, default=False)
 
+    # Set when a manual-review item caused specifically by the
+    # undefined-audio-count threshold gate (decision.py) is approved via
+    # the generic approve_manual_review endpoint. Unlike the image-subtitle
+    # manual-review gate, which already has its own dedicated resolution
+    # flow (resolve_subtitles) that persists an exemption via
+    # subtitle_overrides, this gate had no persistence mechanism at all —
+    # every fresh analyze_file() call (including the one the worker does
+    # at job-pickup time, after "Keep" was already clicked) would
+    # re-evaluate the track count and re-trigger the same gate forever,
+    # since a track's language tag never changes on its own. Confirmed
+    # this directly: decision.actions ended up as only [flag_manual_review]
+    # at the exact point a retry was being built, which is what silently
+    # produced a no-op retry rather than the intended one.
+    und_audio_threshold_acknowledged = Column(Boolean, default=False)
+
     # Parallel fields for subtitle tracks — see Subtitle Language Review.
     # Distinct table/column set from the audio ones above even though the
     # shape is identical, since a file can independently have an audio

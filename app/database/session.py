@@ -223,6 +223,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN subtitle_language_overrides TEXT"),
         ("media_files", "subtitle_language_ignored",
          "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
+        ("media_files", "und_audio_threshold_acknowledged",
+         "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "sonarr_series_id",

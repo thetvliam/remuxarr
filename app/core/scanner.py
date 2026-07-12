@@ -529,6 +529,7 @@ def _process_file(
         "path":        path,
         "container":   fmt_info.get("container"),
         "video_codec": primary_video_codec,
+        "und_audio_threshold_acknowledged": media_file.und_audio_threshold_acknowledged,
     }
     overrides = _load_subtitle_overrides(media_file)
     audio_lang_overrides = _load_audio_language_overrides(media_file)

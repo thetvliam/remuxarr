@@ -710,18 +710,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
-                # TEMPORARY diagnostic — see matching comment at the other
-                # call site below.
-                logger.warning(
-                    "DIAGNOSTIC job %d (combined): before transform: %s",
-                    job_id,
-                    [(a.action_type, a.track_type, a.stream_index) for a in decision.actions],
-                )
-                logger.warning(
-                    "DIAGNOSTIC job %d (combined): after transform: %s",
-                    job_id,
-                    [(a.action_type, a.track_type, a.stream_index) for a in retry_decision.actions],
-                )
                 result, srt_results = await execute_ffmpeg_combined(
                     input_path           = input_path,
                     output_path          = output_path,
@@ -789,21 +777,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
-                # TEMPORARY diagnostic — remove once this is resolved. Every
-                # piece of this pipeline has checked out correctly in
-                # isolation; this shows directly, inside the real running
-                # system, whether the transform itself actually changes
-                # anything for this specific file's real decision object.
-                logger.warning(
-                    "DIAGNOSTIC job %d: before transform: %s",
-                    job_id,
-                    [(a.action_type, a.track_type, a.stream_index) for a in decision.actions],
-                )
-                logger.warning(
-                    "DIAGNOSTIC job %d: after transform: %s",
-                    job_id,
-                    [(a.action_type, a.track_type, a.stream_index) for a in retry_decision.actions],
-                )
                 result = await execute_ffmpeg(
                     input_path        = input_path,
                     output_path       = output_path,
@@ -893,7 +866,8 @@ def _load_job_data(job_id: int):
 
         app_cfg    = get_app_settings(db)
         file_info  = {"path": media.path, "container": media.container,
-                      "video_codec": media.video_codec}
+                      "video_codec": media.video_codec,
+                      "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
         overrides  = _load_subtitle_overrides(media)
         audio_lang_overrides = _load_audio_language_overrides(media)
         subtitle_lang_overrides = _load_subtitle_language_overrides(media)

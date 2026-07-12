@@ -373,7 +373,8 @@ def resolve_subtitles(
 
     app_cfg   = get_app_settings(db)
     file_info = {"path": media.path, "container": media.container,
-                  "video_codec": media.video_codec}
+                  "video_codec": media.video_codec,
+                  "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
     decision  = analyze_file(
         file_info, tracks, app_cfg,
@@ -478,7 +479,8 @@ def resolve_subtitles_bulk(db: Session = Depends(get_db)):
             tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
             tracks = [_track_to_dict(t) for t in tracks_raw]
             file_info = {"path": media.path, "container": media.container,
-                         "video_codec": media.video_codec}
+                         "video_codec": media.video_codec,
+                         "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
             forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
             decision = analyze_file(
                 file_info, tracks, app_cfg,
@@ -536,7 +538,29 @@ def resolve_subtitles_bulk(db: Session = Depends(get_db)):
 
 @router.post("/{item_id}/approve")
 def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
-    """Approve a manual-review item — moves it into the normal queue."""
+    """
+    Approve a manual-review item — moves it into the normal queue.
+
+    Also persists an exemption when this item's review was caused
+    specifically by the undefined-audio-count threshold gate
+    (decision.py) — that gate has no per-track override the way the
+    image-subtitle gate does (subtitle_overrides, resolved through the
+    separate resolve_subtitles endpoint instead of this generic one), so
+    without this, the worker's own fresh analyze_file() call at
+    job-pickup time would re-trigger the identical gate every single
+    time, since a track's language tag never changes on its own —
+    confirmed directly: this was silently producing a no-op "retry"
+    whose decision was still just [flag_manual_review], not the normal
+    processing actions, even after being approved here.
+
+    review_subtitles being null is the existing, established signal
+    that this item's review came from the threshold gate rather than
+    the image-subtitle one — confirmed via resolve_subtitles_bulk's own
+    docstring, which notes the threshold gate never populates that
+    field. Only setting the flag in that specific case avoids touching
+    anything about the image-subtitle gate's own, already-working
+    resolution flow.
+    """
     item = db.get(QueueItem, item_id)
     if not item:
         raise HTTPException(404, "Queue item not found")
@@ -551,6 +575,8 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     item.is_dry_run  = _current_dry_run_mode(db)
     if item.media_file:
         item.media_file.status = "queued"
+        if item.review_subtitles is None:
+            item.media_file.und_audio_threshold_acknowledged = True
     db.commit()
     return {"success": True}
 

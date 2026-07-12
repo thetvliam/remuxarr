@@ -251,7 +251,7 @@ def analyze_file(
         forged_track = audio_tracks[forged_ac3_audio_index]
         und_audio = [t for t in und_audio if t is not forged_track]
 
-    if len(und_audio) >= und_threshold:
+    if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
         msg = (
             f"Contains {len(und_audio)} audio tracks with undefined language — "
             f"manual review required to prevent accidental track deletion."
