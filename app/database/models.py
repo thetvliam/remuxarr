@@ -70,6 +70,13 @@ class MediaFile(Base):
     # else changes about it on future scans.
     audio_language_ignored = Column(Boolean, default=False)
 
+    # Parallel fields for subtitle tracks — see Subtitle Language Review.
+    # Distinct table/column set from the audio ones above even though the
+    # shape is identical, since a file can independently have an audio
+    # override, a subtitle override, both, or neither.
+    subtitle_language_overrides = Column(Text)
+    subtitle_language_ignored   = Column(Boolean, default=False)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -367,3 +374,37 @@ class AudioLanguageFlag(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     media_file = relationship("MediaFile", backref="audio_language_flag")
+
+
+class SubtitleLanguageFlag(Base):
+    """
+    Subtitle-track counterpart to AudioLanguageFlag — one row per file with
+    a kept subtitle track flagged for language review, surfaced in the
+    Subtitle Language Review section.
+
+    Unlike AudioLanguageFlag (which only ever flags a DEFINED but wrong
+    language), this table's rows always originate from an UNDEFINED ("und")
+    tag — specifically, a track fix_undefined_language's "always_ask" mode
+    decided qualifies for tagging but left for a human to actually choose,
+    rather than auto-guessing. Same resolution mechanism either way though:
+    the user picks the correct language (persisted on
+    MediaFile.subtitle_language_overrides) or confirms it's fine to leave
+    undefined (via MediaFile.subtitle_language_ignored) — either action
+    removes this row.
+
+    Same non-blocking behavior as AudioLanguageFlag too — a flagged file is
+    fully processed and playable the entire time it sits flagged, this is
+    purely informational bookkeeping, never something that holds up
+    processing the way the general manual_review queue does.
+    """
+    __tablename__ = "subtitle_language_flags"
+
+    id      = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
+                     nullable=False, unique=True)
+    stream_index = Column(Integer, nullable=False)
+    detected_language = Column(String)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    media_file = relationship("MediaFile", backref="subtitle_language_flag")

@@ -62,7 +62,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "auto_start_jobs":          True,
     "job_timeout_minutes":      120,
     # ── Metadata ───────────────────────────────────────────────────────────
-    "fix_undefined_language":   False,
+    # always_leave preserves today's default behavior exactly (was False) —
+    # existing installs upgrading see no change until they deliberately
+    # pick a different value.
+    "fix_undefined_language":   "always_leave",
     "undefined_language_value": "eng",
     "undefined_language_mode":  "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
@@ -216,6 +219,10 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN audio_language_overrides TEXT"),
         ("media_files", "audio_language_ignored",
          "ALTER TABLE media_files ADD COLUMN audio_language_ignored BOOLEAN DEFAULT 0"),
+        ("media_files", "subtitle_language_overrides",
+         "ALTER TABLE media_files ADD COLUMN subtitle_language_overrides TEXT"),
+        ("media_files", "subtitle_language_ignored",
+         "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "sonarr_series_id",

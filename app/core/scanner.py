@@ -31,7 +31,7 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track
 from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -213,17 +213,19 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
 
     tracks and queue_items (and queue_items' own planned_actions) DO
     cascade correctly via SQLAlchemy's own cascade="all, delete-orphan"
-    on those specific relationships. Ac3ForgeJob, PlexAnalyzeBacklog, and
-    AudioLanguageFlag do NOT have that configured, and their
-    ondelete="CASCADE" foreign keys are not actually enforced either —
-    SQLite only respects that when PRAGMA foreign_keys=ON is set
-    per-connection, which this project does not do. Deleting all three
-    explicitly here, rather than assuming cascade behavior that doesn't
-    actually apply to them, is what prevents them from being silently
-    orphaned — confirmed this was a real, pre-existing gap for
-    PlexAnalyzeBacklog and AudioLanguageFlag specifically: this function
-    was written before either table existed and was never updated when
-    they were added.
+    on those specific relationships. Ac3ForgeJob, PlexAnalyzeBacklog,
+    AudioLanguageFlag, and SubtitleLanguageFlag do NOT have that
+    configured, and their ondelete="CASCADE" foreign keys are not
+    actually enforced either — SQLite only respects that when PRAGMA
+    foreign_keys=ON is set per-connection, which this project does not
+    do. Deleting all four explicitly here, rather than assuming cascade
+    behavior that doesn't actually apply to them, is what prevents them
+    from being silently orphaned — confirmed this was a real,
+    pre-existing gap for PlexAnalyzeBacklog and AudioLanguageFlag
+    specifically: this function was written before either table existed
+    and was never updated when they were added. SubtitleLanguageFlag was
+    added directly alongside this comment specifically to avoid
+    repeating that exact mistake a third time.
     """
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(
@@ -241,6 +243,9 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     ).delete(synchronize_session=False)
     db.query(AudioLanguageFlag).filter(
         AudioLanguageFlag.file_id == media.id
+    ).delete(synchronize_session=False)
+    db.query(SubtitleLanguageFlag).filter(
+        SubtitleLanguageFlag.file_id == media.id
     ).delete(synchronize_session=False)
     db.query(Track).filter(
         Track.file_id == media.id
@@ -527,6 +532,7 @@ def _process_file(
     }
     overrides = _load_subtitle_overrides(media_file)
     audio_lang_overrides = _load_audio_language_overrides(media_file)
+    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media_file.id)
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
@@ -542,6 +548,7 @@ def _process_file(
         file_info_dict, track_list, app_cfg,
         subtitle_overrides=overrides,
         audio_language_overrides=audio_lang_overrides,
+        subtitle_language_overrides=subtitle_lang_overrides,
         has_faststart=faststart,
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
@@ -601,6 +608,28 @@ def _process_file(
     elif existing_flag:
         # No longer mismatched (or now ignored) — clear any stale flag.
         db.delete(existing_flag)
+
+    # ── Subtitle language mismatch flag ───────────────────────────────────────
+    # Subtitle counterpart to the block above — identical mechanics, see
+    # its comments for the full rationale.
+    existing_sub_flag = (
+        db.query(SubtitleLanguageFlag)
+        .filter(SubtitleLanguageFlag.file_id == media_file.id)
+        .first()
+    )
+    if decision.subtitle_language_mismatch and not media_file.subtitle_language_ignored:
+        mismatch = decision.subtitle_language_mismatch
+        if existing_sub_flag:
+            existing_sub_flag.stream_index      = mismatch["stream_index"]
+            existing_sub_flag.detected_language = mismatch["language"]
+        else:
+            db.add(SubtitleLanguageFlag(
+                file_id=media_file.id,
+                stream_index=mismatch["stream_index"],
+                detected_language=mismatch["language"],
+            ))
+    elif existing_sub_flag:
+        db.delete(existing_sub_flag)
 
     # ── Skip ───────────────────────────────────────────────────────────────
     if not decision.should_process:
@@ -711,6 +740,22 @@ def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
     except (ValueError, AttributeError, TypeError):
         logger.warning(
             "Invalid audio_language_overrides JSON for file %d — ignoring",
+            media_file.id,
+        )
+        return {}
+
+
+def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
+    """Subtitle counterpart to _load_audio_language_overrides above — same
+    shape, same parsing, different column."""
+    if not media_file.subtitle_language_overrides:
+        return {}
+    try:
+        raw = json.loads(media_file.subtitle_language_overrides)
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, AttributeError, TypeError):
+        logger.warning(
+            "Invalid subtitle_language_overrides JSON for file %d — ignoring",
             media_file.id,
         )
         return {}

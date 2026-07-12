@@ -5,6 +5,7 @@ import { Stat } from "../atoms/Stat";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
+import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MANUAL REVIEW PAGE
@@ -222,6 +223,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
             }
 
             <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} />
+            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} />
             </div>
     );
 };
