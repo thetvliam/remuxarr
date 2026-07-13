@@ -14,18 +14,17 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
 
 ---
 
-## Why this exists 
+## Why this exists
 
 Most media coming out of Sonarr/Radarr carries far more than you actually need - five or six audio languages, subtitle tracks for every region, sometimes a container your TV or Plex client doesn't handle as cleanly as it could. Re-encoding to "fix" this wastes CPU, time, and quality for no benefit, since the video itself was already fine.
 
-Remuxarr only ever touches what's cheap and lossless to touch: 
+Remuxarr only ever touches what's cheap and lossless to touch:
 
 - **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
-- **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding video to do it.
+- **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken).
-- **The one exception** - AAC 5.1 → AC3 5.1, purely for older AV receivers that need bitstream passthrough. Off by default; see Settings → Audio.
 
-Video is never re-encoded, under any setting, for any reason. That's not a preference here - it's the entire point of the project.
+Nothing is ever re-encoded - not video, not audio, under any setting, for any reason. That's not a preference here - it's the entire point of the project. (If you specifically need AAC 5.1 → AC3 for an older AV receiver's bitstream passthrough, that's a deliberate, reviewable, undoable operation in AC3 Forge - never something the main pipeline does automatically to every matching file.)
 
 This application was generated entirely using Claude. I acted as the architect, prompt engineer, and primary tester to solve a specific problem for myself, and wanted to share the functional result with the open-source community!
 

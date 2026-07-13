@@ -70,6 +70,28 @@ class MediaFile(Base):
     # else changes about it on future scans.
     audio_language_ignored = Column(Boolean, default=False)
 
+    # Set when a manual-review item caused specifically by the
+    # undefined-audio-count threshold gate (decision.py) is approved via
+    # the generic approve_manual_review endpoint. Unlike the image-subtitle
+    # manual-review gate, which already has its own dedicated resolution
+    # flow (resolve_subtitles) that persists an exemption via
+    # subtitle_overrides, this gate had no persistence mechanism at all —
+    # every fresh analyze_file() call (including the one the worker does
+    # at job-pickup time, after "Keep" was already clicked) would
+    # re-evaluate the track count and re-trigger the same gate forever,
+    # since a track's language tag never changes on its own. Confirmed
+    # this directly: decision.actions ended up as only [flag_manual_review]
+    # at the exact point a retry was being built, which is what silently
+    # produced a no-op retry rather than the intended one.
+    und_audio_threshold_acknowledged = Column(Boolean, default=False)
+
+    # Parallel fields for subtitle tracks — see Subtitle Language Review.
+    # Distinct table/column set from the audio ones above even though the
+    # shape is identical, since a file can independently have an audio
+    # override, a subtitle override, both, or neither.
+    subtitle_language_overrides = Column(Text)
+    subtitle_language_ignored   = Column(Boolean, default=False)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -367,3 +389,37 @@ class AudioLanguageFlag(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     media_file = relationship("MediaFile", backref="audio_language_flag")
+
+
+class SubtitleLanguageFlag(Base):
+    """
+    Subtitle-track counterpart to AudioLanguageFlag — one row per file with
+    a kept subtitle track flagged for language review, surfaced in the
+    Subtitle Language Review section.
+
+    Unlike AudioLanguageFlag (which only ever flags a DEFINED but wrong
+    language), this table's rows always originate from an UNDEFINED ("und")
+    tag — specifically, a track fix_undefined_language's "always_ask" mode
+    decided qualifies for tagging but left for a human to actually choose,
+    rather than auto-guessing. Same resolution mechanism either way though:
+    the user picks the correct language (persisted on
+    MediaFile.subtitle_language_overrides) or confirms it's fine to leave
+    undefined (via MediaFile.subtitle_language_ignored) — either action
+    removes this row.
+
+    Same non-blocking behavior as AudioLanguageFlag too — a flagged file is
+    fully processed and playable the entire time it sits flagged, this is
+    purely informational bookkeeping, never something that holds up
+    processing the way the general manual_review queue does.
+    """
+    __tablename__ = "subtitle_language_flags"
+
+    id      = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
+                     nullable=False, unique=True)
+    stream_index = Column(Integer, nullable=False)
+    detected_language = Column(String)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    media_file = relationship("MediaFile", backref="subtitle_language_flag")

@@ -24,7 +24,6 @@ BASE_SETTINGS = {
     "undefined_language_value":     "eng",
     "undefined_language_mode":      "all_undefined_per_type",
     "prefer_mp4_container":         True,
-    "transcode_aac_51_to_ac3":      False,
     "extract_text_subtitles_to_srt": False,
     "add_faststart_to_mp4":         True,
 }

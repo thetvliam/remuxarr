@@ -274,7 +274,6 @@ KNOWN_KEYS = {
     "keep_subtitle_languages",
     "keep_forced_subtitles",
     "keep_default_audio",
-    "transcode_aac_51_to_ac3",
     "prefer_mp4_container",
     "dry_run_mode",
     "scan_paths",
@@ -359,15 +358,38 @@ SETTINGS_SCHEMA = [
     },
     # ── Metadata ───────────────────────────────────────────────────────────
     {
-        "key":         "fix_undefined_language",
-        "group":       "Metadata",
-        "label":       "Fix Undefined Language Tags",
-        "type":        "boolean",
-        "description": "Automatically tag audio and subtitle tracks whose "
-                       "language is undefined (und) with the primary language "
-                       "configured below. Video tracks are never tagged. Only "
-                       "tracks that are being kept in the output are affected — "
-                       "dropped and extracted tracks are ignored.",
+        "key":     "fix_undefined_language",
+        "group":   "Metadata",
+        "label":   "Fix Undefined Language Tags",
+        "type":    "select",
+        "options": [
+            {
+                "value": "always_fix",
+                "label": "Always fix (tag with the primary language below)",
+            },
+            {
+                "value": "always_ask",
+                "label": "Always ask (flag for review)",
+            },
+            {
+                "value": "always_leave",
+                "label": "Always leave (do nothing)",
+            },
+        ],
+        "description": "What to do with audio and subtitle tracks whose "
+                       "language is undefined (und). Always Fix tags them "
+                       "automatically with the primary language below. "
+                       "Always Ask flags them for a human decision instead — "
+                       "audio tracks in Audio Language Review, subtitle "
+                       "tracks in Subtitle Language Review — without "
+                       "touching the file until resolved. Video tracks are "
+                       "never affected either way, and only tracks being "
+                       "kept in the output are considered — dropped and "
+                       "extracted tracks are ignored. Independent of the "
+                       "separate Undefined Audio Track Threshold below, "
+                       "which always sends a file to manual review when it "
+                       "has too many undefined audio tracks to safely guess "
+                       "between, regardless of this setting's value.",
     },
     {
         "key":         "undefined_language_value",
@@ -424,13 +446,6 @@ SETTINGS_SCHEMA = [
                        "when no preferred-language track exists — prevents "
                        "accidentally removing the only audio from a file. Has "
                        "no effect when a preferred-language track is present.",
-    },
-    {
-        "key":         "transcode_aac_51_to_ac3",
-        "group":       "Audio",
-        "label":       "Transcode AAC 5.1 → AC3 5.1",
-        "type":        "boolean",
-        "description": "Converts AAC 5.1 tracks to AC3 for AVR bitstream passthrough.",
     },
     {
         "key":         "und_audio_threshold",

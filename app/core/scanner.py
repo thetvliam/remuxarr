@@ -31,7 +31,7 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track
 from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -213,17 +213,19 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
 
     tracks and queue_items (and queue_items' own planned_actions) DO
     cascade correctly via SQLAlchemy's own cascade="all, delete-orphan"
-    on those specific relationships. Ac3ForgeJob, PlexAnalyzeBacklog, and
-    AudioLanguageFlag do NOT have that configured, and their
-    ondelete="CASCADE" foreign keys are not actually enforced either —
-    SQLite only respects that when PRAGMA foreign_keys=ON is set
-    per-connection, which this project does not do. Deleting all three
-    explicitly here, rather than assuming cascade behavior that doesn't
-    actually apply to them, is what prevents them from being silently
-    orphaned — confirmed this was a real, pre-existing gap for
-    PlexAnalyzeBacklog and AudioLanguageFlag specifically: this function
-    was written before either table existed and was never updated when
-    they were added.
+    on those specific relationships. Ac3ForgeJob, PlexAnalyzeBacklog,
+    AudioLanguageFlag, and SubtitleLanguageFlag do NOT have that
+    configured, and their ondelete="CASCADE" foreign keys are not
+    actually enforced either — SQLite only respects that when PRAGMA
+    foreign_keys=ON is set per-connection, which this project does not
+    do. Deleting all four explicitly here, rather than assuming cascade
+    behavior that doesn't actually apply to them, is what prevents them
+    from being silently orphaned — confirmed this was a real,
+    pre-existing gap for PlexAnalyzeBacklog and AudioLanguageFlag
+    specifically: this function was written before either table existed
+    and was never updated when they were added. SubtitleLanguageFlag was
+    added directly alongside this comment specifically to avoid
+    repeating that exact mistake a third time.
     """
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(
@@ -242,10 +244,44 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.query(AudioLanguageFlag).filter(
         AudioLanguageFlag.file_id == media.id
     ).delete(synchronize_session=False)
+    db.query(SubtitleLanguageFlag).filter(
+        SubtitleLanguageFlag.file_id == media.id
+    ).delete(synchronize_session=False)
     db.query(Track).filter(
         Track.file_id == media.id
     ).delete(synchronize_session=False)
     db.delete(media)
+
+
+def _clear_stale_skip_record(db: Session, file_id: int) -> None:
+    """
+    Delete any existing "skipped" QueueItem for this file — call this
+    right before creating a genuinely new pending or manual_review record
+    for the same file.
+
+    A "skipped" record's entire meaning is "as of THIS scan, nothing
+    needed to happen" — that meaning becomes actively false, not just
+    stale, the moment a later scan decides the file needs queuing or
+    manual review instead (e.g. after a settings change). Without this,
+    the old "skipped" record just sits there forever alongside the new,
+    genuine one, so the same file ends up visibly listed under both
+    Skipped and Success/Failed at once in the History panel — confirmed
+    directly: the Queue and Manual review branches below only ever
+    checked for an existing record of their OWN status (to avoid
+    duplicating a genuinely-still-skipped or already-flagged file), never
+    for a stale one left over from a different status entirely.
+
+    Deliberately does NOT do the reverse (clearing a completed/failed/
+    manual_review record when a file later becomes skipped) — those
+    represent real, historical events that actually happened and should
+    stay in history regardless of the file's current state; only a
+    "skipped" record's claim of "nothing happened" can become false out
+    from under it like this.
+    """
+    db.query(QueueItem).filter(
+        QueueItem.file_id == file_id,
+        QueueItem.status  == "skipped",
+    ).delete(synchronize_session=False)
 
 
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
@@ -524,9 +560,11 @@ def _process_file(
         "path":        path,
         "container":   fmt_info.get("container"),
         "video_codec": primary_video_codec,
+        "und_audio_threshold_acknowledged": media_file.und_audio_threshold_acknowledged,
     }
     overrides = _load_subtitle_overrides(media_file)
     audio_lang_overrides = _load_audio_language_overrides(media_file)
+    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media_file.id)
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
@@ -542,6 +580,7 @@ def _process_file(
         file_info_dict, track_list, app_cfg,
         subtitle_overrides=overrides,
         audio_language_overrides=audio_lang_overrides,
+        subtitle_language_overrides=subtitle_lang_overrides,
         has_faststart=faststart,
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
@@ -549,6 +588,7 @@ def _process_file(
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:
         media_file.status = "manual_review"
+        _clear_stale_skip_record(db, media_file.id)
 
         # Only create one manual-review item per file
         already = db.query(QueueItem).filter(
@@ -602,6 +642,28 @@ def _process_file(
         # No longer mismatched (or now ignored) — clear any stale flag.
         db.delete(existing_flag)
 
+    # ── Subtitle language mismatch flag ───────────────────────────────────────
+    # Subtitle counterpart to the block above — identical mechanics, see
+    # its comments for the full rationale.
+    existing_sub_flag = (
+        db.query(SubtitleLanguageFlag)
+        .filter(SubtitleLanguageFlag.file_id == media_file.id)
+        .first()
+    )
+    if decision.subtitle_language_mismatch and not media_file.subtitle_language_ignored:
+        mismatch = decision.subtitle_language_mismatch
+        if existing_sub_flag:
+            existing_sub_flag.stream_index      = mismatch["stream_index"]
+            existing_sub_flag.detected_language = mismatch["language"]
+        else:
+            db.add(SubtitleLanguageFlag(
+                file_id=media_file.id,
+                stream_index=mismatch["stream_index"],
+                detected_language=mismatch["language"],
+            ))
+    elif existing_sub_flag:
+        db.delete(existing_sub_flag)
+
     # ── Skip ───────────────────────────────────────────────────────────────
     if not decision.should_process:
         media_file.status = "skipped"
@@ -647,6 +709,7 @@ def _process_file(
         db.commit()
         return
 
+    _clear_stale_skip_record(db, media_file.id)
     media_file.status = "queued"
 
     qi = QueueItem(
@@ -711,6 +774,22 @@ def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
     except (ValueError, AttributeError, TypeError):
         logger.warning(
             "Invalid audio_language_overrides JSON for file %d — ignoring",
+            media_file.id,
+        )
+        return {}
+
+
+def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
+    """Subtitle counterpart to _load_audio_language_overrides above — same
+    shape, same parsing, different column."""
+    if not media_file.subtitle_language_overrides:
+        return {}
+    try:
+        raw = json.loads(media_file.subtitle_language_overrides)
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, AttributeError, TypeError):
+        logger.warning(
+            "Invalid subtitle_language_overrides JSON for file %d — ignoring",
             media_file.id,
         )
         return {}

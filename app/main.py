@@ -117,7 +117,7 @@ app.add_middleware(
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 
-from app.api.routes import queue, history, webhooks, settings as settings_routes, scan, forge, worker as worker_routes, logs as logs_routes, plex as plex_routes, notifications as notifications_routes, audio_language as audio_language_routes, backup as backup_routes
+from app.api.routes import queue, history, webhooks, settings as settings_routes, scan, forge, worker as worker_routes, logs as logs_routes, plex as plex_routes, notifications as notifications_routes, audio_language as audio_language_routes, backup as backup_routes, subtitle_language as subtitle_language_routes
 
 app.include_router(queue.router)
 app.include_router(history.router)
@@ -131,6 +131,7 @@ app.include_router(plex_routes.router)
 app.include_router(notifications_routes.router)
 app.include_router(audio_language_routes.router)
 app.include_router(backup_routes.router)
+app.include_router(subtitle_language_routes.router)
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────

@@ -24,16 +24,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_forced_subtitles": True,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
-    # Transcode AAC 5.1 → AC3 5.1 for AVR passthrough compatibility. Off by
-    # default — this is a real transcode (audio, not video), and only
-    # matters for a specific hardware limitation: older/cheaper AV
-    # receivers that support AC3/DTS bitstream passthrough but not AAC.
-    # Most setups (smart TVs, soundbars, modern receivers, direct computer
-    # playback) handle AAC 5.1 natively — enabling this unconditionally
-    # for every new install would mean an unnecessary re-encode, with a
-    # real chance of being lower quality than the source at an equivalent
-    # bitrate, for a hardware need most users don't have.
-    "transcode_aac_51_to_ac3": False,
     # Remux to MP4 when all tracks are container-compatible
     "prefer_mp4_container": True,
     # Global dry-run toggle — no files are modified when True. Defaults to
@@ -72,7 +62,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "auto_start_jobs":          True,
     "job_timeout_minutes":      120,
     # ── Metadata ───────────────────────────────────────────────────────────
-    "fix_undefined_language":   False,
+    # always_leave preserves today's default behavior exactly (was False) —
+    # existing installs upgrading see no change until they deliberately
+    # pick a different value.
+    "fix_undefined_language":   "always_leave",
     "undefined_language_value": "eng",
     "undefined_language_mode":  "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
@@ -226,6 +219,12 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN audio_language_overrides TEXT"),
         ("media_files", "audio_language_ignored",
          "ALTER TABLE media_files ADD COLUMN audio_language_ignored BOOLEAN DEFAULT 0"),
+        ("media_files", "subtitle_language_overrides",
+         "ALTER TABLE media_files ADD COLUMN subtitle_language_overrides TEXT"),
+        ("media_files", "subtitle_language_ignored",
+         "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
+        ("media_files", "und_audio_threshold_acknowledged",
+         "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "sonarr_series_id",

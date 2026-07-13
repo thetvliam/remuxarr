@@ -69,7 +69,8 @@ def build_ffmpeg_command(
     Strategy
     --------
     • All video streams  → always mapped, always copy
-    • Kept audio streams → copy, OR transcode (AAC 5.1 → AC3)
+    • Kept audio streams → copy, OR transcode (only ever via the
+      corrupt-audio retry path — worker.py's _make_audio_transcode_decision)
     • Kept sub streams   → copy (subtitles being extracted to external SRT,
       or dropped entirely, are excluded from the map list)
     • -progress pipe:1   → structured key=value progress on stdout
@@ -83,6 +84,11 @@ def build_ffmpeg_command(
     extracted = {
         a.stream_index for a in decision.actions if a.action_type == "extract_subtitle"
     }
+    # transcode_track actions only ever come from worker.py's corrupt-audio
+    # retry path (_make_audio_transcode_decision) — re-encoding audio when
+    # a lossless copy failed because the source frames themselves are
+    # corrupt. decision.py's own normal path never produces this directly;
+    # there's no setting that does anymore.
     transcode_map = {
         a.stream_index: a
         for a in decision.actions
@@ -124,7 +130,9 @@ def build_ffmpeg_command(
         if action and action.track_type == "audio":
             cmd += [f"-c:a:{out_idx}", action.output_codec]
             for opt_k, opt_v in action.output_codec_options.items():
-                # e.g. -b:a:0 640k  or  -ac:0 6
+                # e.g. -ac:0 6 — used by the corrupt-audio retry path when
+                # it needs to force a specific channel count; normally
+                # empty, which preserves the source's own channel layout.
                 cmd += [f"-{opt_k}:{out_idx}", str(opt_v)]
         else:
             cmd += [f"-c:a:{out_idx}", "copy"]
@@ -595,13 +603,13 @@ async def execute_ffmpeg_combined(
 
 
 def _describe_action(decision: ProcessingDecision) -> str:
+    # has_transcode is only ever true here via worker.py's corrupt-audio
+    # retry path — there's no setting that produces this on a normal pass.
     has_transcode  = any(a.action_type == "transcode_track" for a in decision.actions)
     has_container  = any(a.action_type == "change_container" for a in decision.actions)
     has_faststart  = any(a.action_type == "add_faststart" for a in decision.actions)
-    if has_transcode and has_container:
-        return "Remuxing to MP4 & transcoding AAC 5.1 → AC3"
     if has_transcode:
-        return "Transcoding AAC 5.1 → AC3 5.1"
+        return "Re-encoding audio (recovering from corrupt source frames)"
     if has_container:
         return "Remuxing to MP4"
     if has_faststart:
