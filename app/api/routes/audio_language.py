@@ -91,12 +91,14 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
     persist it as an override, and reprocess each file immediately so the
     correction actually gets written.
 
-    Mirrors _retry_with_reprobe's approach exactly: delete any existing
-    QueueItem for the file (regardless of its current status — success,
-    skipped, whatever) and re-run _process_file with force_probe=True,
-    since the file's bytes haven't changed on disk and a normal (non-
-    force) evaluation would otherwise just skip it without ever seeing
-    the new override.
+    Deletes any existing ACTIVE QueueItem for the file (pending,
+    processing, or manual_review specifically — not any status) before
+    re-running _process_file with force_probe=True, since the file's
+    bytes haven't changed on disk and a normal (non-force) evaluation
+    would otherwise just skip it without ever seeing the new override.
+    Scoped to active statuses only, deliberately — see the comment at
+    the actual delete below for why an unfiltered "any status" lookup
+    is a real bug, not just an equivalent simplification.
     """
     lang = body.target_language.strip().lower()
     if not lang:
@@ -141,15 +143,30 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         media.audio_language_ignored = False
         db.commit()
 
-        # Clear any existing QueueItem so _process_file starts fresh,
-        # exactly as _retry_with_reprobe does for the same reason.
-        existing_item = (
-            db.query(QueueItem)
-            .filter(QueueItem.file_id == file_id)
-            .first()
-        )
-        if existing_item:
-            db.delete(existing_item)
+        # Clear any existing ACTIVE QueueItem(s) so _process_file starts
+        # fresh. Deliberately filtered to non-terminal statuses only
+        # ("pending", "processing", "manual_review") — a file can have
+        # several historical QueueItem rows (completed/failed/skipped/etc.
+        # from past scans) alongside a current active one; an unfiltered,
+        # unordered .first() could return a stale terminal row instead of
+        # the live one, leaving the actual active item in place.
+        # _process_file's own "in_progress" check (scanner.py) would then
+        # find that surviving active item and silently skip creating a
+        # new one — the language override gets saved to the DB, but the
+        # reprocess that's supposed to actually apply it never runs, with
+        # no error shown anywhere.
+        #
+        # Bulk-deletes every matching row rather than just one,
+        # defensively — existing "don't double-queue" guards elsewhere
+        # should mean there's never genuinely more than one, but this
+        # guarantees the reprocess below can't be blocked by any
+        # leftover active row regardless. Deliberately does NOT touch
+        # completed/failed/cancelled/skipped/dry_run rows — those are
+        # real historical records and should stay exactly as they are.
+        db.query(QueueItem).filter(
+            QueueItem.file_id == file_id,
+            QueueItem.status.in_(["pending", "processing", "manual_review"]),
+        ).delete(synchronize_session=False)
         db.flush()
 
         try:

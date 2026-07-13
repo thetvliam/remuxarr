@@ -253,34 +253,39 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.delete(media)
 
 
-def _clear_stale_skip_record(db: Session, file_id: int) -> None:
+def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, ...]) -> None:
     """
-    Delete any existing "skipped" QueueItem for this file — call this
-    right before creating a genuinely new pending or manual_review record
-    for the same file.
+    Delete any existing QueueItem(s) for this file matching the given
+    as-of-this-scan statuses — call this right before creating a
+    genuinely new record with a DIFFERENT status for the same file.
 
-    A "skipped" record's entire meaning is "as of THIS scan, nothing
-    needed to happen" — that meaning becomes actively false, not just
-    stale, the moment a later scan decides the file needs queuing or
-    manual review instead (e.g. after a settings change). Without this,
-    the old "skipped" record just sits there forever alongside the new,
-    genuine one, so the same file ends up visibly listed under both
-    Skipped and Success/Failed at once in the History panel — confirmed
-    directly: the Queue and Manual review branches below only ever
-    checked for an existing record of their OWN status (to avoid
-    duplicating a genuinely-still-skipped or already-flagged file), never
-    for a stale one left over from a different status entirely.
+    "skipped" and "manual_review" share the same defining trait: each
+    one's entire meaning is "as of THIS scan, here's the situation,"
+    not a genuine historical event — that meaning becomes actively
+    false, not just stale, the moment a LATER scan decides differently
+    for the same file (e.g. after a settings change, or — for
+    manual_review specifically — the underlying condition resolving
+    itself via a full rescan or webhook re-trigger rather than the
+    dedicated Approve/Resolve endpoints, which is the one path that
+    already updates things correctly). Without this, the old record
+    just sits there forever alongside the new, genuine one, so the same
+    file ends up visibly listed under two tabs in the History panel at
+    once.
 
-    Deliberately does NOT do the reverse (clearing a completed/failed/
-    manual_review record when a file later becomes skipped) — those
-    represent real, historical events that actually happened and should
-    stay in history regardless of the file's current state; only a
-    "skipped" record's claim of "nothing happened" can become false out
-    from under it like this.
+    This function originally only ever cleared "skipped" records — an
+    independent code review caught that manual_review has the exact
+    same character and was missing the same treatment, a gap in my own
+    original scoping of this fix, not a separate, unrelated bug.
+
+    Deliberately does NOT apply to completed/failed/cancelled/dry_run —
+    those represent real, historical events that actually happened and
+    should stay in history regardless of the file's current state; only
+    "skipped" and "manual_review" can have their entire claim become
+    false out from under them like this.
     """
     db.query(QueueItem).filter(
         QueueItem.file_id == file_id,
-        QueueItem.status  == "skipped",
+        QueueItem.status.in_(statuses),
     ).delete(synchronize_session=False)
 
 
@@ -588,7 +593,7 @@ def _process_file(
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:
         media_file.status = "manual_review"
-        _clear_stale_skip_record(db, media_file.id)
+        _clear_stale_status_records(db, media_file.id, ("skipped",))
 
         # Only create one manual-review item per file
         already = db.query(QueueItem).filter(
@@ -668,6 +673,7 @@ def _process_file(
     if not decision.should_process:
         media_file.status = "skipped"
         stats.skipped += 1
+        _clear_stale_status_records(db, media_file.id, ("manual_review",))
 
         # Create or update a skipped QueueItem so the file is visible in
         # the History panel with the reason it needed no changes.
@@ -709,7 +715,7 @@ def _process_file(
         db.commit()
         return
 
-    _clear_stale_skip_record(db, media_file.id)
+    _clear_stale_status_records(db, media_file.id, ("skipped", "manual_review"))
     media_file.status = "queued"
 
     qi = QueueItem(

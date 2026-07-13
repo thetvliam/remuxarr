@@ -244,23 +244,40 @@ def update_one(key: str, body: SettingValue, db: Session = Depends(get_db)):
 def clear_database(db: Session = Depends(get_db)):
     """
     Wipe all scanned-file data — media files, tracks, queue items, planned
-    actions, history, and AC3 forge jobs — while leaving app_settings
+    actions, history, AC3 forge jobs, the Plex analyze backlog, and both
+    audio/subtitle language review flags — while leaving app_settings
     (scan paths, language preferences, dry-run mode, etc.) untouched.
 
     After this runs, the next scan treats every file on disk as brand new,
     exactly like a first-run baseline scan.
+
+    PlexAnalyzeBacklog, AudioLanguageFlag, and SubtitleLanguageFlag are
+    included explicitly, not implicitly — SQLite's foreign keys aren't
+    enforced here (no PRAGMA foreign_keys=ON), so nothing cascades
+    automatically. Without deleting them here too, their rows would
+    survive this wipe with a now-stale file_id — and since IDs get
+    reused once media_files is cleared, a later scan could hand that
+    same id to a completely unrelated file, silently reattaching an old
+    flag to new content. This is the exact same non-cascading-tables
+    problem _delete_media_file_and_related (scanner.py) was hardened
+    against — that fix just never made it to this separate, independent
+    deletion path until now.
     """
     from app.database.models import (
-        Ac3ForgeJob, MediaFile, PlannedAction, QueueItem, Track,
+        Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction,
+        PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track,
     )
 
     # Delete in FK-dependency order — children before parents.
     deleted = {
-        "planned_actions": db.query(PlannedAction).delete(),
-        "queue_items":     db.query(QueueItem).delete(),
-        "forge_jobs":      db.query(Ac3ForgeJob).delete(),
-        "tracks":          db.query(Track).delete(),
-        "media_files":     db.query(MediaFile).delete(),
+        "planned_actions":      db.query(PlannedAction).delete(),
+        "queue_items":          db.query(QueueItem).delete(),
+        "forge_jobs":           db.query(Ac3ForgeJob).delete(),
+        "plex_analyze_backlog": db.query(PlexAnalyzeBacklog).delete(),
+        "audio_language_flags": db.query(AudioLanguageFlag).delete(),
+        "subtitle_language_flags": db.query(SubtitleLanguageFlag).delete(),
+        "tracks":               db.query(Track).delete(),
+        "media_files":          db.query(MediaFile).delete(),
     }
     db.commit()
 

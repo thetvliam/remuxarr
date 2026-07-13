@@ -888,7 +888,7 @@ def _load_job_data(job_id: int):
 
         return (
             {"id": job.id, "is_dry_run": job.is_dry_run},
-            {"path": media.path, "filename": media.filename},
+            {"path": media.path, "filename": media.filename, "size": media.size},
             tracks,
             app_cfg,
             decision,

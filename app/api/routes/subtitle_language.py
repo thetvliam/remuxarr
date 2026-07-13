@@ -96,10 +96,12 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
     file_ids, persist it as an override, and reprocess each file
     immediately so the correction actually gets written.
 
-    Mirrors /api/audio-language-review/apply exactly — see that
-    endpoint's docstring for the full rationale on why the override
-    commit is separate from the reprocess attempt, and why force_probe
-    is required here.
+    Mirrors /api/audio-language-review/apply exactly, including the fix
+    for its status-filtered active-item delete — see that endpoint's
+    docstring and its delete's own comment for the full rationale on
+    both why the override commit is separate from the reprocess
+    attempt, and why an unfiltered "any status" QueueItem lookup here
+    was a real, silent bug rather than a harmless simplification.
     """
     lang = body.target_language.strip().lower()
     if not lang:
@@ -135,13 +137,14 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         media.subtitle_language_ignored = False
         db.commit()
 
-        existing_item = (
-            db.query(QueueItem)
-            .filter(QueueItem.file_id == file_id)
-            .first()
-        )
-        if existing_item:
-            db.delete(existing_item)
+        # Clear any existing ACTIVE QueueItem(s) — see
+        # audio_language.py's apply_language for the full rationale on
+        # why this must be status-filtered rather than an unfiltered
+        # .first().
+        db.query(QueueItem).filter(
+            QueueItem.file_id == file_id,
+            QueueItem.status.in_(["pending", "processing", "manual_review"]),
+        ).delete(synchronize_session=False)
         db.flush()
 
         try:
