@@ -253,6 +253,37 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.delete(media)
 
 
+def _clear_stale_skip_record(db: Session, file_id: int) -> None:
+    """
+    Delete any existing "skipped" QueueItem for this file — call this
+    right before creating a genuinely new pending or manual_review record
+    for the same file.
+
+    A "skipped" record's entire meaning is "as of THIS scan, nothing
+    needed to happen" — that meaning becomes actively false, not just
+    stale, the moment a later scan decides the file needs queuing or
+    manual review instead (e.g. after a settings change). Without this,
+    the old "skipped" record just sits there forever alongside the new,
+    genuine one, so the same file ends up visibly listed under both
+    Skipped and Success/Failed at once in the History panel — confirmed
+    directly: the Queue and Manual review branches below only ever
+    checked for an existing record of their OWN status (to avoid
+    duplicating a genuinely-still-skipped or already-flagged file), never
+    for a stale one left over from a different status entirely.
+
+    Deliberately does NOT do the reverse (clearing a completed/failed/
+    manual_review record when a file later becomes skipped) — those
+    represent real, historical events that actually happened and should
+    stay in history regardless of the file's current state; only a
+    "skipped" record's claim of "nothing happened" can become false out
+    from under it like this.
+    """
+    db.query(QueueItem).filter(
+        QueueItem.file_id == file_id,
+        QueueItem.status  == "skipped",
+    ).delete(synchronize_session=False)
+
+
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     """
     Remove MediaFile rows (and all related rows) for files that no longer
@@ -557,6 +588,7 @@ def _process_file(
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:
         media_file.status = "manual_review"
+        _clear_stale_skip_record(db, media_file.id)
 
         # Only create one manual-review item per file
         already = db.query(QueueItem).filter(
@@ -677,6 +709,7 @@ def _process_file(
         db.commit()
         return
 
+    _clear_stale_skip_record(db, media_file.id)
     media_file.status = "queued"
 
     qi = QueueItem(
