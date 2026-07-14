@@ -128,6 +128,26 @@ class ProcessingDecision:
     # motivated that case for audio in the first place).
     subtitle_language_mismatch: dict | None = None
 
+    # True specifically when the SOURCE file was already MP4 and already
+    # faststart-optimised (i.e. has_faststart was True when this decision
+    # was computed) — False whenever that isn't the case, including when
+    # it isn't known or doesn't apply (non-MP4 source, probe failed,
+    # etc), since "unknown" and "genuinely false" both correctly mean the
+    # same thing here: don't force the flag. Exists so
+    # build_ffmpeg_command can preserve an already-faststart source's optimisation on ANY
+    # remux, not just ones that specifically needed to add faststart or
+    # convert containers. Confirmed directly: a plain FFmpeg remux that
+    # doesn't explicitly include -movflags +faststart silently rebuilds
+    # the container with the moov atom at the end regardless of where it
+    # was in the source — even for a pure, lossless stream-copy with no
+    # video or audio re-encoding involved. Without this, any unrelated
+    # remux (a language correction, a track drop, anything) on an
+    # already-optimised MP4 would quietly undo that optimisation as a
+    # side effect, only for a later scan to "discover" faststart is
+    # missing again and re-add it — not a decision-logic bug, a real,
+    # silent regression in the file itself.
+    source_already_faststart: bool = False
+
 
 # ── Main function ──────────────────────────────────────────────────────────────
 
@@ -845,6 +865,7 @@ def analyze_file(
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             subtitle_language_mismatch=subtitle_language_mismatch,
+            source_already_faststart=has_faststart is True,
         )
 
     # ── Build human-readable reason ────────────────────────────────────────
@@ -880,6 +901,7 @@ def analyze_file(
         output_extension=output_extension,
         audio_language_mismatch=audio_language_mismatch,
         subtitle_language_mismatch=subtitle_language_mismatch,
+        source_already_faststart=has_faststart is True,
     )
 
 

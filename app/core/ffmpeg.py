@@ -175,7 +175,7 @@ def build_ffmpeg_command(
     )
     cmd += ["-f", out_fmt]
 
-    # Apply +faststart when the output is MP4 — this covers two cases:
+    # Apply +faststart when the output is MP4 — this covers three cases:
     #   1. Container conversion (MKV → MP4): always web-optimise the new
     #      file, regardless of add_faststart_to_mp4 — a genuinely new MP4
     #      should always be web-optimised.
@@ -183,6 +183,17 @@ def build_ffmpeg_command(
     #      missing it. Gated on decision actually having generated that
     #      action, which decision.py only does when add_faststart_to_mp4
     #      is enabled AND the existing file genuinely needs it.
+    #   3. source_already_faststart: the source was ALREADY MP4 and
+    #      ALREADY faststart-optimised — preserve that on ANY remux,
+    #      regardless of why this remux is happening (a language
+    #      correction, a track drop, anything). Confirmed directly: a
+    #      plain FFmpeg remux that doesn't explicitly include this flag
+    #      silently rebuilds the container with the moov atom at the
+    #      end, even for a pure, lossless stream-copy with nothing
+    #      re-encoded — so without this case, any unrelated remux would
+    #      quietly undo an already-correct file's optimisation as a side
+    #      effect, only for a later scan to "discover" it's missing
+    #      again and have to re-add it.
     #
     # Previously this only checked target_container == "mp4", which is
     # true for every MP4 output regardless of the setting's value or
@@ -192,7 +203,11 @@ def build_ffmpeg_command(
     # language-tag fix) on files that already had it correctly disabled.
     has_container_conversion = any(a.action_type == "change_container" for a in decision.actions)
     has_faststart_action     = any(a.action_type == "add_faststart"    for a in decision.actions)
-    if decision.target_container == "mp4" and (has_container_conversion or has_faststart_action):
+    if decision.target_container == "mp4" and (
+        has_container_conversion
+        or has_faststart_action
+        or decision.source_already_faststart
+    ):
         cmd += ["-movflags", "+faststart"]
 
     cmd.append(output_path)

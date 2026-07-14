@@ -183,6 +183,50 @@ def test_applied_override_does_not_reapply_once_already_correct(settings):
     )
 
 
+def test_already_faststart_source_preserves_flag_on_unrelated_remux(settings):
+    """
+    Reproduces a real, reported bug: after correcting a language tag
+    through Audio Language Review, a subsequent full scan flagged the
+    SAME file as needing "Add fast start" — even though it was already
+    faststart-optimised before the correction ran.
+
+    Root cause wasn't in decision-making at all: a plain FFmpeg remux
+    that doesn't explicitly include -movflags +faststart silently
+    rebuilds the container with the moov atom at the end, regardless of
+    where it was in the source — confirmed directly, empirically,
+    against real FFmpeg output, even for a pure lossless stream-copy
+    with nothing re-encoded. So a language-only correction (which
+    legitimately has nothing else to do, and correctly never generates
+    its own add_faststart action) would silently undo an
+    already-correct file's optimisation as a side effect — only for a
+    LATER scan to genuinely, correctly detect faststart is now missing
+    and re-add it. Not a decision-logic bug on its own; a real
+    regression in the file produced by an earlier, unrelated job.
+
+    ProcessingDecision.source_already_faststart is what closes this —
+    build_ffmpeg_command must re-assert +faststart on ANY remux of a
+    source that already had it, not just ones that specifically needed
+    to add it or convert containers.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="jpn", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(), tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=True,  # the source already has it
+    )
+    assert decision.should_process is True
+    assert "Correct language tag" in decision.reason
+    assert not any(a.action_type == "add_faststart" for a in decision.actions), (
+        "This should need nothing NEW for faststart — the point is "
+        "preserving what's already there, not re-adding it as its own action."
+    )
+    assert decision.source_already_faststart is True
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # und_audio_threshold — the zero-value trap
 # ═══════════════════════════════════════════════════════════════════════════
