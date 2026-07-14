@@ -24,7 +24,7 @@ from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpe
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
-from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict
+from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr
 from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -845,7 +845,22 @@ def _claim_next() -> int | None:
 def _load_job_data(job_id: int):
     """
     Return (job_dict, file_dict, tracks, app_cfg, decision) or None.
-    Everything is plain Python — no ORM objects cross the thread boundary.
+    Everything RETURNED is plain Python — no ORM objects cross the thread
+    boundary. This function itself does have one deliberate side effect
+    before returning, though: it upserts/clears AudioLanguageFlag and
+    SubtitleLanguageFlag for the file, matching what the identical fresh
+    decision it just computed would have caused during a normal scan.
+
+    Without this, a file whose manual-review cause got resolved via
+    Approve (rather than being re-discovered by a normal scan) computed
+    the correct audio_language_mismatch/subtitle_language_mismatch the
+    whole time — right here, in this exact decision — but never actually
+    persisted it to either flag table until some LATER, separate scan
+    happened to re-evaluate the file from scratch. Reported directly:
+    files approved from manual review, whose jobs succeeded and
+    correctly logged the "audio language tag is likely wrong" warning,
+    didn't show up in Audio Language Review until an entirely separate
+    full scan ran afterward.
     """
     db = SessionLocal()
     try:
@@ -885,6 +900,9 @@ def _load_job_data(job_id: int):
             has_faststart=faststart,
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
+
+        _upsert_language_flags(db, media, decision)
+        db.commit()
 
         return (
             {"id": job.id, "is_dry_run": job.is_dry_run},
