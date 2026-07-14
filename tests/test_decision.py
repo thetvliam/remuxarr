@@ -147,6 +147,42 @@ def test_audio_language_override_resolves_mismatch(settings):
     assert decision.audio_language_mismatch is None
 
 
+def test_applied_override_does_not_reapply_once_already_correct(settings):
+    """
+    The test above already covers the override actually taking effect
+    the first time. This covers the OTHER half of its own docstring's
+    claim ("shouldn't keep nagging") that it never actually verified —
+    audio_language_mismatch being None only confirms the file stops
+    showing up in Audio Language Review, a different concern from
+    whether the file stops being queued for reprocessing at all.
+
+    Reproduces a real, reported bug: a file already corrected through
+    Audio Language Review kept showing "Correct language tag on 1
+    track" and getting reprocessed on every subsequent full scan,
+    forever — because the override pass never checked whether the
+    track's actual, current language already matched the override
+    before reapplying it. Confirmed directly from production logs
+    showing the exact same five files requeuing identically across two
+    separate full scans, with the actual FFmpeg command re-running an
+    already-successful language correction each time.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        # Track's language is ALREADY "eng" — simulating the file AFTER
+        # a previous, successful correction, not before one.
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(), tracks, settings,
+        audio_language_overrides={1: "eng"},
+    )
+    assert decision.should_process is False, (
+        "Override kept reapplying even though the track is already "
+        "correct — this is the exact reported 'requeues forever' bug."
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # und_audio_threshold — the zero-value trap
 # ═══════════════════════════════════════════════════════════════════════════

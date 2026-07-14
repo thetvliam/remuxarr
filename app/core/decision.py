@@ -752,6 +752,25 @@ def analyze_file(
         si = next(iter(und_flagged_subtitle))
         subtitle_language_mismatch = {"stream_index": si, "language": "und"}
 
+    # A persisted override (audio_language_overrides / subtitle_language_
+    # overrides) never expires or gets cleared once applied — it's meant
+    # to survive future re-scans, same as any other override in this
+    # file. That's correct and intentional right up until the correction
+    # has actually succeeded, at which point the track's REAL, current
+    # language (as read from the source file, via `tracks` — not
+    # anything derived from the override itself) genuinely already
+    # matches what the override says it should be. Both passes below
+    # need to check that before reapplying anything, or they can never
+    # tell the difference between "still needs correcting" and "already
+    # corrected, successfully, a while ago" — confirmed directly: a
+    # file that's already been through Audio Language Review keeps
+    # showing up as "Correct language tag on 1 track" on every future
+    # full scan, forever, even though the actual file is already right.
+    current_language_by_stream = {
+        t["stream_index"]: (t.get("language") or "und").strip().lower()
+        for t in tracks
+    }
+
     # ── Audio language override pass ─────────────────────────────────────────
     # Per-track, user-directed corrections from the Audio Language Review
     # section — distinct from the bulk pass above, which only ever touches
@@ -767,15 +786,17 @@ def analyze_file(
     if audio_language_overrides:
         dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
         for i, action in enumerate(actions):
+            override_lang = (audio_language_overrides.get(action.stream_index) or "").strip().lower()
             if (
                 action.track_type == "audio"
                 and action.stream_index in audio_language_overrides
                 and action.stream_index not in dropped_si
                 and action.action_type in ("copy_track", "transcode_track")
+                and current_language_by_stream.get(action.stream_index) != override_lang
             ):
                 actions[i] = dc_replace(
                     action,
-                    target_language=audio_language_overrides[action.stream_index],
+                    target_language=override_lang,
                 )
                 has_language_fix = True
                 override_fixed_indices.add(action.stream_index)
@@ -794,15 +815,17 @@ def analyze_file(
     if subtitle_language_overrides:
         dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
         for i, action in enumerate(actions):
+            override_lang = (subtitle_language_overrides.get(action.stream_index) or "").strip().lower()
             if (
                 action.track_type == "subtitle"
                 and action.stream_index in subtitle_language_overrides
                 and action.stream_index not in dropped_si
                 and action.action_type in ("copy_track", "transcode_track")
+                and current_language_by_stream.get(action.stream_index) != override_lang
             ):
                 actions[i] = dc_replace(
                     action,
-                    target_language=subtitle_language_overrides[action.stream_index],
+                    target_language=override_lang,
                 )
                 has_language_fix = True
                 override_fixed_indices.add(action.stream_index)
