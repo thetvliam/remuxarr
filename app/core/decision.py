@@ -645,11 +645,21 @@ def analyze_file(
     # has_faststart=False  → file confirmed missing fast-start → add it
     # has_faststart=True   → already optimised → nothing to do
     # has_faststart=None   → unknown (non-MP4, probe failed, setting off)
+    #
+    # has_faststart is only ever non-None when the SOURCE was already MP4
+    # (see the "Detect fast-start" block that computes it, in scanner.py /
+    # worker.py), which makes current_container == "mp4" below always true
+    # whenever this whole expression could possibly matter — and, since
+    # target_container only ever differs from current_container when
+    # converting TO "mp4" (never away from it — there's no code path that
+    # ever assigns anything else), checking target_container == "mp4" here
+    # was always implied by current_container == "mp4" already being true.
+    # Removed as a no-op condition, not a behavior change — confirmed by
+    # tracing every assignment site to target_container in this file.
     needs_faststart = (
         add_faststart
         and has_faststart is False        # confirmed missing
         and current_container == "mp4"    # existing MP4 only
-        and target_container == "mp4"     # not being converted away
     )
     if needs_faststart:
         actions.append(Action(
@@ -814,64 +824,21 @@ def analyze_file(
         for t in tracks
     }
 
-    # ── Audio language override pass ─────────────────────────────────────────
-    # Per-track, user-directed corrections from the Audio Language Review
-    # section — distinct from the bulk pass above, which only ever touches
-    # "und" tracks. This handles the opposite case: a track that already
-    # has a DEFINED but WRONG language (e.g. an English show whose only
-    # audio track is mistagged "dut"). Persisted on
-    # MediaFile.audio_language_overrides, keyed by stream_index.
-    #
-    # Only ever applies to a track that's still present as copy/transcode
-    # at this point — if the override's target track ended up dropped for
-    # some other reason, there's nothing to relabel and this is a no-op
-    # for it, which is the correct, safe outcome rather than an error.
-    if audio_language_overrides:
-        dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
-        for i, action in enumerate(actions):
-            override_lang = (audio_language_overrides.get(action.stream_index) or "").strip().lower()
-            if (
-                action.track_type == "audio"
-                and action.stream_index in audio_language_overrides
-                and action.stream_index not in dropped_si
-                and action.action_type in ("copy_track", "transcode_track")
-                and current_language_by_stream.get(action.stream_index) != override_lang
-            ):
-                actions[i] = dc_replace(
-                    action,
-                    target_language=override_lang,
-                )
-                has_language_fix = True
-                override_fixed_indices.add(action.stream_index)
-
-    # ── Subtitle language override pass ───────────────────────────────────────
-    # Subtitle counterpart to the pass above — corrections from the
-    # Subtitle Language Review section, persisted on
-    # MediaFile.subtitle_language_overrides. Unlike the audio version this
-    # only ever resolves an undefined tag (there's no defined-but-wrong
-    # subtitle case), but the mechanics are otherwise identical.
-    #
-    # The action_type check below already naturally excludes a track that
-    # got extracted to an external .srt (that's an extract_subtitle
-    # action, not copy_track/transcode_track) — no separate check needed
-    # for that case the way dropped_si is handled explicitly.
-    if subtitle_language_overrides:
-        dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
-        for i, action in enumerate(actions):
-            override_lang = (subtitle_language_overrides.get(action.stream_index) or "").strip().lower()
-            if (
-                action.track_type == "subtitle"
-                and action.stream_index in subtitle_language_overrides
-                and action.stream_index not in dropped_si
-                and action.action_type in ("copy_track", "transcode_track")
-                and current_language_by_stream.get(action.stream_index) != override_lang
-            ):
-                actions[i] = dc_replace(
-                    action,
-                    target_language=override_lang,
-                )
-                has_language_fix = True
-                override_fixed_indices.add(action.stream_index)
+    # ── Audio & subtitle language override passes ────────────────────────────
+    # Per-track, user-directed corrections from the Audio/Subtitle Language
+    # Review sections. Shared implementation in
+    # _apply_language_override_pass (below analyze_file) — was two
+    # separate, structurally identical blocks; see that function's
+    # docstring for the full rationale, including why comparing against
+    # each track's current, real language matters here.
+    override_fixed_indices.update(_apply_language_override_pass(
+        actions, "audio", audio_language_overrides, current_language_by_stream,
+    ))
+    override_fixed_indices.update(_apply_language_override_pass(
+        actions, "subtitle", subtitle_language_overrides, current_language_by_stream,
+    ))
+    if override_fixed_indices:
+        has_language_fix = True
 
     # ── Is there anything to do? ───────────────────────────────────────────
     has_drops       = any(a.action_type == "drop_track" for a in actions)
@@ -929,6 +896,73 @@ def analyze_file(
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
+
+def _apply_language_override_pass(
+    actions: list[Action],
+    track_type: str,
+    overrides: dict[int, str] | None,
+    current_language_by_stream: dict[int, str],
+) -> set[int]:
+    """
+    Shared implementation for the audio and subtitle language override
+    passes in analyze_file — previously two separate, structurally
+    identical blocks (one built by directly mirroring the other),
+    differing only in which track_type/overrides dict to consult.
+
+    Per-track, user-directed corrections from the Audio/Subtitle
+    Language Review sections — distinct from the bulk fix_undefined_
+    language pass, which only ever touches "und" tracks. Audio
+    additionally handles the DEFINED-but-WRONG case (e.g. an English
+    show whose only audio track is mistagged "dut"); subtitle only ever
+    resolves an undefined tag — see subtitle_language_mismatch's own
+    docstring on ProcessingDecision for why there's no defined-but-wrong
+    subtitle case the way there is for audio.
+
+    Only ever applies to a track that's still present as copy/transcode
+    at this point — if the override's target track ended up dropped for
+    some other reason, there's nothing to relabel and this is a no-op
+    for it, which is the correct, safe outcome rather than an error.
+    For subtitles specifically, the action_type check also naturally
+    excludes a track that got extracted to an external .srt (that's an
+    extract_subtitle action, not copy_track/transcode_track) — no
+    separate check needed for that case the way dropped_si is handled
+    explicitly.
+
+    Compares the override against each track's real, current language
+    (current_language_by_stream, derived from the source file via
+    `tracks` — never from the override itself) and skips reapplying it
+    once they already match. An override persists indefinitely once
+    set, by design, meant to survive future re-scans — but without this
+    check it would keep reapplying itself, and keep counting toward
+    has_language_fix, forever, even long after the correction had
+    already succeeded. Confirmed as a real, reported bug: a file
+    already corrected through Audio Language Review kept showing
+    "Correct language tag on 1 track" and getting reprocessed on every
+    subsequent full scan.
+
+    Mutates `actions` in place, matching every other pass in
+    analyze_file. Returns the set of stream_indices actually relabeled,
+    for the caller to fold into has_language_fix / override_fixed_indices.
+    """
+    fixed_indices: set[int] = set()
+    if not overrides:
+        return fixed_indices
+
+    dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
+    for i, action in enumerate(actions):
+        override_lang = (overrides.get(action.stream_index) or "").strip().lower()
+        if (
+            action.track_type == track_type
+            and action.stream_index in overrides
+            and action.stream_index not in dropped_si
+            and action.action_type in ("copy_track", "transcode_track")
+            and current_language_by_stream.get(action.stream_index) != override_lang
+        ):
+            actions[i] = dc_replace(action, target_language=override_lang)
+            fixed_indices.add(action.stream_index)
+
+    return fixed_indices
+
 
 def _video_audio_mp4_compatible(
     video_tracks: list[dict],
