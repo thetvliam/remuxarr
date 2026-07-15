@@ -240,23 +240,6 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.post("/{item_id}/retry")
-def retry_item(item_id: int, db: Session = Depends(get_db)):
-    """
-    Re-evaluate and re-queue a failed or cancelled item, or — for a dry-run
-    preview — queue it for REAL processing. The file is re-probed first
-    (force_probe=True) so the retry reflects the current code, settings,
-    and on-disk state rather than repeating a stale, possibly-broken plan.
-    """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status not in ("failed", "cancelled", "dry_run", "success", "skipped"):
-        raise HTTPException(400, "Only failed, cancelled, dry-run, success, or skipped items can be retried")
-
-    return _retry_with_reprobe(db, item)
-
-
 @router.post("/retry-all")
 def retry_all_failed(db: Session = Depends(get_db)):
     """
@@ -539,27 +522,45 @@ def resolve_subtitles_bulk(db: Session = Depends(get_db)):
 @router.post("/{item_id}/approve")
 def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     """
-    Approve a manual-review item — moves it into the normal queue.
+    Approve a manual-review item.
+
+    Re-runs the decision engine immediately, mirroring resolve_subtitles'
+    structure exactly (see that endpoint for the fuller explanation of
+    why re-running rather than just flipping status matters):
+
+      • If the new decision still requires manual review (e.g. a
+        different gate — most plausibly the image-subtitle one — also
+        independently applies to this file), the item stays in
+        manual_review with an updated reason.
+      • If the new decision needs no changes at all, the item is marked
+        "skipped".
+      • Otherwise it moves to "pending" with freshly-generated planned
+        actions.
+
+    Previously this only ever flipped status to "pending" without
+    re-running anything — processing itself was never affected, since
+    the worker always recomputes its own decision fresh at job-pickup
+    time regardless of what's stored here, but the reason text and
+    Planned Actions shown in the UI stayed stale (still describing "why
+    this needs manual review") for however long the item sat in the
+    queue before the worker actually got to it.
 
     Also persists an exemption when this item's review was caused
     specifically by the undefined-audio-count threshold gate
     (decision.py) — that gate has no per-track override the way the
     image-subtitle gate does (subtitle_overrides, resolved through the
     separate resolve_subtitles endpoint instead of this generic one), so
-    without this, the worker's own fresh analyze_file() call at
-    job-pickup time would re-trigger the identical gate every single
-    time, since a track's language tag never changes on its own —
-    confirmed directly: this was silently producing a no-op "retry"
-    whose decision was still just [flag_manual_review], not the normal
-    processing actions, even after being approved here.
+    without this, the fresh analyze_file() call below would immediately
+    re-trigger the identical gate, since a track's language tag never
+    changes on its own. This has to be set BEFORE the fresh decision is
+    computed — the whole point is that analyze_file() needs to already
+    see it acknowledged to correctly resolve past the gate.
 
     review_subtitles being null is the existing, established signal
     that this item's review came from the threshold gate rather than
     the image-subtitle one — confirmed via resolve_subtitles_bulk's own
     docstring, which notes the threshold gate never populates that
-    field. Only setting the flag in that specific case avoids touching
-    anything about the image-subtitle gate's own, already-working
-    resolution flow.
+    field.
     """
     item = db.get(QueueItem, item_id)
     if not item:
@@ -567,18 +568,73 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     if item.status != "manual_review":
         raise HTTPException(400, "Item is not in manual review")
 
-    item.status     = "pending"
+    media = item.media_file
+    if not media:
+        raise HTTPException(404, "Associated media file not found")
+
+    if item.review_subtitles is None:
+        media.und_audio_threshold_acknowledged = True
+
+    # ── Re-run the decision engine now that the exemption is in place ───────
+    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+    tracks = [_track_to_dict(t) for t in tracks_raw]
+
+    app_cfg   = get_app_settings(db)
+    file_info = {"path": media.path, "container": media.container,
+                 "video_codec": media.video_codec,
+                 "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
+    forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
+    decision  = analyze_file(
+        file_info, tracks, app_cfg,
+        subtitle_overrides=_load_subtitle_overrides(media),
+        audio_language_overrides=_load_audio_language_overrides(media),
+        subtitle_language_overrides=_load_subtitle_language_overrides(media),
+        forged_ac3_audio_index=forged_ac3_audio_index,
+    )
+
+    if decision.is_manual_review:
+        # A different gate independently applies too — stay in review.
+        item.reason = decision.reason
+        item.review_subtitles = (
+            json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
+        )
+        db.commit()
+        return _serialize(item, include_actions=True)
+
+    if not decision.should_process:
+        item.status = "skipped"
+        item.reason = decision.reason
+        item.review_subtitles = None
+        media.status = "skipped"
+        db.commit()
+        return _serialize(item, include_actions=True)
+
+    # Changes are needed — move to the normal queue with fresh planned actions
+    db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
+
+    item.status = "pending"
+    item.reason = decision.reason
+    item.review_subtitles = None
     # The item's is_dry_run flag was set when the SCAN originally created it,
     # which may have been while Dry Run was enabled. Approval happens later,
     # potentially after the user has toggled Dry Run off — processing should
     # honor the CURRENT setting, not the stale one captured at scan time.
-    item.is_dry_run  = _current_dry_run_mode(db)
-    if item.media_file:
-        item.media_file.status = "queued"
-        if item.review_subtitles is None:
-            item.media_file.und_audio_threshold_acknowledged = True
+    item.is_dry_run = _current_dry_run_mode(db)
+    media.status = "queued"
+
+    db.flush()
+    for i, action in enumerate(decision.actions):
+        db.add(PlannedAction(
+            queue_item_id    = item.id,
+            order            = i,
+            action_type      = action.action_type,
+            description      = action.description,
+            track_type       = action.track_type,
+            stream_index     = action.stream_index,
+            target_language  = getattr(action, "target_language", None),
+        ))
     db.commit()
-    return {"success": True}
+    return _serialize(item, include_actions=True)
 
 
 @router.post("/{item_id}/prioritize")

@@ -53,6 +53,12 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
     const skip = async (id) => {
         await fetch(`${api}/api/queue/${id}`, { method: "DELETE" }).catch(() => {});
         onRefresh();
+        // fetchAll (via onRefresh) is blind to useHistoryData's separate
+        // refresh mechanism — DELETE here produces a real, terminal
+        // "cancelled" status, which the Failed tab's own count already
+        // includes, so without this the History panel goes stale until
+        // something else happens to trigger a refresh.
+        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
     };
     const resolveSubtitle = async (id, streamIndex, choice) => {
         await fetch(`${api}/api/queue/${id}/resolve-subtitles`, {
@@ -61,6 +67,10 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
             body: JSON.stringify({ overrides: { [streamIndex]: choice } }),
         }).catch(() => {});
         onRefresh();
+        // Same reasoning as skip() above — resolving can move the item to
+        // "skipped" or "pending" (later completed/failed), any of which
+        // the History panel needs to know about.
+        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
     };
 
     return (

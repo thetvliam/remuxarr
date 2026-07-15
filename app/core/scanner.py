@@ -289,6 +289,71 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     ).delete(synchronize_session=False)
 
 
+def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None:
+    """
+    Upsert or clear AudioLanguageFlag/SubtitleLanguageFlag for this file
+    based on a freshly-computed decision's audio_language_mismatch /
+    subtitle_language_mismatch fields.
+
+    This was originally inline within _process_file, called only during
+    a scan. Extracted into a shared helper specifically so worker.py can
+    also call it right after computing its own fresh decision at
+    job-pickup time (_load_job_data) — without that, a file whose
+    manual-review cause gets resolved via Approve (rather than being
+    re-discovered by a normal scan) would compute the correct
+    audio_language_mismatch/subtitle_language_mismatch the whole time,
+    at every single point along the way (approval, worker pickup), but
+    never actually persist it to either flag table until some LATER,
+    separate scan happened to re-evaluate the file from scratch —
+    reported directly: files approved from manual review, whose jobs
+    succeeded and correctly logged the "audio language tag is likely
+    wrong" warning, didn't show up in Audio Language Review until an
+    entirely separate full scan ran afterward.
+
+    Never applies to a file the user has explicitly confirmed is correct
+    via Ignore, and never blocks processing either way — this is purely
+    bookkeeping for the Audio/Subtitle Language Review sections.
+    """
+    existing_flag = (
+        db.query(AudioLanguageFlag)
+        .filter(AudioLanguageFlag.file_id == media_file.id)
+        .first()
+    )
+    if decision.audio_language_mismatch and not media_file.audio_language_ignored:
+        mismatch = decision.audio_language_mismatch
+        if existing_flag:
+            existing_flag.stream_index      = mismatch["stream_index"]
+            existing_flag.detected_language = mismatch["language"]
+        else:
+            db.add(AudioLanguageFlag(
+                file_id=media_file.id,
+                stream_index=mismatch["stream_index"],
+                detected_language=mismatch["language"],
+            ))
+    elif existing_flag:
+        # No longer mismatched (or now ignored) — clear any stale flag.
+        db.delete(existing_flag)
+
+    existing_sub_flag = (
+        db.query(SubtitleLanguageFlag)
+        .filter(SubtitleLanguageFlag.file_id == media_file.id)
+        .first()
+    )
+    if decision.subtitle_language_mismatch and not media_file.subtitle_language_ignored:
+        mismatch = decision.subtitle_language_mismatch
+        if existing_sub_flag:
+            existing_sub_flag.stream_index      = mismatch["stream_index"]
+            existing_sub_flag.detected_language = mismatch["language"]
+        else:
+            db.add(SubtitleLanguageFlag(
+                file_id=media_file.id,
+                stream_index=mismatch["stream_index"],
+                detected_language=mismatch["language"],
+            ))
+    elif existing_sub_flag:
+        db.delete(existing_sub_flag)
+
+
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     """
     Remove MediaFile rows (and all related rows) for files that no longer
@@ -627,47 +692,7 @@ def _process_file(
     # path). Never applies to a file the user has explicitly confirmed is
     # correct via Ignore, and never blocks processing either way — this is
     # purely bookkeeping for the Audio Language Review section.
-    existing_flag = (
-        db.query(AudioLanguageFlag)
-        .filter(AudioLanguageFlag.file_id == media_file.id)
-        .first()
-    )
-    if decision.audio_language_mismatch and not media_file.audio_language_ignored:
-        mismatch = decision.audio_language_mismatch
-        if existing_flag:
-            existing_flag.stream_index      = mismatch["stream_index"]
-            existing_flag.detected_language = mismatch["language"]
-        else:
-            db.add(AudioLanguageFlag(
-                file_id=media_file.id,
-                stream_index=mismatch["stream_index"],
-                detected_language=mismatch["language"],
-            ))
-    elif existing_flag:
-        # No longer mismatched (or now ignored) — clear any stale flag.
-        db.delete(existing_flag)
-
-    # ── Subtitle language mismatch flag ───────────────────────────────────────
-    # Subtitle counterpart to the block above — identical mechanics, see
-    # its comments for the full rationale.
-    existing_sub_flag = (
-        db.query(SubtitleLanguageFlag)
-        .filter(SubtitleLanguageFlag.file_id == media_file.id)
-        .first()
-    )
-    if decision.subtitle_language_mismatch and not media_file.subtitle_language_ignored:
-        mismatch = decision.subtitle_language_mismatch
-        if existing_sub_flag:
-            existing_sub_flag.stream_index      = mismatch["stream_index"]
-            existing_sub_flag.detected_language = mismatch["language"]
-        else:
-            db.add(SubtitleLanguageFlag(
-                file_id=media_file.id,
-                stream_index=mismatch["stream_index"],
-                detected_language=mismatch["language"],
-            ))
-    elif existing_sub_flag:
-        db.delete(existing_sub_flag)
+    _upsert_language_flags(db, media_file, decision)
 
     # ── Skip ───────────────────────────────────────────────────────────────
     if not decision.should_process:

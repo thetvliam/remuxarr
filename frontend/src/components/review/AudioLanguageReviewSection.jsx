@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { C } from "../../constants";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
-import { useAudioLanguageReviewData } from "../../hooks/useAudioLanguageReviewData";
+import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * AUDIO LANGUAGE REVIEW SECTION
@@ -26,8 +26,14 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         return () => clearTimeout(t);
     }, [search]);
 
-    const { items, total, loading, hasMore, loadMore } = useAudioLanguageReviewData(
-        api, refreshKey, debouncedSearch,
+    // 100 (vs the shared hook's default of 50) deliberately — the primary
+    // workflow here is "search a show name, select all matching episodes."
+    // A long-running show can have 200+ episodes; a bigger page means the
+    // common case fits in a single fetch, so "select all currently loaded"
+    // behaves the same as "select every matching result" without needing
+    // separate server-side select-all-by-search logic.
+    const { items, total, loading, hasMore, loadMore } = usePaginatedFetch(
+        api, "/api/audio-language-review/", refreshKey, debouncedSearch, 100,
     );
 
     // Clear selection whenever the underlying list changes shape (new

@@ -147,6 +147,86 @@ def test_audio_language_override_resolves_mismatch(settings):
     assert decision.audio_language_mismatch is None
 
 
+def test_applied_override_does_not_reapply_once_already_correct(settings):
+    """
+    The test above already covers the override actually taking effect
+    the first time. This covers the OTHER half of its own docstring's
+    claim ("shouldn't keep nagging") that it never actually verified —
+    audio_language_mismatch being None only confirms the file stops
+    showing up in Audio Language Review, a different concern from
+    whether the file stops being queued for reprocessing at all.
+
+    Reproduces a real, reported bug: a file already corrected through
+    Audio Language Review kept showing "Correct language tag on 1
+    track" and getting reprocessed on every subsequent full scan,
+    forever — because the override pass never checked whether the
+    track's actual, current language already matched the override
+    before reapplying it. Confirmed directly from production logs
+    showing the exact same five files requeuing identically across two
+    separate full scans, with the actual FFmpeg command re-running an
+    already-successful language correction each time.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        # Track's language is ALREADY "eng" — simulating the file AFTER
+        # a previous, successful correction, not before one.
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(), tracks, settings,
+        audio_language_overrides={1: "eng"},
+    )
+    assert decision.should_process is False, (
+        "Override kept reapplying even though the track is already "
+        "correct — this is the exact reported 'requeues forever' bug."
+    )
+
+
+def test_already_faststart_source_preserves_flag_on_unrelated_remux(settings):
+    """
+    Reproduces a real, reported bug: after correcting a language tag
+    through Audio Language Review, a subsequent full scan flagged the
+    SAME file as needing "Add fast start" — even though it was already
+    faststart-optimised before the correction ran.
+
+    Root cause wasn't in decision-making at all: a plain FFmpeg remux
+    that doesn't explicitly include -movflags +faststart silently
+    rebuilds the container with the moov atom at the end, regardless of
+    where it was in the source — confirmed directly, empirically,
+    against real FFmpeg output, even for a pure lossless stream-copy
+    with nothing re-encoded. So a language-only correction (which
+    legitimately has nothing else to do, and correctly never generates
+    its own add_faststart action) would silently undo an
+    already-correct file's optimisation as a side effect — only for a
+    LATER scan to genuinely, correctly detect faststart is now missing
+    and re-add it. Not a decision-logic bug on its own; a real
+    regression in the file produced by an earlier, unrelated job.
+
+    ProcessingDecision.source_already_faststart is what closes this —
+    build_ffmpeg_command must re-assert +faststart on ANY remux of a
+    source that already had it, not just ones that specifically needed
+    to add it or convert containers.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="jpn", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(), tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=True,  # the source already has it
+    )
+    assert decision.should_process is True
+    assert "Correct language tag" in decision.reason
+    assert not any(a.action_type == "add_faststart" for a in decision.actions), (
+        "This should need nothing NEW for faststart — the point is "
+        "preserving what's already there, not re-adding it as its own action."
+    )
+    assert decision.source_already_faststart is True
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # und_audio_threshold — the zero-value trap
 # ═══════════════════════════════════════════════════════════════════════════

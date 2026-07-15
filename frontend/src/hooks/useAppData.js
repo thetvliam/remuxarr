@@ -76,7 +76,7 @@ export function useAppData() {
   const [forgeActive,    setForgeActive]    = useState(null);
   const [forgeProcessed, setForgeProcessed] = useState([]);
   // Incremented whenever the candidates list may have changed — triggers
-  // useCandidatesData to reset and re-fetch in CandidatesPanel.
+  // usePaginatedFetch to reset and re-fetch in CandidatesPanel.
   const [forgeRefreshKey, setForgeRefreshKey] = useState(0);
 
   /* ── Routing: initial replaceState ───────────────────────────────────────

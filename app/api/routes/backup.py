@@ -26,14 +26,11 @@ import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime
-from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 
 from app.config import settings as app_settings
 from app.core.worker import pause_worker
-from app.database.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
