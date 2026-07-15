@@ -289,6 +289,15 @@ def analyze_file(
     # Whether a subtitle track would be retained under the current language/
     # forced settings — shared by the manual-review gate below and the main
     # subtitle keep/drop loop further down.
+    #
+    # NOTE the deliberate asymmetry with audio: there is no "und" branch
+    # here, so an undefined-language subtitle only survives by being
+    # forced — while undefined-language AUDIO is always kept
+    # unconditionally. Not an oversight; see the full rationale at the
+    # `or lang == "und"` branch inside the audio should_keep condition
+    # below (in short: a wrong guess costs a silent, ruined output on
+    # the audio side and merely a lost optional extra on this one, so
+    # each side defaults to whichever mistake is cheaper).
     def _sub_is_kept(track: dict) -> bool:
         lang      = track["language"] or "und"
         is_forced = track.get("is_forced", False)
@@ -419,10 +428,24 @@ def analyze_file(
     for track in audio_tracks:
         lang     = track["language"] or "und"
         codec    = (track["codec"] or "").lower()
-        channels = track.get("channels") or 0
 
         should_keep = (
             lang in keep_audio_langs
+            # Undefined-language audio is ALWAYS kept — deliberately
+            # asymmetric with subtitles, where _sub_is_kept (above) has no
+            # equivalent branch and an "und" subtitle only survives by
+            # being forced. The asymmetry is intentional, weighted by
+            # what a wrong guess costs on each side: dropping the only
+            # audio track because its tag happened to be missing would
+            # produce a silent, effectively ruined output file (and
+            # remuxes are destructive — the original is deleted after),
+            # while dropping an und subtitle merely loses an optional
+            # extra of unknowable relevance. "und" tells us nothing
+            # either way, so each side defaults to whichever mistake is
+            # cheaper to make: keep the audio, drop the subtitle. The
+            # fix_undefined_language setting and the und_audio_threshold
+            # manual-review gate both exist precisely to let und tags be
+            # resolved properly rather than guessed at here.
             or lang == "und"
             # Only keep the default-flagged track when no preferred-language
             # track exists — preserves audio on edge-case files without

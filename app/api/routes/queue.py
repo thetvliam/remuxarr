@@ -240,23 +240,6 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.post("/{item_id}/retry")
-def retry_item(item_id: int, db: Session = Depends(get_db)):
-    """
-    Re-evaluate and re-queue a failed or cancelled item, or — for a dry-run
-    preview — queue it for REAL processing. The file is re-probed first
-    (force_probe=True) so the retry reflects the current code, settings,
-    and on-disk state rather than repeating a stale, possibly-broken plan.
-    """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status not in ("failed", "cancelled", "dry_run", "success", "skipped"):
-        raise HTTPException(400, "Only failed, cancelled, dry-run, success, or skipped items can be retried")
-
-    return _retry_with_reprobe(db, item)
-
-
 @router.post("/retry-all")
 def retry_all_failed(db: Session = Depends(get_db)):
     """

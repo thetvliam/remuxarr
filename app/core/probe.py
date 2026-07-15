@@ -137,12 +137,9 @@ def extract_tracks(probe_data: dict) -> list[dict]:
             "stream_index":   stream.get("index", 0),
             "track_type":     codec_type,
             "codec":          stream.get("codec_name", "unknown"),
-            "codec_long":     stream.get("codec_long_name", ""),
             "language":       language,
             "channels":       stream.get("channels"),
             "channel_layout": stream.get("channel_layout", ""),
-            "sample_rate":    _int_or_none(stream.get("sample_rate")),
-            "bit_rate":       _int_or_none(stream.get("bit_rate")),
             "is_default":     disposition.get("default", 0) == 1,
             "is_forced": (
                 disposition.get("forced", 0) == 1
@@ -160,7 +157,6 @@ def extract_tracks(probe_data: dict) -> list[dict]:
                 or any_tag_is_dub
             ),
             "title":          title,
-            "raw_ffprobe":    json.dumps(stream),
         })
 
     return tracks
