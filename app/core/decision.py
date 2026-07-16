@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 from typing import Literal
 
-from app.core.probe import _FORCED_RE, _SDH_RE
+from app.core.probe import _FORCED_RE, _SDH_RE, _DUB_RE
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,41 @@ def analyze_file(
 
     video_tracks = [t for t in tracks if t["track_type"] == "video"]
     audio_tracks = [t for t in tracks if t["track_type"] == "audio"]
-    sub_tracks   = [t for t in tracks if t["track_type"] == "subtitle"]
+
+    # Subtitle dicts are normalised into upgraded COPIES here, before any
+    # gating code runs: Track rows scanned before probe.py's
+    # title-based detection existed have is_forced/is_hearing_impaired/
+    # is_dub stored as False even when the title says otherwise (e.g.
+    # title "English (Forced)"). An earlier version applied this
+    # fallback only inside the main subtitle loop, into LOCAL variables
+    # — so the keep/drop decision (_sub_is_kept reads the dict) and the
+    # manual-review gate (runs before the loop entirely) never saw the
+    # upgrade, and a legacy forced-by-title subtitle with a non-kept
+    # language was dropped despite keep_forced_subtitles=True, defeating
+    # the fallback's own stated purpose. It only ever affected
+    # description strings and .forced.srt naming of tracks kept for
+    # OTHER reasons. Caught by independent review.
+    #
+    # Copies, not in-place writes — analyze_file must never mutate its
+    # caller's inputs. All three flags are upgraded to mirror probe.py's
+    # own three-way title detection exactly (forced gates keep/drop;
+    # SDH/dub feed .srt naming and descriptions, same legacy gap).
+    # Fresh scans are unaffected either way: probe.py already bakes
+    # title detection into the stored flags.
+    def _normalise_sub(t: dict) -> dict:
+        title = t.get("title") or ""
+        if not title:
+            return t
+        upgraded = dict(t)
+        if not upgraded.get("is_forced") and _FORCED_RE.search(title):
+            upgraded["is_forced"] = True
+        if not upgraded.get("is_hearing_impaired") and _SDH_RE.search(title):
+            upgraded["is_hearing_impaired"] = True
+        if not upgraded.get("is_dub") and _DUB_RE.search(title):
+            upgraded["is_dub"] = True
+        return upgraded
+
+    sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
     # ── Manual-review gate: undefined-language audio ─────────────────────────
     und_audio = [t for t in audio_tracks
@@ -506,20 +540,12 @@ def analyze_file(
 
     for track in sub_tracks:
         lang      = track["language"] or "und"
+        # Title-based forced/SDH/dub fallbacks already applied — sub_tracks
+        # entries are normalised copies (see _normalise_sub above), so the
+        # dict values here are authoritative. No per-loop re-derivation.
         is_forced = track.get("is_forced", False)
-        # Fallback for Track rows scanned before forced-from-name detection
-        # was added: re-check the stored title for "Forced" / "English (Forced)".
-        if not is_forced and track.get("title"):
-            if _FORCED_RE.search(track["title"]):
-                is_forced = True
-
-        is_sdh = bool(track.get("is_hearing_impaired"))
-        # Fallback for rows scanned before CC was added to the SDH regex.
-        if not is_sdh and track.get("title"):
-            if _SDH_RE.search(track["title"]):
-                is_sdh = True
-
-        is_dub = bool(track.get("is_dub"))
+        is_sdh    = bool(track.get("is_hearing_impaired"))
+        is_dub    = bool(track.get("is_dub"))
         codec     = (track.get("codec") or "").lower()
         si        = track["stream_index"]
 
