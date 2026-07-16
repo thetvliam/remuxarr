@@ -86,7 +86,21 @@ def build_add_ac3_command(
     The new AC3 always ends up at output audio index audio_track_count
     (0-based), making the undo index deterministic.
     """
-    fmt     = _FORMAT_MAP.get(container, "matroska")
+    # Hard-fail on unknown containers rather than silently defaulting to
+    # matroska — same file-corruption pattern just fixed in
+    # ffmpeg.build_ffmpeg_command (see the comment there for the full
+    # story). Note this map is even narrower than that one (no "mov"
+    # entry), so without this a forge job on a .mov would have written
+    # Matroska bytes into the .mov in place. Raising here is caught by
+    # _process_next_forge's job-level exception handler and becomes a
+    # visible failed forge job, before FFmpeg ever starts.
+    if container not in _FORMAT_MAP:
+        raise ValueError(
+            f"Unsupported container {container!r} for AC3 Forge — "
+            f"refusing to guess the mux format (supported: "
+            f"{', '.join(sorted(_FORMAT_MAP))})"
+        )
+    fmt     = _FORMAT_MAP[container]
     ac3_idx = audio_track_count  # output audio index for the new stream
 
     cmd = [
@@ -127,7 +141,14 @@ def build_undo_command(
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection.
     """
-    fmt = _FORMAT_MAP.get(container, "matroska")
+    # Same hard-fail as build_add_ac3_command — see the comment there.
+    if container not in _FORMAT_MAP:
+        raise ValueError(
+            f"Unsupported container {container!r} for AC3 Forge undo — "
+            f"refusing to guess the mux format (supported: "
+            f"{', '.join(sorted(_FORMAT_MAP))})"
+        )
+    fmt = _FORMAT_MAP[container]
 
     cmd = [
         app_settings.FFMPEG_PATH,

@@ -137,13 +137,31 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         media.subtitle_language_ignored = False
         db.commit()
 
-        # Clear any existing ACTIVE QueueItem(s) — see
-        # audio_language.py's apply_language for the full rationale on
-        # why this must be status-filtered rather than an unfiltered
-        # .first().
+        # Skip files with a live running job, then clear any WAITING
+        # QueueItem(s) — see audio_language.py's apply_language for the
+        # full rationale on both: why deleting a "processing" row out
+        # from under a running FFmpeg is a real concurrent-write hazard
+        # (an earlier version of this code did exactly that), and why
+        # the remaining delete must be status-filtered rather than an
+        # unfiltered .first().
+        processing = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status == "processing")
+            .first()
+        )
+        if processing:
+            results["errors"].append({
+                "file_id": file_id,
+                "error": "File is currently being processed — the language "
+                         "choice is saved and will apply automatically after "
+                         "the running job finishes (next scan).",
+            })
+            continue
+
         db.query(QueueItem).filter(
             QueueItem.file_id == file_id,
-            QueueItem.status.in_(["pending", "processing", "manual_review"]),
+            QueueItem.status.in_(["pending", "manual_review"]),
         ).delete(synchronize_session=False)
         db.flush()
 

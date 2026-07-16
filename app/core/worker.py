@@ -1549,24 +1549,6 @@ async def _process_next_forge(ws_manager) -> bool:
     temp_path = os.path.join(tmp_dir, safe_name + ".forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
-    if job_data["is_undo"]:
-        action_label = "Removing AC3 5.1 track"
-        cmd = build_undo_command(
-            input_path              = input_path,
-            temp_path               = temp_path,
-            ac3_audio_output_index  = job_data["audio_track_count"],
-            container               = job_data["container"],
-        )
-    else:
-        action_label = "Adding AC3 5.1 track"
-        cmd = build_add_ac3_command(
-            input_path        = input_path,
-            temp_path         = temp_path,
-            aac_stream_index  = job_data["aac_stream_index"],
-            audio_track_count = job_data["audio_track_count"],
-            container         = job_data["container"],
-        )
-
     async def on_progress(prog: ForgeProgress) -> None:
         loop.run_in_executor(
             None, update_forge_progress, job_id, prog.percent, prog.action
@@ -1580,6 +1562,29 @@ async def _process_next_forge(ws_manager) -> bool:
         })
 
     try:
+        # Command building sits INSIDE the try deliberately — the builders
+        # now raise ValueError on containers their format map doesn't know
+        # (instead of silently corrupting the file with a matroska
+        # default), and that failure must mark the forge job failed via
+        # the handler below, not escape this function uncaught.
+        if job_data["is_undo"]:
+            action_label = "Removing AC3 5.1 track"
+            cmd = build_undo_command(
+                input_path              = input_path,
+                temp_path               = temp_path,
+                ac3_audio_output_index  = job_data["audio_track_count"],
+                container               = job_data["container"],
+            )
+        else:
+            action_label = "Adding AC3 5.1 track"
+            cmd = build_add_ac3_command(
+                input_path        = input_path,
+                temp_path         = temp_path,
+                aac_stream_index  = job_data["aac_stream_index"],
+                audio_track_count = job_data["audio_track_count"],
+                container         = job_data["container"],
+            )
+
         result = await run_forge_command(
             cmd           = cmd,
             input_path    = input_path,

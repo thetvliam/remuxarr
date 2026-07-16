@@ -167,7 +167,25 @@ def build_ffmpeg_command(
         "webm": "webm",
         "mov": "mov",
     }
-    out_fmt = _CONTAINER_FORMAT.get(decision.target_container or "mkv", "matroska")
+    # Hard-fail on any container this map doesn't know, rather than
+    # silently defaulting to matroska. The old `.get(..., "matroska")`
+    # default was a genuine file-corruption bug: MEDIA_EXTENSIONS accepts
+    # containers (e.g. .flv) that _normalise_container passes through
+    # unchanged and this map has no entry for — those files got Matroska
+    # bytes written into their original path, in place, with the original
+    # deleted after "success". analyze_file's own container guard can't
+    # catch this case (the container string is present and non-empty; it
+    # just isn't muxable-as-itself here). Raising is caught by the
+    # worker's job-level exception handler and becomes a visible failed
+    # job with this message — and, critically, it fires before FFmpeg
+    # ever starts, so the source file is never touched.
+    if decision.target_container not in _CONTAINER_FORMAT:
+        raise ValueError(
+            f"Unsupported output container {decision.target_container!r} — "
+            f"refusing to guess the mux format (supported: "
+            f"{', '.join(sorted(_CONTAINER_FORMAT))})"
+        )
+    out_fmt = _CONTAINER_FORMAT[decision.target_container]
     logger.info(
         "build_ffmpeg_command: decision.target_container=%r -> out_fmt=%r "
         "(output_path=%s)",

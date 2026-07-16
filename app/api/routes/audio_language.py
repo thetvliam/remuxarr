@@ -143,10 +143,42 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         media.audio_language_ignored = False
         db.commit()
 
-        # Clear any existing ACTIVE QueueItem(s) so _process_file starts
-        # fresh. Deliberately filtered to non-terminal statuses only
-        # ("pending", "processing", "manual_review") — a file can have
-        # several historical QueueItem rows (completed/failed/skipped/etc.
+        # A file whose job is CURRENTLY RUNNING must be skipped, not
+        # cleared: deleting a "processing" row does nothing to the
+        # worker's already-running FFmpeg process (worker.abort_job
+        # exists for that, and isn't called here) — the running job
+        # would finish invisibly (its progress/finish updates find no
+        # row), while _process_file below immediately creates a fresh
+        # pending item the worker can claim WHILE the old FFmpeg is
+        # still writing. Both stage to distinct temp names but move
+        # onto the SAME final path, so the stale pre-override job can
+        # finish last and overwrite the corrected output. An earlier
+        # version of this code deleted "processing" rows here and
+        # presented that as deliberate and safe — it was neither;
+        # caught by independent review.
+        #
+        # Skipping is safe because the override was already committed
+        # above: the running job rewrites the file (new mtime), so the
+        # next delta scan re-evaluates it and picks the override up
+        # automatically.
+        processing = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status == "processing")
+            .first()
+        )
+        if processing:
+            results["errors"].append({
+                "file_id": file_id,
+                "error": "File is currently being processed — the language "
+                         "choice is saved and will apply automatically after "
+                         "the running job finishes (next scan).",
+            })
+            continue
+
+        # Clear any existing WAITING QueueItem(s) so _process_file starts
+        # fresh. Filtered to "pending"/"manual_review" only — a file can
+        # have several historical QueueItem rows (completed/failed/etc.
         # from past scans) alongside a current active one; an unfiltered,
         # unordered .first() could return a stale terminal row instead of
         # the live one, leaving the actual active item in place.
@@ -157,15 +189,12 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         # no error shown anywhere.
         #
         # Bulk-deletes every matching row rather than just one,
-        # defensively — existing "don't double-queue" guards elsewhere
-        # should mean there's never genuinely more than one, but this
-        # guarantees the reprocess below can't be blocked by any
-        # leftover active row regardless. Deliberately does NOT touch
-        # completed/failed/cancelled/skipped/dry_run rows — those are
-        # real historical records and should stay exactly as they are.
+        # defensively. Deliberately does NOT touch completed/failed/
+        # cancelled/skipped/dry_run rows (real historical records), and
+        # NOT "processing" (live job — handled above).
         db.query(QueueItem).filter(
             QueueItem.file_id == file_id,
-            QueueItem.status.in_(["pending", "processing", "manual_review"]),
+            QueueItem.status.in_(["pending", "manual_review"]),
         ).delete(synchronize_session=False)
         db.flush()
 
