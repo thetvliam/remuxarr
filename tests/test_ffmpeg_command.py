@@ -101,3 +101,74 @@ def test_forge_builders_hard_fail_on_unknown_containers():
     # Known containers keep working
     cmd = build_add_ac3_command("/media/x/a.mkv", "/tmp/t", 1, 1, container="mkv")
     assert cmd[cmd.index("-f") + 1] == "matroska"
+
+
+# ── Output-path derivation (F-B2 regression) ─────────────────────────────────
+
+def _drop_track_setup(path, container, vcodec="mpeg2video"):
+    """A file needing only a track drop — no container change involved."""
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec=vcodec),
+        make_track(stream_index=1, track_type="audio", codec="ac3",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="audio", codec="ac3",
+                   language="fre"),
+    ]
+    file_info = make_file_info(path=path, container=container, video_codec=vcodec)
+    return file_info, tracks
+
+
+def test_m2ts_incidental_processing_keeps_its_extension():
+    """
+    Regression for a real silent-rename bug found by independent review:
+    a .m2ts file (ffprobe format_name "mpegts", normalised container
+    "ts") processed for ANY reason — here a pure track drop — was
+    written to Movie.ts. No change_container action, no mention in the
+    reason, original deleted at the old path after success, and nothing
+    informed Plex/Sonarr/Radarr of the rename. Root cause: the output
+    path was derived from a separate output_extension field computed
+    from the NORMALISED container name, rather than from whether a
+    genuine container conversion was actually happening.
+    """
+    file_info, tracks = _drop_track_setup("/media/x/Movie.m2ts", "ts")
+    decision = analyze_file(
+        file_info, tracks,
+        {**_flv_settings(), "prefer_mp4_container": False},
+    )
+    assert decision.should_process is True
+    assert not any(a.action_type == "change_container" for a in decision.actions)
+    assert determine_output_path("/media/x/Movie.m2ts", decision) == "/media/x/Movie.m2ts"
+
+
+def test_m4v_with_prefer_mp4_keeps_its_extension():
+    """
+    A .m4v IS an MP4-family container (normalised "mp4"), so
+    prefer_mp4_container correctly generates no change_container action
+    for it — and therefore its extension must survive incidental
+    processing too, instead of being silently normalised to .mp4.
+    """
+    file_info, tracks = _drop_track_setup("/media/x/Movie.m4v", "mp4", vcodec="h264")
+    decision = analyze_file(
+        file_info, tracks,
+        {**_flv_settings(), "prefer_mp4_container": True},
+    )
+    assert decision.should_process is True
+    assert not any(a.action_type == "change_container" for a in decision.actions)
+    assert determine_output_path("/media/x/Movie.m4v", decision) == "/media/x/Movie.m4v"
+
+
+def test_genuine_container_conversion_still_renames():
+    """The one case that SHOULD rename — mkv → mp4 — must keep working."""
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+    ]
+    file_info = make_file_info(path="/media/x/Movie.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(
+        file_info, tracks,
+        {**_flv_settings(), "prefer_mp4_container": True},
+    )
+    assert any(a.action_type == "change_container" for a in decision.actions)
+    assert determine_output_path("/media/x/Movie.mkv", decision) == "/media/x/Movie.mp4"

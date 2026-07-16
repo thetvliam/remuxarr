@@ -283,7 +283,11 @@ def test_container_conversion_mkv_to_mp4(settings):
     )
     decision = analyze_file(file_info, tracks, settings)
     assert decision.target_container == "mp4"
-    assert decision.output_extension == ".mp4"
+    # No output_extension assertion — the field was removed (it was
+    # derivable from target_container + the change_container action, and
+    # carrying both is what caused real silent renames; see
+    # determine_output_path). Path derivation is covered in
+    # test_ffmpeg_command.py.
     assert any(a.action_type == "change_container" for a in decision.actions)
 
 

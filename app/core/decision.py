@@ -100,7 +100,13 @@ class ProcessingDecision:
     actions:          list[Action] = field(default_factory=list)
     is_manual_review: bool = False
     target_container: str | None = None   # None = keep current
-    output_extension: str | None = None   # e.g. ".mp4"
+    # NOTE: there is deliberately no output_extension field — the output
+    # path is derived in ffmpeg.determine_output_path from target_container
+    # plus the presence of a change_container action. An earlier version
+    # carried a separate, derivable output_extension here, and the two
+    # diverging is exactly what caused real silent file renames
+    # (.m2ts → .ts, .m4v/.mov → .mp4) on incidental processing — see
+    # determine_output_path's docstring.
     # Populated only for is_manual_review=True decisions caused by
     # non-convertible (image-based) subtitle tracks. Each entry:
     #   {stream_index, language, codec, is_forced, title}
@@ -626,11 +632,9 @@ def analyze_file(
     )
 
     target_container = current_container
-    output_extension = f".{current_container}"
 
     if prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4:
         target_container = "mp4"
-        output_extension = ".mp4"
         actions.append(Action(
             action_type="change_container",
             description=f"Convert container: {current_container.upper()} → MP4",
@@ -888,7 +892,6 @@ def analyze_file(
         reason="; ".join(parts),
         actions=actions,
         target_container=target_container,
-        output_extension=output_extension,
         audio_language_mismatch=audio_language_mismatch,
         subtitle_language_mismatch=subtitle_language_mismatch,
         source_already_faststart=has_faststart is True,

@@ -432,12 +432,35 @@ def determine_output_path(input_path: str, decision: ProcessingDecision) -> str:
     """
     Return the target output path.
 
-    • Container conversion (e.g. MKV → MP4): same directory, new extension.
-    • Same-container remux: same path (temp→rename strategy keeps it atomic).
+    • Genuine container conversion (a change_container action exists):
+      same directory, extension derived from target_container.
+    • Everything else: same path, byte-for-byte (temp→rename keeps it
+      atomic) — including containers whose normalised name differs from
+      their real extension.
+
+    The rename is gated on an actual change_container ACTION, not on
+    extension/suffix comparison. The previous implementation compared
+    decision.output_extension (derived from the NORMALISED container
+    name) against the file's real suffix and renamed on any mismatch —
+    which silently renamed files whose extension legitimately differs
+    from their normalised container name: a .m2ts (normalised "ts")
+    processed for ANY reason — even a pure track drop — was written to
+    Movie.ts, with no change_container action, no mention in the reason,
+    and the original deleted at the old path after success; .m4v/.mov
+    (normalised "mp4") were renamed to .mp4 the same way. Nothing
+    informed Plex/Sonarr/Radarr of those renames. Caught by independent
+    review; ProcessingDecision.output_extension was removed entirely at
+    the same time, since carrying a second, derivable field alongside
+    target_container is exactly what produced the divergence.
     """
     p = Path(input_path)
-    if decision.output_extension and decision.output_extension != p.suffix.lower():
-        return str(p.parent / (p.stem + decision.output_extension))
+    has_container_change = any(
+        a.action_type == "change_container" for a in decision.actions
+    )
+    if has_container_change:
+        new_ext = f".{decision.target_container}"
+        if new_ext != p.suffix.lower():
+            return str(p.parent / (p.stem + new_ext))
     return input_path
 
 
