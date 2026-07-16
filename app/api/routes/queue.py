@@ -9,7 +9,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.decision import analyze_file
-from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict
+from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.probe import is_faststart_mp4
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import get_app_settings, get_db
 
@@ -111,6 +112,114 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         "message": "File re-evaluated — no further action needed.",
         "media_status": media_after.status if media_after else None,
     }
+
+
+def _build_analysis_inputs(db: Session, media: MediaFile):
+    """
+    Build (file_info, tracks, analyze_file-kwargs) for re-running the
+    decision engine on a stored MediaFile — the exact inputs
+    scanner._process_file and worker._load_job_data construct for the
+    same file, in one place.
+
+    Extracted from three near-identical inline copies in
+    resolve_subtitles / resolve_subtitles_bulk / approve_manual_review.
+    Independent review confirmed the triplication had already produced
+    real divergence: all three copies were missing has_faststart (which
+    scanner and worker both pass), so an MP4 in manual review whose only
+    remaining work was add_faststart resolved to "no changes needed" →
+    skipped — and the miss was STICKY, because the file's size/mtime
+    never change on disk, so no delta scan ever re-evaluates it; the
+    file stayed un-optimised until a forced full rescan. A scan of the
+    identical file would have queued it.
+    """
+    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+    tracks = [_track_to_dict(t) for t in tracks_raw]
+    file_info = {
+        "path": media.path, "container": media.container,
+        "video_codec": media.video_codec,
+        "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged,
+    }
+    faststart = (
+        is_faststart_mp4(media.path)
+        if (media.container or "").lower() == "mp4"
+        else None
+    )
+    kwargs = dict(
+        subtitle_overrides=_load_subtitle_overrides(media),
+        audio_language_overrides=_load_audio_language_overrides(media),
+        subtitle_language_overrides=_load_subtitle_language_overrides(media),
+        has_faststart=faststart,
+        forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
+    )
+    return file_info, tracks, kwargs
+
+
+def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
+                             decision) -> None:
+    """
+    Apply a freshly-computed decision to a manual-review item — the
+    shared three-outcome block (stay in review / skipped / pending)
+    previously triplicated across resolve_subtitles /
+    resolve_subtitles_bulk / approve_manual_review.
+
+    Does NOT commit — the caller controls the transaction (the bulk
+    endpoint commits per item so one bad item can't roll back earlier
+    successes; the single-item endpoints commit once).
+
+    Carries two fixes the triplication had let diverge:
+    • _upsert_language_flags runs for the skipped and pending outcomes —
+      previously the endpoints computed decision.audio/subtitle_language_
+      mismatch and then discarded them, so a skipped file with a mismatch
+      never appeared in Language Review, and a resolved file's stale flag
+      never got cleared (the worker covers pending items at pickup, but
+      nothing covered skipped). Deliberately placed AFTER the
+      manual_review early-return, mirroring scanner.py's ordering: a
+      manual_review decision returns before mismatch detection ever runs,
+      so its mismatch fields are always None, and calling the helper for
+      that outcome would incorrectly CLEAR valid existing flags.
+    • completed_at is stamped on the skipped transition, matching
+      scanner's skip path — without it these rows sorted to the bottom
+      of the Skipped tab (ORDER BY completed_at DESC puts NULLs last)
+      and rendered "—" timestamps.
+    """
+    if decision.is_manual_review:
+        # Still unresolved (or a different gate fired) — stay in review.
+        item.reason = decision.reason
+        item.review_subtitles = (
+            json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
+        )
+        return
+
+    _upsert_language_flags(db, media, decision)
+
+    if not decision.should_process:
+        item.status = "skipped"
+        item.reason = decision.reason
+        item.review_subtitles = None
+        item.completed_at = datetime.utcnow()
+        media.status = "skipped"
+        return
+
+    # Changes are needed — move to the normal queue with fresh planned actions
+    db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
+    item.status = "pending"
+    item.reason = decision.reason
+    item.review_subtitles = None
+    # Honor dry_run_mode as it stands NOW, not as it was when the file
+    # was originally scanned.
+    item.is_dry_run = _current_dry_run_mode(db)
+    media.status = "queued"
+    db.flush()
+    for i, action in enumerate(decision.actions):
+        db.add(PlannedAction(
+            queue_item_id    = item.id,
+            order            = i,
+            action_type      = action.action_type,
+            description      = action.description,
+            track_type       = action.track_type,
+            stream_index     = action.stream_index,
+            target_language  = getattr(action, "target_language", None),
+        ))
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -346,68 +455,20 @@ def resolve_subtitles(
             raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep' or 'remove')")
 
     # ── Merge new overrides into the persisted set ──────────────────────────
+    # Written to media BEFORE the analysis below — _build_analysis_inputs
+    # loads subtitle_overrides back off the media object, so it sees the
+    # merged set including these new choices (in-session attribute read,
+    # not a DB re-read).
     existing_overrides = _load_subtitle_overrides(media)
     existing_overrides.update(body.overrides)
     media.subtitle_overrides = json.dumps({str(k): v for k, v in existing_overrides.items()})
 
     # ── Re-run the decision engine with the updated overrides ───────────────
-    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
-    tracks = [_track_to_dict(t) for t in tracks_raw]
+    app_cfg = get_app_settings(db)
+    file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
+    decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
-    app_cfg   = get_app_settings(db)
-    file_info = {"path": media.path, "container": media.container,
-                  "video_codec": media.video_codec,
-                  "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
-    forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
-    decision  = analyze_file(
-        file_info, tracks, app_cfg,
-        subtitle_overrides=existing_overrides,
-        audio_language_overrides=_load_audio_language_overrides(media),
-        subtitle_language_overrides=_load_subtitle_language_overrides(media),
-        forged_ac3_audio_index=forged_ac3_audio_index,
-    )
-
-    if decision.is_manual_review:
-        # Still unresolved tracks (or a different gate fired) — stay in review
-        item.reason = decision.reason
-        item.review_subtitles = (
-            json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
-        )
-        db.commit()
-        return _serialize(item, include_actions=True)
-
-    if not decision.should_process:
-        # Nothing left to do — the file is fine as-is with these choices
-        item.status = "skipped"
-        item.reason = decision.reason
-        item.review_subtitles = None
-        media.status = "skipped"
-        db.commit()
-        return _serialize(item, include_actions=True)
-
-    # Changes are needed — move to the normal queue with fresh planned actions
-    db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
-
-    item.status = "pending"
-    item.reason = decision.reason
-    item.review_subtitles = None
-    # Same reasoning as approve_manual_review: honor dry_run_mode as it
-    # stands NOW, not as it was when the file was originally scanned.
-    item.is_dry_run = _current_dry_run_mode(db)
-    media.status = "queued"
-
-    db.flush()
-    for i, action in enumerate(decision.actions):
-        db.add(PlannedAction(
-            queue_item_id    = item.id,
-            order            = i,
-            action_type      = action.action_type,
-            description      = action.description,
-            track_type       = action.track_type,
-            stream_index     = action.stream_index,
-            target_language  = getattr(action, "target_language", None),
-        ))
-
+    _apply_decision_to_item(db, item, media, decision)
     db.commit()
     return _serialize(item, include_actions=True)
 
@@ -459,54 +520,13 @@ def resolve_subtitles_bulk(db: Session = Depends(get_db)):
             continue
 
         try:
-            tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
-            tracks = [_track_to_dict(t) for t in tracks_raw]
-            file_info = {"path": media.path, "container": media.container,
-                         "video_codec": media.video_codec,
-                         "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
-            forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
-            decision = analyze_file(
-                file_info, tracks, app_cfg,
-                subtitle_overrides=_load_subtitle_overrides(media),
-                audio_language_overrides=_load_audio_language_overrides(media),
-                subtitle_language_overrides=_load_subtitle_language_overrides(media),
-                forged_ac3_audio_index=forged_ac3_audio_index,
-            )
+            file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
+            decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
+            _apply_decision_to_item(db, item, media, decision)
             if decision.is_manual_review:
-                # Still unresolved (always_ask, or a different gate fired
-                # this time) — refresh in place, stays in review.
-                item.reason = decision.reason
-                item.review_subtitles = (
-                    json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
-                )
                 unresolved += 1
-
-            elif not decision.should_process:
-                item.status = "skipped"
-                item.reason = decision.reason
-                item.review_subtitles = None
-                media.status = "skipped"
-                resolved += 1
-
             else:
-                db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
-                item.status = "pending"
-                item.reason = decision.reason
-                item.review_subtitles = None
-                item.is_dry_run = _current_dry_run_mode(db)
-                media.status = "queued"
-                db.flush()
-                for i, action in enumerate(decision.actions):
-                    db.add(PlannedAction(
-                        queue_item_id   = item.id,
-                        order           = i,
-                        action_type     = action.action_type,
-                        description     = action.description,
-                        track_type      = action.track_type,
-                        stream_index    = action.stream_index,
-                        target_language = getattr(action, "target_language", None),
-                    ))
                 resolved += 1
 
             db.commit()
@@ -576,63 +596,14 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
         media.und_audio_threshold_acknowledged = True
 
     # ── Re-run the decision engine now that the exemption is in place ───────
-    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
-    tracks = [_track_to_dict(t) for t in tracks_raw]
+    # _build_analysis_inputs reads und_audio_threshold_acknowledged off the
+    # media object, so the in-session flag set above is what the fresh
+    # decision sees — which is the entire point of setting it first.
+    app_cfg = get_app_settings(db)
+    file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
+    decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
-    app_cfg   = get_app_settings(db)
-    file_info = {"path": media.path, "container": media.container,
-                 "video_codec": media.video_codec,
-                 "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
-    forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
-    decision  = analyze_file(
-        file_info, tracks, app_cfg,
-        subtitle_overrides=_load_subtitle_overrides(media),
-        audio_language_overrides=_load_audio_language_overrides(media),
-        subtitle_language_overrides=_load_subtitle_language_overrides(media),
-        forged_ac3_audio_index=forged_ac3_audio_index,
-    )
-
-    if decision.is_manual_review:
-        # A different gate independently applies too — stay in review.
-        item.reason = decision.reason
-        item.review_subtitles = (
-            json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
-        )
-        db.commit()
-        return _serialize(item, include_actions=True)
-
-    if not decision.should_process:
-        item.status = "skipped"
-        item.reason = decision.reason
-        item.review_subtitles = None
-        media.status = "skipped"
-        db.commit()
-        return _serialize(item, include_actions=True)
-
-    # Changes are needed — move to the normal queue with fresh planned actions
-    db.query(PlannedAction).filter(PlannedAction.queue_item_id == item.id).delete()
-
-    item.status = "pending"
-    item.reason = decision.reason
-    item.review_subtitles = None
-    # The item's is_dry_run flag was set when the SCAN originally created it,
-    # which may have been while Dry Run was enabled. Approval happens later,
-    # potentially after the user has toggled Dry Run off — processing should
-    # honor the CURRENT setting, not the stale one captured at scan time.
-    item.is_dry_run = _current_dry_run_mode(db)
-    media.status = "queued"
-
-    db.flush()
-    for i, action in enumerate(decision.actions):
-        db.add(PlannedAction(
-            queue_item_id    = item.id,
-            order            = i,
-            action_type      = action.action_type,
-            description      = action.description,
-            track_type       = action.track_type,
-            stream_index     = action.stream_index,
-            target_language  = getattr(action, "target_language", None),
-        ))
+    _apply_decision_to_item(db, item, media, decision)
     db.commit()
     return _serialize(item, include_actions=True)
 
