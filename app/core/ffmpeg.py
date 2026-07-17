@@ -161,8 +161,13 @@ def build_ffmpeg_command(
         "mkv": "matroska",
         "mp4": "mp4",
         "avi": "avi",
+        # No "m2ts" entry — _normalise_container (probe.py) can never
+        # actually produce it: every real .m2ts file's ffprobe format_name
+        # contains "mpegts", which the "ts" branch there always matches
+        # first, before any fallback path could return "m2ts" literally.
+        # Confirmed directly, including during the real .m2ts investigation
+        # for F-B2 earlier — genuinely unreachable, not just unlikely.
         "ts": "mpegts",
-        "m2ts": "mpegts",
         "wmv": "asf",
         "webm": "webm",
         "mov": "mov",

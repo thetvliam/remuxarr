@@ -45,8 +45,9 @@ _FORMAT_MAP = {
     "mkv":  "matroska",
     "mp4":  "mp4",
     "avi":  "avi",
+    # No "m2ts" entry — see ffmpeg.py's own _CONTAINER_FORMAT comment for
+    # why this is genuinely, provably unreachable, not just unlikely.
     "ts":   "mpegts",
-    "m2ts": "mpegts",
     "wmv":  "asf",
     "webm": "webm",
 }

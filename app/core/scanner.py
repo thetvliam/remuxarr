@@ -773,22 +773,44 @@ def _process_file(
     logger.info("Queued [%d] %s — %s", qi.id, os.path.basename(path), decision.reason)
 
 
+def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int, str]:
+    """
+    Shared implementation for _load_subtitle_overrides,
+    _load_audio_language_overrides, and _load_subtitle_language_overrides
+    below — those three were previously byte-identical apart from which
+    MediaFile column they read (their own docstrings already
+    acknowledged this). Consolidated here as thin wrappers rather than
+    updating every importer (worker.py, queue.py, audio_language.py,
+    subtitle_language.py) to call this directly, so every existing call
+    site keeps working unchanged. Caught by independent review.
+
+    Parses a JSON dict with string keys (JSON object keys are always
+    strings) into a dict[int, str] keyed by stream_index, as expected by
+    analyze_file(). The warning message is built from `attr` itself,
+    which reproduces each wrapper's own original, distinct wording
+    exactly — preserved deliberately in case anything greps logs for a
+    specific one of these three messages.
+    """
+    value = getattr(media_file, attr)
+    if not value:
+        return {}
+    try:
+        raw = json.loads(value)
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, AttributeError, TypeError):
+        logger.warning(
+            "Invalid %s JSON for file %d — ignoring", attr, media_file.id
+        )
+        return {}
+
+
 def _load_subtitle_overrides(media_file: MediaFile) -> dict[int, str]:
     """
     Parse MediaFile.subtitle_overrides (JSON dict with string keys, since
     JSON object keys are always strings) into a dict[int, str] keyed by
     stream_index, as expected by analyze_file().
     """
-    if not media_file.subtitle_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.subtitle_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid subtitle_overrides JSON for file %d — ignoring", media_file.id
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "subtitle_overrides")
 
 
 def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
@@ -797,33 +819,13 @@ def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
     shape as _load_subtitle_overrides above) into a dict[int, str] keyed by
     stream_index, as expected by analyze_file().
     """
-    if not media_file.audio_language_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.audio_language_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid audio_language_overrides JSON for file %d — ignoring",
-            media_file.id,
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "audio_language_overrides")
 
 
 def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
     """Subtitle counterpart to _load_audio_language_overrides above — same
     shape, same parsing, different column."""
-    if not media_file.subtitle_language_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.subtitle_language_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid subtitle_language_overrides JSON for file %d — ignoring",
-            media_file.id,
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
 
 
 def _track_to_dict(t: Track) -> dict:
@@ -883,3 +885,5 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
+
+

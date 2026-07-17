@@ -18,11 +18,16 @@ logger = logging.getLogger(__name__)
 
 # ── MP4 compatibility tables ───────────────────────────────────────────────────
 # Video codecs that can live inside an MP4/M4V container without transcoding.
+# "avc"/"h265" are harmless slack, not live aliases — ffprobe's own
+# codec_name is consistently "h264"/"hevc" across every real probe output
+# seen throughout this project (confirmed directly, repeatedly); these two
+# can never actually match. Kept rather than removed since a stray, unused
+# alias here is genuinely harmless — flagged by independent review as
+# worth a comment rather than worth the risk of deleting.
 MP4_COMPATIBLE_VIDEO = frozenset({
     "h264", "avc", "hevc", "h265", "mpeg4", "mpeg2video", "mjpeg",
 })
-# Audio codecs compatible with MP4.  Note: DTS, TrueHD, FLAC are NOT included.
-# After our AAC-5.1 → AC3 transcode, AC3 is fine.
+# Audio codecs compatible with MP4. Note: DTS, TrueHD, FLAC are NOT included.
 MP4_COMPATIBLE_AUDIO = frozenset({
     "aac", "ac3", "eac3", "mp3", "alac", "opus",
 })
@@ -80,7 +85,11 @@ class Action:
     track_type:   str | None = None
     stream_index: int | None = None
     order:        int = 0
-    # Extra fields for audio transcode actions (AAC 5.1 → AC3)
+    # Extra fields for transcode_track actions — currently only ever
+    # populated by worker._make_audio_transcode_decision's corrupt-source-
+    # audio retry path (transcodes to AAC), not by analyze_file itself.
+    # Not tied to any specific codec pairing; whichever retry path sets
+    # these determines the actual target.
     output_codec:         str | None = None
     output_codec_options: dict       = field(default_factory=dict)
     # Extra fields for extract_subtitle actions
@@ -897,8 +906,18 @@ def analyze_file(
                       if a.action_type == "drop_track" and a.track_type == "subtitle")
         if n_audio: parts.append(f"Remove {n_audio} audio track{'s' if n_audio > 1 else ''}")
         if n_sub:   parts.append(f"Remove {n_sub} subtitle track{'s' if n_sub > 1 else ''}")
-    if has_transcode:
-        parts.append("Transcode AAC 5.1 → AC3 5.1")
+    # NOTE: no reason-string branch for has_transcode here — analyze_file
+    # itself never produces a transcode_track action (confirmed directly:
+    # the only actual creator is worker._make_audio_transcode_decision,
+    # which operates on a COPY of the decision at retry time, after
+    # analyze_file has already returned and this reason string has
+    # already been built). has_transcode is always False whenever this
+    # code actually runs, so a "Transcode AAC 5.1 → AC3 5.1" branch here
+    # was unreachable dead code describing a feature that no longer
+    # exists (the AAC 5.1 -> AC3 setting was removed earlier this
+    # project). Caught by independent review. has_transcode itself is
+    # kept below for the "anything to do at all" check — only the
+    # reason-string branch was actually dead.
     if has_container:
         parts.append(f"Convert {current_container.upper()} → MP4")
     if has_extract:
@@ -1005,7 +1024,9 @@ def _video_audio_mp4_compatible(
 
     for t in kept_audio:
         codec = (t.get("codec") or "").lower()
-        # AAC 5.1 will become AC3 (compatible); plain AAC is also fine
+        # Plain membership check — no transcoding happens here. AC3 is
+        # simply already MP4-compatible in its own right; nothing about
+        # this check involves converting one codec into another.
         if codec not in MP4_COMPATIBLE_AUDIO:
             logger.debug("MP4 blocked by audio codec: %s", codec)
             return False

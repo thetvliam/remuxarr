@@ -418,6 +418,31 @@ def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
     )
 
 
+def _needs_audio_transcode_retry(result) -> bool:
+    """
+    True when a failed FFmpeg attempt should be retried with AAC
+    transcoding instead of a plain audio copy — either genuinely corrupt
+    source packet data, or source packets with no usable timestamp at
+    all (common in older/non-standard AVI files); same remediation
+    either way.
+
+    Previously this exact predicate (result.success check plus both
+    _is_corrupt_audio_copy_failure / _is_unknown_timestamp_audio_failure
+    checks) was duplicated identically across _run_job's combined-pass
+    and two-pass branches. Only the predicate is hoisted here — the
+    actual retry call, log wording, and _make_audio_transcode_decision
+    rebuild stay inline at each call site deliberately: the two branches
+    call genuinely different underlying functions with different return
+    shapes (execute_ffmpeg_combined returns a tuple, execute_ffmpeg
+    doesn't), and the log wording usefully distinguishes which of the
+    two retry paths actually fired. Caught by independent review.
+    """
+    return not result.success and (
+        _is_corrupt_audio_copy_failure(result.error)
+        or _is_unknown_timestamp_audio_failure(result.error)
+    )
+
+
 def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
     """
     Return a copy of the decision where every audio copy_track action is
@@ -694,11 +719,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 )
                 return
 
-            audio_copy_failed = (
-                _is_corrupt_audio_copy_failure(result.error)
-                or _is_unknown_timestamp_audio_failure(result.error)
-            )
-            if not result.success and audio_copy_failed:
+            if _needs_audio_transcode_retry(result):
                 # Two distinct root causes land here — genuinely corrupt
                 # packet data, or source packets with no usable timestamp
                 # at all (common in older/non-standard AVI files) — but
@@ -768,11 +789,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds   = timeout_seconds,
             )
 
-            audio_copy_failed = (
-                _is_corrupt_audio_copy_failure(result.error)
-                or _is_unknown_timestamp_audio_failure(result.error)
-            )
-            if not result.success and audio_copy_failed:
+            if _needs_audio_transcode_retry(result):
                 logger.warning(
                     "Job %d (%s): audio copy failed (corrupt frames or "
                     "unusable source timestamps) — retrying with AAC "
