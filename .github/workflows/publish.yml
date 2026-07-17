@@ -2,9 +2,9 @@ name: Build and Publish Docker Image
 
 # Deliberately separate from the existing build-and-test workflow, and
 # deliberately NOT triggered on pull_request — only a push that's already
-# landed on main (i.e. from someone with actual write access) should ever
-# publish a public image. Triggering this from PRs (especially from forks)
-# would be a real security concern, not just noise.
+# landed on main or testing (i.e. from someone with actual write access)
+# should ever publish an image. Triggering this from PRs (especially from
+# forks) would be a real security concern, not just noise.
 on:
   push:
     branches:
@@ -36,24 +36,39 @@ jobs:
           # No secret to create or manage — GITHUB_TOKEN is generated
           # automatically for every workflow run.
 
+      # tags rules, explained (kept OUTSIDE the `tags: |` block deliberately
+      # — a genuine bug, found and fixed here: a previous version of this
+      # workflow had these same explanations written as "# ..." lines
+      # INSIDE the tags: | block scalar. Inside a YAML literal block scalar,
+      # every line — including ones starting with "#" — is literal STRING
+      # CONTENT, not a YAML comment; confirmed directly against a YAML
+      # parser. So docker/metadata-action was actually receiving each
+      # explanatory line as if it were its own malformed tag-rule entry,
+      # mixed in with the three real ones, which broke tag generation and
+      # failed the "Extract tags and labels" step outright (a GitHub.com
+      # HTML error page, not a normal action failure — consistent with the
+      # action's tag-rule parsing going somewhere unexpected on the garbled
+      # input rather than failing cleanly).
+      #
+      #   type=raw,value=latest,enable={{is_default_branch}} — :latest tag
+      #     ONLY on the default branch (main); this enable= condition is
+      #     what makes that automatic — it does NOT happen implicitly for
+      #     branch pushes the way it does for version-tag pushes (semver).
+      #   type=ref,event=branch — a tag matching the branch name itself:
+      #     main -> :main, testing -> :testing, any-branch -> :any-branch.
+      #   type=sha,prefix=,format=short — the short commit SHA, e.g.
+      #     :a1b2c3d, giving a stable, exact reference to roll back to if
+      #     a moving tag (:latest / :testing) ever turns out to have a
+      #     problem.
       - name: Extract tags and labels
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # :latest ONLY on the default branch (main) — type=ref,event=branch
-            # does NOT imply this on its own; that auto-latest behavior is
-            # reserved for version-tag pushes (semver etc.), not branches.
             type=raw,value=latest,enable={{is_default_branch}}
-            # main -> :main, testing -> :testing, any-branch -> :any-branch
             type=ref,event=branch
-            # Keeps your commit SHA for safe rollbacks
             type=sha,prefix=,format=short
-          # Produces e.g. ghcr.io/thetvliam/remuxarr:latest and
-          # ghcr.io/thetvliam/remuxarr:a1b2c3d — the short commit SHA tag
-          # gives a stable, exact reference to roll back to if a "latest"
-          # build ever turns out to have a problem.
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
