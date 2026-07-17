@@ -54,6 +54,20 @@ async def trigger_scan(
     if _scan_running:
         raise HTTPException(409, "A scan is already in progress")
 
+    # Set synchronously, immediately, before any await or thread creation —
+    # closes a real TOCTOU window: _run_scan (the only other place this
+    # gets set) only sets it AFTER the new thread actually starts running,
+    # which can be meaningfully delayed under load. A manual trigger and a
+    # scheduled trigger (scheduler.py's _tick) landing in that window could
+    # both pass the check above and start two concurrent scans against the
+    # same DB. No threading.Lock needed: both callers are themselves
+    # single-threaded asyncio coroutines on the same event loop, and this
+    # assignment has no await before or after it — asyncio only switches
+    # coroutines at await points, so this check-and-set is already atomic
+    # with respect to any other coroutine on the loop. Caught by
+    # independent review.
+    _scan_running = True
+
     app_cfg = get_app_settings(db)
     paths   = body.paths or app_cfg.get("scan_paths", [])
 
@@ -153,7 +167,7 @@ async def run_cleanup(db: Session = Depends(get_db)):
 
     loop = asyncio.get_running_loop()
     removed = await loop.run_in_executor(
-        None, cleanup_deleted_files, db, scan_paths
+        None, _cleanup_sync, scan_paths
     )
 
     await ws_manager.broadcast_json({
@@ -162,6 +176,26 @@ async def run_cleanup(db: Session = Depends(get_db)):
     })
 
     return {"removed": removed}
+
+
+def _cleanup_sync(scan_paths: list[str]) -> int:
+    """
+    Sync wrapper around cleanup_deleted_files, opening/closing its own
+    SessionLocal() rather than reusing the request-scoped Session from
+    run_cleanup's own Depends(get_db).
+
+    That Session is bound to the request's own lifecycle and isn't
+    intended to cross thread boundaries — it happened to work here only
+    because of check_same_thread=False, but this was the one place in the
+    codebase doing this; every other executor helper (_queue_sync,
+    _load_job_data, etc.) already opens its own session for exactly this
+    reason. Caught by independent review.
+    """
+    db = SessionLocal()
+    try:
+        return cleanup_deleted_files(db, scan_paths)
+    finally:
+        db.close()
 
 
 @router.get("/orphaned")
@@ -231,7 +265,12 @@ def _run_scan(
     loop:        asyncio.AbstractEventLoop,
 ) -> None:
     """
-    Executed by FastAPI's BackgroundTasks in a thread-pool worker.
+    Executed on a dedicated daemon thread (threading.Thread), NOT via
+    FastAPI's BackgroundTasks — see trigger_scan's own comment for why:
+    BackgroundTasks uses the shared default thread pool, which every sync
+    route handler also draws from, and a long-running scan blocking on
+    hundreds of ffprobe subprocesses would exhaust it and hang unrelated
+    HTTP requests. A dedicated thread stays completely outside that pool.
 
     We receive the event loop captured in the async endpoint above so that
     asyncio.run_coroutine_threadsafe() can reliably schedule WebSocket

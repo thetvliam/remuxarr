@@ -247,13 +247,31 @@ async def _tick(ws_manager) -> None:
     _last_triggered_minute = current_minute
     logger.info("Scheduler: triggering scheduled scan at %s", current_minute)
 
-    # Import here to avoid circular imports (scan.py imports scanner.py;
-    # scheduler.py is imported by main.py which also imports scan.py).
-    from app.api.routes.scan import _run_scan, _scan_running
+    # Deferred (in-function) import to avoid circular imports: scan.py
+    # imports scanner.py; scheduler.py is imported by main.py, which also
+    # imports scan.py.
+    #
+    # Imports the MODULE itself here, not `_scan_running` as a name — a
+    # `from app.api.routes.scan import _scan_running` binds a local copy
+    # of whatever the value was at import time; reassigning that local
+    # name would never actually mutate scan.py's own module-level
+    # variable, so trigger_scan's own check would still see False and
+    # this fix would silently fail to close the race it's meant to close
+    # (confirmed directly: this exact gotcha reproduces with a minimal
+    # two-module test). Reading/writing scan_route._scan_running as an
+    # attribute is what actually shares the same underlying value across
+    # both files.
+    import app.api.routes.scan as scan_route
+    from app.api.routes.scan import _run_scan
 
-    if _scan_running:
+    if scan_route._scan_running:
         logger.info("Scheduler: scan already running — skipping this trigger")
         return
+
+    # Set synchronously, immediately, before any await — see trigger_scan's
+    # own comment for the full rationale (same fix, same reasoning,
+    # applied on this side of the same race).
+    scan_route._scan_running = True
 
     db2 = SessionLocal()
     try:

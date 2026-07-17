@@ -130,9 +130,30 @@ def clear_history(
     status: str = Query(default="all", description="all | failed | success | skipped | cancelled"),
     db: Session = Depends(get_db),
 ):
-    """Bulk-delete all terminal history items, optionally filtered by status."""
+    """
+    Bulk-delete all terminal history items, optionally filtered by status.
+
+    Resets each dismissed file's size/mtime to sentinel values (-1 / -1.0)
+    alongside status="unprocessed" — matching clear_dry_run's precedent in
+    queue.py for the identical problem. Without this, the scanner's delta
+    check in _process_file compares ONLY size/mtime against the current
+    on-disk stat() and has no awareness of .status at all — a plain
+    re-scan (force_probe=False) would see the file's actual bytes are
+    unchanged from what was last stamped and return immediately, never
+    calling analyze_file() again. So a dismissed file would only actually
+    get re-evaluated on a forced FULL scan, not "the next scan" as this
+    endpoint's own behavior otherwise implies. Caught by independent
+    review.
+
+    status="failed" also matches "cancelled" — mirrors list_history's own
+    folding of cancelled into the Failed tab exactly. Without this,
+    clearing the Failed tab left cancelled rows behind, still visible in
+    the tab this endpoint just claimed to have cleared.
+    """
     query = db.query(QueueItem).filter(QueueItem.status.in_(TERMINAL_STATUSES))
-    if status != "all":
+    if status == "failed":
+        query = query.filter(QueueItem.status.in_(["failed", "cancelled"]))
+    elif status != "all":
         query = query.filter(QueueItem.status == status)
 
     items = query.all()
@@ -140,6 +161,8 @@ def clear_history(
     for item in items:
         if item.media_file:
             item.media_file.status = "unprocessed"
+            item.media_file.size   = -1
+            item.media_file.mtime  = -1.0
         db.delete(item)
         count += 1
 
@@ -161,8 +184,11 @@ def get_history_item(item_id: int, db: Session = Depends(get_db)):
 def delete_history_item(item_id: int, db: Session = Depends(get_db)):
     """
     Remove a single completed item from history.
-    Resets the MediaFile status to 'unprocessed' so the next scan
-    re-evaluates the file from scratch.
+
+    Resets the MediaFile status to 'unprocessed', with a size/mtime
+    sentinel reset — see clear_history for the full rationale on why
+    the sentinel is necessary for "the next scan re-evaluates" to
+    actually be true for a plain delta scan, not just a forced full one.
     """
     item = db.get(QueueItem, item_id)
     if not item:
@@ -175,6 +201,8 @@ def delete_history_item(item_id: int, db: Session = Depends(get_db)):
 
     if item.media_file:
         item.media_file.status = "unprocessed"
+        item.media_file.size   = -1
+        item.media_file.mtime  = -1.0
 
     db.delete(item)
     db.commit()

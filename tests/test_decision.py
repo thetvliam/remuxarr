@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 from app.core.decision import analyze_file, MP4_COMPATIBLE_VIDEO
-from conftest import make_track, make_file_info, BASE_SETTINGS
+from conftest import make_track, make_file_info
 
 
 # ═══════════════════════════════════════════════════════════════════════════

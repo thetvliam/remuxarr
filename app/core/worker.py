@@ -155,7 +155,10 @@ async def start_worker() -> None:
 
 
 async def stop_worker() -> None:
-    global _running, _worker_task
+    # _worker_task is only READ here, never reassigned — no `global`
+    # needed for it specifically (only _running, which IS reassigned
+    # below, actually requires the declaration).
+    global _running
     _running = False
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
