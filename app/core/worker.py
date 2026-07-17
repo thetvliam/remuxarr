@@ -1537,6 +1537,11 @@ async def _process_next_forge(ws_manager) -> bool:
 
     input_path = job_data["file_path"]
 
+    # Mirrors the main pipeline's exact formula (_run_job, worker.py) —
+    # see run_forge_command's docstring for why this is here at all.
+    timeout_minutes = job_data.get("job_timeout_minutes", 120)
+    timeout_seconds = float(timeout_minutes) * 60 if timeout_minutes else None
+
     # Stage the temp file in TEMP_DIR (RAM-backed tmpfs on Unraid) when
     # there's enough free space, falling back to the source file's own
     # directory otherwise — same space-aware logic the main remux pipeline
@@ -1544,9 +1549,18 @@ async def _process_next_forge(ws_manager) -> bool:
     # directly next to the source on the array for every add/undo, which
     # meant forge jobs got none of the benefit of staging through RAM and
     # added extra array I/O contention during processing.
-    safe_name = os.path.basename(input_path).replace("/", "_")
+    #
+    # Named from job_id, not the original basename — mirrors
+    # ffmpeg.execute_ffmpeg's own temp naming exactly. Using the original
+    # basename here (even after the RAM-staging fix above) reintroduced
+    # the exact NAME_MAX failure the main pipeline already fixed:
+    # appending a suffix to an already-long Sonarr-style filename can push
+    # it past the 255-byte filesystem component limit (confirmed in
+    # production there: a 247-byte original filename failed). A job_id is
+    # always short and unique, so this can never happen here. Caught by
+    # independent review.
     tmp_dir   = _pick_temp_dir(input_path)
-    temp_path = os.path.join(tmp_dir, safe_name + ".forge_tmp")
+    temp_path = os.path.join(tmp_dir, f"forge_{job_id}.forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
     async def on_progress(prog: ForgeProgress) -> None:
@@ -1592,6 +1606,7 @@ async def _process_next_forge(ws_manager) -> bool:
             temp_path     = temp_path,
             action_label  = action_label,
             progress_callback = on_progress,
+            timeout_seconds   = timeout_seconds,
         )
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)

@@ -159,10 +159,21 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
             })
             continue
 
-        db.query(QueueItem).filter(
-            QueueItem.file_id == file_id,
-            QueueItem.status.in_(["pending", "manual_review"]),
-        ).delete(synchronize_session=False)
+        # Same reasoning as audio_language.py's apply_language for capturing
+        # arr IDs before deleting — see that endpoint for the full rationale.
+        active_items = (
+            db.query(QueueItem)
+            .filter(
+                QueueItem.file_id == file_id,
+                QueueItem.status.in_(["pending", "manual_review"]),
+            )
+            .order_by(QueueItem.created_at.desc())
+            .all()
+        )
+        sonarr_series_id = active_items[0].sonarr_series_id if active_items else None
+        radarr_movie_id  = active_items[0].radarr_movie_id  if active_items else None
+        for active_item in active_items:
+            db.delete(active_item)
         db.flush()
 
         try:
@@ -172,6 +183,8 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
                 force_probe=True,
                 dry_run=dry_run,
                 stats=stats,
+                sonarr_series_id=sonarr_series_id,
+                radarr_movie_id=radarr_movie_id,
             )
             results["applied"] += 1
         except Exception as exc:

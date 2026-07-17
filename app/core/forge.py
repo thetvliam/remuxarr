@@ -31,7 +31,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
-from app.database.session import SessionLocal
+from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     StagedOutput,
     parse_out_time_seconds,
@@ -178,6 +178,7 @@ async def run_forge_command(
     temp_path:         str,
     action_label:      str,
     progress_callback: Callable[[ForgeProgress], Awaitable[None]] | None = None,
+    timeout_seconds:   float | None = None,
 ) -> ForgeResult:
     """
     Run a forge FFmpeg command with real-time progress tracking.
@@ -194,6 +195,12 @@ async def run_forge_command(
 
     NOTE: stderr_tail_lines=20 here vs 30 in the main pipeline — preserved
     intentionally, not unified.
+
+    timeout_seconds was previously never wired through at all — forge
+    jobs got none of the job_timeout_minutes protection the main remux
+    pipeline has always had, meaning a hung forge job (e.g. against a
+    genuinely broken source file) could run indefinitely with no
+    recovery. Caught by independent review.
     """
     duration = await probe_duration(input_path)
 
@@ -214,6 +221,7 @@ async def run_forge_command(
         [StagedOutput(temp_path=temp_path, final_path=output_path)],
         on_progress_line=on_progress_line,
         stderr_tail_lines=20,
+        timeout_seconds=timeout_seconds,
     )
 
     if not result.success:
@@ -444,6 +452,11 @@ def load_forge_job_data(job_id: int) -> dict | None:
             finish_forge_job(job_id, False, None, None, "File not found on disk")
             return None
 
+        # job_timeout_minutes read here (rather than a separate fetch in
+        # worker.py) since this function already has the DB session open —
+        # mirrors _load_job_data's own pattern in worker.py exactly.
+        app_cfg = get_app_settings(db)
+
         return {
             "job_id":             job.id,
             "is_undo":            job.is_undo,
@@ -453,6 +466,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "original_size":      job.original_size,
+            "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
         }
     finally:
         db.close()

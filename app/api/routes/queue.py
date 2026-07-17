@@ -282,12 +282,35 @@ def get_queue_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/")
 def clear_pending(db: Session = Depends(get_db)):
-    """Cancel all pending (not yet started) items."""
+    """
+    Cancel all pending (not yet started) items.
+
+    Also sets MediaFile.status = "skipped" for every affected file,
+    matching cancel_item's single-item behavior — the previous version
+    only bulk-updated QueueItem.status, never touching MediaFile.status,
+    so files were left stranded at "queued" with no pending item behind
+    them. That state didn't self-heal on its own: a delta scan sees
+    unchanged size/mtime and returns early without re-evaluating, and
+    _process_file's "queued"-status disambiguation only special-cases a
+    latest item of dry_run, not cancelled — so the file stayed
+    (incorrectly) marked "queued" until a forced full scan happened to
+    touch it. Caught by independent review.
+    """
+    file_ids = [
+        row[0] for row in
+        db.query(QueueItem.file_id)
+        .filter(QueueItem.status == "pending")
+        .all()
+    ]
     count = (
         db.query(QueueItem)
         .filter(QueueItem.status == "pending")
         .update({"status": "cancelled"})
     )
+    if file_ids:
+        db.query(MediaFile).filter(
+            MediaFile.id.in_(file_ids)
+        ).update({"status": "skipped"}, synchronize_session=False)
     db.commit()
     return {"cancelled": count}
 
@@ -383,15 +406,27 @@ def retry_all_failed(db: Session = Depends(get_db)):
             continue
 
         file_path = media.path
+        # Preserve arr IDs so the notification chain fires after the
+        # re-processed job completes — identical to _retry_with_reprobe
+        # (see that function for the full rationale). Previously this
+        # deleted the item and re-processed with no arr IDs at all, so
+        # "Retry All" on webhook-originated failures produced jobs that
+        # would never fire RescanSeries/RescanMovie on success, even
+        # though single-item retry preserved this correctly. Caught by
+        # independent review.
+        sonarr_series_id = item.sonarr_series_id
+        radarr_movie_id  = item.radarr_movie_id
         db.delete(item)
         db.flush()
 
         try:
             _process_file(
                 db, file_path, app_cfg,
-                force_probe = True,
-                dry_run     = dry_run,
-                stats       = ScanStats(),
+                force_probe      = True,
+                dry_run          = dry_run,
+                stats            = ScanStats(),
+                sonarr_series_id = sonarr_series_id,
+                radarr_movie_id  = radarr_movie_id,
             )
             retried += 1
         except Exception as exc:
