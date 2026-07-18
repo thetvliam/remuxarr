@@ -55,45 +55,57 @@ async def trigger_scan(
         raise HTTPException(409, "A scan is already in progress")
 
     # Set synchronously, immediately, before any await or thread creation —
-    # closes a real TOCTOU window: _run_scan (the only other place this
-    # gets set) only sets it AFTER the new thread actually starts running,
-    # which can be meaningfully delayed under load. A manual trigger and a
-    # scheduled trigger (scheduler.py's _tick) landing in that window could
-    # both pass the check above and start two concurrent scans against the
-    # same DB. No threading.Lock needed: both callers are themselves
-    # single-threaded asyncio coroutines on the same event loop, and this
-    # assignment has no await before or after it — asyncio only switches
-    # coroutines at await points, so this check-and-set is already atomic
-    # with respect to any other coroutine on the loop. Caught by
-    # independent review.
+    # closes a real TOCTOU window: a manual trigger and a scheduled trigger
+    # (scheduler.py's _tick) landing in the gap between check and thread
+    # start could both pass the check above and start two concurrent scans
+    # against the same DB. No threading.Lock needed: both callers are
+    # themselves single-threaded asyncio coroutines on the same event loop,
+    # and this assignment has no await before or after it — asyncio only
+    # switches coroutines at await points, so this check-and-set is already
+    # atomic with respect to any other coroutine on the loop.
+    #
+    # The try/finally below is NOT optional: the first version of this fix
+    # set the flag here but had no rollback, so any early exit before the
+    # thread actually started — most easily an empty scan_paths list
+    # raising the 400 below — left the flag stuck True forever, and every
+    # future scan (manual or scheduled) got a 409 until the container
+    # restarted. The flag's lifecycle contract: whoever sets it must
+    # either hand ownership to a successfully-started scan thread (whose
+    # own finally in _run_scan is then the sole reset point) or roll it
+    # back themselves on every other exit path, exceptional or not.
     _scan_running = True
+    scan_thread_started = False
+    try:
+        app_cfg = get_app_settings(db)
+        paths   = body.paths or app_cfg.get("scan_paths", [])
 
-    app_cfg = get_app_settings(db)
-    paths   = body.paths or app_cfg.get("scan_paths", [])
+        if not paths:
+            raise HTTPException(
+                400,
+                "No scan paths configured. Add paths via Settings or pass them in the request body.",
+            )
 
-    if not paths:
-        raise HTTPException(
-            400,
-            "No scan paths configured. Add paths via Settings or pass them in the request body.",
+        # Capture the running event loop here, in the async context, so the
+        # scan thread can safely schedule WebSocket broadcasts back onto it.
+        loop = asyncio.get_running_loop()
+
+        # Launch the scan on a DEDICATED daemon thread rather than via
+        # FastAPI's BackgroundTasks (which uses the shared default thread pool).
+        # The shared pool is also used by every sync route handler in the app;
+        # a long-running scan that blocks on hundreds of ffprobe subprocesses
+        # exhausts the pool and causes HTTP requests to hang.  A dedicated thread
+        # is completely outside the pool and never competes with route handlers.
+        t = threading.Thread(
+            target  = _run_scan,
+            args    = (paths, body.force_probe, loop),
+            name    = "remuxarr-scanner",
+            daemon  = True,   # exits automatically if the container shuts down
         )
-
-    # Capture the running event loop here, in the async context, so the
-    # scan thread can safely schedule WebSocket broadcasts back onto it.
-    loop = asyncio.get_running_loop()
-
-    # Launch the scan on a DEDICATED daemon thread rather than via
-    # FastAPI's BackgroundTasks (which uses the shared default thread pool).
-    # The shared pool is also used by every sync route handler in the app;
-    # a long-running scan that blocks on hundreds of ffprobe subprocesses
-    # exhausts the pool and causes HTTP requests to hang.  A dedicated thread
-    # is completely outside the pool and never competes with route handlers.
-    t = threading.Thread(
-        target  = _run_scan,
-        args    = (paths, body.force_probe, loop),
-        name    = "remuxarr-scanner",
-        daemon  = True,   # exits automatically if the container shuts down
-    )
-    t.start()
+        t.start()
+        scan_thread_started = True
+    finally:
+        if not scan_thread_started:
+            _scan_running = False
 
     return {"status": "started", "paths": paths, "force_probe": body.force_probe}
 
@@ -277,7 +289,15 @@ def _run_scan(
     broadcasts back onto the main event loop from this sync thread.
     """
     global _scan_running, _scan_progress, _scan_cancel_requested
-    _scan_running  = True
+    # NOTE: _scan_running is deliberately NOT set here. Both launchers
+    # (trigger_scan above, and scheduler._tick) set it synchronously
+    # BEFORE starting this thread — that ordering is what closes the
+    # double-start race — and each rolls it back itself on any exit where
+    # this thread never actually started. Once this thread IS running, the
+    # finally at the bottom of this function is the sole reset point. A
+    # re-set here would be harmless but would blur that single-owner
+    # lifecycle; anyone adding a new launcher must follow the same
+    # set-before-start + rollback-on-failure contract.
     _scan_progress = {"scanned": 0, "total": 0}
     _scan_cancel_requested = False
 

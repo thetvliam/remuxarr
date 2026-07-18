@@ -269,30 +269,41 @@ async def _tick(ws_manager) -> None:
         return
 
     # Set synchronously, immediately, before any await — see trigger_scan's
-    # own comment for the full rationale (same fix, same reasoning,
-    # applied on this side of the same race).
+    # own comment for the full rationale (same fix, same reasoning, applied
+    # on this side of the same race), including the flag's lifecycle
+    # contract this try/finally implements. The first version of this fix
+    # set the flag but had no rollback, so an empty scan_paths list here
+    # (completely plausible: scheduling enabled before paths configured)
+    # permanently wedged all scanning at the first scheduled tick.
+    #
+    # scan_paths comes from `cfg`, already loaded at the top of this
+    # function — the previous version opened a SECOND session and
+    # re-fetched settings here, after setting the flag, which was most of
+    # the window in which an exception could leak it. Reusing the
+    # already-loaded value doesn't just shrink that window, it removes it:
+    # nothing between the set and the thread start can fail except thread
+    # creation itself, and the finally covers that too.
     scan_route._scan_running = True
-
-    db2 = SessionLocal()
+    scan_thread_started = False
     try:
-        cfg2       = get_app_settings(db2)
-        scan_paths = cfg2.get("scan_paths", [])
+        scan_paths = cfg.get("scan_paths", [])
+        if not scan_paths:
+            logger.warning("Scheduler: no scan paths configured — skipping")
+            return
+
+        # Dispatch on a background thread, exactly like the manual scan
+        # button. We capture the running loop and pass ws_manager's
+        # broadcast function the same way the scan route does.
+        loop = asyncio.get_running_loop()
+        import threading
+        t = threading.Thread(
+            target  = _run_scan,
+            args    = (scan_paths, False, loop),
+            name    = "remuxarr-scheduled-scanner",
+            daemon  = True,
+        )
+        t.start()
+        scan_thread_started = True
     finally:
-        db2.close()
-
-    if not scan_paths:
-        logger.warning("Scheduler: no scan paths configured — skipping")
-        return
-
-    # Dispatch on a background thread, exactly like the manual scan button.
-    # We capture the running loop and pass ws_manager's broadcast function
-    # the same way the scan route does.
-    loop = asyncio.get_running_loop()
-    import threading
-    t = threading.Thread(
-        target  = _run_scan,
-        args    = (scan_paths, False, loop),
-        name    = "remuxarr-scheduled-scanner",
-        daemon  = True,
-    )
-    t.start()
+        if not scan_thread_started:
+            scan_route._scan_running = False
