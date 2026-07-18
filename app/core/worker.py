@@ -864,23 +864,48 @@ def _claim_next() -> int | None:
 
 def _load_job_data(job_id: int):
     """
-    Return (job_dict, file_dict, tracks, app_cfg, decision) or None.
-    Everything RETURNED is plain Python — no ORM objects cross the thread
-    boundary. This function itself does have one deliberate side effect
-    before returning, though: it upserts/clears AudioLanguageFlag and
-    SubtitleLanguageFlag for the file, matching what the identical fresh
-    decision it just computed would have caused during a normal scan.
+    Load everything _run_job needs, re-running the decision engine fresh —
+    and APPLY that fresh decision's outcome, exactly as queue.py's
+    _apply_decision_to_item does for its three call sites:
 
-    Without this, a file whose manual-review cause got resolved via
-    Approve (rather than being re-discovered by a normal scan) computed
-    the correct audio_language_mismatch/subtitle_language_mismatch the
-    whole time — right here, in this exact decision — but never actually
-    persisted it to either flag table until some LATER, separate scan
-    happened to re-evaluate the file from scratch. Reported directly:
-    files approved from manual review, whose jobs succeeded and
-    correctly logged the "audio language tag is likely wrong" warning,
-    didn't show up in Audio Language Review until an entirely separate
-    full scan ran afterward.
+      • is_manual_review  → item transitions to "manual_review" (with the
+        fresh reason and flagged subtitles), returns None — no execution.
+      • should_process=False → item transitions to "skipped" (+ completed_at),
+        returns None — no execution.
+      • otherwise → PlannedActions refreshed to the FRESH decision's
+        actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
+        for execution. Everything returned is plain Python — no ORM
+        objects cross the thread boundary.
+
+    The first two outcomes were previously unhandled entirely — any
+    decision was returned for execution unconditionally. A pending item
+    whose circumstances changed between queuing and pickup (settings
+    edited, a threshold crossed, an override landing mid-queue) could
+    compute a manual-review or nothing-to-do decision here, and instead
+    of transitioning cleanly, the job would "execute" it: no-op decisions
+    carry target_container=None, which build_ffmpeg_command now
+    hard-rejects (deliberately, after the silent-matroska corruption
+    fix), so the job failed with a baffling "Unsupported output container
+    None" instead of just being marked skipped. Manual-review decisions
+    were worse: executed as if approved, silently bypassing the gate.
+
+    On returning None for either no-op outcome: _run_and_broadcast's
+    finally block already broadcasts the item's final status whatever it
+    is, and its stuck-job safety net only force-fails items still at
+    "processing" — so transitioning here integrates with the existing
+    machinery with no extra broadcast plumbing needed.
+
+    _upsert_language_flags placement — AFTER the manual-review
+    early-return, deliberately, mirroring both scanner.py's ordering and
+    _apply_decision_to_item's: a manual-review decision returns before
+    mismatch detection ever runs, so its mismatch fields are always None,
+    and upserting on that outcome would incorrectly CLEAR valid existing
+    flags (the exact hazard this function previously had — it called the
+    upsert unconditionally, on every decision including manual-review
+    ones). For the other two outcomes the upsert is what makes
+    corrections resolved via Approve show up in Language Review without
+    waiting for a later full scan (reported directly, fixed earlier);
+    that behavior is preserved, now correctly guarded.
     """
     db = SessionLocal()
     try:
@@ -921,7 +946,45 @@ def _load_job_data(job_id: int):
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
 
+        if decision.is_manual_review:
+            job.status = "manual_review"
+            job.reason = decision.reason
+            job.review_subtitles = (
+                json.dumps(decision.flagged_subtitles)
+                if decision.flagged_subtitles else None
+            )
+            media.status = "manual_review"
+            db.commit()
+            return None
+
         _upsert_language_flags(db, media, decision)
+
+        if not decision.should_process:
+            job.status = "skipped"
+            job.reason = decision.reason
+            job.review_subtitles = None
+            job.completed_at = datetime.utcnow()
+            media.status = "skipped"
+            db.commit()
+            return None
+
+        # Proceeding — refresh stored PlannedActions to match the FRESH
+        # decision actually about to be executed. Previously the fresh
+        # actions were executed while the stale scan-time rows stayed in
+        # the DB, so the UI could show a plan that no longer matched what
+        # the job was really doing.
+        db.query(PlannedAction).filter(PlannedAction.queue_item_id == job.id).delete()
+        db.flush()
+        for i, action in enumerate(decision.actions):
+            db.add(PlannedAction(
+                queue_item_id    = job.id,
+                order            = i,
+                action_type      = action.action_type,
+                description      = action.description,
+                track_type       = action.track_type,
+                stream_index     = action.stream_index,
+                target_language  = getattr(action, "target_language", None),
+            ))
         db.commit()
 
         return (
