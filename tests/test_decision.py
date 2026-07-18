@@ -538,3 +538,77 @@ def test_plain_non_forced_non_kept_subtitle_still_drops(settings):
     decision = analyze_file(make_file_info(), tracks, settings)
     sub_actions = [a for a in decision.actions if a.track_type == "subtitle"]
     assert any(a.action_type == "drop_track" for a in sub_actions)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MP4 conversion vs kept TEXT subtitles (H3 regression)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_kept_subrip_blocks_mp4_conversion_when_extraction_disabled(settings):
+    """
+    Regression for a real bug found by independent review, reproduced
+    empirically with real FFmpeg: MP4's only native text subtitle format
+    is mov_text — `-c:s copy` of a SubRip stream into `-f mp4` fails at
+    header-write ("Could not find tag for codec subrip", exit 234,
+    zero-byte output). MP4_INCOMPATIBLE_SUBS previously listed only
+    image/ASS codecs, so a conversion keeping a SubRip track (reachable
+    only when extract_text_subtitles_to_srt is disabled — extraction
+    otherwise removes text subs from kept_subs before the check)
+    produced a guaranteed-failing command on every attempt.
+
+    Note the existing conversion+subtitle test above this section uses
+    an already-MP4 file, which is exactly why this case was never
+    exercised — flagged by the same review.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert not any(a.action_type == "change_container" for a in decision.actions), (
+        "Conversion generated with a kept SubRip track — this command is "
+        "guaranteed to fail at FFmpeg header-write."
+    )
+    assert decision.target_container != "mp4"
+
+
+def test_kept_subrip_does_not_block_conversion_when_extraction_enabled(settings):
+    """Default config: extraction removes the text sub from kept_subs
+    before the compatibility check, so conversion proceeds — this is the
+    behavior that must NOT change."""
+    settings["extract_text_subtitles_to_srt"] = True
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert any(a.action_type == "change_container" for a in decision.actions)
+    assert any(a.action_type == "extract_subtitle" for a in decision.actions)
+
+
+def test_kept_mov_text_still_allows_conversion(settings):
+    """mov_text is MP4's own native text format and stream-copies fine —
+    deliberately NOT in the blocklist."""
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="mov_text",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert any(a.action_type == "change_container" for a in decision.actions)

@@ -37,6 +37,24 @@ MP4_COMPATIBLE_AUDIO = frozenset({
 MP4_INCOMPATIBLE_SUBS = frozenset({
     "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
     "ass", "ssa", "dvb_subtitle",
+    # Text codecs FFmpeg cannot STREAM-COPY into MP4 either — confirmed
+    # empirically with a real subrip-in-MKV source: `-c:s copy -f mp4`
+    # fails at header-write with "Could not find tag for codec subrip in
+    # stream #1, codec not currently supported in container" (exit 234,
+    # zero-byte output). MP4's only native text subtitle format is
+    # mov_text; SubRip/WebVTT must be transcoded to it, and this
+    # pipeline deliberately only ever copies subtitles (see the kept_subs
+    # block in ffmpeg.build_ffmpeg_command). Without these entries, a
+    # container conversion keeping a text subtitle — only reachable when
+    # extract_text_subtitles_to_srt is disabled, since extraction
+    # otherwise removes text subs from kept_subs before this check —
+    # produced a guaranteed-failing FFmpeg command. With them, such
+    # files simply stay in their current container, exactly like files
+    # with kept image subtitles always have. mov_text itself is
+    # deliberately NOT listed: it's MP4's native format and copies fine.
+    # If conversion-with-text-subs is ever wanted, the upgrade path is
+    # transcoding to mov_text during conversion, not removing these.
+    "subrip", "srt", "webvtt",
 })
 
 # Image-based (bitmap) subtitle codecs. These can never be converted to a
