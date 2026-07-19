@@ -269,9 +269,29 @@ async def _run_and_broadcast(
     """Wrap _run_job with the completed broadcast."""
     try:
         await _run_job(job_id, ws_manager, loop)
+    except asyncio.CancelledError:
+        # User abort: abort_job() marked the DB row "cancelled" and then
+        # called task.cancel(), which raised this here at _run_job's await
+        # point. We re-raise so the task still ends cancelled — the
+        # broadcast itself happens in the finally below, which runs to
+        # completion even under cancellation (see the note there). This
+        # branch exists so an abort is explicit and logged rather than an
+        # unlabelled BaseException silently skipping past `except
+        # Exception`.
+        logger.info("Job %d cancelled by user abort — finalising", job_id)
+        raise
     except Exception:
         logger.exception("_run_job raised for job %d — attempting emergency cleanup", job_id)
     finally:
+        # This block runs on EVERY exit path — normal return, exception,
+        # and cancellation. It is safe under cancellation specifically
+        # because abort_job() issues a single task.cancel(): the resulting
+        # CancelledError is delivered once, at _run_job's await, so by the
+        # time control reaches here the cancellation is already consumed
+        # and the awaits below (executor calls + the broadcast) complete
+        # normally. That's what guarantees EVERY connected client gets the
+        # "cancelled" job_completed event, not just the one that clicked
+        # abort (which also re-fetches over REST). Verified empirically.
         post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
         if post_job:
             final = post_job["final"]
@@ -1574,7 +1594,13 @@ def _load_email_notify_data(job_id: int) -> dict | None:
                             on again later. A dry-run preview success
                             counts as a reset too — it demonstrates the
                             pipeline is currently working for that file.
-      failed              → counter increments by 1.
+      failed              → counter increments by 1, UNTIL the breaker
+                            trips; once tripped the counter freezes and
+                            stays frozen until a success resets it —
+                            identically whether or not email is enabled
+                            (so toggling email off after a trip can't
+                            resume counting). The frozen value is the
+                            "tripped at N" figure.
                             A dry-run preview FAILURE counts as a real
                             failure here too — if dry-run previews are
                             failing due to a config mistake, that's exactly
@@ -1608,28 +1634,36 @@ def _load_email_notify_data(job_id: int) -> dict | None:
             return None
 
         # job.status == "failed"
-        if not cfg.get("email_enabled", False):
-            # Keep the breaker accurate even while email is disabled.
-            state.consecutive_failures += 1
-            threshold = cfg.get("email_failure_threshold", 5)
-            if state.consecutive_failures >= threshold:
-                state.breaker_tripped = True
-            db.commit()
-            return None
+        threshold = cfg.get("email_failure_threshold", 5)
 
+        # Once tripped, the incident is already "open": no further
+        # counting and no further emails until a success resets it —
+        # identically whether or not email is enabled. Previously the
+        # email-DISABLED branch kept incrementing past the threshold
+        # while the email-ENABLED+tripped branch froze, so toggling email
+        # off after a trip silently resumed counting and the two paths
+        # disagreed about the same state. The frozen value is the
+        # "tripped at N" figure; keeping it stable is what makes that
+        # number meaningful. Caught by independent review.
         if state.breaker_tripped:
-            # Already silenced for this incident — stop counting further so
-            # the eventual "tripped at N" number stays meaningful, and don't
-            # send anything more until a success resets it.
             return None
 
         state.consecutive_failures += 1
-        threshold = cfg.get("email_failure_threshold", 5)
+        if state.consecutive_failures >= threshold:
+            state.breaker_tripped = True
+
+        # Email off: breaker state is now updated and accurate (the
+        # reason this runs even while disabled — so it's coherent if
+        # email is re-enabled later); nothing to send.
+        if not cfg.get("email_enabled", False):
+            db.commit()
+            return None
+
         media    = job.media_file
         filename = media.filename if media else "unknown file"
 
-        if state.consecutive_failures >= threshold:
-            state.breaker_tripped = True
+        if state.breaker_tripped:
+            # Crossed the threshold on THIS failure → the one tripped email.
             db.commit()
             return {"kind": "tripped", "count": state.consecutive_failures, "cfg": cfg}
 

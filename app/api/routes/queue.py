@@ -38,7 +38,11 @@ def _current_dry_run_mode(db: Session) -> bool:
 def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     """
     Re-queue a failed / cancelled / dry-run item by deleting it and
-    re-running the scanner's per-file evaluation with force_probe=True.
+    re-running the scanner's per-file evaluation with force_probe=True,
+    OR re-evaluate a success / skipped item WITHOUT deleting its history
+    record (surfaced in the UI as "RE-PROCESS" — see the delete guard
+    below). Any exception from the re-evaluation is rolled back and
+    reported as a 400 rather than a 500 (see the try/except below).
 
     Why re-probe on retry?
     -----------------------
@@ -68,7 +72,8 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         # Explicit "Process Now" override — regardless of current setting.
         dry_run = False
     else:
-        # failed / cancelled — honor dry_run_mode as it stands NOW.
+        # failed / cancelled / success / skipped — honor dry_run_mode as
+        # it stands NOW.
         dry_run = _current_dry_run_mode(db)
 
     file_path        = media.path
@@ -80,21 +85,53 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     sonarr_series_id = item.sonarr_series_id
     radarr_movie_id  = item.radarr_movie_id
 
-    # Remove the stale item (and its PlannedActions, via cascade) — the
-    # re-probe below creates a fresh QueueItem if one is actually needed.
-    db.delete(item)
-    db.flush()
+    # Delete only STALE ATTEMPTS (failed / cancelled / dry-run previews) —
+    # the re-probe below replaces them with a fresh item if one is needed.
+    # A success or skipped item is a COMPLETED EVALUATION and a terminal
+    # history record (a success row also carries real bytes-saved /
+    # output-size stats), surfaced in the UI as "RE-PROCESS" rather than
+    # "RETRY": re-evaluate the file WITHOUT erasing that record.
+    # Previously every status was deleted unconditionally, so
+    # re-processing an already-compliant success — the common case, since
+    # the file is compliant *because* it succeeded — destroyed the
+    # history row and its stats and created nothing to replace it.
+    # Preserving is safe: _process_file's queue path clears only
+    # ("skipped", "manual_review") stale records, never "success", so a
+    # kept success row survives a re-probe that queues new work (yielding
+    # two legitimate history rows for two operations), and a kept skipped
+    # row is updated in place by the skip path. Caught by independent
+    # review.
+    preserve_completed_record = item.status in ("success", "skipped")
+    if not preserve_completed_record:
+        # Removes the stale item and its PlannedActions via cascade.
+        db.delete(item)
+        db.flush()
 
     app_cfg = get_app_settings(db)
     stats   = ScanStats()
-    _process_file(
-        db, file_path, app_cfg,
-        force_probe      = True,
-        dry_run          = dry_run,
-        stats            = stats,
-        sonarr_series_id = sonarr_series_id,
-        radarr_movie_id  = radarr_movie_id,
-    )
+    try:
+        _process_file(
+            db, file_path, app_cfg,
+            force_probe      = True,
+            dry_run          = dry_run,
+            stats            = stats,
+            sonarr_series_id = sonarr_series_id,
+            radarr_movie_id  = radarr_movie_id,
+        )
+    except Exception as exc:
+        # Same failure class retry_all_failed guards against per-item
+        # (e.g. the ValueError decision.py raises for genuinely unknown
+        # container info). The bulk sibling collects these and continues;
+        # a single explicit retry instead surfaces the reason directly.
+        # Without this the exception propagated as an unhandled 500 with
+        # no indication of what went wrong — and, for a stale attempt,
+        # left the item already deleted above. Roll back so a failed
+        # retry never destroys the item it was meant to re-queue, then
+        # report the reason. Caught by independent review.
+        logger.exception("Retry failed for %s", file_path)
+        db.rollback()
+        raise HTTPException(400, f"Retry failed: {exc}") from exc
+
     db.commit()  # ensure the deletion above is persisted even on early-return paths
 
     new_item = (
