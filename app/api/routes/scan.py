@@ -246,8 +246,26 @@ def list_orphaned(db: Session = Depends(get_db)):
     }
 
 
+def _remove_orphaned_sync(file_ids: list[int]) -> int:
+    """
+    Sync wrapper around remove_orphaned_media_files, opening/closing its
+    own SessionLocal() on the executor thread — the exact pattern (and
+    rationale) of _cleanup_sync above. When that function was fixed, its
+    docstring declared it "the one place in the codebase doing this";
+    this endpoint was doing the identical thing four routes down —
+    passing the request-scoped Depends(get_db) Session into
+    run_in_executor — and was missed. It only ever worked because of
+    check_same_thread=False. Caught by independent review.
+    """
+    db = SessionLocal()
+    try:
+        return remove_orphaned_media_files(db, file_ids)
+    finally:
+        db.close()
+
+
 @router.post("/orphaned/remove")
-async def remove_orphaned(body: RemoveOrphanedRequest, db: Session = Depends(get_db)):
+async def remove_orphaned(body: RemoveOrphanedRequest):
     """
     Remove specific orphaned MediaFile rows by ID (and every row across
     the codebase that references them — see
@@ -258,14 +276,17 @@ async def remove_orphaned(body: RemoveOrphanedRequest, db: Session = Depends(get
     being outside the configured library, which is the only thing that
     matters for this action. Removing the database row never touches
     the actual file on disk, regardless of whether it still exists.
+
+    No Depends(get_db) — all database work happens on the executor
+    thread inside _remove_orphaned_sync's own session; a request-scoped
+    session here would have nothing to do except tempt the next edit
+    into passing it across the thread boundary again.
     """
     if not body.file_ids:
         raise HTTPException(400, "No file IDs provided")
 
     loop = asyncio.get_running_loop()
-    removed = await loop.run_in_executor(
-        None, remove_orphaned_media_files, db, body.file_ids
-    )
+    removed = await loop.run_in_executor(None, _remove_orphaned_sync, body.file_ids)
     return {"removed": removed}
 
 

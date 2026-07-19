@@ -295,6 +295,11 @@ def clear_pending(db: Session = Depends(get_db)):
     latest item of dry_run, not cancelled — so the file stayed
     (incorrectly) marked "queued" until a forced full scan happened to
     touch it. Caught by independent review.
+
+    Also resets size/mtime to the delta-scan sentinels, matching
+    cancel_item — see its docstring for the full rationale. The
+    frontend's copy for this action ("They re-appear on the next scan"
+    — useActions.clearQueue) was false for delta scans without it.
     """
     file_ids = [
         row[0] for row in
@@ -310,7 +315,10 @@ def clear_pending(db: Session = Depends(get_db)):
     if file_ids:
         db.query(MediaFile).filter(
             MediaFile.id.in_(file_ids)
-        ).update({"status": "skipped"}, synchronize_session=False)
+        ).update(
+            {"status": "skipped", "size": -1, "mtime": -1.0},
+            synchronize_session=False,
+        )
     db.commit()
     return {"cancelled": count}
 
@@ -358,7 +366,28 @@ def clear_dry_run(db: Session = Depends(get_db)):
 
 @router.delete("/{item_id}")
 def cancel_item(item_id: int, db: Session = Depends(get_db)):
-    """Cancel a specific pending item."""
+    """
+    Cancel a specific pending or manual-review item.
+
+    Resets the file's size/mtime to sentinel values — the same pattern
+    clear_dry_run (above) and history's clear/delete endpoints use, and
+    for the same reason: the scanner's delta check compares ONLY
+    size/mtime against the on-disk stat(), so without the reset a
+    cancelled file's unchanged bytes read as "nothing to do" and it is
+    never re-evaluated by any delta scan. That directly contradicted
+    the frontend's own copy for this action ("it will re-appear on the
+    next library scan" — useActions.dismissQueueItem), which was only
+    true for forced full scans. The sibling endpoints that faced the
+    identical problem all reset the sentinels; this one and
+    clear_pending were missed. Caught by independent review.
+
+    For a manual_review item ("Skip" in the Review page) this means the
+    review flag also resurfaces on the next DELTA scan — deliberately
+    so: full scans already re-flag it (the underlying condition still
+    holds), so this makes the two scan types consistent rather than
+    changing what "skip" means. Permanent suppression has its own
+    dedicated mechanism (Approve sets und_audio_threshold_acknowledged).
+    """
     item = db.get(QueueItem, item_id)
     if not item:
         raise HTTPException(404, "Queue item not found")
@@ -367,6 +396,8 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
 
     item.status = "cancelled"
     if item.media_file:
+        item.media_file.size   = -1
+        item.media_file.mtime  = -1.0
         item.media_file.status = "skipped"
     db.commit()
     return {"success": True}
