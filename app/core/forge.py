@@ -31,6 +31,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
+from app.core.probe import ProbeError, extract_tracks, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     StagedOutput,
@@ -134,13 +135,19 @@ def build_add_ac3_command(
 def build_undo_command(
     input_path:            str,
     temp_path:             str,
-    ac3_audio_output_index: int,   # = audio_track_count from the original forge job
+    ac3_audio_output_index: int,   # resolved at UNDO time by resolve_forge_ac3_for_undo
     container:             str = "mkv",
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection.
+
+    ac3_audio_output_index comes from resolve_forge_ac3_for_undo's fresh
+    probe of the file, NOT from Ac3ForgeJob.audio_track_count — the
+    stored add-time index goes stale whenever the main pipeline drops
+    audio tracks between add and undo (see that function's docstring for
+    the full failure modes the stale index caused).
     """
     # Same hard-fail as build_add_ac3_command — see the comment there.
     if container not in _FORMAT_MAP:
@@ -438,8 +445,102 @@ def claim_next_forge_job() -> int | None:
         db.close()
 
 
+def resolve_forge_ac3_for_undo(tracks: list[dict]) -> tuple[str, int | None]:
+    """
+    Locate the forge-added AC3 5.1 track in a FRESHLY-probed track list,
+    for undo. Pure function — takes probe.extract_tracks() output,
+    touches nothing.
+
+    Returns (outcome, audio_output_index):
+      ("found", N)        — the forge AC3 is audio output stream N
+                            (0-based, i.e. the -0:a:{N} selector);
+      ("absent", None)    — no AC3 5.1 track exists anywhere in the file:
+                            the track is already gone (the main pipeline
+                            legitimately drops it when its inherited
+                            language isn't in the keep list), so there is
+                            nothing to undo;
+      ("mismatch", None)  — an AC3 5.1 track exists but is NOT the last
+                            audio track, which the invariant below says
+                            is impossible for a file forge actually
+                            modified — refuse rather than guess.
+
+    Why "last audio track" identifies the forge AC3 (the invariant):
+    build_add_ac3_command APPENDS the new AC3 after every existing
+    stream, making it the final audio track at add time. The main remux
+    pipeline (build_ffmpeg_command) only ever drops or copies audio
+    tracks in source order — it never reorders and never appends — so
+    any later processing shifts the forge AC3 left but can never move
+    anything past it: if it survives at all, it is still the last audio
+    track. A pre-existing AC3 5.1 in the source (possible — candidates
+    only require an AAC 5.1, they can carry other tracks too) always
+    sits BEFORE the appended one, so "last" never confuses the two.
+
+    This function exists because the previous undo trusted
+    Ac3ForgeJob.audio_track_count — the track's position AT ADD TIME —
+    verbatim. The forge rewrite changes the file's size/mtime, so the
+    next delta scan re-evaluates it, and the main pipeline can drop
+    audio tracks (e.g. a non-kept-language track) before the user ever
+    clicks undo. The forge AC3 was the LAST audio track, so any drop
+    pushes the stored index past the end of the surviving audio — and
+    FFmpeg SILENTLY IGNORES a negative map that matches nothing
+    (verified live: rc=0, no warning). The stale undo therefore rewrote
+    the entire file with every track kept and recorded the job as
+    "undone" — a false success leaving the AC3 embedded forever while
+    the UI reported it removed and the candidates list excluded the
+    file. Caught by independent review; failure mode confirmed
+    empirically during the fix. Resolving by verified properties at
+    undo time closes it.
+
+    The "mismatch" outcome is the safety net for the one case property
+    matching can't cover: the path now holds a DIFFERENT file (replaced
+    in place under the identical filename) whose own layout happens to
+    include an AC3 5.1 somewhere. When the invariant doesn't hold, this
+    file cannot be the one forge modified — refusing with a clear error
+    beats stripping a track from a file forge never touched. (A same-
+    layout replacement is indistinguishable in principle; the stored-
+    index approach was equally blind to it, and normal *arr upgrades
+    change the release filename, which deletes the MediaFile row and
+    the forge job with it — so this residual window is both tiny and
+    strictly no worse than before.)
+    """
+    audio = [t for t in tracks if t.get("track_type") == "audio"]
+
+    def _is_forge_shape(t: dict) -> bool:
+        return (t.get("codec") or "").lower() == "ac3" and t.get("channels") == 6
+
+    if not any(_is_forge_shape(t) for t in audio):
+        return ("absent", None)
+    if audio and _is_forge_shape(audio[-1]):
+        return ("found", len(audio) - 1)
+    return ("mismatch", None)
+
+
 def load_forge_job_data(job_id: int) -> dict | None:
-    """Return everything the worker needs to execute a forge job."""
+    """
+    Return everything the worker needs to execute a forge job.
+
+    For UNDO jobs this additionally re-probes the file and resolves the
+    forge AC3's CURRENT position via resolve_forge_ac3_for_undo (see its
+    docstring for why the stored add-time index cannot be trusted),
+    returning it as "undo_audio_output_index". Terminal outcomes are
+    settled here, following the existing file-missing pattern (finish +
+    return None):
+      • probe failure        → job failed, file untouched;
+      • AC3 already absent   → job marked "undone" WITHOUT running
+                                FFmpeg — the desired end state already
+                                holds (the main pipeline removed the
+                                track), the file returns to the
+                                candidates list, and re-running would
+                                rewrite gigabytes to change nothing.
+                                Deliberately NOT "undo_failed": that
+                                status means "the AC3 is still present",
+                                would exclude the file from candidates,
+                                and every retry would fail identically —
+                                a stuck state for an already-correct
+                                file;
+      • layout mismatch      → job failed with an explicit explanation,
+                                file untouched.
+    """
     from app.database.models import Ac3ForgeJob, MediaFile
 
     db = SessionLocal()
@@ -452,6 +553,51 @@ def load_forge_job_data(job_id: int) -> dict | None:
         if not media or not os.path.exists(media.path):
             finish_forge_job(job_id, False, None, None, "File not found on disk")
             return None
+
+        undo_audio_output_index: int | None = None
+        if job.is_undo:
+            try:
+                probe_data   = probe_file(media.path, app_settings.FFPROBE_PATH)
+                fresh_tracks = extract_tracks(probe_data)
+            except ProbeError as exc:
+                finish_forge_job(
+                    job_id, False, None, None,
+                    f"Could not probe file to locate the AC3 track for undo: {exc}",
+                )
+                return None
+
+            outcome, undo_audio_output_index = resolve_forge_ac3_for_undo(fresh_tracks)
+
+            if outcome == "absent":
+                logger.info(
+                    "Forge undo %d: no AC3 5.1 track present in %s — it was "
+                    "already removed (most likely by the main pipeline after "
+                    "the forge rewrite triggered a re-scan). Marking undone "
+                    "without touching the file.",
+                    job_id, media.path,
+                )
+                finish_forge_job(job_id, True, None, None, None)
+                return None
+
+            if outcome == "mismatch":
+                finish_forge_job(
+                    job_id, False, None, None,
+                    "The file's audio layout no longer matches what this "
+                    "forge job produced (an AC3 5.1 track exists but is not "
+                    "the last audio track) — the file at this path appears "
+                    "to have been replaced. Refusing to remove a track from "
+                    "a file this job did not modify.",
+                )
+                return None
+
+            if undo_audio_output_index != job.audio_track_count:
+                logger.warning(
+                    "Forge undo %d: AC3 track resolved at audio index %d, "
+                    "but the add-time index was %d — audio tracks were "
+                    "removed by later processing. Using the resolved index; "
+                    "the stored one would have targeted the wrong track.",
+                    job_id, undo_audio_output_index, job.audio_track_count,
+                )
 
         # job_timeout_minutes read here (rather than a separate fetch in
         # worker.py) since this function already has the DB session open —
@@ -466,6 +612,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "container":          media.container or "mkv",
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
+            "undo_audio_output_index": undo_audio_output_index,
             "original_size":      job.original_size,
             "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
         }

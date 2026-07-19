@@ -1680,7 +1680,22 @@ async def _process_next_forge(ws_manager) -> bool:
 
     job_data = await loop.run_in_executor(None, load_forge_job_data, job_id)
     if job_data is None:
-        return True   # job was claimed but data missing — counts as "ran"
+        # The job reached a terminal state inside load_forge_job_data
+        # itself (file missing, probe failure, AC3 already absent →
+        # undone, or a layout mismatch → failed) — broadcast that final
+        # state now, same as the post-execution path below does.
+        # Previously this returned silently, so a job settled at load
+        # time looked stuck in the UI until the next poll happened by.
+        final = await loop.run_in_executor(None, load_forge_final_state, job_id)
+        if final:
+            await ws_manager.broadcast_json({
+                "event":    "forge_job_completed",
+                "job_id":   job_id,
+                "status":   final["status"],
+                "filename": final["filename"],
+                "error":    final.get("error"),
+            })
+        return True   # job was claimed and settled — counts as "ran"
 
     input_path = job_data["file_path"]
 
@@ -1732,8 +1747,15 @@ async def _process_next_forge(ws_manager) -> bool:
             action_label = "Removing AC3 5.1 track"
             cmd = build_undo_command(
                 input_path              = input_path,
+                # Resolved against a fresh probe at load time — NOT the
+                # stored add-time audio_track_count. After any pipeline
+                # drop that index points past the end, and FFmpeg
+                # silently ignores an unmatched negative map: the old
+                # undo rewrote the file unchanged and recorded a false
+                # "undone" with the AC3 still embedded. See
+                # resolve_forge_ac3_for_undo.
+                ac3_audio_output_index  = job_data["undo_audio_output_index"],
                 temp_path               = temp_path,
-                ac3_audio_output_index  = job_data["audio_track_count"],
                 container               = job_data["container"],
             )
         else:

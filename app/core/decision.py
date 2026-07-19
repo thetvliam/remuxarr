@@ -334,9 +334,33 @@ def analyze_file(
     # See the forged_ac3_audio_index docstring above for why: it's a known
     # duplicate, not a new ambiguous source, so it shouldn't count toward
     # triggering manual review.
-    if forged_ac3_audio_index is not None and forged_ac3_audio_index < len(audio_tracks):
-        forged_track = audio_tracks[forged_ac3_audio_index]
-        und_audio = [t for t in und_audio if t is not forged_track]
+    #
+    # The index is VALIDATED against the track it lands on, not trusted
+    # blindly: it's the track's position at ADD time, and the main
+    # pipeline can drop audio tracks afterwards, shifting every index
+    # down. Since the forge AC3 is appended as the LAST audio track and
+    # the pipeline never reorders or appends audio, a surviving forge AC3
+    # is provably still the last audio track — so when the stored index
+    # no longer lands on an ac3/6ch track, fall back to the last track if
+    # (and only if) IT has the forge shape. If neither matches, the forge
+    # AC3 is genuinely gone (dropped by the pipeline) and nothing is
+    # excluded — previously a stale in-range index silently excluded
+    # whatever unrelated track happened to sit there. Same resolution
+    # rule as forge.resolve_forge_ac3_for_undo, kept inline here because
+    # this module is deliberately import-light and pure.
+    if forged_ac3_audio_index is not None and audio_tracks:
+        def _is_forge_ac3(t: dict) -> bool:
+            return (t.get("codec") or "").lower() == "ac3" and t.get("channels") == 6
+
+        forged_track = None
+        if (forged_ac3_audio_index < len(audio_tracks)
+                and _is_forge_ac3(audio_tracks[forged_ac3_audio_index])):
+            forged_track = audio_tracks[forged_ac3_audio_index]
+        elif _is_forge_ac3(audio_tracks[-1]):
+            forged_track = audio_tracks[-1]
+
+        if forged_track is not None:
+            und_audio = [t for t in und_audio if t is not forged_track]
 
     if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
         msg = (
