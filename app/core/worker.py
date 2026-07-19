@@ -475,14 +475,22 @@ def _is_subtitle_encoding_failure(error: str | None) -> bool:
     Return True if the error string looks like a subtitle-encoding failure
     rather than a video/audio or filesystem problem.
 
-    Used to decide whether to flag for manual review after a combined
-    remux+extraction pass fails — if the failure is subtitle-specific, the
-    main video/audio was fine and we should let the user decide what to do
-    with the problematic subtitle track rather than silently dropping it or
-    failing the job entirely.
+    Used by BOTH execution paths in _run_job to decide whether to flag for
+    manual review instead of failing the job outright:
+      • combined pass — a subtitle decode failure cascades and kills the
+        whole multi-output command even though the video/audio was fine;
+      • two-pass extraction loop — the same underlying file fails its
+        standalone `-map 0:N -c:s srt` command instead.
+    Either way, the user should get the per-track Keep/Remove review
+    rather than a raw failure (or, worse, a silent drop).
 
-    Patterns are all specific to subtitle processing in FFmpeg's multi-output
-    combined commands and won't false-positive on video/audio failures.
+    Patterns cover both command shapes and won't false-positive on
+    video/audio or filesystem failures: "sist#" only ever appears in the
+    combined multi-output form, while "subtitle"/"sub_charenc" also match
+    the single-command form — FFmpeg's canonical message for the exact
+    production case this exists for is "Invalid UTF-8 in decoded
+    subtitles text; maybe missing -sub_charenc option", which matches on
+    two of the four patterns.
     """
     if not error:
         return False
@@ -745,18 +753,40 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds      = timeout_seconds,
                 )
 
-            # Log subtitle results — only meaningful when main remux succeeded.
-            if result.success:
-                for (_, srt_dest), srt_res in zip(subtitle_pairs, srt_results):
-                    if srt_res.success:
-                        logger.info("Subtitle extracted → %s", srt_dest)
-                    else:
-                        logger.warning(
-                            "Subtitle extraction failed in combined pass (%s): %s",
-                            srt_dest, srt_res.error,
-                        )
+            # All-or-nothing staging: result.success now guarantees every
+            # extracted .srt landed alongside the main file (per-SRT
+            # logging happens inside execute_ffmpeg_combined). A missing
+            # or unstageable SRT fails the whole run with the source file
+            # untouched — the previous partial-success contract here could
+            # record job SUCCESS while a subtitle had silently vanished
+            # (removed from the mux, never written as a sidecar, only a
+            # log warning to show for it). srt_results is retained in the
+            # return shape for per-track detail, but no partial-failure
+            # branch exists anymore. Caught by independent review.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
+            #
+            # Encoding failures here get the SAME manual-review routing as
+            # the combined path's _is_subtitle_encoding_failure handler —
+            # previously only the combined path had it, so the identical
+            # underlying file (non-UTF-8 text subtitle) produced two
+            # different outcomes depending on which internal execution
+            # path happened to run: per-track Keep/Remove review when a
+            # remux was also needed, but a raw failed job when the only
+            # work was extraction. Caught by independent review.
+            #
+            # One deliberate asymmetry with the combined path remains: a
+            # combined command's cascade can't be attributed to a specific
+            # stream, so that path flags EVERY extraction stream for
+            # review. Here each stream runs as its own command, so only
+            # the stream(s) that actually failed are flagged — strictly
+            # better information, not a divergence. Encoding failures are
+            # accumulated across the loop (rather than flagging on the
+            # first one) so a file whose subtitles share the same bad
+            # charset resolves in ONE review visit instead of one per
+            # track; any NON-encoding failure (disk, permissions, missing
+            # stream) still fails the job immediately, exactly as before.
+            encoding_failed_pairs: list[tuple[int, str]] = []
             for i, action in enumerate(extract_actions, start=1):
                 label = f"Extracting subtitle to SRT ({i}/{len(extract_actions)})"
                 logger.info("%s — stream %d → %s",
@@ -773,11 +803,45 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id         = job_id,
                 )
                 if not ext_result.success:
+                    if _is_subtitle_encoding_failure(ext_result.error):
+                        logger.warning(
+                            "Subtitle extraction failed with an encoding "
+                            "error for job %d (%s), stream %d — will flag "
+                            "for manual review: %s",
+                            job_id, file_dict["path"],
+                            action.stream_index, ext_result.error,
+                        )
+                        encoding_failed_pairs.append(
+                            (action.stream_index, action.external_path)
+                        )
+                        continue
                     await loop.run_in_executor(
                         None, _finish_job, job_id, False, None, None,
                         f"Subtitle extraction failed (stream {action.stream_index}): {ext_result.error}",
                     )
                     return
+
+            if encoding_failed_pairs:
+                # Flag and stop BEFORE the remux — the remux would remove
+                # these tracks from the muxed output (extracted streams are
+                # excluded from the map list) with no sidecar to replace
+                # them, which is exactly the silent loss this routing
+                # exists to prevent. Any sidecars from streams that DID
+                # extract successfully above are left in place — same
+                # rationale as the failed-remux case below: they're valid,
+                # standalone files next to the (unmodified) original, and
+                # the post-review re-run simply re-extracts over them.
+                logger.warning(
+                    "Two-pass extraction hit encoding failures for job %d "
+                    "(%s) — flagging for manual review (subtitle stream(s): %s)",
+                    job_id, file_dict["path"],
+                    ", ".join(str(si) for si, _ in encoding_failed_pairs),
+                )
+                await loop.run_in_executor(
+                    None, _flag_subtitle_encoding_review,
+                    job_id, encoding_failed_pairs, tracks,
+                )
+                return
 
             result = await execute_ffmpeg(
                 input_path        = input_path,

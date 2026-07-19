@@ -10,7 +10,6 @@ determine_output_path()       — decides where to write the output file
 
 import logging
 import os
-import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,17 +539,32 @@ async def execute_ffmpeg_combined(
     Returns (FFmpegResult, [ExtractionResult, ...]) — one ExtractionResult
     per entry in subtitle_extractions, in the same order.
 
-    Thin adapter over run_staged_subprocess() for the main output, with a
-    manual SRT-move loop below to preserve partial-success semantics.
+    Thin adapter over run_staged_subprocess(): the main output AND every
+    SRT sidecar are passed to it as one staged set, so all outputs land
+    together or none do.
 
-    WHY the SRT temps are NOT passed to run_staged_subprocess:
-    run_staged_subprocess has all-or-nothing move semantics — if any temp is
-    missing, ALL outputs are cleaned up and failure is returned. But this
-    function's contract is different for SRTs: a missing SRT temp after a
-    successful main-file move reports only THAT SRT as failed; the
-    already-moved main file and any other SRTs that moved successfully are
-    unaffected. Preserving this behaviour requires keeping the SRT move loop
-    here rather than delegating it to the shared executor.
+    WHY all-or-nothing (this is a deliberate contract change):
+    an earlier version staged only the main output through
+    run_staged_subprocess and moved the SRT temps itself with
+    partial-success semantics — a missing SRT temp after a successful
+    main-file move reported only that SRT as failed, a log warning was
+    emitted, and the job still recorded SUCCESS. That combination was a
+    silent-data-loss mechanism: extracted subtitles are removed from the
+    muxed output, so "main file staged, sidecar missing" means the
+    subtitle no longer exists anywhere — gone from the media file, never
+    written to disk — with nothing but a log line to show for it (and,
+    on a container change, the original deleted right after). Caught by
+    independent review.
+
+    The partial-success contract only ever made sense when moves were
+    destructive (delete original, then move) — "rolling back" the main
+    file was impossible, so salvaging it was the least-bad option. Since
+    run_staged_subprocess switched to two-phase staging (verify every
+    temp, stage every .part, THEN swap), nothing is touched until all
+    outputs are known good: a missing or unstageable SRT now fails the
+    whole run with the source file byte-for-byte untouched, and a plain
+    retry gets a clean second attempt. All-or-nothing is strictly safer
+    and no longer costs anything.
     """
     tmp_dir   = _pick_temp_dir(input_path)
     os.makedirs(tmp_dir, exist_ok=True)
@@ -597,27 +611,29 @@ async def execute_ffmpeg_combined(
             current_action=current_action,
         ))
 
-    # ── Run via shared executor (main output only) ─────────────────────────
-    try:
-        result = await run_staged_subprocess(
-            main_cmd,
-            [StagedOutput(temp_path=temp_main, final_path=output_path)],
-            on_progress_line=on_progress_line,
-            stderr_tail_lines=30,
-            timeout_seconds=timeout_seconds,
-        )
-    except Exception:
-        # run_staged_subprocess already cleaned temp_main before re-raising.
-        # Clean up the SRT temps it doesn't know about, then re-raise so the
-        # caller's except block (in worker.py) marks the job failed.
-        for t in srt_temps:
-            cleanup_temp_file(t)
-        raise
+    # ── Run via shared executor — ALL outputs staged as one set ────────────
+    # Main file first, then each SRT in subtitle_extractions order.
+    # run_staged_subprocess owns every temp from here on: it verifies all
+    # of them exist post-run, stages all of them as .part files, and only
+    # then swaps them into place — so any missing/unstageable output
+    # (including an SRT) fails the whole run with every original
+    # untouched, and its cleanup paths (failure, timeout, cancellation,
+    # exception) already cover the SRT temps too. No local cleanup needed.
+    staged_outputs = [StagedOutput(temp_path=temp_main, final_path=output_path)]
+    staged_outputs += [
+        StagedOutput(temp_path=srt_tmp, final_path=srt_dest)
+        for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions)
+    ]
+
+    result = await run_staged_subprocess(
+        main_cmd,
+        staged_outputs,
+        on_progress_line=on_progress_line,
+        stderr_tail_lines=30,
+        timeout_seconds=timeout_seconds,
+    )
 
     if not result.success:
-        # Clean up SRT temps (run_staged_subprocess already handled temp_main).
-        for t in srt_temps:
-            cleanup_temp_file(t)
         # Log only for genuine FFmpeg failures (rc != 0), not for the
         # missing-temp edge case — matches original asymmetric logging.
         if result.returncode is not None and result.returncode != 0:
@@ -639,40 +655,10 @@ async def execute_ffmpeg_combined(
         success=True, output_path=output_path, error=None, output_size=output_size
     )
 
-    # ── Move subtitle outputs (partial-success semantics) ──────────────────
-    # Each SRT is moved independently. A missing SRT temp reports only that
-    # one SRT as failed — it does NOT roll back the already-moved main file
-    # or prevent other SRTs from being moved successfully.
-    #
-    # Same atomic .part staging as run_staged_subprocess (see the long
-    # comment there): copy to <dest>.part on the destination filesystem,
-    # then os.replace. The previous delete-then-cross-fs-move here meant a
-    # PRE-EXISTING sidecar (re-extraction over an earlier run's output)
-    # was deleted before its replacement safely existed anywhere off
-    # tmpfs. Per-file semantics preserved: each SRT stages or fails alone.
+    # All-or-nothing: success above means every SRT was staged alongside
+    # the main file — report and log them all as extracted.
     srt_results: list[ExtractionResult] = []
-    for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions):
-        if not os.path.exists(srt_tmp):
-            srt_results.append(ExtractionResult(
-                success=False, output_path=None,
-                error="Temp .srt file missing after FFmpeg completed",
-            ))
-            continue
-        try:
-            srt_part = srt_dest + ".part"
-            shutil.copyfile(srt_tmp, srt_part)
-            with open(srt_part, "rb") as f:
-                os.fsync(f.fileno())
-            os.replace(srt_part, srt_dest)
-            cleanup_temp_file(srt_tmp)
-        except OSError as exc:
-            cleanup_temp_file(srt_dest + ".part")
-            cleanup_temp_file(srt_tmp)
-            srt_results.append(ExtractionResult(
-                success=False, output_path=None,
-                error=f"Failed staging .srt to destination: {exc}",
-            ))
-            continue
+    for _, srt_dest in subtitle_extractions:
         logger.info("Subtitle extracted → %s", srt_dest)
         srt_results.append(ExtractionResult(success=True, output_path=srt_dest, error=None))
 
