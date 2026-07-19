@@ -8,6 +8,17 @@ setting they care about, via BASE_SETTINGS | {"some_setting": value}.
 make_track() builds a single track dict without repeating every key every
 time — pass only the fields that matter for a given test.
 """
+import os
+
+# Must be set before ANY test module first imports app.database.session
+# (directly or transitively, e.g. via app.core.worker): that module's
+# import mkdir()s DATABASE_PATH's parent, and the production default
+# (/config) isn't writable on dev machines or CI runners. conftest.py is
+# imported by pytest before every test module, making this the one place
+# that reliably runs first. setdefault, not assignment — an explicitly
+# configured environment still wins.
+os.environ.setdefault("REMUXARR_DATABASE_PATH", "/tmp/remuxarr-test/remuxarr.db")
+
 import pytest
 
 # Every settings key analyze_file() actually reads, confirmed directly

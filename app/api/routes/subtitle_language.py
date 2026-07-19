@@ -137,14 +137,43 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         media.subtitle_language_ignored = False
         db.commit()
 
-        # Clear any existing ACTIVE QueueItem(s) — see
-        # audio_language.py's apply_language for the full rationale on
-        # why this must be status-filtered rather than an unfiltered
-        # .first().
-        db.query(QueueItem).filter(
-            QueueItem.file_id == file_id,
-            QueueItem.status.in_(["pending", "processing", "manual_review"]),
-        ).delete(synchronize_session=False)
+        # Skip files with a live running job, then clear any WAITING
+        # QueueItem(s) — see audio_language.py's apply_language for the
+        # full rationale on both: why deleting a "processing" row out
+        # from under a running FFmpeg is a real concurrent-write hazard
+        # (an earlier version of this code did exactly that), and why
+        # the remaining delete must be status-filtered rather than an
+        # unfiltered .first().
+        processing = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status == "processing")
+            .first()
+        )
+        if processing:
+            results["errors"].append({
+                "file_id": file_id,
+                "error": "File is currently being processed — the language "
+                         "choice is saved and will apply automatically after "
+                         "the running job finishes (next scan).",
+            })
+            continue
+
+        # Same reasoning as audio_language.py's apply_language for capturing
+        # arr IDs before deleting — see that endpoint for the full rationale.
+        active_items = (
+            db.query(QueueItem)
+            .filter(
+                QueueItem.file_id == file_id,
+                QueueItem.status.in_(["pending", "manual_review"]),
+            )
+            .order_by(QueueItem.created_at.desc())
+            .all()
+        )
+        sonarr_series_id = active_items[0].sonarr_series_id if active_items else None
+        radarr_movie_id  = active_items[0].radarr_movie_id  if active_items else None
+        for active_item in active_items:
+            db.delete(active_item)
         db.flush()
 
         try:
@@ -154,6 +183,8 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
                 force_probe=True,
                 dry_run=dry_run,
                 stats=stats,
+                sonarr_series_id=sonarr_series_id,
+                radarr_movie_id=radarr_movie_id,
             )
             results["applied"] += 1
         except Exception as exc:

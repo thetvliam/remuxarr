@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 from app.core.decision import analyze_file, MP4_COMPATIBLE_VIDEO
-from conftest import make_track, make_file_info, BASE_SETTINGS
+from conftest import make_track, make_file_info
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +283,11 @@ def test_container_conversion_mkv_to_mp4(settings):
     )
     decision = analyze_file(file_info, tracks, settings)
     assert decision.target_container == "mp4"
-    assert decision.output_extension == ".mp4"
+    # No output_extension assertion — the field was removed (it was
+    # derivable from target_container + the change_container action, and
+    # carrying both is what caused real silent renames; see
+    # determine_output_path). Path derivation is covered in
+    # test_ffmpeg_command.py.
     assert any(a.action_type == "change_container" for a in decision.actions)
 
 
@@ -452,3 +456,159 @@ def test_image_subtitle_setting_does_not_affect_text_based_subs(settings):
         "text-based, SRT-convertible track — it should have been "
         "extracted normally, completely untouched by this setting."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Title-derived forced/SDH flags — legacy DB rows (F-B4 regression)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_forced_by_title_legacy_row_is_kept_not_dropped(settings):
+    """
+    Regression for a real bug found by independent review: the
+    title-regex fallback for Track rows scanned before probe-side forced
+    detection existed only upgraded LOCAL variables inside the subtitle
+    loop — but the keep/drop decision (_sub_is_kept) reads the track
+    dict, and the manual-review gate runs before the loop entirely. So a
+    legacy forced-by-title subtitle with a non-kept language was DROPPED
+    despite keep_forced_subtitles=True, defeating the fallback's own
+    stated purpose. Verified before the fix: this exact setup produced
+    [('drop_track', 2)]. Flags are now normalised into upgraded copies
+    before any gating code runs.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="fre", is_forced=False, title="English (Forced)"),
+    ]
+    tracks_snapshot = [dict(t) for t in tracks]
+    decision = analyze_file(make_file_info(), tracks, settings)
+
+    # Before the fix this exact setup produced should_process=True with a
+    # drop_track for stream 2. With the flag correctly upgraded, the
+    # subtitle is kept — and since the fixture file is already MP4 with
+    # nothing else wrong, the correct outcome is "no changes needed at
+    # all". That no-op is the sharpest form of the regression assertion.
+    assert not any(a.action_type == "drop_track" for a in decision.actions), (
+        "Legacy forced-by-title subtitle was dropped — the title fallback "
+        "isn't reaching the keep/drop decision."
+    )
+    assert decision.should_process is False
+    # Purity: analyze_file must upgrade COPIES, never the caller's dicts.
+    assert tracks == tracks_snapshot, "analyze_file mutated its caller's track dicts"
+
+
+def test_forced_by_title_legacy_pgs_reaches_manual_review_gate(settings):
+    """
+    The manual-review gate calls _sub_is_kept before the subtitle loop
+    runs at all, so it had the same blind spot: a legacy forced-by-title
+    PGS track never even registered as "kept" and silently bypassed the
+    image-subtitle gate. It must now land in manual review with the
+    upgraded flag visible in the flagged payload.
+    """
+    settings["extract_text_subtitles_to_srt"] = True
+    settings["image_subtitle_handling"] = "always_ask"
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle",
+                   codec="hdmv_pgs_subtitle", language="fre",
+                   is_forced=False, title="Forced"),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+    assert decision.is_manual_review is True
+    assert decision.flagged_subtitles
+    assert decision.flagged_subtitles[0]["is_forced"] is True
+
+
+def test_plain_non_forced_non_kept_subtitle_still_drops(settings):
+    """No over-keeping: a genuinely non-forced, non-kept-language subtitle
+    with an ordinary title must still be dropped."""
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="fre", is_forced=False, title="Français"),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+    sub_actions = [a for a in decision.actions if a.track_type == "subtitle"]
+    assert any(a.action_type == "drop_track" for a in sub_actions)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MP4 conversion vs kept TEXT subtitles (H3 regression)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_kept_subrip_blocks_mp4_conversion_when_extraction_disabled(settings):
+    """
+    Regression for a real bug found by independent review, reproduced
+    empirically with real FFmpeg: MP4's only native text subtitle format
+    is mov_text — `-c:s copy` of a SubRip stream into `-f mp4` fails at
+    header-write ("Could not find tag for codec subrip", exit 234,
+    zero-byte output). MP4_INCOMPATIBLE_SUBS previously listed only
+    image/ASS codecs, so a conversion keeping a SubRip track (reachable
+    only when extract_text_subtitles_to_srt is disabled — extraction
+    otherwise removes text subs from kept_subs before the check)
+    produced a guaranteed-failing command on every attempt.
+
+    Note the existing conversion+subtitle test above this section uses
+    an already-MP4 file, which is exactly why this case was never
+    exercised — flagged by the same review.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert not any(a.action_type == "change_container" for a in decision.actions), (
+        "Conversion generated with a kept SubRip track — this command is "
+        "guaranteed to fail at FFmpeg header-write."
+    )
+    assert decision.target_container != "mp4"
+
+
+def test_kept_subrip_does_not_block_conversion_when_extraction_enabled(settings):
+    """Default config: extraction removes the text sub from kept_subs
+    before the compatibility check, so conversion proceeds — this is the
+    behavior that must NOT change."""
+    settings["extract_text_subtitles_to_srt"] = True
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert any(a.action_type == "change_container" for a in decision.actions)
+    assert any(a.action_type == "extract_subtitle" for a in decision.actions)
+
+
+def test_kept_mov_text_still_allows_conversion(settings):
+    """mov_text is MP4's own native text format and stream-copies fine —
+    deliberately NOT in the blocklist."""
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="mov_text",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                                video_codec="h264")
+    decision = analyze_file(file_info, tracks, settings)
+    assert any(a.action_type == "change_container" for a in decision.actions)

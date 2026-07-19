@@ -28,36 +28,71 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends wget xz-utils ca-certificates jq \
  && rm -rf /var/lib/apt/lists/*
 
-# BtbN only keeps the last 14 daily builds (plus one build per month for two
-# years) — a hardcoded "autobuild-YYYY-MM-DD-HH-MM" release tag WILL 404 once
-# it inevitably rolls off that window. Resolve the current download URL via
-# BtbN's GitHub Releases API instead, filtering by asset name for the
-# "-linux64-gpl-8.1.tar.xz" suffix — this stays correct indefinitely, even as
-# the embedded FFmpeg point version (currently n8.1.2) changes over time.
+# FFmpeg 8.1 static binaries, downloaded WITHOUT depending on the GitHub
+# API. The previous approach hit the API first (to resolve a dated
+# autobuild asset) and 404'd on a hardcoded dated fallback — both failed
+# together in a real build: the unauthenticated API returned 403 "rate
+# limit exceeded" (60 req/hr/IP, and CI runners share pooled egress IPs)
+# so the asset lookup came back empty, and BtbN had already pruned the
+# pinned "autobuild-2026-06-30" release off its ~14-day retention window.
 #
-# Falls back to the most recent known-good dated release if the API call
-# fails for any reason — most notably GitHub's unauthenticated API rate
-# limit (60 requests/hour per IP), which a Docker host could plausibly hit
-# during repeated rebuilds. The fallback tag will itself eventually roll off
-# BtbN's 14-day retention window too — if this build ever fails on BOTH
-# paths, check https://github.com/BtbN/FFmpeg-Builds/releases/latest for
-# the current linux64-gpl-8.1 asset and update FALLBACK_URL below.
-RUN FFMPEG_URL=$(wget -qO- --header="Accept: application/vnd.github+json" \
-        https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest 2>/dev/null \
-      | jq -r '.assets[]? | select(.name | test("-linux64-gpl-8\\.1\\.tar\\.xz$")) | .browser_download_url' \
-      | head -1) \
- && FALLBACK_URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-30-13-34/ffmpeg-n8.1.2-linux64-gpl-8.1.tar.xz" \
- && if [ -z "$FFMPEG_URL" ]; then \
-      echo "GitHub API lookup failed or returned no match — using fallback URL" >&2; \
-      FFMPEG_URL="$FALLBACK_URL"; \
-    fi \
- && echo "Downloading FFmpeg from: $FFMPEG_URL" \
- && wget -q -O /tmp/ffmpeg.tar.xz "$FFMPEG_URL" \
- && tar -xf /tmp/ffmpeg.tar.xz -C /tmp \
- && find /tmp -name ffmpeg  -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffmpeg \; \
- && find /tmp -name ffprobe -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffprobe \; \
- && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
- && rm -rf /tmp/ffmpeg*
+# Fix: BtbN maintains a PERMANENT "latest" release whose asset filenames
+# are version-pinned but NOT date-stamped —
+#   .../releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+# The "latest" tag never rolls off and the file is re-uploaded in place as
+# new 8.1.x point builds ship (verified: currently serves n8.1.2), so this
+# URL needs no API call (no rate limit) and no dated tag (no retention
+# 404). We try two forms of that same stable asset (direct /download/ and
+# the /releases/latest/download/ redirect), each with wget retries for
+# transient blips, and only fall back to the rate-limited API as a LAST
+# resort. Finally we verify the binary actually runs and reports 8.1
+# before the stage succeeds, so a truncated/corrupt archive fails HERE
+# (loud, at build time) rather than at container runtime.
+#
+# If this ever needs bumping to a new major FFmpeg line, change the "8.1"
+# in the two URLs (and the grep check) to the new version — the "latest"
+# tag itself stays the same.
+RUN set -eu; \
+    STABLE_ASSET="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"; \
+    URLS="\
+https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${STABLE_ASSET} \
+https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/${STABLE_ASSET}"; \
+    ok=""; \
+    for url in $URLS; do \
+      echo "Trying FFmpeg download: $url"; \
+      if wget --tries=3 --waitretry=5 --retry-connrefused \
+              --timeout=30 -q -O /tmp/ffmpeg.tar.xz "$url"; then \
+        ok=1; break; \
+      fi; \
+      echo "  → failed, trying next source" >&2; \
+    done; \
+    if [ -z "$ok" ]; then \
+      echo "Stable URLs failed — falling back to GitHub API lookup" >&2; \
+      api_url=$(wget -qO- --header="Accept: application/vnd.github+json" \
+          https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest 2>/dev/null \
+        | jq -r '.assets[]? | select(.name | test("-linux64-gpl-8\\.1\\.tar\\.xz$")) | .browser_download_url' \
+        | head -1); \
+      if [ -n "$api_url" ] && [ "$api_url" != "null" ]; then \
+        echo "API resolved: $api_url"; \
+        wget --tries=3 --waitretry=5 --retry-connrefused \
+             --timeout=30 -q -O /tmp/ffmpeg.tar.xz "$api_url" && ok=1; \
+      fi; \
+    fi; \
+    if [ -z "$ok" ]; then \
+      echo "ERROR: could not download FFmpeg 8.1 from any source." >&2; \
+      echo "Check https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest for the current linux64-gpl-8.1 asset name." >&2; \
+      exit 1; \
+    fi; \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
+    find /tmp -name ffmpeg  -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffmpeg \; ; \
+    find /tmp -name ffprobe -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffprobe \; ; \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg*; \
+    /usr/local/bin/ffmpeg  -version | head -1 | grep -q 'version n8.1' \
+      || { echo "ERROR: downloaded ffmpeg is not the expected 8.1 build" >&2; exit 1; }; \
+    /usr/local/bin/ffprobe -version >/dev/null \
+      || { echo "ERROR: ffprobe failed to run" >&2; exit 1; }; \
+    echo "FFmpeg installed: $(/usr/local/bin/ffmpeg -version | head -1)"
 
 
 # ── Stage 3: Python runtime ───────────────────────────────────────────────────

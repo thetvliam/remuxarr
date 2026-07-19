@@ -10,7 +10,6 @@ determine_output_path()       — decides where to write the output file
 
 import logging
 import os
-import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,13 +160,36 @@ def build_ffmpeg_command(
         "mkv": "matroska",
         "mp4": "mp4",
         "avi": "avi",
+        # No "m2ts" entry — _normalise_container (probe.py) can never
+        # actually produce it: every real .m2ts file's ffprobe format_name
+        # contains "mpegts", which the "ts" branch there always matches
+        # first, before any fallback path could return "m2ts" literally.
+        # Confirmed directly, including during the real .m2ts investigation
+        # for F-B2 earlier — genuinely unreachable, not just unlikely.
         "ts": "mpegts",
-        "m2ts": "mpegts",
         "wmv": "asf",
         "webm": "webm",
         "mov": "mov",
     }
-    out_fmt = _CONTAINER_FORMAT.get(decision.target_container or "mkv", "matroska")
+    # Hard-fail on any container this map doesn't know, rather than
+    # silently defaulting to matroska. The old `.get(..., "matroska")`
+    # default was a genuine file-corruption bug: MEDIA_EXTENSIONS accepts
+    # containers (e.g. .flv) that _normalise_container passes through
+    # unchanged and this map has no entry for — those files got Matroska
+    # bytes written into their original path, in place, with the original
+    # deleted after "success". analyze_file's own container guard can't
+    # catch this case (the container string is present and non-empty; it
+    # just isn't muxable-as-itself here). Raising is caught by the
+    # worker's job-level exception handler and becomes a visible failed
+    # job with this message — and, critically, it fires before FFmpeg
+    # ever starts, so the source file is never touched.
+    if decision.target_container not in _CONTAINER_FORMAT:
+        raise ValueError(
+            f"Unsupported output container {decision.target_container!r} — "
+            f"refusing to guess the mux format (supported: "
+            f"{', '.join(sorted(_CONTAINER_FORMAT))})"
+        )
+    out_fmt = _CONTAINER_FORMAT[decision.target_container]
     logger.info(
         "build_ffmpeg_command: decision.target_container=%r -> out_fmt=%r "
         "(output_path=%s)",
@@ -414,12 +436,35 @@ def determine_output_path(input_path: str, decision: ProcessingDecision) -> str:
     """
     Return the target output path.
 
-    • Container conversion (e.g. MKV → MP4): same directory, new extension.
-    • Same-container remux: same path (temp→rename strategy keeps it atomic).
+    • Genuine container conversion (a change_container action exists):
+      same directory, extension derived from target_container.
+    • Everything else: same path, byte-for-byte (temp→rename keeps it
+      atomic) — including containers whose normalised name differs from
+      their real extension.
+
+    The rename is gated on an actual change_container ACTION, not on
+    extension/suffix comparison. The previous implementation compared
+    decision.output_extension (derived from the NORMALISED container
+    name) against the file's real suffix and renamed on any mismatch —
+    which silently renamed files whose extension legitimately differs
+    from their normalised container name: a .m2ts (normalised "ts")
+    processed for ANY reason — even a pure track drop — was written to
+    Movie.ts, with no change_container action, no mention in the reason,
+    and the original deleted at the old path after success; .m4v/.mov
+    (normalised "mp4") were renamed to .mp4 the same way. Nothing
+    informed Plex/Sonarr/Radarr of those renames. Caught by independent
+    review; ProcessingDecision.output_extension was removed entirely at
+    the same time, since carrying a second, derivable field alongside
+    target_container is exactly what produced the divergence.
     """
     p = Path(input_path)
-    if decision.output_extension and decision.output_extension != p.suffix.lower():
-        return str(p.parent / (p.stem + decision.output_extension))
+    has_container_change = any(
+        a.action_type == "change_container" for a in decision.actions
+    )
+    if has_container_change:
+        new_ext = f".{decision.target_container}"
+        if new_ext != p.suffix.lower():
+            return str(p.parent / (p.stem + new_ext))
     return input_path
 
 
@@ -494,17 +539,32 @@ async def execute_ffmpeg_combined(
     Returns (FFmpegResult, [ExtractionResult, ...]) — one ExtractionResult
     per entry in subtitle_extractions, in the same order.
 
-    Thin adapter over run_staged_subprocess() for the main output, with a
-    manual SRT-move loop below to preserve partial-success semantics.
+    Thin adapter over run_staged_subprocess(): the main output AND every
+    SRT sidecar are passed to it as one staged set, so all outputs land
+    together or none do.
 
-    WHY the SRT temps are NOT passed to run_staged_subprocess:
-    run_staged_subprocess has all-or-nothing move semantics — if any temp is
-    missing, ALL outputs are cleaned up and failure is returned. But this
-    function's contract is different for SRTs: a missing SRT temp after a
-    successful main-file move reports only THAT SRT as failed; the
-    already-moved main file and any other SRTs that moved successfully are
-    unaffected. Preserving this behaviour requires keeping the SRT move loop
-    here rather than delegating it to the shared executor.
+    WHY all-or-nothing (this is a deliberate contract change):
+    an earlier version staged only the main output through
+    run_staged_subprocess and moved the SRT temps itself with
+    partial-success semantics — a missing SRT temp after a successful
+    main-file move reported only that SRT as failed, a log warning was
+    emitted, and the job still recorded SUCCESS. That combination was a
+    silent-data-loss mechanism: extracted subtitles are removed from the
+    muxed output, so "main file staged, sidecar missing" means the
+    subtitle no longer exists anywhere — gone from the media file, never
+    written to disk — with nothing but a log line to show for it (and,
+    on a container change, the original deleted right after). Caught by
+    independent review.
+
+    The partial-success contract only ever made sense when moves were
+    destructive (delete original, then move) — "rolling back" the main
+    file was impossible, so salvaging it was the least-bad option. Since
+    run_staged_subprocess switched to two-phase staging (verify every
+    temp, stage every .part, THEN swap), nothing is touched until all
+    outputs are known good: a missing or unstageable SRT now fails the
+    whole run with the source file byte-for-byte untouched, and a plain
+    retry gets a clean second attempt. All-or-nothing is strictly safer
+    and no longer costs anything.
     """
     tmp_dir   = _pick_temp_dir(input_path)
     os.makedirs(tmp_dir, exist_ok=True)
@@ -551,27 +611,29 @@ async def execute_ffmpeg_combined(
             current_action=current_action,
         ))
 
-    # ── Run via shared executor (main output only) ─────────────────────────
-    try:
-        result = await run_staged_subprocess(
-            main_cmd,
-            [StagedOutput(temp_path=temp_main, final_path=output_path)],
-            on_progress_line=on_progress_line,
-            stderr_tail_lines=30,
-            timeout_seconds=timeout_seconds,
-        )
-    except Exception:
-        # run_staged_subprocess already cleaned temp_main before re-raising.
-        # Clean up the SRT temps it doesn't know about, then re-raise so the
-        # caller's except block (in worker.py) marks the job failed.
-        for t in srt_temps:
-            cleanup_temp_file(t)
-        raise
+    # ── Run via shared executor — ALL outputs staged as one set ────────────
+    # Main file first, then each SRT in subtitle_extractions order.
+    # run_staged_subprocess owns every temp from here on: it verifies all
+    # of them exist post-run, stages all of them as .part files, and only
+    # then swaps them into place — so any missing/unstageable output
+    # (including an SRT) fails the whole run with every original
+    # untouched, and its cleanup paths (failure, timeout, cancellation,
+    # exception) already cover the SRT temps too. No local cleanup needed.
+    staged_outputs = [StagedOutput(temp_path=temp_main, final_path=output_path)]
+    staged_outputs += [
+        StagedOutput(temp_path=srt_tmp, final_path=srt_dest)
+        for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions)
+    ]
+
+    result = await run_staged_subprocess(
+        main_cmd,
+        staged_outputs,
+        on_progress_line=on_progress_line,
+        stderr_tail_lines=30,
+        timeout_seconds=timeout_seconds,
+    )
 
     if not result.success:
-        # Clean up SRT temps (run_staged_subprocess already handled temp_main).
-        for t in srt_temps:
-            cleanup_temp_file(t)
         # Log only for genuine FFmpeg failures (rc != 0), not for the
         # missing-temp edge case — matches original asymmetric logging.
         if result.returncode is not None and result.returncode != 0:
@@ -593,21 +655,10 @@ async def execute_ffmpeg_combined(
         success=True, output_path=output_path, error=None, output_size=output_size
     )
 
-    # ── Move subtitle outputs (partial-success semantics) ──────────────────
-    # Each SRT is moved independently. A missing SRT temp reports only that
-    # one SRT as failed — it does NOT roll back the already-moved main file
-    # or prevent other SRTs from being moved successfully.
+    # All-or-nothing: success above means every SRT was staged alongside
+    # the main file — report and log them all as extracted.
     srt_results: list[ExtractionResult] = []
-    for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions):
-        if not os.path.exists(srt_tmp):
-            srt_results.append(ExtractionResult(
-                success=False, output_path=None,
-                error="Temp .srt file missing after FFmpeg completed",
-            ))
-            continue
-        if os.path.exists(srt_dest):
-            os.remove(srt_dest)
-        shutil.move(srt_tmp, srt_dest)
+    for _, srt_dest in subtitle_extractions:
         logger.info("Subtitle extracted → %s", srt_dest)
         srt_results.append(ExtractionResult(success=True, output_path=srt_dest, error=None))
 

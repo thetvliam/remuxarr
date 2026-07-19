@@ -289,6 +289,69 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     ).delete(synchronize_session=False)
 
 
+def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
+    """
+    Delete any PENDING QueueItem(s) for this file — called from the
+    manual-review branch of _process_file right before it records the
+    review state.
+
+    Why this exists: a file could hold a pending item AND a
+    manual_review item simultaneously. Sequence: a scan queues the file
+    (pending, with PlannedActions computed under the then-current
+    settings) → conditions change (settings edit, threshold change) → a
+    later scan's decision is manual-review, which created its review
+    item WITHOUT touching the pending one. The worker would then still
+    claim the stale pending item, recompute the decision at pickup, and
+    — via _load_job_data's manual-review transition — convert IT to
+    manual_review as well: a wasted claim cycle ending in a duplicate
+    review row for the same file. The pending item's plan is exactly the
+    kind of "as of that scan" claim _clear_stale_status_records deals in;
+    it just additionally carries children and a claim race, handled
+    below. Caught by independent review.
+
+    NOT routed through _clear_stale_status_records for two load-bearing
+    reasons:
+
+    1. Cascade safety — that helper uses a bulk delete, which bypasses
+       ORM relationship cascades, and this codebase does not enable
+       SQLite's foreign_keys PRAGMA, so the schema-level
+       ondelete=CASCADE is inert too. Harmless there (skipped /
+       manual_review items never have PlannedActions); here it would
+       orphan the pending item's planned_actions rows forever. Children
+       are deleted explicitly instead.
+
+    2. Claim race — the worker can claim a pending item (flipping it to
+       "processing") between this function's SELECT and its DELETE.
+       Each parent delete is therefore GUARDED on status still being
+       "pending" and children are only removed when the guarded delete
+       actually deleted the row (parent first, then children — safe
+       within one transaction precisely because FK enforcement is off).
+       If the guard misses, the worker owns the item and its pickup
+       transition handles it; that razor-thin window can still produce
+       a duplicate review row, but a claimed job's rows must never be
+       deleted out from under the worker mid-run.
+
+    "processing" items are never touched for the same reason.
+    """
+    stale_ids = [
+        row[0] for row in
+        db.query(QueueItem.id).filter(
+            QueueItem.file_id == file_id,
+            QueueItem.status  == "pending",
+        ).all()
+    ]
+    for qid in stale_ids:
+        deleted = (
+            db.query(QueueItem)
+            .filter(QueueItem.id == qid, QueueItem.status == "pending")
+            .delete(synchronize_session=False)
+        )
+        if deleted:
+            db.query(PlannedAction).filter(
+                PlannedAction.queue_item_id == qid
+            ).delete(synchronize_session=False)
+
+
 def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None:
     """
     Upsert or clear AudioLanguageFlag/SubtitleLanguageFlag for this file
@@ -659,6 +722,12 @@ def _process_file(
     if decision.is_manual_review:
         media_file.status = "manual_review"
         _clear_stale_status_records(db, media_file.id, ("skipped",))
+        # A still-pending item from an earlier scan is superseded by this
+        # review decision — left in place it becomes a duplicate-review
+        # factory (see _supersede_stale_pending_items). Runs before the
+        # dedup check below so a pre-existing bad state (pending + review
+        # coexisting, created before this fix) also self-heals here.
+        _supersede_stale_pending_items(db, media_file.id)
 
         # Only create one manual-review item per file
         already = db.query(QueueItem).filter(
@@ -773,22 +842,44 @@ def _process_file(
     logger.info("Queued [%d] %s — %s", qi.id, os.path.basename(path), decision.reason)
 
 
+def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int, str]:
+    """
+    Shared implementation for _load_subtitle_overrides,
+    _load_audio_language_overrides, and _load_subtitle_language_overrides
+    below — those three were previously byte-identical apart from which
+    MediaFile column they read (their own docstrings already
+    acknowledged this). Consolidated here as thin wrappers rather than
+    updating every importer (worker.py, queue.py, audio_language.py,
+    subtitle_language.py) to call this directly, so every existing call
+    site keeps working unchanged. Caught by independent review.
+
+    Parses a JSON dict with string keys (JSON object keys are always
+    strings) into a dict[int, str] keyed by stream_index, as expected by
+    analyze_file(). The warning message is built from `attr` itself,
+    which reproduces each wrapper's own original, distinct wording
+    exactly — preserved deliberately in case anything greps logs for a
+    specific one of these three messages.
+    """
+    value = getattr(media_file, attr)
+    if not value:
+        return {}
+    try:
+        raw = json.loads(value)
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, AttributeError, TypeError):
+        logger.warning(
+            "Invalid %s JSON for file %d — ignoring", attr, media_file.id
+        )
+        return {}
+
+
 def _load_subtitle_overrides(media_file: MediaFile) -> dict[int, str]:
     """
     Parse MediaFile.subtitle_overrides (JSON dict with string keys, since
     JSON object keys are always strings) into a dict[int, str] keyed by
     stream_index, as expected by analyze_file().
     """
-    if not media_file.subtitle_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.subtitle_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid subtitle_overrides JSON for file %d — ignoring", media_file.id
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "subtitle_overrides")
 
 
 def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
@@ -797,33 +888,13 @@ def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
     shape as _load_subtitle_overrides above) into a dict[int, str] keyed by
     stream_index, as expected by analyze_file().
     """
-    if not media_file.audio_language_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.audio_language_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid audio_language_overrides JSON for file %d — ignoring",
-            media_file.id,
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "audio_language_overrides")
 
 
 def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
     """Subtitle counterpart to _load_audio_language_overrides above — same
     shape, same parsing, different column."""
-    if not media_file.subtitle_language_overrides:
-        return {}
-    try:
-        raw = json.loads(media_file.subtitle_language_overrides)
-        return {int(k): v for k, v in raw.items()}
-    except (ValueError, AttributeError, TypeError):
-        logger.warning(
-            "Invalid subtitle_language_overrides JSON for file %d — ignoring",
-            media_file.id,
-        )
-        return {}
+    return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
 
 
 def _track_to_dict(t: Track) -> dict:
@@ -853,31 +924,53 @@ def _track_to_dict(t: Track) -> dict:
 
 def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     """
-    If this file has a completed (or undo-in-progress/undo-failed) AC3
-    forge job, return Ac3ForgeJob.audio_track_count — the 0-based
-    audio-track-relative index of the AC3 track it added. This is the same
-    index the undo command uses for its -map -0:a:{N} selector, and audio
-    tracks from extract_tracks() are naturally ordered by ascending
-    ffprobe stream_index, matching FFmpeg's own 0:a:N addressing — so
-    indexing into the file's audio_tracks list at this position reliably
-    identifies the forge-derived track.
+    If this file has an AC3 forge job in any state where the added AC3
+    track is (or should be treated as) present, return
+    Ac3ForgeJob.audio_track_count — the 0-based audio-track-relative
+    index the AC3 was appended at. analyze_file() uses this to exclude
+    that track from the "multiple undefined-language audio tracks"
+    manual-review threshold count; since the index reflects the track's
+    position at ADD time, analyze_file validates it against the actual
+    track (with a last-audio-track fallback) rather than trusting it
+    blindly — see the exclusion block there.
 
-    Statuses checked: "success" (AC3 present), "undo_pending" (AC3 still
-    present, removal in flight), "undo_failed" (AC3 still present, removal
-    never completed). "pending"/"processing"/"failed"/"undone"/"cancelled"
-    are excluded — in each of those the AC3 track either doesn't exist yet
-    or has already been removed, so there's nothing to exclude.
+    Matched states — every one in which the AC3 physically exists:
+      "success"      — AC3 added and present;
+      "undo_pending" — removal queued, AC3 still present;
+      "undo_failed"  — removal attempted and failed, AC3 still present;
+      "processing" WITH is_undo=True — removal actively running. The
+        moment the worker claims an undo job, claim_next_forge_job flips
+        undo_pending → processing, but the AC3 remains in the file for
+        the entire (potentially long) rewrite. A plain status list
+        couldn't see this window: "processing" is ambiguous on its own
+        (an ADD in flight means the AC3 does NOT exist yet), so the
+        is_undo flag is what disambiguates. Without this, a scan landing
+        mid-undo counted the forge track toward the und threshold and
+        could re-flag for manual review a file this feature exists to
+        exempt. Caught by independent review.
+
+    Excluded: "pending"/"failed" and "processing" with is_undo=False
+    (AC3 doesn't exist yet), "undone"/"cancelled" (AC3 already removed
+    or never added) — nothing to exclude in any of them.
 
     Returns None if no such job exists, so analyze_file() falls back to
     its normal (unmodified) und-audio counting.
     """
+    from sqlalchemy import and_, or_
+
     from app.database.models import Ac3ForgeJob
 
     job = (
         db.query(Ac3ForgeJob)
         .filter(
             Ac3ForgeJob.file_id == file_id,
-            Ac3ForgeJob.status.in_(["success", "undo_pending", "undo_failed"]),
+            or_(
+                Ac3ForgeJob.status.in_(["success", "undo_pending", "undo_failed"]),
+                and_(
+                    Ac3ForgeJob.status == "processing",
+                    Ac3ForgeJob.is_undo.is_(True),
+                ),
+            ),
         )
         .order_by(Ac3ForgeJob.created_at.desc())
         .first()

@@ -54,32 +54,58 @@ async def trigger_scan(
     if _scan_running:
         raise HTTPException(409, "A scan is already in progress")
 
-    app_cfg = get_app_settings(db)
-    paths   = body.paths or app_cfg.get("scan_paths", [])
+    # Set synchronously, immediately, before any await or thread creation —
+    # closes a real TOCTOU window: a manual trigger and a scheduled trigger
+    # (scheduler.py's _tick) landing in the gap between check and thread
+    # start could both pass the check above and start two concurrent scans
+    # against the same DB. No threading.Lock needed: both callers are
+    # themselves single-threaded asyncio coroutines on the same event loop,
+    # and this assignment has no await before or after it — asyncio only
+    # switches coroutines at await points, so this check-and-set is already
+    # atomic with respect to any other coroutine on the loop.
+    #
+    # The try/finally below is NOT optional: the first version of this fix
+    # set the flag here but had no rollback, so any early exit before the
+    # thread actually started — most easily an empty scan_paths list
+    # raising the 400 below — left the flag stuck True forever, and every
+    # future scan (manual or scheduled) got a 409 until the container
+    # restarted. The flag's lifecycle contract: whoever sets it must
+    # either hand ownership to a successfully-started scan thread (whose
+    # own finally in _run_scan is then the sole reset point) or roll it
+    # back themselves on every other exit path, exceptional or not.
+    _scan_running = True
+    scan_thread_started = False
+    try:
+        app_cfg = get_app_settings(db)
+        paths   = body.paths or app_cfg.get("scan_paths", [])
 
-    if not paths:
-        raise HTTPException(
-            400,
-            "No scan paths configured. Add paths via Settings or pass them in the request body.",
+        if not paths:
+            raise HTTPException(
+                400,
+                "No scan paths configured. Add paths via Settings or pass them in the request body.",
+            )
+
+        # Capture the running event loop here, in the async context, so the
+        # scan thread can safely schedule WebSocket broadcasts back onto it.
+        loop = asyncio.get_running_loop()
+
+        # Launch the scan on a DEDICATED daemon thread rather than via
+        # FastAPI's BackgroundTasks (which uses the shared default thread pool).
+        # The shared pool is also used by every sync route handler in the app;
+        # a long-running scan that blocks on hundreds of ffprobe subprocesses
+        # exhausts the pool and causes HTTP requests to hang.  A dedicated thread
+        # is completely outside the pool and never competes with route handlers.
+        t = threading.Thread(
+            target  = _run_scan,
+            args    = (paths, body.force_probe, loop),
+            name    = "remuxarr-scanner",
+            daemon  = True,   # exits automatically if the container shuts down
         )
-
-    # Capture the running event loop here, in the async context, so the
-    # scan thread can safely schedule WebSocket broadcasts back onto it.
-    loop = asyncio.get_running_loop()
-
-    # Launch the scan on a DEDICATED daemon thread rather than via
-    # FastAPI's BackgroundTasks (which uses the shared default thread pool).
-    # The shared pool is also used by every sync route handler in the app;
-    # a long-running scan that blocks on hundreds of ffprobe subprocesses
-    # exhausts the pool and causes HTTP requests to hang.  A dedicated thread
-    # is completely outside the pool and never competes with route handlers.
-    t = threading.Thread(
-        target  = _run_scan,
-        args    = (paths, body.force_probe, loop),
-        name    = "remuxarr-scanner",
-        daemon  = True,   # exits automatically if the container shuts down
-    )
-    t.start()
+        t.start()
+        scan_thread_started = True
+    finally:
+        if not scan_thread_started:
+            _scan_running = False
 
     return {"status": "started", "paths": paths, "force_probe": body.force_probe}
 
@@ -153,7 +179,7 @@ async def run_cleanup(db: Session = Depends(get_db)):
 
     loop = asyncio.get_running_loop()
     removed = await loop.run_in_executor(
-        None, cleanup_deleted_files, db, scan_paths
+        None, _cleanup_sync, scan_paths
     )
 
     await ws_manager.broadcast_json({
@@ -162,6 +188,26 @@ async def run_cleanup(db: Session = Depends(get_db)):
     })
 
     return {"removed": removed}
+
+
+def _cleanup_sync(scan_paths: list[str]) -> int:
+    """
+    Sync wrapper around cleanup_deleted_files, opening/closing its own
+    SessionLocal() rather than reusing the request-scoped Session from
+    run_cleanup's own Depends(get_db).
+
+    That Session is bound to the request's own lifecycle and isn't
+    intended to cross thread boundaries — it happened to work here only
+    because of check_same_thread=False, but this was the one place in the
+    codebase doing this; every other executor helper (_queue_sync,
+    _load_job_data, etc.) already opens its own session for exactly this
+    reason. Caught by independent review.
+    """
+    db = SessionLocal()
+    try:
+        return cleanup_deleted_files(db, scan_paths)
+    finally:
+        db.close()
 
 
 @router.get("/orphaned")
@@ -200,8 +246,26 @@ def list_orphaned(db: Session = Depends(get_db)):
     }
 
 
+def _remove_orphaned_sync(file_ids: list[int]) -> int:
+    """
+    Sync wrapper around remove_orphaned_media_files, opening/closing its
+    own SessionLocal() on the executor thread — the exact pattern (and
+    rationale) of _cleanup_sync above. When that function was fixed, its
+    docstring declared it "the one place in the codebase doing this";
+    this endpoint was doing the identical thing four routes down —
+    passing the request-scoped Depends(get_db) Session into
+    run_in_executor — and was missed. It only ever worked because of
+    check_same_thread=False. Caught by independent review.
+    """
+    db = SessionLocal()
+    try:
+        return remove_orphaned_media_files(db, file_ids)
+    finally:
+        db.close()
+
+
 @router.post("/orphaned/remove")
-async def remove_orphaned(body: RemoveOrphanedRequest, db: Session = Depends(get_db)):
+async def remove_orphaned(body: RemoveOrphanedRequest):
     """
     Remove specific orphaned MediaFile rows by ID (and every row across
     the codebase that references them — see
@@ -212,14 +276,17 @@ async def remove_orphaned(body: RemoveOrphanedRequest, db: Session = Depends(get
     being outside the configured library, which is the only thing that
     matters for this action. Removing the database row never touches
     the actual file on disk, regardless of whether it still exists.
+
+    No Depends(get_db) — all database work happens on the executor
+    thread inside _remove_orphaned_sync's own session; a request-scoped
+    session here would have nothing to do except tempt the next edit
+    into passing it across the thread boundary again.
     """
     if not body.file_ids:
         raise HTTPException(400, "No file IDs provided")
 
     loop = asyncio.get_running_loop()
-    removed = await loop.run_in_executor(
-        None, remove_orphaned_media_files, db, body.file_ids
-    )
+    removed = await loop.run_in_executor(None, _remove_orphaned_sync, body.file_ids)
     return {"removed": removed}
 
 
@@ -231,14 +298,27 @@ def _run_scan(
     loop:        asyncio.AbstractEventLoop,
 ) -> None:
     """
-    Executed by FastAPI's BackgroundTasks in a thread-pool worker.
+    Executed on a dedicated daemon thread (threading.Thread), NOT via
+    FastAPI's BackgroundTasks — see trigger_scan's own comment for why:
+    BackgroundTasks uses the shared default thread pool, which every sync
+    route handler also draws from, and a long-running scan blocking on
+    hundreds of ffprobe subprocesses would exhaust it and hang unrelated
+    HTTP requests. A dedicated thread stays completely outside that pool.
 
     We receive the event loop captured in the async endpoint above so that
     asyncio.run_coroutine_threadsafe() can reliably schedule WebSocket
     broadcasts back onto the main event loop from this sync thread.
     """
     global _scan_running, _scan_progress, _scan_cancel_requested
-    _scan_running  = True
+    # NOTE: _scan_running is deliberately NOT set here. Both launchers
+    # (trigger_scan above, and scheduler._tick) set it synchronously
+    # BEFORE starting this thread — that ordering is what closes the
+    # double-start race — and each rolls it back itself on any exit where
+    # this thread never actually started. Once this thread IS running, the
+    # finally at the bottom of this function is the sole reset point. A
+    # re-set here would be harmless but would blur that single-owner
+    # lifecycle; anyone adding a new launcher must follow the same
+    # set-before-start + rollback-on-failure contract.
     _scan_progress = {"scanned": 0, "total": 0}
     _scan_cancel_requested = False
 

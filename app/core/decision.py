@@ -12,17 +12,22 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 from typing import Literal
 
-from app.core.probe import _FORCED_RE, _SDH_RE
+from app.core.probe import _FORCED_RE, _SDH_RE, _DUB_RE
 
 logger = logging.getLogger(__name__)
 
 # ── MP4 compatibility tables ───────────────────────────────────────────────────
 # Video codecs that can live inside an MP4/M4V container without transcoding.
+# "avc"/"h265" are harmless slack, not live aliases — ffprobe's own
+# codec_name is consistently "h264"/"hevc" across every real probe output
+# seen throughout this project (confirmed directly, repeatedly); these two
+# can never actually match. Kept rather than removed since a stray, unused
+# alias here is genuinely harmless — flagged by independent review as
+# worth a comment rather than worth the risk of deleting.
 MP4_COMPATIBLE_VIDEO = frozenset({
     "h264", "avc", "hevc", "h265", "mpeg4", "mpeg2video", "mjpeg",
 })
-# Audio codecs compatible with MP4.  Note: DTS, TrueHD, FLAC are NOT included.
-# After our AAC-5.1 → AC3 transcode, AC3 is fine.
+# Audio codecs compatible with MP4. Note: DTS, TrueHD, FLAC are NOT included.
 MP4_COMPATIBLE_AUDIO = frozenset({
     "aac", "ac3", "eac3", "mp3", "alac", "opus",
 })
@@ -32,6 +37,24 @@ MP4_COMPATIBLE_AUDIO = frozenset({
 MP4_INCOMPATIBLE_SUBS = frozenset({
     "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
     "ass", "ssa", "dvb_subtitle",
+    # Text codecs FFmpeg cannot STREAM-COPY into MP4 either — confirmed
+    # empirically with a real subrip-in-MKV source: `-c:s copy -f mp4`
+    # fails at header-write with "Could not find tag for codec subrip in
+    # stream #1, codec not currently supported in container" (exit 234,
+    # zero-byte output). MP4's only native text subtitle format is
+    # mov_text; SubRip/WebVTT must be transcoded to it, and this
+    # pipeline deliberately only ever copies subtitles (see the kept_subs
+    # block in ffmpeg.build_ffmpeg_command). Without these entries, a
+    # container conversion keeping a text subtitle — only reachable when
+    # extract_text_subtitles_to_srt is disabled, since extraction
+    # otherwise removes text subs from kept_subs before this check —
+    # produced a guaranteed-failing FFmpeg command. With them, such
+    # files simply stay in their current container, exactly like files
+    # with kept image subtitles always have. mov_text itself is
+    # deliberately NOT listed: it's MP4's native format and copies fine.
+    # If conversion-with-text-subs is ever wanted, the upgrade path is
+    # transcoding to mov_text during conversion, not removing these.
+    "subrip", "srt", "webvtt",
 })
 
 # Image-based (bitmap) subtitle codecs. These can never be converted to a
@@ -80,7 +103,11 @@ class Action:
     track_type:   str | None = None
     stream_index: int | None = None
     order:        int = 0
-    # Extra fields for audio transcode actions (AAC 5.1 → AC3)
+    # Extra fields for transcode_track actions — currently only ever
+    # populated by worker._make_audio_transcode_decision's corrupt-source-
+    # audio retry path (transcodes to AAC), not by analyze_file itself.
+    # Not tied to any specific codec pairing; whichever retry path sets
+    # these determines the actual target.
     output_codec:         str | None = None
     output_codec_options: dict       = field(default_factory=dict)
     # Extra fields for extract_subtitle actions
@@ -100,7 +127,13 @@ class ProcessingDecision:
     actions:          list[Action] = field(default_factory=list)
     is_manual_review: bool = False
     target_container: str | None = None   # None = keep current
-    output_extension: str | None = None   # e.g. ".mp4"
+    # NOTE: there is deliberately no output_extension field — the output
+    # path is derived in ffmpeg.determine_output_path from target_container
+    # plus the presence of a change_container action. An earlier version
+    # carried a separate, derivable output_extension here, and the two
+    # diverging is exactly what caused real silent file renames
+    # (.m2ts → .ts, .m4v/.mov → .mp4) on incidental processing — see
+    # determine_output_path's docstring.
     # Populated only for is_manual_review=True decisions caused by
     # non-convertible (image-based) subtitle tracks. Each entry:
     #   {stream_index, language, codec, is_forced, title}
@@ -257,7 +290,41 @@ def analyze_file(
 
     video_tracks = [t for t in tracks if t["track_type"] == "video"]
     audio_tracks = [t for t in tracks if t["track_type"] == "audio"]
-    sub_tracks   = [t for t in tracks if t["track_type"] == "subtitle"]
+
+    # Subtitle dicts are normalised into upgraded COPIES here, before any
+    # gating code runs: Track rows scanned before probe.py's
+    # title-based detection existed have is_forced/is_hearing_impaired/
+    # is_dub stored as False even when the title says otherwise (e.g.
+    # title "English (Forced)"). An earlier version applied this
+    # fallback only inside the main subtitle loop, into LOCAL variables
+    # — so the keep/drop decision (_sub_is_kept reads the dict) and the
+    # manual-review gate (runs before the loop entirely) never saw the
+    # upgrade, and a legacy forced-by-title subtitle with a non-kept
+    # language was dropped despite keep_forced_subtitles=True, defeating
+    # the fallback's own stated purpose. It only ever affected
+    # description strings and .forced.srt naming of tracks kept for
+    # OTHER reasons. Caught by independent review.
+    #
+    # Copies, not in-place writes — analyze_file must never mutate its
+    # caller's inputs. All three flags are upgraded to mirror probe.py's
+    # own three-way title detection exactly (forced gates keep/drop;
+    # SDH/dub feed .srt naming and descriptions, same legacy gap).
+    # Fresh scans are unaffected either way: probe.py already bakes
+    # title detection into the stored flags.
+    def _normalise_sub(t: dict) -> dict:
+        title = t.get("title") or ""
+        if not title:
+            return t
+        upgraded = dict(t)
+        if not upgraded.get("is_forced") and _FORCED_RE.search(title):
+            upgraded["is_forced"] = True
+        if not upgraded.get("is_hearing_impaired") and _SDH_RE.search(title):
+            upgraded["is_hearing_impaired"] = True
+        if not upgraded.get("is_dub") and _DUB_RE.search(title):
+            upgraded["is_dub"] = True
+        return upgraded
+
+    sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
     # ── Manual-review gate: undefined-language audio ─────────────────────────
     und_audio = [t for t in audio_tracks
@@ -267,9 +334,33 @@ def analyze_file(
     # See the forged_ac3_audio_index docstring above for why: it's a known
     # duplicate, not a new ambiguous source, so it shouldn't count toward
     # triggering manual review.
-    if forged_ac3_audio_index is not None and forged_ac3_audio_index < len(audio_tracks):
-        forged_track = audio_tracks[forged_ac3_audio_index]
-        und_audio = [t for t in und_audio if t is not forged_track]
+    #
+    # The index is VALIDATED against the track it lands on, not trusted
+    # blindly: it's the track's position at ADD time, and the main
+    # pipeline can drop audio tracks afterwards, shifting every index
+    # down. Since the forge AC3 is appended as the LAST audio track and
+    # the pipeline never reorders or appends audio, a surviving forge AC3
+    # is provably still the last audio track — so when the stored index
+    # no longer lands on an ac3/6ch track, fall back to the last track if
+    # (and only if) IT has the forge shape. If neither matches, the forge
+    # AC3 is genuinely gone (dropped by the pipeline) and nothing is
+    # excluded — previously a stale in-range index silently excluded
+    # whatever unrelated track happened to sit there. Same resolution
+    # rule as forge.resolve_forge_ac3_for_undo, kept inline here because
+    # this module is deliberately import-light and pure.
+    if forged_ac3_audio_index is not None and audio_tracks:
+        def _is_forge_ac3(t: dict) -> bool:
+            return (t.get("codec") or "").lower() == "ac3" and t.get("channels") == 6
+
+        forged_track = None
+        if (forged_ac3_audio_index < len(audio_tracks)
+                and _is_forge_ac3(audio_tracks[forged_ac3_audio_index])):
+            forged_track = audio_tracks[forged_ac3_audio_index]
+        elif _is_forge_ac3(audio_tracks[-1]):
+            forged_track = audio_tracks[-1]
+
+        if forged_track is not None:
+            und_audio = [t for t in und_audio if t is not forged_track]
 
     if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
         msg = (
@@ -500,20 +591,12 @@ def analyze_file(
 
     for track in sub_tracks:
         lang      = track["language"] or "und"
+        # Title-based forced/SDH/dub fallbacks already applied — sub_tracks
+        # entries are normalised copies (see _normalise_sub above), so the
+        # dict values here are authoritative. No per-loop re-derivation.
         is_forced = track.get("is_forced", False)
-        # Fallback for Track rows scanned before forced-from-name detection
-        # was added: re-check the stored title for "Forced" / "English (Forced)".
-        if not is_forced and track.get("title"):
-            if _FORCED_RE.search(track["title"]):
-                is_forced = True
-
-        is_sdh = bool(track.get("is_hearing_impaired"))
-        # Fallback for rows scanned before CC was added to the SDH regex.
-        if not is_sdh and track.get("title"):
-            if _SDH_RE.search(track["title"]):
-                is_sdh = True
-
-        is_dub = bool(track.get("is_dub"))
+        is_sdh    = bool(track.get("is_hearing_impaired"))
+        is_dub    = bool(track.get("is_dub"))
         codec     = (track.get("codec") or "").lower()
         si        = track["stream_index"]
 
@@ -626,11 +709,9 @@ def analyze_file(
     )
 
     target_container = current_container
-    output_extension = f".{current_container}"
 
     if prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4:
         target_container = "mp4"
-        output_extension = ".mp4"
         actions.append(Action(
             action_type="change_container",
             description=f"Convert container: {current_container.upper()} → MP4",
@@ -867,8 +948,18 @@ def analyze_file(
                       if a.action_type == "drop_track" and a.track_type == "subtitle")
         if n_audio: parts.append(f"Remove {n_audio} audio track{'s' if n_audio > 1 else ''}")
         if n_sub:   parts.append(f"Remove {n_sub} subtitle track{'s' if n_sub > 1 else ''}")
-    if has_transcode:
-        parts.append("Transcode AAC 5.1 → AC3 5.1")
+    # NOTE: no reason-string branch for has_transcode here — analyze_file
+    # itself never produces a transcode_track action (confirmed directly:
+    # the only actual creator is worker._make_audio_transcode_decision,
+    # which operates on a COPY of the decision at retry time, after
+    # analyze_file has already returned and this reason string has
+    # already been built). has_transcode is always False whenever this
+    # code actually runs, so a "Transcode AAC 5.1 → AC3 5.1" branch here
+    # was unreachable dead code describing a feature that no longer
+    # exists (the AAC 5.1 -> AC3 setting was removed earlier this
+    # project). Caught by independent review. has_transcode itself is
+    # kept below for the "anything to do at all" check — only the
+    # reason-string branch was actually dead.
     if has_container:
         parts.append(f"Convert {current_container.upper()} → MP4")
     if has_extract:
@@ -888,7 +979,6 @@ def analyze_file(
         reason="; ".join(parts),
         actions=actions,
         target_container=target_container,
-        output_extension=output_extension,
         audio_language_mismatch=audio_language_mismatch,
         subtitle_language_mismatch=subtitle_language_mismatch,
         source_already_faststart=has_faststart is True,
@@ -976,7 +1066,9 @@ def _video_audio_mp4_compatible(
 
     for t in kept_audio:
         codec = (t.get("codec") or "").lower()
-        # AAC 5.1 will become AC3 (compatible); plain AAC is also fine
+        # Plain membership check — no transcoding happens here. AC3 is
+        # simply already MP4-compatible in its own right; nothing about
+        # this check involves converting one codec into another.
         if codec not in MP4_COMPATIBLE_AUDIO:
             logger.debug("MP4 blocked by audio codec: %s", codec)
             return False

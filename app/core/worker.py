@@ -155,7 +155,10 @@ async def start_worker() -> None:
 
 
 async def stop_worker() -> None:
-    global _running, _worker_task
+    # _worker_task is only READ here, never reassigned — no `global`
+    # needed for it specifically (only _running, which IS reassigned
+    # below, actually requires the declaration).
+    global _running
     _running = False
     if _worker_task and not _worker_task.done():
         _worker_task.cancel()
@@ -415,6 +418,31 @@ def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
     )
 
 
+def _needs_audio_transcode_retry(result) -> bool:
+    """
+    True when a failed FFmpeg attempt should be retried with AAC
+    transcoding instead of a plain audio copy — either genuinely corrupt
+    source packet data, or source packets with no usable timestamp at
+    all (common in older/non-standard AVI files); same remediation
+    either way.
+
+    Previously this exact predicate (result.success check plus both
+    _is_corrupt_audio_copy_failure / _is_unknown_timestamp_audio_failure
+    checks) was duplicated identically across _run_job's combined-pass
+    and two-pass branches. Only the predicate is hoisted here — the
+    actual retry call, log wording, and _make_audio_transcode_decision
+    rebuild stay inline at each call site deliberately: the two branches
+    call genuinely different underlying functions with different return
+    shapes (execute_ffmpeg_combined returns a tuple, execute_ffmpeg
+    doesn't), and the log wording usefully distinguishes which of the
+    two retry paths actually fired. Caught by independent review.
+    """
+    return not result.success and (
+        _is_corrupt_audio_copy_failure(result.error)
+        or _is_unknown_timestamp_audio_failure(result.error)
+    )
+
+
 def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
     """
     Return a copy of the decision where every audio copy_track action is
@@ -447,14 +475,22 @@ def _is_subtitle_encoding_failure(error: str | None) -> bool:
     Return True if the error string looks like a subtitle-encoding failure
     rather than a video/audio or filesystem problem.
 
-    Used to decide whether to flag for manual review after a combined
-    remux+extraction pass fails — if the failure is subtitle-specific, the
-    main video/audio was fine and we should let the user decide what to do
-    with the problematic subtitle track rather than silently dropping it or
-    failing the job entirely.
+    Used by BOTH execution paths in _run_job to decide whether to flag for
+    manual review instead of failing the job outright:
+      • combined pass — a subtitle decode failure cascades and kills the
+        whole multi-output command even though the video/audio was fine;
+      • two-pass extraction loop — the same underlying file fails its
+        standalone `-map 0:N -c:s srt` command instead.
+    Either way, the user should get the per-track Keep/Remove review
+    rather than a raw failure (or, worse, a silent drop).
 
-    Patterns are all specific to subtitle processing in FFmpeg's multi-output
-    combined commands and won't false-positive on video/audio failures.
+    Patterns cover both command shapes and won't false-positive on
+    video/audio or filesystem failures: "sist#" only ever appears in the
+    combined multi-output form, while "subtitle"/"sub_charenc" also match
+    the single-command form — FFmpeg's canonical message for the exact
+    production case this exists for is "Invalid UTF-8 in decoded
+    subtitles text; maybe missing -sub_charenc option", which matches on
+    two of the four patterns.
     """
     if not error:
         return False
@@ -691,11 +727,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 )
                 return
 
-            audio_copy_failed = (
-                _is_corrupt_audio_copy_failure(result.error)
-                or _is_unknown_timestamp_audio_failure(result.error)
-            )
-            if not result.success and audio_copy_failed:
+            if _needs_audio_transcode_retry(result):
                 # Two distinct root causes land here — genuinely corrupt
                 # packet data, or source packets with no usable timestamp
                 # at all (common in older/non-standard AVI files) — but
@@ -721,18 +753,40 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds      = timeout_seconds,
                 )
 
-            # Log subtitle results — only meaningful when main remux succeeded.
-            if result.success:
-                for (_, srt_dest), srt_res in zip(subtitle_pairs, srt_results):
-                    if srt_res.success:
-                        logger.info("Subtitle extracted → %s", srt_dest)
-                    else:
-                        logger.warning(
-                            "Subtitle extraction failed in combined pass (%s): %s",
-                            srt_dest, srt_res.error,
-                        )
+            # All-or-nothing staging: result.success now guarantees every
+            # extracted .srt landed alongside the main file (per-SRT
+            # logging happens inside execute_ffmpeg_combined). A missing
+            # or unstageable SRT fails the whole run with the source file
+            # untouched — the previous partial-success contract here could
+            # record job SUCCESS while a subtitle had silently vanished
+            # (removed from the mux, never written as a sidecar, only a
+            # log warning to show for it). srt_results is retained in the
+            # return shape for per-track detail, but no partial-failure
+            # branch exists anymore. Caught by independent review.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
+            #
+            # Encoding failures here get the SAME manual-review routing as
+            # the combined path's _is_subtitle_encoding_failure handler —
+            # previously only the combined path had it, so the identical
+            # underlying file (non-UTF-8 text subtitle) produced two
+            # different outcomes depending on which internal execution
+            # path happened to run: per-track Keep/Remove review when a
+            # remux was also needed, but a raw failed job when the only
+            # work was extraction. Caught by independent review.
+            #
+            # One deliberate asymmetry with the combined path remains: a
+            # combined command's cascade can't be attributed to a specific
+            # stream, so that path flags EVERY extraction stream for
+            # review. Here each stream runs as its own command, so only
+            # the stream(s) that actually failed are flagged — strictly
+            # better information, not a divergence. Encoding failures are
+            # accumulated across the loop (rather than flagging on the
+            # first one) so a file whose subtitles share the same bad
+            # charset resolves in ONE review visit instead of one per
+            # track; any NON-encoding failure (disk, permissions, missing
+            # stream) still fails the job immediately, exactly as before.
+            encoding_failed_pairs: list[tuple[int, str]] = []
             for i, action in enumerate(extract_actions, start=1):
                 label = f"Extracting subtitle to SRT ({i}/{len(extract_actions)})"
                 logger.info("%s — stream %d → %s",
@@ -749,11 +803,45 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id         = job_id,
                 )
                 if not ext_result.success:
+                    if _is_subtitle_encoding_failure(ext_result.error):
+                        logger.warning(
+                            "Subtitle extraction failed with an encoding "
+                            "error for job %d (%s), stream %d — will flag "
+                            "for manual review: %s",
+                            job_id, file_dict["path"],
+                            action.stream_index, ext_result.error,
+                        )
+                        encoding_failed_pairs.append(
+                            (action.stream_index, action.external_path)
+                        )
+                        continue
                     await loop.run_in_executor(
                         None, _finish_job, job_id, False, None, None,
                         f"Subtitle extraction failed (stream {action.stream_index}): {ext_result.error}",
                     )
                     return
+
+            if encoding_failed_pairs:
+                # Flag and stop BEFORE the remux — the remux would remove
+                # these tracks from the muxed output (extracted streams are
+                # excluded from the map list) with no sidecar to replace
+                # them, which is exactly the silent loss this routing
+                # exists to prevent. Any sidecars from streams that DID
+                # extract successfully above are left in place — same
+                # rationale as the failed-remux case below: they're valid,
+                # standalone files next to the (unmodified) original, and
+                # the post-review re-run simply re-extracts over them.
+                logger.warning(
+                    "Two-pass extraction hit encoding failures for job %d "
+                    "(%s) — flagging for manual review (subtitle stream(s): %s)",
+                    job_id, file_dict["path"],
+                    ", ".join(str(si) for si, _ in encoding_failed_pairs),
+                )
+                await loop.run_in_executor(
+                    None, _flag_subtitle_encoding_review,
+                    job_id, encoding_failed_pairs, tracks,
+                )
+                return
 
             result = await execute_ffmpeg(
                 input_path        = input_path,
@@ -765,11 +853,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds   = timeout_seconds,
             )
 
-            audio_copy_failed = (
-                _is_corrupt_audio_copy_failure(result.error)
-                or _is_unknown_timestamp_audio_failure(result.error)
-            )
-            if not result.success and audio_copy_failed:
+            if _needs_audio_transcode_retry(result):
                 logger.warning(
                     "Job %d (%s): audio copy failed (corrupt frames or "
                     "unusable source timestamps) — retrying with AAC "
@@ -844,23 +928,48 @@ def _claim_next() -> int | None:
 
 def _load_job_data(job_id: int):
     """
-    Return (job_dict, file_dict, tracks, app_cfg, decision) or None.
-    Everything RETURNED is plain Python — no ORM objects cross the thread
-    boundary. This function itself does have one deliberate side effect
-    before returning, though: it upserts/clears AudioLanguageFlag and
-    SubtitleLanguageFlag for the file, matching what the identical fresh
-    decision it just computed would have caused during a normal scan.
+    Load everything _run_job needs, re-running the decision engine fresh —
+    and APPLY that fresh decision's outcome, exactly as queue.py's
+    _apply_decision_to_item does for its three call sites:
 
-    Without this, a file whose manual-review cause got resolved via
-    Approve (rather than being re-discovered by a normal scan) computed
-    the correct audio_language_mismatch/subtitle_language_mismatch the
-    whole time — right here, in this exact decision — but never actually
-    persisted it to either flag table until some LATER, separate scan
-    happened to re-evaluate the file from scratch. Reported directly:
-    files approved from manual review, whose jobs succeeded and
-    correctly logged the "audio language tag is likely wrong" warning,
-    didn't show up in Audio Language Review until an entirely separate
-    full scan ran afterward.
+      • is_manual_review  → item transitions to "manual_review" (with the
+        fresh reason and flagged subtitles), returns None — no execution.
+      • should_process=False → item transitions to "skipped" (+ completed_at),
+        returns None — no execution.
+      • otherwise → PlannedActions refreshed to the FRESH decision's
+        actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
+        for execution. Everything returned is plain Python — no ORM
+        objects cross the thread boundary.
+
+    The first two outcomes were previously unhandled entirely — any
+    decision was returned for execution unconditionally. A pending item
+    whose circumstances changed between queuing and pickup (settings
+    edited, a threshold crossed, an override landing mid-queue) could
+    compute a manual-review or nothing-to-do decision here, and instead
+    of transitioning cleanly, the job would "execute" it: no-op decisions
+    carry target_container=None, which build_ffmpeg_command now
+    hard-rejects (deliberately, after the silent-matroska corruption
+    fix), so the job failed with a baffling "Unsupported output container
+    None" instead of just being marked skipped. Manual-review decisions
+    were worse: executed as if approved, silently bypassing the gate.
+
+    On returning None for either no-op outcome: _run_and_broadcast's
+    finally block already broadcasts the item's final status whatever it
+    is, and its stuck-job safety net only force-fails items still at
+    "processing" — so transitioning here integrates with the existing
+    machinery with no extra broadcast plumbing needed.
+
+    _upsert_language_flags placement — AFTER the manual-review
+    early-return, deliberately, mirroring both scanner.py's ordering and
+    _apply_decision_to_item's: a manual-review decision returns before
+    mismatch detection ever runs, so its mismatch fields are always None,
+    and upserting on that outcome would incorrectly CLEAR valid existing
+    flags (the exact hazard this function previously had — it called the
+    upsert unconditionally, on every decision including manual-review
+    ones). For the other two outcomes the upsert is what makes
+    corrections resolved via Approve show up in Language Review without
+    waiting for a later full scan (reported directly, fixed earlier);
+    that behavior is preserved, now correctly guarded.
     """
     db = SessionLocal()
     try:
@@ -901,7 +1010,45 @@ def _load_job_data(job_id: int):
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
 
+        if decision.is_manual_review:
+            job.status = "manual_review"
+            job.reason = decision.reason
+            job.review_subtitles = (
+                json.dumps(decision.flagged_subtitles)
+                if decision.flagged_subtitles else None
+            )
+            media.status = "manual_review"
+            db.commit()
+            return None
+
         _upsert_language_flags(db, media, decision)
+
+        if not decision.should_process:
+            job.status = "skipped"
+            job.reason = decision.reason
+            job.review_subtitles = None
+            job.completed_at = datetime.utcnow()
+            media.status = "skipped"
+            db.commit()
+            return None
+
+        # Proceeding — refresh stored PlannedActions to match the FRESH
+        # decision actually about to be executed. Previously the fresh
+        # actions were executed while the stale scan-time rows stayed in
+        # the DB, so the UI could show a plan that no longer matched what
+        # the job was really doing.
+        db.query(PlannedAction).filter(PlannedAction.queue_item_id == job.id).delete()
+        db.flush()
+        for i, action in enumerate(decision.actions):
+            db.add(PlannedAction(
+                queue_item_id    = job.id,
+                order            = i,
+                action_type      = action.action_type,
+                description      = action.description,
+                track_type       = action.track_type,
+                stream_index     = action.stream_index,
+                target_language  = getattr(action, "target_language", None),
+            ))
         db.commit()
 
         return (
@@ -1533,9 +1680,29 @@ async def _process_next_forge(ws_manager) -> bool:
 
     job_data = await loop.run_in_executor(None, load_forge_job_data, job_id)
     if job_data is None:
-        return True   # job was claimed but data missing — counts as "ran"
+        # The job reached a terminal state inside load_forge_job_data
+        # itself (file missing, probe failure, AC3 already absent →
+        # undone, or a layout mismatch → failed) — broadcast that final
+        # state now, same as the post-execution path below does.
+        # Previously this returned silently, so a job settled at load
+        # time looked stuck in the UI until the next poll happened by.
+        final = await loop.run_in_executor(None, load_forge_final_state, job_id)
+        if final:
+            await ws_manager.broadcast_json({
+                "event":    "forge_job_completed",
+                "job_id":   job_id,
+                "status":   final["status"],
+                "filename": final["filename"],
+                "error":    final.get("error"),
+            })
+        return True   # job was claimed and settled — counts as "ran"
 
     input_path = job_data["file_path"]
+
+    # Mirrors the main pipeline's exact formula (_run_job, worker.py) —
+    # see run_forge_command's docstring for why this is here at all.
+    timeout_minutes = job_data.get("job_timeout_minutes", 120)
+    timeout_seconds = float(timeout_minutes) * 60 if timeout_minutes else None
 
     # Stage the temp file in TEMP_DIR (RAM-backed tmpfs on Unraid) when
     # there's enough free space, falling back to the source file's own
@@ -1544,28 +1711,19 @@ async def _process_next_forge(ws_manager) -> bool:
     # directly next to the source on the array for every add/undo, which
     # meant forge jobs got none of the benefit of staging through RAM and
     # added extra array I/O contention during processing.
-    safe_name = os.path.basename(input_path).replace("/", "_")
+    #
+    # Named from job_id, not the original basename — mirrors
+    # ffmpeg.execute_ffmpeg's own temp naming exactly. Using the original
+    # basename here (even after the RAM-staging fix above) reintroduced
+    # the exact NAME_MAX failure the main pipeline already fixed:
+    # appending a suffix to an already-long Sonarr-style filename can push
+    # it past the 255-byte filesystem component limit (confirmed in
+    # production there: a 247-byte original filename failed). A job_id is
+    # always short and unique, so this can never happen here. Caught by
+    # independent review.
     tmp_dir   = _pick_temp_dir(input_path)
-    temp_path = os.path.join(tmp_dir, safe_name + ".forge_tmp")
+    temp_path = os.path.join(tmp_dir, f"forge_{job_id}.forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
-
-    if job_data["is_undo"]:
-        action_label = "Removing AC3 5.1 track"
-        cmd = build_undo_command(
-            input_path              = input_path,
-            temp_path               = temp_path,
-            ac3_audio_output_index  = job_data["audio_track_count"],
-            container               = job_data["container"],
-        )
-    else:
-        action_label = "Adding AC3 5.1 track"
-        cmd = build_add_ac3_command(
-            input_path        = input_path,
-            temp_path         = temp_path,
-            aac_stream_index  = job_data["aac_stream_index"],
-            audio_track_count = job_data["audio_track_count"],
-            container         = job_data["container"],
-        )
 
     async def on_progress(prog: ForgeProgress) -> None:
         loop.run_in_executor(
@@ -1580,6 +1738,36 @@ async def _process_next_forge(ws_manager) -> bool:
         })
 
     try:
+        # Command building sits INSIDE the try deliberately — the builders
+        # now raise ValueError on containers their format map doesn't know
+        # (instead of silently corrupting the file with a matroska
+        # default), and that failure must mark the forge job failed via
+        # the handler below, not escape this function uncaught.
+        if job_data["is_undo"]:
+            action_label = "Removing AC3 5.1 track"
+            cmd = build_undo_command(
+                input_path              = input_path,
+                # Resolved against a fresh probe at load time — NOT the
+                # stored add-time audio_track_count. After any pipeline
+                # drop that index points past the end, and FFmpeg
+                # silently ignores an unmatched negative map: the old
+                # undo rewrote the file unchanged and recorded a false
+                # "undone" with the AC3 still embedded. See
+                # resolve_forge_ac3_for_undo.
+                ac3_audio_output_index  = job_data["undo_audio_output_index"],
+                temp_path               = temp_path,
+                container               = job_data["container"],
+            )
+        else:
+            action_label = "Adding AC3 5.1 track"
+            cmd = build_add_ac3_command(
+                input_path        = input_path,
+                temp_path         = temp_path,
+                aac_stream_index  = job_data["aac_stream_index"],
+                audio_track_count = job_data["audio_track_count"],
+                container         = job_data["container"],
+            )
+
         result = await run_forge_command(
             cmd           = cmd,
             input_path    = input_path,
@@ -1587,6 +1775,7 @@ async def _process_next_forge(ws_manager) -> bool:
             temp_path     = temp_path,
             action_label  = action_label,
             progress_callback = on_progress,
+            timeout_seconds   = timeout_seconds,
         )
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)

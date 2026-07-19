@@ -198,18 +198,78 @@ async def run_staged_subprocess(
                 returncode=proc.returncode,
             )
 
+        # ── Stage outputs into place — two phases, originals protected ────
+        # The previous implementation deleted each original FIRST, then
+        # shutil.move()d the temp into place. With temps on tmpfs and
+        # finals on the array, that move is a NON-atomic cross-filesystem
+        # copy — so for the entire duration of a potentially multi-GB
+        # copy, the original was already gone and the final was partial.
+        # A crash, power loss, or mid-copy error (ENOSPC) in that window
+        # lost the original outright: FFmpeg had succeeded, the original
+        # was deleted, and the only complete copy of the output was a
+        # temp on a RAM-backed tmpfs. Worse with multiple outputs (main
+        # file + SRT sidecars): a failure mid-loop left earlier originals
+        # deleted-and-replaced and later ones deleted with nothing staged,
+        # and the outer exception handler then deleted the temps too.
+        # Caught by independent review.
+        #
+        # Phase 1 copies every temp to "<final>.part" on the DESTINATION
+        # filesystem — originals untouched, any failure (incl. ENOSPC)
+        # cleans up the .part files and fails the job with every original
+        # exactly as it was. The worker's disk-space preflight already
+        # requires file-size free in the output dir while the original
+        # still exists, which is precisely this phase's peak requirement.
+        # Each .part is fsync'd: os.replace guarantees which NAME you
+        # see, not that the new bytes survived a power cut — without the
+        # fsync, a crash shortly after the swap could leave the new name
+        # pointing at data still in the page cache. (Directory-entry
+        # fsync after the rename is deliberately omitted as
+        # disproportionate here — worst realistic post-crash outcome is
+        # the OLD file still fully in place, i.e. a retry, not a loss.)
+        #
+        # Phase 2 swaps each .part into place with os.replace — atomic on
+        # POSIX, and guaranteed same-filesystem since the .part sits in
+        # the final's own directory. The exposure drops from
+        # "gigabytes of copying with no original" to per-file metadata
+        # renames.
+        part_paths: list[str] = []
+        try:
+            for o in outputs:
+                part = o.final_path + ".part"
+                shutil.copyfile(o.temp_path, part)
+                with open(part, "rb") as f:
+                    os.fsync(f.fileno())
+                part_paths.append(part)
+        except OSError as exc:
+            for p in part_paths + [o.final_path + ".part" for o in outputs]:
+                cleanup_temp_file(p)
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            return SubprocessRunResult(
+                success=False,
+                error=(
+                    f"Failed staging output to destination "
+                    f"(originals untouched): {exc}"
+                ),
+                returncode=proc.returncode,
+            )
+
         for o in outputs:
-            if os.path.exists(o.final_path):
-                os.remove(o.final_path)
-            shutil.move(o.temp_path, o.final_path)
+            os.replace(o.final_path + ".part", o.final_path)
+
+        # Temps are no longer consumed by a move — remove them explicitly.
+        for o in outputs:
+            cleanup_temp_file(o.temp_path)
 
         return SubprocessRunResult(success=True, error=None, returncode=proc.returncode)
 
     except asyncio.CancelledError:
         for o in outputs:
             cleanup_temp_file(o.temp_path)
+            cleanup_temp_file(o.final_path + ".part")
         raise
     except Exception:
         for o in outputs:
             cleanup_temp_file(o.temp_path)
+            cleanup_temp_file(o.final_path + ".part")
         raise

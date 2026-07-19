@@ -289,10 +289,24 @@ def _radarr_paths(payload: dict) -> list[str]:
     if mf.get("path"):
         paths.append(mf["path"])
 
-    # Rename event
-    rmf = payload.get("renamedMovieFile", {})
-    if rmf.get("path"):
-        paths.append(rmf["path"])
+    # Rename event — renamedMovieFiles is a LIST (mirrors Sonarr's
+    # renamedEpisodeFiles), each element extending WebhookMovieFile. The
+    # previous code read "renamedMovieFile" (singular object), a field
+    # Radarr never emits, so Rename events matched nothing and queued no
+    # files — Download still worked via movieFile above. Confirmed
+    # against Radarr's WebhookRenamePayload / WebhookRenamedMovieFile
+    # source, not just the field name: same array shape the correctly
+    # -handled Sonarr sibling already uses. Caught by independent review.
+    #
+    # Each element also carries "previousPath" (the pre-rename full
+    # path). We deliberately take only "path" (the NEW location), exactly
+    # as _sonarr_paths does: after a rename the file no longer exists at
+    # previousPath, so queuing it would just probe-fail on a missing
+    # file. The stale MediaFile row still sitting at the old path is
+    # cleaned up by the scanner's own orphan/delete handling, not here.
+    for item in payload.get("renamedMovieFiles", []):
+        if item.get("path"):
+            paths.append(item["path"])
 
     return list(dict.fromkeys(paths))
 

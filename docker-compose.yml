@@ -8,12 +8,27 @@ services:
       - "8000:8000"   # Web UI + API
 
     volumes:
-      # Persistent config/DB — map to a host path that survives updates
-      - ./config:/config
+      # Persistent config/DB — map to a host path that survives updates.
+      # :Z (uppercase) = SELinux PRIVATE label, exclusive to this
+      # container. Correct here specifically because nothing else needs
+      # this path — it's Remuxarr's own database and settings alone.
+      # Harmless no-op on non-SELinux hosts (e.g. stock Unraid) — safe
+      # to leave in either way.
+      - ./config:/config:Z
 
-      # Your media library — adjust to match your own library paths
-      - /path/to/your/movies:/media/movies:rw
-      - /path/to/your/tv:/media/tv:rw
+      # Your media library — adjust to match your own library paths.
+      # :z (LOWERCASE) = SELinux SHARED label — deliberately the
+      # opposite of :Z above. Sonarr, Radarr, and Plex (in their own,
+      # separate containers) almost certainly mount these same host
+      # paths too — :Z here would mark them exclusive to Remuxarr and
+      # risk a real conflict with those other containers over the same
+      # directories. Same no-op guarantee on non-SELinux hosts.
+      #
+      # NOTE: on an SELinux-enabled host, the very first container start
+      # after adding this relabels every file under the mount — can take
+      # a real while on a large library. Only happens once.
+      - /path/to/your/movies:/media/movies:rw,z
+      - /path/to/your/tv:/media/tv:rw,z
 
     # Reads from .env (see .env.example). Every variable there already
     # matches this app's own built-in default (see app/config.py) — an

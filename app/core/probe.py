@@ -163,14 +163,18 @@ def extract_tracks(probe_data: dict) -> list[dict]:
 
 
 def extract_format_info(probe_data: dict) -> dict:
-    """Extract file-level format metadata."""
+    """Extract file-level format metadata.
+
+    Only container and duration — confirmed directly, at every call site
+    across the codebase, that bit_rate and size were never actually read
+    from this dict once computed (previously computed anyway, on every
+    scan, for values nothing consumed). Caught by independent review.
+    """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
     return {
         "container": _normalise_container(format_names),
         "duration":  _float_or_none(fmt.get("duration")),
-        "bit_rate":  _int_or_none(fmt.get("bit_rate")),
-        "size":      _int_or_none(fmt.get("size")),
     }
 
 
@@ -241,13 +245,6 @@ def _normalise_container(format_names: list[str]) -> str:
     if "asf"      in name: return "wmv"
     if "webm"     in name: return "webm"
     return format_names[0].strip() if format_names else "unknown"
-
-
-def _int_or_none(val) -> int | None:
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
 
 
 def _float_or_none(val) -> float | None:
