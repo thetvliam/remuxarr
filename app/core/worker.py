@@ -504,21 +504,33 @@ def _is_subtitle_encoding_failure(error: str | None) -> bool:
     Either way, the user should get the per-track Keep/Remove review
     rather than a raw failure (or, worse, a silent drop).
 
-    Patterns cover both command shapes and won't false-positive on
-    video/audio or filesystem failures: "sist#" only ever appears in the
-    combined multi-output form, while "subtitle"/"sub_charenc" also match
-    the single-command form — FFmpeg's canonical message for the exact
-    production case this exists for is "Invalid UTF-8 in decoded
-    subtitles text; maybe missing -sub_charenc option", which matches on
-    two of the four patterns.
+    Patterns are encoding/decoding-specific and won't false-positive on
+    video/audio, filesystem, or container-capability failures — "sist#"
+    only appears in the combined multi-output form, while "invalid utf-8"
+    and "sub_charenc" match the single-command form. FFmpeg's canonical
+    message for the exact production case this exists for is "Invalid
+    UTF-8 in decoded subtitles text; maybe missing -sub_charenc option",
+    which matches on two of the four patterns. A bare "subtitle"
+    catch-all was deliberately removed — see the note at the return.
     """
     if not error:
         return False
     lower = error.lower()
+    # Patterns are SPECIFIC to encoding/decoding failures. A bare
+    # "subtitle" substring was previously included as a catch-all, but it
+    # matched container-capability errors that merely mention the word —
+    # notably FFmpeg's "...WebVTT subtitles are supported for WebM",
+    # which is a MUX/container rejection, not an encoding problem. That
+    # false positive routed a container failure into the "non-UTF-8
+    # subtitle" manual-review flow with a misleading reason. The
+    # canonical encoding failure ("Invalid UTF-8 in decoded subtitles
+    # text; maybe missing -sub_charenc option") still matches here via
+    # both "invalid utf-8" and "sub_charenc", so dropping the catch-all
+    # loses no real coverage.
     return any(pat in lower for pat in (
-        "subtitle",          # generic subtitle processing failures
-        "mov_text",          # the specific codec that triggered this fix
+        "invalid utf-8",     # the actual decode diagnostic for non-UTF-8 text subs
         "sub_charenc",       # FFmpeg's hint for the encoding issue
+        "mov_text",          # the specific codec that triggered this fix
         "sist#",             # FFmpeg's notation for subtitle input streams in combined commands
     ))
 

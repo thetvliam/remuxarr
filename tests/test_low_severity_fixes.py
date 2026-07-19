@@ -1,14 +1,23 @@
 """
 Regression tests for the low-severity review items L1–L5.
 
-L1 — .webm normalised to generic Matroska; two container branches dead:
-    _normalise_container checked "matroska" before "webm", but ffprobe
-    reports a webm's format_name as "matroska,webm", so every webm was
-    swallowed to "mkv" — making the "webm" branch (and the webm entries
-    in the two format maps) dead, and disagreeing with worker.py's
-    _EXT_TO_CONTAINER which already maps .webm → "webm". Fix reorders so
-    webm is detected first; the dead "wmv" string branch (ffprobe emits
-    "asf", never "wmv") was removed.
+L1 — container detection for Matroska-family files (mkv AND webm):
+    ffprobe reports format_name="matroska,webm" for EVERY Matroska file,
+    not just webm — it's a demuxer property. _normalise_container must
+    therefore check "matroska" before "webm" and treat both as "mkv"
+    (format_name genuinely can't distinguish them; only the file
+    extension or EBML DocType can). A prior change reordered "webm"
+    first, which mislabelled every MKV as a webm container and routed
+    normal H.264/HEVC/AC3/DTS MKVs to `-f webm` — FFmpeg rejects that,
+    breaking every remux. These tests use the REAL "matroska,webm" input
+    that ffprobe actually emits (an earlier test used the unrealistic
+    ["matroska"], which is why the regression slipped through).
+
+    Related (worker.py): _is_subtitle_encoding_failure must NOT classify
+    a container-capability error (e.g. "...WebVTT subtitles are supported
+    for WebM") as a subtitle-encoding failure — that misread turned the
+    webm mux rejection into a misleading "non-UTF-8 subtitle" manual
+    review. Pinned below.
 
 L2 — email breaker counted inconsistently between enabled/disabled:
     once tripped, the email-enabled path froze consecutive_failures but
@@ -48,46 +57,76 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.probe import _normalise_container
+from app.core.worker import _is_subtitle_encoding_failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # L1 — _normalise_container (pure function)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_webm_detected_before_matroska():
+def test_matroska_webm_format_name_is_mkv():
     """
-    The core L1 regression: a webm's ffprobe format_name is
-    "matroska,webm". It must normalise to "webm", not "mkv" — otherwise
-    the webm branch and the webm format-map entries are dead and a remux
-    silently rewrites the file as generic Matroska at a .webm path.
+    THE regression guard. ffprobe emits format_name="matroska,webm" for
+    EVERY Matroska file — plain MKVs included — because it names the
+    shared demuxer, not the file. extract_format_info splits it to
+    ["matroska", "webm"]. That MUST normalise to "mkv": treating it as
+    "webm" (as a prior reorder did) sends ordinary H.264/HEVC/AC3/DTS
+    MKVs to `-f webm`, which FFmpeg rejects, breaking every remux.
     """
-    assert _normalise_container(["matroska", "webm"]) == "webm"
-    # single combined string form (how ffprobe actually returns it)
-    assert _normalise_container(["matroska,webm"]) == "webm"
+    # exactly what extract_format_info passes in (fmt["format_name"].split(","))
+    assert _normalise_container(["matroska", "webm"]) == "mkv"
+    # and the bare-string spelling, for safety
+    assert _normalise_container(["matroska,webm"]) == "mkv"
 
 
-def test_plain_matroska_still_mkv():
-    """A real MKV (no 'webm' in the format name) is unaffected."""
-    assert _normalise_container(["matroska"]) == "mkv"
-    assert _normalise_container(["matroska,webm,foo"]) == "webm"  # webm wins if present
+def test_real_webm_file_also_normalises_to_mkv():
+    """
+    A genuine .webm reports the SAME "matroska,webm" format_name, so it
+    also normalises to "mkv" — and that's correct: `-f matroska` muxes
+    webm content fine and the file keeps playing. format_name cannot
+    distinguish the two; only the extension/DocType can, which this
+    function intentionally does not attempt.
+    """
+    assert _normalise_container(["matroska", "webm"]) == "mkv"
 
 
-def test_asf_maps_to_wmv_after_dead_branch_removed():
-    """
-    ASF/WMV files report format_name "asf" — the removed `if "wmv"`
-    branch never matched. The "asf" branch must still yield "wmv".
-    """
+def test_asf_maps_to_wmv():
+    """ASF/WMV files report format_name 'asf' → 'wmv'."""
     assert _normalise_container(["asf"]) == "wmv"
 
 
 def test_other_containers_unchanged():
-    """The remaining mappings must be untouched by the reorder."""
+    """The remaining mappings are untouched."""
     assert _normalise_container(["mov", "mp4", "m4a"]) == "mp4"
     assert _normalise_container(["mpegts"]) == "ts"
     assert _normalise_container(["avi"]) == "avi"
     # Unknown format falls through to the raw first name.
     assert _normalise_container(["flv"]) == "flv"
     assert _normalise_container([]) == "unknown"
+
+
+def test_webm_container_error_is_not_an_encoding_failure():
+    """
+    The misclassification that turned the webm mux rejection into a bogus
+    "non-UTF-8 subtitle" manual review. FFmpeg's container-capability
+    error merely mentions the word "subtitles"; it is NOT an encoding
+    failure and must not be routed into the subtitle-encoding review.
+    """
+    webm_err = (
+        "[webm @ 0x5565a5017000] Only VP8 or VP9 or AV1 video and Vorbis "
+        "or Opus audio and WebVTT subtitles are supported for WebM.\n"
+        "[out#0/webm @ 0x5565a5126680] Could not write header "
+        "(incorrect codec parameters ?): Invalid argument"
+    )
+    assert _is_subtitle_encoding_failure(webm_err) is False, (
+        "a container-capability error was misclassified as a subtitle "
+        "encoding failure — this is what produced the misleading "
+        "'non-UTF-8 encoded characters' manual-review reason."
+    )
+    # The genuine encoding failure must STILL be detected.
+    real = ("[srt @ 0x0] Invalid UTF-8 in decoded subtitles text; maybe "
+            "missing -sub_charenc option")
+    assert _is_subtitle_encoding_failure(real) is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════

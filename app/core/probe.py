@@ -235,32 +235,29 @@ def is_faststart_mp4(path: str, max_boxes: int = 64) -> bool | None:
 
 def _normalise_container(format_names: list[str]) -> str:
     name = ",".join(format_names).lower()
-    # webm MUST be checked before matroska: a .webm file's ffprobe
-    # format_name is "matroska,webm" (webm is a restricted Matroska
-    # profile), so checking "matroska" first swallowed every webm and
-    # normalised it to "mkv". That mislabel made this "webm" branch —
-    # plus the "webm" entries in ffmpeg._CONTAINER_FORMAT and
-    # forge._FORMAT_MAP — dead, and left the post-processing
-    # _EXT_TO_CONTAINER map in worker.py (which already maps .webm →
-    # "webm") disagreeing with this function about the same file.
-    # Detecting webm first fixes both: a remuxed webm keeps the webm
-    # doctype (stream-copy into "-f webm" verified) and only converts to
-    # MP4 when its codecs are genuinely MP4-compatible — VP9/Opus fail
-    # that gate in decision.py, so they stay webm. Caught by independent
-    # review.
-    if "webm"     in name: return "webm"
+    # ⚠ "matroska" MUST be checked before "webm", and the "webm" branch is
+    # deliberately unreachable. ffprobe reports format_name="matroska,webm"
+    # for EVERY Matroska-family file — both real .mkv AND real .webm —
+    # because it's a property of the shared demuxer, not the individual
+    # file. So `name` contains "webm" for ordinary MKVs too, and checking
+    # "webm" first mislabels every MKV as a webm container. That routes
+    # normal H.264/HEVC/AC3/DTS/PGS MKVs to `-f webm` output, which FFmpeg
+    # rejects ("Only VP8/VP9/AV1 video and Vorbis/Opus audio and WebVTT
+    # subtitles are supported for WebM"), breaking every remux — a real
+    # regression that shipped once. format_name genuinely CANNOT
+    # distinguish mkv from webm (only the file extension or the EBML
+    # DocType can), so both are treated as "mkv": `-f matroska` muxes
+    # both correctly, and a real .webm keeps playing. Do not "fix" the
+    # dead webm branch by moving it up.
     if "matroska" in name: return "mkv"
     if "mp4"      in name: return "mp4"
     if "mov"      in name: return "mp4"
     if "avi"      in name: return "avi"
     if "mpegts"   in name: return "ts"
     if "mpeg"     in name: return "ts"
-    # ASF/WMV files report format_name "asf"; this maps them to "wmv". A
-    # prior `if "wmv" in name` line above was dead (ffprobe never emits
-    # "wmv" as a format name) and redundant anyway — were such a name
-    # ever produced, the fallthrough returns it verbatim and "wmv" is
-    # already a valid _CONTAINER_FORMAT key. Removed.
+    if "wmv"      in name: return "wmv"
     if "asf"      in name: return "wmv"
+    if "webm"     in name: return "webm"   # unreachable (see above); kept for intent
     return format_names[0].strip() if format_names else "unknown"
 
 
