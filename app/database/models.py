@@ -124,18 +124,21 @@ class Track(Base):
     title          = Column(String)
 
     # ── Write-only columns — removal candidates ───────────────────────────────
-    # These four columns are populated during scanning but never read back in
-    # the decision engine, workers, or any API serialiser. They consume storage
-    # with no downstream consumer. Removing them requires a schema migration
-    # (ALTER TABLE tracks DROP COLUMN …) and removing the corresponding writes
-    # in scanner.py (_process_file's Track(...) constructor call).
+    # These four columns are now neither written nor read: scanner.py
+    # (_process_file's Track(...) constructor) and the worker's post-job
+    # refresh deliberately stopped populating them, and nothing in the
+    # decision engine, workers, or any API serialiser ever read them.
+    # The comment previously said they were "populated during scanning,"
+    # which contradicted the code once the writes were removed. They're
+    # kept only to avoid a schema migration for now; removing them means
+    # ALTER TABLE tracks DROP COLUMN … (no write-removal needed anymore).
     #
-    # Removal priority:
-    #   raw_ffprobe — highest: stores the full ffprobe JSON blob per track
+    # What each held back when it was still written:
+    #   raw_ffprobe — highest cost: the full ffprobe JSON blob per track
     #                 (potentially several KB each), zero consumers.
     #   codec_long  — human-readable codec description, never queried.
-    #   sample_rate — populated from probe, never queried.
-    #   bit_rate    — populated from probe, never queried.
+    #   sample_rate — from probe, never queried.
+    #   bit_rate    — from probe, never queried.
     codec_long     = Column(String)
     raw_ffprobe    = Column(Text)
     sample_rate    = Column(Integer)

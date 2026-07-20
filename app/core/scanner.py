@@ -599,9 +599,15 @@ def _process_file(
                 stats.unchanged += 1
                 return
 
-        stats.changed += 1
-    else:
+    # Count new vs changed for every file that reaches probing (past the
+    # unchanged early-returns above). Kept OUTSIDE the
+    # `if existing and not force_probe` block on purpose: a full scan
+    # (force_probe=True) skips that block entirely, and the old `else`
+    # there bucketed every existing file as `new`.
+    if is_new_file:
         stats.new += 1
+    else:
+        stats.changed += 1
 
     # ── Run ffprobe ────────────────────────────────────────────────────────
     try:

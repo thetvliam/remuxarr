@@ -168,6 +168,13 @@ def build_ffmpeg_command(
         # for F-B2 earlier — genuinely unreachable, not just unlikely.
         "ts": "mpegts",
         "wmv": "asf",
+        # "webm" and "mov" are unreachable defensive keys, kept for
+        # intent (matching probe.py's annotated copy): _normalise_container
+        # can never return "webm" (its format_name always contains
+        # "matroska", matched first) and maps "mov"→"mp4", and
+        # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
+        # either value. Nothing reaches these; they just document the
+        # intended format if that ever changes.
         "webm": "webm",
         "mov": "mov",
     }
