@@ -112,6 +112,19 @@ def abort_job(job_id: int) -> bool:
             job.error_message  = "Aborted by user"
             job.completed_at   = datetime.utcnow()
             if job.media_file:
+                # Reset the delta-scan sentinels alongside the status, the
+                # same as cancel_item / clear_pending / clear_dry_run and
+                # the history clear/delete paths. An aborted file's bytes
+                # are unchanged on disk (staging never completed), so the
+                # scanner's size/mtime delta check would read it as
+                # "nothing to do" and never re-evaluate it — leaving it
+                # reachable only via Retry or a forced full rescan. The
+                # abort scenario is exactly "fix the wrong setting and let
+                # it re-process," so the file must resurface on the next
+                # delta scan. abort_job was the one cancel path that reset
+                # status but not the sentinels.
+                job.media_file.size   = -1
+                job.media_file.mtime  = -1.0
                 job.media_file.status = "skipped"
             db.commit()
             logger.info("Job %d marked cancelled — aborting task now", job_id)
@@ -510,27 +523,25 @@ def _is_subtitle_encoding_failure(error: str | None) -> bool:
     and "sub_charenc" match the single-command form. FFmpeg's canonical
     message for the exact production case this exists for is "Invalid
     UTF-8 in decoded subtitles text; maybe missing -sub_charenc option",
-    which matches on two of the four patterns. A bare "subtitle"
+    which matches on two of the three patterns. A bare "subtitle"
     catch-all was deliberately removed — see the note at the return.
     """
     if not error:
         return False
     lower = error.lower()
-    # Patterns are SPECIFIC to encoding/decoding failures. A bare
-    # "subtitle" substring was previously included as a catch-all, but it
-    # matched container-capability errors that merely mention the word —
-    # notably FFmpeg's "...WebVTT subtitles are supported for WebM",
-    # which is a MUX/container rejection, not an encoding problem. That
-    # false positive routed a container failure into the "non-UTF-8
-    # subtitle" manual-review flow with a misleading reason. The
-    # canonical encoding failure ("Invalid UTF-8 in decoded subtitles
-    # text; maybe missing -sub_charenc option") still matches here via
-    # both "invalid utf-8" and "sub_charenc", so dropping the catch-all
-    # loses no real coverage.
+    # Patterns are encoding/decoding-specific and won't false-positive on
+    # video/audio, filesystem, or container-capability failures. Two
+    # bare-substring catch-alls have been removed for exactly that
+    # reason: "subtitle" (matched "...WebVTT subtitles are supported for
+    # WebM", a container rejection) and "mov_text" (would match a
+    # container/mux error naming that codec — e.g. muxing a kept mov_text
+    # track into a non-MP4 output). The canonical encoding failure
+    # ("Invalid UTF-8 in decoded subtitles text; maybe missing
+    # -sub_charenc option") still matches via both "invalid utf-8" and
+    # "sub_charenc", so no real coverage is lost.
     return any(pat in lower for pat in (
         "invalid utf-8",     # the actual decode diagnostic for non-UTF-8 text subs
         "sub_charenc",       # FFmpeg's hint for the encoding issue
-        "mov_text",          # the specific codec that triggered this fix
         "sist#",             # FFmpeg's notation for subtitle input streams in combined commands
     ))
 
@@ -1130,7 +1141,8 @@ def _finish_job(
             job.status = "success" if success else "failed"
 
         job.completed_at  = datetime.utcnow()
-        job.progress      = 100.0 if success else job.progress
+        if success:
+            job.progress = 100.0   # leave progress untouched on failure
         job.output_path   = output_path
         job.output_size   = output_size
         job.error_message = error
@@ -1671,14 +1683,16 @@ def _load_email_notify_data(job_id: int) -> dict | None:
             db.commit()
             return None
 
-        media    = job.media_file
-        filename = media.filename if media else "unknown file"
-
         if state.breaker_tripped:
-            # Crossed the threshold on THIS failure → the one tripped email.
+            # Crossed the threshold on THIS failure → the one tripped
+            # email (which doesn't include a filename).
             db.commit()
             return {"kind": "tripped", "count": state.consecutive_failures, "cfg": cfg}
 
+        # Only the per-failure email below needs the filename, so resolve
+        # it here rather than before the tripped branch that ignores it.
+        media    = job.media_file
+        filename = media.filename if media else "unknown file"
         db.commit()
         return {
             "kind":     "failure",

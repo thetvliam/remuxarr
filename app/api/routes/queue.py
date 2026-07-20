@@ -347,7 +347,9 @@ def clear_pending(db: Session = Depends(get_db)):
     count = (
         db.query(QueueItem)
         .filter(QueueItem.status == "pending")
-        .update({"status": "cancelled"})
+        # completed_at stamped for the same reason as cancel_item — see
+        # its comment (NULLs sort last in the completed_at-DESC history).
+        .update({"status": "cancelled", "completed_at": datetime.utcnow()})
     )
     if file_ids:
         db.query(MediaFile).filter(
@@ -432,6 +434,13 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
 
     item.status = "cancelled"
+    # Stamp completed_at, matching the skipped transition in
+    # _apply_decision_to_item (and abort_job): history orders by
+    # completed_at DESC and SQLite sorts NULLs last, so a cancelled row
+    # without it would sink to the bottom of the Failed tab regardless of
+    # recency and render a "—" timestamp. cancel_item and clear_pending
+    # were the two "cancelled"-producing paths that missed this.
+    item.completed_at = datetime.utcnow()
     if item.media_file:
         item.media_file.size   = -1
         item.media_file.mtime  = -1.0

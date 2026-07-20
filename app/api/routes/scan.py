@@ -139,16 +139,44 @@ def cancel_scan():
     return {"cancelling": True}
 
 
+def _scan_file_sync(path: str):
+    """
+    Synchronous wrapper for thread-pool execution — mirrors the webhook
+    handler's _queue_sync. queue_single_file runs ffprobe (subprocess,
+    up to the probe timeout) plus full decision/DB work; on the event
+    loop that would freeze WebSocket broadcasts, the worker's progress
+    events, and every other async route for its whole duration. Every
+    sibling here already offloads its blocking work (cleanup →
+    _cleanup_sync, orphan removal → _remove_orphaned_sync, webhooks →
+    _queue_sync); this route was the one that didn't. Opens its own
+    SessionLocal on the executor thread rather than crossing the
+    request-scoped session over a thread boundary. Returns the freshly
+    -queried QueueItem (whose id/reason stay readable after the session
+    closes because queue_single_file re-queries post-commit) or None.
+    """
+    db = SessionLocal()
+    try:
+        return queue_single_file(db, path)
+    finally:
+        db.close()
+
+
 @router.post("/file")
-async def scan_file(body: FileScanRequest, db: Session = Depends(get_db)):
+async def scan_file(body: FileScanRequest):
     """
     Re-probe a single file and queue it if needed.
     Useful for manual testing or after fixing a misidentified file.
+
+    No Depends(get_db): the blocking probe/queue work runs on the thread
+    pool (see _scan_file_sync) with its own session, and the async route
+    only awaits the broadcast afterward — so a single manual re-scan can
+    no longer stall the event loop for the length of an ffprobe.
     """
     if not os.path.isfile(body.path):
         raise HTTPException(400, f"File not found: {body.path}")
 
-    qi = queue_single_file(db, body.path)
+    loop = asyncio.get_running_loop()
+    qi = await loop.run_in_executor(None, _scan_file_sync, body.path)
     if qi:
         await ws_manager.broadcast_json({
             "event":         "file_queued",
