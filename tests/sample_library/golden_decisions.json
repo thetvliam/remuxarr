@@ -1,0 +1,92 @@
+{
+ "Anime HEVC Main10 1080p Sample1.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "Anime HEVC Main10 1080p Sample2.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mkv"
+ },
+ "Anime HEVC Main10 1080p Sample3 (Heavy Subtitle Use).mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "Awaken AV1 DV Sample.mkv": {
+  "container": "mkv",
+  "outcome": "skip",
+  "target_container": null
+ },
+ "Clannad After Story OPA - sample HEVC main10 1080p.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "Dolby Digital Plus 7.1 Channel Check.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "FPS_test_1080p23.976_L4.1.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "Forced Sub Sample (PGS).mkv": {
+  "container": "mkv",
+  "outcome": "manual_review",
+  "target_container": null
+ },
+ "Forced Sub Sample (und test).mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mkv"
+ },
+ "Forced Sub Sample.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mkv"
+ },
+ "MPEG2_1080i_sample.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "POCAWE_Sample.mkv": {
+  "container": "mkv",
+  "outcome": "manual_review",
+  "target_container": null
+ },
+ "SPY.x.FAMILY.S03E01.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264-VARYG.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "The Redwoods.mkv": {
+  "container": "mkv",
+  "outcome": "skip",
+  "target_container": null
+ },
+ "VC-1_23.976_sample.mkv": {
+  "container": "mkv",
+  "outcome": "skip",
+  "target_container": null
+ },
+ "[Underwater] Another - sample H264 Hi10P 1080p.avi": {
+  "container": "avi",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "[Underwater] Another - sample H264 Hi10P 720p.avi": {
+  "container": "avi",
+  "outcome": "process",
+  "target_container": "mp4"
+ },
+ "jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv": {
+  "container": "mkv",
+  "outcome": "process",
+  "target_container": "mp4"
+ }
+}
