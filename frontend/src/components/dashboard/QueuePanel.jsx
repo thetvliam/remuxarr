@@ -3,18 +3,22 @@ import { C, STATUS_COLOR } from "../../constants";
 import { fmtTime } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
-import { MiniBar } from "../bars/MiniBar";
 import { PanelHeader } from "../layout/PanelHeader";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE ROW
- * Shows per-item ↑ TOP and × buttons on hover.  Both are hidden for items
- * that are currently processing (can't interrupt a running job).
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
+ * this component (the parent filters out processing items), so there's
+ * no processing/progress state here.
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
     const [hover, setHover] = useState(false);
     const f          = item.file || {};
-    const processing = item.status === "processing";
+    // NOTE: this row only ever renders PENDING items. Its parent passes
+    // pendingQueue = queue.filter(status !== "processing"), so an
+    // item.status === "processing" branch here was unreachable — the LED
+    // pulse, the action-hide guard, and the MiniBar block below never
+    // fired (processing items render in ActivePanel instead). Removed.
 
     const stopProp = (fn) => (e) => { e.stopPropagation(); fn(); };
 
@@ -61,7 +65,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
         <LED
         color={STATUS_COLOR[item.status] || C.dim}
-        pulse={processing}
+        pulse={false}
         size={6}
         />
         <span style={{
@@ -77,13 +81,11 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         {f.filename || "—"}
         </span>
 
-        {/* Per-row actions — hidden while processing */}
-        {!processing && (
-            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-            {actionBtn("↑ TOP", C.amber, () => onPrioritize(item), "Move to top of queue")}
-            {actionBtn("×", C.red, () => onDismiss(item), "Remove from queue")}
-            </div>
-        )}
+        {/* Per-row actions (this row is always a pending item) */}
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        {actionBtn("↑ TOP", C.amber, () => onPrioritize(item), "Move to top of queue")}
+        {actionBtn("×", C.red, () => onDismiss(item), "Remove from queue")}
+        </div>
 
         <span style={{ color: C.dim, fontSize: 9, flexShrink: 0 }}>
         {fmtTime(item.created_at)}
@@ -101,20 +103,13 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         }}>
         {item.reason || "—"}
         </div>
-
-        {/* Mini progress bar (when actively processing) */}
-        {processing && (
-            <div style={{ paddingLeft: 14, marginTop: 5 }}>
-            <MiniBar value={item.progress || 0} />
-            </div>
-        )}
         </button>
     );
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const [search,    setSearch]    = useState("");
     const [clearArmed, setClearArmed] = useState(false);
