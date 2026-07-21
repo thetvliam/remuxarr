@@ -229,7 +229,7 @@ def _cleanup_sync(scan_paths: list[str]) -> int:
     because of check_same_thread=False, but this was the one place in the
     codebase doing this; every other executor helper (_queue_sync,
     _load_job_data, etc.) already opens its own session for exactly this
-    reason. Caught by independent review.
+    reason.
     """
     db = SessionLocal()
     try:
@@ -283,7 +283,7 @@ def _remove_orphaned_sync(file_ids: list[int]) -> int:
     this endpoint was doing the identical thing four routes down —
     passing the request-scoped Depends(get_db) Session into
     run_in_executor — and was missed. It only ever worked because of
-    check_same_thread=False. Caught by independent review.
+    check_same_thread=False.
     """
     db = SessionLocal()
     try:

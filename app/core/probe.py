@@ -168,7 +168,7 @@ def extract_format_info(probe_data: dict) -> dict:
     Only container and duration — confirmed directly, at every call site
     across the codebase, that bit_rate and size were never actually read
     from this dict once computed (previously computed anyway, on every
-    scan, for values nothing consumed). Caught by independent review.
+    scan, for values nothing consumed).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")

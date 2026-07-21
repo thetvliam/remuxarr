@@ -25,8 +25,7 @@ def _flv_settings():
 
 def test_unknown_container_raises_instead_of_silently_muxing_matroska():
     """
-    Regression for a real P1 file-corruption bug found by independent
-    review: MEDIA_EXTENSIONS accepts containers (e.g. .flv) that
+    Regression for a real file-corruption bug: MEDIA_EXTENSIONS accepts containers (e.g. .flv) that
     _normalise_container passes through unchanged and _CONTAINER_FORMAT
     has no entry for. The old `.get(..., "matroska")` default meant such
     a file — processed for ANY reason, e.g. a simple track drop — got
@@ -120,7 +119,7 @@ def _drop_track_setup(path, container, vcodec="mpeg2video"):
 
 def test_m2ts_incidental_processing_keeps_its_extension():
     """
-    Regression for a real silent-rename bug found by independent review:
+    Regression for a real silent-rename bug:
     a .m2ts file (ffprobe format_name "mpegts", normalised container
     "ts") processed for ANY reason — here a pure track drop — was
     written to Movie.ts. No change_container action, no mention in the

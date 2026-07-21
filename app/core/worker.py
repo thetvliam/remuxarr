@@ -468,7 +468,7 @@ def _needs_audio_transcode_retry(result) -> bool:
     call genuinely different underlying functions with different return
     shapes (execute_ffmpeg_combined returns a tuple, execute_ffmpeg
     doesn't), and the log wording usefully distinguishes which of the
-    two retry paths actually fired. Caught by independent review.
+    two retry paths actually fired.
     """
     return not result.success and (
         _is_corrupt_audio_copy_failure(result.error)
@@ -805,7 +805,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # (removed from the mux, never written as a sidecar, only a
             # log warning to show for it). srt_results is retained in the
             # return shape for per-track detail, but no partial-failure
-            # branch exists anymore. Caught by independent review.
+            # branch exists anymore.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
             #
@@ -816,7 +816,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # different outcomes depending on which internal execution
             # path happened to run: per-track Keep/Remove review when a
             # remux was also needed, but a raw failed job when the only
-            # work was extraction. Caught by independent review.
+            # work was extraction.
             #
             # One deliberate asymmetry with the combined path remains: a
             # combined command's cascade can't be attributed to a specific
@@ -1668,7 +1668,7 @@ def _load_email_notify_data(job_id: int) -> dict | None:
         # off after a trip silently resumed counting and the two paths
         # disagreed about the same state. The frozen value is the
         # "tripped at N" figure; keeping it stable is what makes that
-        # number meaningful. Caught by independent review.
+        # number meaningful.
         if state.breaker_tripped:
             return None
 
@@ -1779,8 +1779,7 @@ async def _process_next_forge(ws_manager) -> bool:
     # appending a suffix to an already-long Sonarr-style filename can push
     # it past the 255-byte filesystem component limit (confirmed in
     # production there: a 247-byte original filename failed). A job_id is
-    # always short and unique, so this can never happen here. Caught by
-    # independent review.
+    # always short and unique, so this can never happen here.
     tmp_dir   = _pick_temp_dir(input_path)
     temp_path = os.path.join(tmp_dir, f"forge_{job_id}.forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)

@@ -1,7 +1,7 @@
 """
-Regression tests for the low-severity review items L1–L5.
+Regression tests for several unrelated correctness edge cases.
 
-L1 — container detection for Matroska-family files (mkv AND webm):
+Container detection for Matroska-family files (mkv AND webm):
     ffprobe reports format_name="matroska,webm" for EVERY Matroska file,
     not just webm — it's a demuxer property. _normalise_container must
     therefore check "matroska" before "webm" and treat both as "mkv"
@@ -19,25 +19,25 @@ L1 — container detection for Matroska-family files (mkv AND webm):
     webm mux rejection into a misleading "non-UTF-8 subtitle" manual
     review. Pinned below.
 
-L2 — email breaker counted inconsistently between enabled/disabled:
+Email breaker counted inconsistently between enabled/disabled:
     once tripped, the email-enabled path froze consecutive_failures but
     the email-disabled path kept incrementing, so toggling email off
     after a trip silently resumed counting. Fix freezes the counter once
     tripped regardless of email_enabled.
 
-L3 — retrying a success/skipped item destroyed its history record:
+Retrying a success/skipped item destroyed its history record:
     _retry_with_reprobe deleted the item for ALL statuses, so
     "RE-PROCESS" on a success erased its bytes-saved stats (and, for an
     already-compliant file, created nothing to replace it). Fix deletes
     only stale attempts (failed/cancelled/dry_run) and preserves
     completed evaluations (success/skipped).
 
-L4 — single-item retry lacked the bulk sibling's exception guard:
+Single-item retry lacked the bulk sibling's exception guard:
     _retry_with_reprobe called _process_file bare, so a probe/decision
     exception surfaced as an unhandled 500 AND left a stale item already
     deleted. Fix wraps it in try/except with rollback + a 400.
 
-L5 — abort path relied on the finally running under cancellation:
+Abort path relied on the finally running under cancellation:
     documented + made explicit. The async contract (a single
     task.cancel() lets the finally complete, so the "cancelled" broadcast
     still reaches every client) is pinned below.
@@ -61,7 +61,7 @@ from app.core.worker import _is_subtitle_encoding_failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# L1 — _normalise_container (pure function)
+# _normalise_container (pure function)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_matroska_webm_format_name_is_mkv():
@@ -130,7 +130,7 @@ def test_webm_container_error_is_not_an_encoding_failure():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# L2 — email breaker counting consistency
+# Email breaker counting consistency
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _email_db():
@@ -165,7 +165,7 @@ def _add_failed_job(db, job_id, file_id=1):
 
 def test_breaker_frozen_when_disabled_after_trip(monkeypatch):
     """
-    The exact L2 regression. Trip the breaker with email ENABLED
+    Trip the breaker with email ENABLED
     (threshold 3), then DISABLE email and fail twice more. The counter
     must stay frozen at 3 — the old email-disabled branch kept
     incrementing (→ 5), disagreeing with the enabled path's freeze.
@@ -197,14 +197,14 @@ def test_breaker_frozen_when_disabled_after_trip(monkeypatch):
     st = db.get(NotificationState, 1)
     assert st.consecutive_failures == 3, (
         f"counter resumed to {st.consecutive_failures} while disabled — the "
-        "email-disabled branch is still incrementing past a trip (L2)."
+        "email-disabled branch is still incrementing past a trip."
     )
     assert st.breaker_tripped is True
 
 
 def test_success_resets_breaker(monkeypatch):
     """A success must un-trip and zero the counter (unchanged behavior,
-    pinned so the L2 restructure didn't disturb it)."""
+    pinned so the restructure didn't disturb it)."""
     import app.core.worker as worker
     db = _email_db()
     monkeypatch.setattr(worker, "SessionLocal", lambda: db)
@@ -245,7 +245,7 @@ def test_one_tripped_email_then_silence(monkeypatch):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# L3 / L4 — _retry_with_reprobe (DB-backed; L3 needs a probeable file)
+# _retry_with_reprobe (DB-backed; needs a probeable file)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _retry_db():
@@ -261,7 +261,7 @@ def _retry_db():
 
 def _make_probeable_mp4(path):
     """A minimal valid MP4 so _process_file can probe it. Any decision
-    outcome is fine for L3 — the assertion is only about row survival."""
+    outcome is fine here — the assertion is only about row survival."""
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y",
          "-f", "lavfi", "-i", "testsrc=duration=1:size=128x72:rate=10",
@@ -278,7 +278,7 @@ ffmpeg_missing = shutil.which("ffmpeg") is None or shutil.which("ffprobe") is No
 @pytest.mark.skipif(ffmpeg_missing, reason="ffmpeg/ffprobe not available")
 def test_retry_success_preserves_history_row(tmp_path):
     """
-    L3 core: RE-PROCESS on a success must NOT delete the success row or
+    RE-PROCESS on a success must NOT delete the success row or
     its bytes-saved stats. _process_file's queue path clears only
     skipped/manual_review, never success, so the row survives whatever
     the re-probe decides.
@@ -300,7 +300,7 @@ def test_retry_success_preserves_history_row(tmp_path):
     _retry_with_reprobe(db, db.get(QueueItem, 10))
 
     kept = db.get(QueueItem, 10)
-    assert kept is not None, "the success history row was deleted by RE-PROCESS (L3)"
+    assert kept is not None, "the success history row was deleted by RE-PROCESS"
     assert kept.status == "success"
     assert kept.original_size == 1000 and kept.output_size == 600, (
         "bytes-saved stats were lost"
@@ -333,7 +333,7 @@ def test_retry_failed_still_deletes_the_stale_item(tmp_path):
 
 def test_retry_reprobe_failure_raises_400_and_restores_item(tmp_path, monkeypatch):
     """
-    L4: when _process_file raises (the review's cited case is the
+    When _process_file raises (the cited case is the
     ValueError decision.py throws for unknown container info; a probe
     error is caught inside _process_file, so we force the raise directly
     to exercise the guard itself), the single-item retry must surface a
@@ -366,14 +366,14 @@ def test_retry_reprobe_failure_raises_400_and_restores_item(tmp_path, monkeypatc
 
     restored = db.get(QueueItem, 30)
     assert restored is not None, (
-        "a failed retry destroyed the item it was meant to re-queue (L4) — "
+        "a failed retry destroyed the item it was meant to re-queue — "
         "rollback did not restore it."
     )
     assert restored.status == "failed"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# L5 — abort: the finally broadcast runs under cancellation
+# Abort: the finally broadcast runs under cancellation
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_finally_broadcast_survives_single_cancel():
@@ -400,7 +400,7 @@ def test_finally_broadcast_survives_single_cancel():
         try:
             await inner()
         except asyncio.CancelledError:
-            events.append("logged-abort")   # explicit branch added by the L5 fix
+            events.append("logged-abort")   # explicit branch for the abort path
             raise
         except Exception:
             events.append("caught-exception")

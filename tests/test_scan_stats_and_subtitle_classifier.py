@@ -1,23 +1,20 @@
 """
-Regression tests for the Phase 2/3 review fixes that change observable
-behavior. The pure dead-code / comment / reorder items (claims 8, 9, 10,
-11, 14a, 14b) are guarded by the existing suite — most importantly the
-sample-library golden snapshot, which confirms removing has_transcode
-(9) and dropped_si (10) changed no decisions — and need no new tests.
+Regression tests for two scanner/classifier behaviors: the full-scan
+new/changed counting, and the subtitle-encoding-failure classifier.
 
-Claim 4 — full scans miscounted existing files as "new":
+Full scans miscounted existing files as "new":
     counting keyed off the `else` of `if existing and not force_probe`,
     so a forced full scan (force_probe=True) skipped the delta block and
     logged every existing file as new=<library> changed=0. Now buckets
     by is_new_file.
 
-Claim 5 — mov_text was a substring catch-all in the encoding classifier:
+mov_text was a substring catch-all in the encoding classifier:
     same false-positive class as the removed "subtitle" pattern (would
     match a container/mux error naming mov_text). Removed; genuine
     encoding failures are still caught by "invalid utf-8"/"sub_charenc".
 
 Run from the project root:
-    pytest tests/test_phase2_3_fixes.py -v
+    pytest tests/test_scan_stats_and_subtitle_classifier.py -v
 """
 import os
 import subprocess
@@ -31,7 +28,7 @@ from app.core.worker import _is_subtitle_encoding_failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Claim 5 — encoding classifier no longer matches container errors
+# Encoding classifier no longer matches container errors
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_mov_text_container_error_not_classified_as_encoding():
@@ -57,7 +54,7 @@ def test_non_subtitle_failures_still_rejected():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Claim 4 — full scan counts existing files as changed, not new
+# Full scan counts existing files as changed, not new
 # ═══════════════════════════════════════════════════════════════════════════
 
 ffmpeg_missing = os.system("which ffmpeg >/dev/null 2>&1") != 0
@@ -109,7 +106,7 @@ def test_full_scan_counts_existing_file_as_changed(tmp_path):
     _process_file(db, str(f), cfg, force_probe=True, dry_run=False, stats=stats)
 
     assert stats.new == 0, (
-        f"a full rescan counted an existing file as new (new={stats.new}) — claim 4"
+        f"a full rescan counted an existing file as new (new={stats.new})"
     )
     assert stats.changed == 1, (
         f"expected the existing file to count as changed, got changed={stats.changed}"

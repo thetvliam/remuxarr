@@ -210,7 +210,7 @@ async def run_forge_command(
     jobs got none of the job_timeout_minutes protection the main remux
     pipeline has always had, meaning a hung forge job (e.g. against a
     genuinely broken source file) could run indefinitely with no
-    recovery. Caught by independent review.
+    recovery.
     """
     duration = await probe_duration(input_path)
 
@@ -503,7 +503,7 @@ def resolve_forge_ac3_for_undo(tracks: list[dict]) -> tuple[str, int | None]:
     the entire file with every track kept and recorded the job as
     "undone" — a false success leaving the AC3 embedded forever while
     the UI reported it removed and the candidates list excluded the
-    file. Caught by independent review; failure mode confirmed
+    file. The failure mode was confirmed
     empirically during the fix. Resolving by verified properties at
     undo time closes it.
 

@@ -1,5 +1,5 @@
 """
-Regression test for the Phase 4 fix (claim 12).
+Regression test for get_candidates query batching.
 
 get_candidates issued two extra queries PER FILE (the AAC 5.1 lookup and
 the audio-track count) — 2N+1 for a page of N. They're now collapsed
@@ -10,14 +10,14 @@ count, and a DETERMINISTIC "first AAC 5.1" = lowest stream_index (which
 is what the previous per-file .first() returned, since tracks are
 inserted in stream order).
 
-Claim 13 (folding _has_pending_forge into claim_next_forge_job) was
-deliberately NOT implemented — the fold saves a query only on the hit
-path, doesn't reduce the idle per-tick polling the review was concerned
-about, and would decouple the claim from execution in the hottest loop
-for negligible gain. No test needed for a non-change.
+Folding _has_pending_forge into claim_next_forge_job was deliberately
+NOT done: the fold saves a query only on the hit path, doesn't reduce
+the idle per-tick polling, and would decouple the claim from execution
+in the worker's hottest loop for negligible gain. No test for a
+non-change.
 
 Run from the project root:
-    pytest tests/test_phase4_fixes.py -v
+    pytest tests/test_forge_candidates.py -v
 """
 import os
 import sys

@@ -99,8 +99,7 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     # ("skipped", "manual_review") stale records, never "success", so a
     # kept success row survives a re-probe that queues new work (yielding
     # two legitimate history rows for two operations), and a kept skipped
-    # row is updated in place by the skip path. Caught by independent
-    # review.
+    # row is updated in place by the skip path.
     preserve_completed_record = item.status in ("success", "skipped")
     if not preserve_completed_record:
         # Removes the stale item and its PlannedActions via cascade.
@@ -127,7 +126,7 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         # no indication of what went wrong — and, for a stale attempt,
         # left the item already deleted above. Roll back so a failed
         # retry never destroys the item it was meant to re-queue, then
-        # report the reason. Caught by independent review.
+        # report the reason.
         logger.exception("Retry failed for %s", file_path)
         db.rollback()
         raise HTTPException(400, f"Retry failed: {exc}") from exc
@@ -331,7 +330,7 @@ def clear_pending(db: Session = Depends(get_db)):
     _process_file's "queued"-status disambiguation only special-cases a
     latest item of dry_run, not cancelled — so the file stayed
     (incorrectly) marked "queued" until a forced full scan happened to
-    touch it. Caught by independent review.
+    touch it.
 
     Also resets size/mtime to the delta-scan sentinels, matching
     cancel_item — see its docstring for the full rationale. The
@@ -418,7 +417,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     next library scan" — useActions.dismissQueueItem), which was only
     true for forced full scans. The sibling endpoints that faced the
     identical problem all reset the sentinels; this one and
-    clear_pending were missed. Caught by independent review.
+    clear_pending were missed.
 
     For a manual_review item ("Skip" in the Review page) this means the
     review flag also resurfaces on the next DELTA scan — deliberately
@@ -489,8 +488,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
         # deleted the item and re-processed with no arr IDs at all, so
         # "Retry All" on webhook-originated failures produced jobs that
         # would never fire RescanSeries/RescanMovie on success, even
-        # though single-item retry preserved this correctly. Caught by
-        # independent review.
+        # though single-item retry preserved this correctly.
         sonarr_series_id = item.sonarr_series_id
         radarr_movie_id  = item.radarr_movie_id
         db.delete(item)

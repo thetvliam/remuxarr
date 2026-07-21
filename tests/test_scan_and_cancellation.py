@@ -1,7 +1,8 @@
 """
-Regression tests for the Phase 1 review fixes (three genuine bugs).
+Regression tests for three request-lifecycle bugs (scan-route
+offloading, cancelled-item timestamps, aborted-file re-scanning).
 
-Claim 1 — POST /api/scan/file blocked the event loop:
+POST /api/scan/file blocked the event loop:
     scan_file was `async def` but called queue_single_file (ffprobe via
     subprocess + full decision/DB work) directly on the loop, freezing
     every other async task for its duration. It now offloads to the
@@ -9,20 +10,20 @@ Claim 1 — POST /api/scan/file blocked the event loop:
     webhook/cleanup/orphan siblings. The test proves the blocking work
     runs OFF the event-loop thread.
 
-Claim 2 — cancelled items had no completed_at:
+Cancelled items had no completed_at:
     cancel_item and clear_pending set status="cancelled" without
     stamping completed_at, so they sank to the bottom of the
     completed_at-DESC history (NULLs last in SQLite) with "—"
     timestamps — the exact bug already fixed for skipped rows.
 
-Claim 3 — abort_job didn't reset the delta-scan sentinels:
+Abort_job didn't reset the delta-scan sentinels:
     every other cancel path resets MediaFile.size/mtime to -1/-1.0 so
     the file resurfaces on the next delta scan; abort_job set status but
     left the sentinels, stranding the aborted file until a forced full
     rescan.
 
 Run from the project root:
-    pytest tests/test_phase1_fixes.py -v
+    pytest tests/test_scan_and_cancellation.py -v
 """
 import asyncio
 import os
@@ -45,7 +46,7 @@ def _fresh_db():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Claim 1 — scan_file offloads blocking work to the thread pool
+# Scan_file offloads blocking work to the thread pool
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_scan_file_runs_blocking_work_off_the_event_loop(tmp_path, monkeypatch):
@@ -83,7 +84,7 @@ def test_scan_file_runs_blocking_work_off_the_event_loop(tmp_path, monkeypatch):
     assert "thread" in recorded, "queue_single_file was never called"
     assert recorded["thread"] is not loop_thread, (
         "queue_single_file ran on the event-loop thread — it is still "
-        "blocking the loop (claim 1)."
+        "blocking the loop."
     )
     assert recorded["thread"] is not threading.main_thread()
     assert recorded["broadcast"]["queue_item_id"] == 42
@@ -121,7 +122,7 @@ def test_scan_file_404s_on_missing_file():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Claim 2 — cancel_item / clear_pending stamp completed_at
+# Cancel_item / clear_pending stamp completed_at
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _seed_pending(db, item_id, file_id):
@@ -147,7 +148,7 @@ def test_cancel_item_stamps_completed_at():
     assert item.status == "cancelled"
     assert item.completed_at is not None, (
         "cancel_item left completed_at NULL — the row will sink to the "
-        "bottom of the Failed tab with a '—' timestamp (claim 2)."
+        "bottom of the Failed tab with a '—' timestamp."
     )
 
 
@@ -166,12 +167,12 @@ def test_clear_pending_stamps_completed_at_on_all():
         item = db.get(QueueItem, iid)
         assert item.status == "cancelled"
         assert item.completed_at is not None, (
-            f"clear_pending left completed_at NULL on item {iid} (claim 2)."
+            f"clear_pending left completed_at NULL on item {iid}."
         )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Claim 3 — abort_job resets the delta-scan sentinels
+# Abort_job resets the delta-scan sentinels
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_abort_job_resets_delta_sentinels():
@@ -225,7 +226,7 @@ def test_abort_job_resets_delta_sentinels():
             assert m.status == "skipped"
             assert (m.size, m.mtime) == (-1, -1.0), (
                 f"abort_job left sentinels at ({m.size}, {m.mtime}) — the "
-                "aborted file is invisible to delta scans (claim 3)."
+                "aborted file is invisible to delta scans."
             )
             job = db.get(QueueItem, 1)
             assert job.status == "cancelled"

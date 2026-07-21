@@ -296,7 +296,7 @@ def _radarr_paths(payload: dict) -> list[str]:
     # files — Download still worked via movieFile above. Confirmed
     # against Radarr's WebhookRenamePayload / WebhookRenamedMovieFile
     # source, not just the field name: same array shape the correctly
-    # -handled Sonarr sibling already uses. Caught by independent review.
+    # -handled Sonarr sibling already uses.
     #
     # Each element also carries "previousPath" (the pre-rename full
     # path). We deliberately take only "path" (the NEW location), exactly

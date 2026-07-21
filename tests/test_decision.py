@@ -464,7 +464,7 @@ def test_image_subtitle_setting_does_not_affect_text_based_subs(settings):
 
 def test_forced_by_title_legacy_row_is_kept_not_dropped(settings):
     """
-    Regression for a real bug found by independent review: the
+    Regression for a real bug: the
     title-regex fallback for Track rows scanned before probe-side forced
     detection existed only upgraded LOCAL variables inside the subtitle
     loop — but the keep/drop decision (_sub_is_kept) reads the track
@@ -541,12 +541,12 @@ def test_plain_non_forced_non_kept_subtitle_still_drops(settings):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MP4 conversion vs kept TEXT subtitles (H3 regression)
+# MP4 conversion vs kept TEXT subtitles
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_kept_subrip_blocks_mp4_conversion_when_extraction_disabled(settings):
     """
-    Regression for a real bug found by independent review, reproduced
+    Regression for a real bug, reproduced
     empirically with real FFmpeg: MP4's only native text subtitle format
     is mov_text — `-c:s copy` of a SubRip stream into `-f mp4` fails at
     header-write ("Could not find tag for codec subrip", exit 234,

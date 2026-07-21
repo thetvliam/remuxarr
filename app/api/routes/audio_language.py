@@ -154,8 +154,7 @@ def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         # onto the SAME final path, so the stale pre-override job can
         # finish last and overwrite the corrected output. An earlier
         # version of this code deleted "processing" rows here and
-        # presented that as deliberate and safe — it was neither;
-        # caught by independent review.
+        # presented that as deliberate and safe — it was neither.
         #
         # Skipping is safe because the override was already committed
         # above: the running job rewrites the file (new mtime), so the

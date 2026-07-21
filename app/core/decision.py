@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # codec_name is consistently "h264"/"hevc" across every real probe output
 # seen throughout this project (confirmed directly, repeatedly); these two
 # can never actually match. Kept rather than removed since a stray, unused
-# alias here is genuinely harmless — flagged by independent review as
-# worth a comment rather than worth the risk of deleting.
+# alias here is genuinely harmless — worth a comment rather than the
+# risk of deleting.
 MP4_COMPATIBLE_VIDEO = frozenset({
     "h264", "avc", "hevc", "h265", "mpeg4", "mpeg2video", "mjpeg",
 })
@@ -303,7 +303,7 @@ def analyze_file(
     # language was dropped despite keep_forced_subtitles=True, defeating
     # the fallback's own stated purpose. It only ever affected
     # description strings and .forced.srt naming of tracks kept for
-    # OTHER reasons. Caught by independent review.
+    # OTHER reasons.
     #
     # Copies, not in-place writes — analyze_file must never mutate its
     # caller's inputs. All three flags are upgraded to mirror probe.py's
@@ -962,7 +962,7 @@ def analyze_file(
     # exists (the AAC 5.1 → AC3 setting was removed earlier this
     # project). The has_transcode flag it once shared with the
     # anything-to-do check above was removed there too, for the same
-    # always-False reason. Caught by independent review.
+    # always-False reason.
     if has_container:
         parts.append(f"Convert {current_container.upper()} → MP4")
     if has_extract:

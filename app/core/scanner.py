@@ -272,10 +272,9 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     file ends up visibly listed under two tabs in the History panel at
     once.
 
-    This function originally only ever cleared "skipped" records — an
-    independent code review caught that manual_review has the exact
-    same character and was missing the same treatment, a gap in my own
-    original scoping of this fix, not a separate, unrelated bug.
+    This function originally only ever cleared "skipped" records;
+    manual_review has the exact same character and needs the same
+    treatment.
 
     Deliberately does NOT apply to completed/failed/cancelled/dry_run —
     those represent real, historical events that actually happened and
@@ -307,7 +306,7 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     review row for the same file. The pending item's plan is exactly the
     kind of "as of that scan" claim _clear_stale_status_records deals in;
     it just additionally carries children and a claim race, handled
-    below. Caught by independent review.
+    below.
 
     NOT routed through _clear_stale_status_records for two load-bearing
     reasons:
@@ -857,7 +856,7 @@ def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int
     acknowledged this). Consolidated here as thin wrappers rather than
     updating every importer (worker.py, queue.py, audio_language.py,
     subtitle_language.py) to call this directly, so every existing call
-    site keeps working unchanged. Caught by independent review.
+    site keeps working unchanged.
 
     Parses a JSON dict with string keys (JSON object keys are always
     strings) into a dict[int, str] keyed by stream_index, as expected by
@@ -953,7 +952,7 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         is_undo flag is what disambiguates. Without this, a scan landing
         mid-undo counted the forge track toward the und threshold and
         could re-flag for manual review a file this feature exists to
-        exempt. Caught by independent review.
+        exempt.
 
     Excluded: "pending"/"failed" and "processing" with is_undo=False
     (AC3 doesn't exist yet), "undone"/"cancelled" (AC3 already removed
@@ -982,3 +981,5 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
+
+
