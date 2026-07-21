@@ -10,22 +10,31 @@ import { LogViewer } from "./LogViewer";
 
 const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVED", error: "✗ ERROR" };
 
+/* Category → which schema groups (or custom sections) live under it. The
+   config categories list schema `group` names; the two action categories
+   render their own components and have no saveable fields. */
+const CATEGORIES = [
+  { id: "processing",    label: "Library & Processing", groups: ["Library", "Metadata", "Audio", "Subtitles"] },
+  { id: "worker",        label: "Worker",               groups: ["Worker"] },
+  { id: "integrations",  label: "Integrations",         groups: ["Sonarr", "Radarr", "Plex", "Plex Analyze Backlog"] },
+  { id: "notifications", label: "Notifications",        groups: ["Email"] },
+  { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
+  { id: "backup",        label: "Backup & Danger Zone", custom: "backup" },
+];
+const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
+const STORAGE_KEY = "remuxarr.settingsCategory";
+
 /* ── Section header ─────────────────────────────────────────────────────── */
-const SectionHeader = ({ label }) => (
+const SectionHeader = ({ label, first }) => (
   <div style={{
     display: "flex",
     alignItems: "center",
     gap: 10,
-    margin: "32px 0 0",
+    margin: first ? "4px 0 0" : "32px 0 0",
     paddingBottom: 8,
     borderBottom: `1px solid ${C.border}`,
   }}>
-    <span style={{
-      color: C.amber,
-      fontSize: 9,
-      letterSpacing: "0.18em",
-      fontWeight: 700,
-    }}>
+    <span style={{ color: C.amber, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
       {label.toUpperCase()}
     </span>
   </div>
@@ -53,7 +62,6 @@ const TestConnectionButton = ({ api, service }) => {
       setState("err");
       setResult("Request failed");
     }
-    // Auto-reset after 8 seconds
     setTimeout(() => { setState("idle"); setResult(""); }, 8000);
   };
 
@@ -66,11 +74,7 @@ const TestConnectionButton = ({ api, service }) => {
   }[state];
 
   return (
-    <div style={{
-      display: "flex",
-      justifyContent: "flex-end",
-      padding: "12px 0 4px",
-    }}>
+    <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 0 4px" }}>
       <button
         onClick={run}
         disabled={state === "loading"}
@@ -117,20 +121,15 @@ const PlexBacklogStatus = ({ api }) => {
 
   return (
     <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "10px 0 4px",
-      color: C.muted,
-      fontSize: 11,
+      display: "flex", alignItems: "center", gap: 8,
+      padding: "10px 0 4px", color: C.muted, fontSize: 11,
     }}>
       <span style={{
         padding: "1px 7px",
         background: count > 0 ? C.amber + "18" : "transparent",
         border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
         color: count > 0 ? C.amber : C.dim,
-        fontSize: 10,
-        fontWeight: 700,
+        fontSize: 10, fontWeight: 700,
       }}
         title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
       >
@@ -166,16 +165,10 @@ const EmailBreakerStatus = ({ api }) => {
 
   return (
     <div style={{
-      display: "flex",
-      alignItems: "flex-start",
-      gap: 8,
-      padding: "10px 12px",
-      marginTop: 8,
-      background: C.red + "12",
-      border: `1px solid ${C.red}55`,
-      color: C.red,
-      fontSize: 11,
-      lineHeight: 1.6,
+      display: "flex", alignItems: "flex-start", gap: 8,
+      padding: "10px 12px", marginTop: 8,
+      background: C.red + "12", border: `1px solid ${C.red}55`,
+      color: C.red, fontSize: 11, lineHeight: 1.6,
     }}>
       <span style={{ flexShrink: 0 }}>⚠</span>
       <span>
@@ -211,37 +204,193 @@ const FieldRow = ({ field, value, onChange, isMobile }) => (
   </div>
 );
 
+/* ── Sidebar / dropdown navigation ──────────────────────────────────────── */
+const NavSidebar = ({ active, onSelect, dirty }) => (
+  <nav style={{
+    flexShrink: 0,
+    width: 190,
+    position: "sticky",
+    top: 0,
+    alignSelf: "flex-start",
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    paddingRight: 18,
+    borderRight: `1px solid ${C.border}`,
+  }}>
+    {CATEGORIES.map(c => {
+      const on = c.id === active;
+      return (
+        <button
+          key={c.id}
+          onClick={() => onSelect(c.id)}
+          style={{
+            textAlign: "left",
+            padding: "9px 12px",
+            background: on ? C.amber + "14" : "transparent",
+            border: "none",
+            borderLeft: `2px solid ${on ? C.amber : "transparent"}`,
+            color: on ? C.amber : C.muted,
+            fontSize: 11,
+            fontFamily: "inherit",
+            fontWeight: on ? 700 : 500,
+            letterSpacing: "0.03em",
+            cursor: "pointer",
+            transition: "all 0.12s",
+          }}
+        >
+          {c.label}
+        </button>
+      );
+    })}
+    {dirty && (
+      <div style={{ marginTop: 14, paddingLeft: 12, color: C.amber, fontSize: 9, letterSpacing: "0.1em", fontWeight: 700 }}>
+        ● UNSAVED
+      </div>
+    )}
+  </nav>
+);
+
+const NavDropdown = ({ active, onSelect }) => (
+  <select
+    value={active}
+    onChange={e => onSelect(e.target.value)}
+    style={{
+      flex: 1,
+      minWidth: 0,
+      padding: "9px 10px",
+      background: C.card,
+      border: `1px solid ${C.border}`,
+      color: C.text,
+      fontSize: 12,
+      fontFamily: "inherit",
+      fontWeight: 600,
+      cursor: "pointer",
+    }}
+  >
+    {CATEGORIES.map(c => (
+      <option key={c.id} value={c.id} style={{ background: C.card, color: C.text }}>
+        {c.label}
+      </option>
+    ))}
+  </select>
+);
+
+/* ── Persistent save bar (status + button; caller wraps it sticky) ──────── */
+const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
+  const btnColor = dirty
+    ? { idle: C.amber, saving: C.muted, saved: C.green, error: C.red }[status]
+    : C.dim;
+  const statusText = status === "saving" ? "Saving…"
+    : status === "error" ? "Save failed — check the connection"
+    : status === "saved" ? "Changes saved"
+    : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
+    : "All changes saved";
+  const statusColor = status === "error" ? C.red
+    : status === "saved" ? C.green
+    : dirty ? C.amber : C.muted;
+
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      padding: "12px 0",
+      background: C.bg,
+      borderBottom: `1px solid ${C.border}`,
+    }}>
+      <span style={{ color: statusColor, fontSize: 10, letterSpacing: "0.12em", fontWeight: 700 }}>
+        {dirty && status === "idle" ? "● " : ""}{statusText.toUpperCase()}
+      </span>
+      <button
+        onClick={onSave}
+        disabled={status === "saving" || !dirty}
+        style={{
+          marginLeft: "auto",
+          padding: "6px 18px",
+          background: btnColor + "22",
+          border: `1px solid ${btnColor}`,
+          color: btnColor,
+          fontSize: 10,
+          fontFamily: "inherit",
+          fontWeight: 700,
+          letterSpacing: "0.1em",
+          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+          transition: "all 0.15s",
+        }}
+      >
+        {SAVE_LABEL[status]}
+      </button>
+    </div>
+  );
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════
    SETTINGS PAGE
 ═══════════════════════════════════════════════════════════════════════════ */
-export const SettingsPage = ({ api, toast, isMobile = false }) => {
-  const [schema, setSchema] = useState([]);
-  const [values, setValues] = useState({});
-  const [status, setStatus] = useState("idle");
+export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
+  const [schema,   setSchema]   = useState([]);
+  const [values,   setValues]   = useState({});
+  const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
+  const [status,   setStatus]   = useState("idle");
+  const [active,   setActive]   = useState(() => {
+    try {
+      const s = localStorage.getItem(STORAGE_KEY);
+      return s && CATEGORY_IDS.has(s) ? s : CATEGORIES[0].id;
+    } catch (_) { return CATEGORIES[0].id; }
+  });
 
   useEffect(() => {
     Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
       fetch(`${api}/api/settings`).then(r => r.json()),
     ])
-      .then(([s, v]) => { setSchema(s); setValues(v); })
+      .then(([s, v]) => { setSchema(s); setValues(v); setBaseline(v); })
       .catch(() => {});
   }, [api]);
 
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, active); } catch (_) { /* ignore */ }
+  }, [active]);
+
+  // Dirty = any schema field whose current value differs from the saved snapshot.
+  const dirtyKeys = schema
+    .map(f => f.key)
+    .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
+  const isDirty = dirtyKeys.length > 0;
+
+  // Report dirtiness up so the app can guard navigation, and reset on unmount.
+  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  // Warn on browser refresh / tab close while there are unsaved edits.
+  useEffect(() => {
+    if (!isDirty) return;
+    const h = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [isDirty]);
+
   const save = async () => {
+    const snapshot = values;
     setStatus("saving");
     try {
       const schemaKeys   = new Set(schema.map(f => f.key));
       const schemaValues = Object.fromEntries(
-        Object.entries(values).filter(([k]) => schemaKeys.has(k))
+        Object.entries(snapshot).filter(([k]) => schemaKeys.has(k))
       );
       const r = await fetch(`${api}/api/settings`, {
         method:  "PUT",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify(schemaValues),
       });
-      setStatus(r.ok ? "saved" : "error");
-      if (r.ok) setTimeout(() => setStatus("idle"), 2500);
+      if (r.ok) {
+        setBaseline(snapshot);          // saved values become the new clean baseline
+        setStatus("saved");
+        setTimeout(() => setStatus("idle"), 2500);
+      } else {
+        setStatus("error");
+      }
     } catch (_) {
       setStatus("error");
     }
@@ -249,76 +398,96 @@ export const SettingsPage = ({ api, toast, isMobile = false }) => {
 
   const set = (k, v) => setValues(prev => ({ ...prev, [k]: v }));
 
-  // Group schema entries preserving declaration order
-  const groups = Object.entries(
-    schema.reduce((acc, field) => {
-      const g = field.group || "General";
-      if (!acc[g]) acc[g] = [];
-      acc[g].push(field);
-      return acc;
-    }, {})
-  );
+  // schema grouped by declared group name
+  const groupsMap = schema.reduce((acc, field) => {
+    const g = field.group || "General";
+    (acc[g] = acc[g] || []).push(field);
+    return acc;
+  }, {});
 
-  const btnColor = { idle: C.amber, saving: C.muted, saved: C.green, error: C.red }[status];
-
-  return (
-    <div style={{ maxWidth: 700, margin: "0 auto", padding: "28px 22px" }}>
-      {/* Page header */}
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
-        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
-          CONFIGURATION
-        </span>
-        <button
-          onClick={save}
-          disabled={status === "saving"}
-          style={{
-            marginLeft: "auto",
-            padding: "6px 18px",
-            background: btnColor + "22",
-            border: `1px solid ${btnColor}`,
-            color: btnColor,
-            fontSize: 10,
-            fontFamily: "inherit",
-            fontWeight: 700,
-            letterSpacing: "0.1em",
-            cursor: status === "saving" ? "not-allowed" : "pointer",
-          }}
-        >
-          {SAVE_LABEL[status]}
-        </button>
+  const renderGroup = (groupName, first) => {
+    const fields = groupsMap[groupName] || [];
+    if (fields.length === 0) return null;
+    return (
+      <div key={groupName}>
+        <SectionHeader label={groupName} first={first} />
+        {fields.map(field => (
+          <FieldRow
+            key={field.key}
+            field={field}
+            value={values[field.key]}
+            onChange={v => set(field.key, v)}
+            isMobile={isMobile}
+          />
+        ))}
+        {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
+          <TestConnectionButton api={api} service={groupName.toLowerCase()} />
+        )}
+        {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
+        {groupName === "Email" && <EmailBreakerStatus api={api} />}
       </div>
+    );
+  };
 
-      {schema.length === 0 && (
+  const cat = CATEGORIES.find(c => c.id === active) || CATEGORIES[0];
+
+  const renderCategory = () => {
+    if (cat.custom === "maintenance") {
+      return (
+        <>
+          <MaintenanceSection api={api} toast={toast} />
+          <LogViewer api={api} />
+        </>
+      );
+    }
+    if (cat.custom === "backup") {
+      return (
+        <>
+          <BackupRestoreSection api={api} toast={toast} />
+          <FullBackupSection api={api} toast={toast} />
+          <DangerZone api={api} toast={toast} />
+        </>
+      );
+    }
+    if (schema.length === 0) {
+      return (
         <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: 32 }}>
           Connect to the backend to load settings…
         </div>
-      )}
+      );
+    }
+    return cat.groups.map((g, i) => renderGroup(g, i === 0));
+  };
 
-      {groups.map(([groupName, fields]) => (
-        <div key={groupName}>
-          <SectionHeader label={groupName} />
-          {fields.map(field => (
-            <FieldRow
-              key={field.key}
-              field={field}
-              value={values[field.key]}
-              onChange={v => set(field.key, v)}
-              isMobile={isMobile}
-            />
-          ))}
-          {(groupName === "Sonarr" || groupName === "Radarr" || groupName === "Plex" || groupName === "Email") && (
-            <TestConnectionButton api={api} service={groupName.toLowerCase()} />
-          )}
-          {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
-          {groupName === "Email" && <EmailBreakerStatus api={api} />}
+  const saveBar = (
+    <SaveBar status={status} dirty={isDirty} dirtyCount={dirtyKeys.length} onSave={save} />
+  );
+
+  // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
+  if (isMobile) {
+    return (
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: "16px 16px 40px" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 6, background: C.bg }}>
+          <div style={{ padding: "2px 0 8px" }}>
+            <NavDropdown active={active} onSelect={setActive} />
+          </div>
+          {saveBar}
         </div>
-      ))}
+        <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+      </div>
+    );
+  }
 
-      <MaintenanceSection api={api} toast={toast} />
-      <LogViewer api={api} />
-      <BackupRestoreSection api={api} toast={toast} />
-      <FullBackupSection api={api} toast={toast} />
-      <DangerZone api={api} toast={toast} />
+  // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
+  return (
+    <div style={{ maxWidth: 940, margin: "0 auto", padding: "24px 22px 48px", display: "flex", gap: 26 }}>
+      <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 5 }}>
+          {saveBar}
+        </div>
+        <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+      </div>
     </div>
   );
 };
