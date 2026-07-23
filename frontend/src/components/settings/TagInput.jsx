@@ -6,7 +6,14 @@ import { C } from "../../constants";
 // `normalize` prop: true (default) lowercases input — correct for language
 // codes (eng, fre…). false preserves case exactly — required for filesystem
 // paths, where SettingInput passes normalize={field.key !== "scan_paths"}.
-export const TagInput = ({ values, onChange, normalize = true }) => {
+//
+// `placeholder` prop: comes from the field's schema entry. It used to be
+// hardcoded to a language-code example, so every list setting — scan paths,
+// Plex path mappings, email recipients — prompted for "eng", which was
+// actively misleading (the mappings field wants "/media/tv=/data/tv", a
+// format nothing else hinted at). Fields with no schema placeholder fall
+// back to a neutral prompt rather than an example from an unrelated setting.
+export const TagInput = ({ values, onChange, normalize = true, placeholder = "" }) => {
     const [draft, setDraft] = useState("");
 
     const add = () => {
@@ -63,7 +70,7 @@ export const TagInput = ({ values, onChange, normalize = true }) => {
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => e.key === "Enter" && add()}
-        placeholder="e.g.  eng"
+        placeholder={placeholder || "add an entry…"}
         style={{
             flex: 1,
             padding: "4px 8px",
