@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -19,6 +19,60 @@ const NAV_ITEMS = [
 { k: "review",    l: "REVIEW",    alertable: true },
 { k: "forge",     l: "FORGE"     },
 ];
+
+/* ── Logo ────────────────────────────────────────────────────────────────────
+ * Served from frontend/public/, which Vite copies to the dist root at build
+ * time (and app.main's static handler serves from there), so these absolute
+ * paths work in dev and in the container alike.
+ *
+ *   variant="full" → /logo-name.svg   icon + wordmark (~4:1), desktop header
+ *   variant="mark" → /logo.svg        icon only (1:1),        mobile header
+ *
+ * Height is fixed and width follows the file's own aspect ratio, so the
+ * lockup can be re-exported at a different ratio without touching this code.
+ * If a file is missing or fails to load, the original CSS placeholder renders
+ * instead — the header degrades to the old look rather than a broken image.
+ */
+const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
+
+const Logo = ({ variant = "mark", height = 24 }) => {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div style={{
+        width: height, height, flexShrink: 0,
+        background: C.amber,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+      <span style={{ color: "#000", fontSize: 12, fontWeight: 900 }}>R</span>
+      </div>
+      {variant === "full" && (
+        <span style={{ color: C.text, fontSize: 12, fontWeight: 700, letterSpacing: "0.18em" }}>
+        REMUXARR
+        </span>
+      )}
+      </div>
+    );
+  }
+
+  return (
+    <img
+    src={LOGO_SRC[variant]}
+    alt="Remuxarr"
+    draggable={false}
+    onError={() => setFailed(true)}
+    style={{
+      height,
+      width: variant === "mark" ? height : "auto",
+      flexShrink: 0,
+      display: "block",
+      userSelect: "none",
+    }}
+    />
+  );
+};
 
 export const AppHeader = ({
   page, setPage,
@@ -55,18 +109,9 @@ export const AppHeader = ({
         flexShrink: 0,
         gap: 0,
       }}>
-      {/* Logo */}
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginRight: 22 }}>
-      <div style={{
-        width: 24, height: 24,
-        background: C.amber,
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}>
-      <span style={{ color: "#000", fontSize: 12, fontWeight: 900 }}>R</span>
-      </div>
-      <span style={{ color: C.text, fontSize: 12, fontWeight: 700, letterSpacing: "0.18em" }}>
-      REMUXARR
-      </span>
+      {/* Logo — icon + wordmark lockup */}
+      <div style={{ display: "flex", alignItems: "center", marginRight: 22 }}>
+      <Logo variant="full" />
       </div>
 
       {/* Nav links */}
@@ -203,14 +248,8 @@ export const AppHeader = ({
       zIndex: 600,
       position: "relative",
     }}>
-    {/* Logo mark only — no text, saves space */}
-    <div style={{
-      width: 24, height: 24, flexShrink: 0,
-      background: C.amber,
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }}>
-    <span style={{ color: "#000", fontSize: 12, fontWeight: 900 }}>R</span>
-    </div>
+    {/* Logo mark only — no wordmark, saves space */}
+    <Logo variant="mark" />
 
     {/* Current page label */}
     <span style={{
