@@ -351,6 +351,7 @@ SETTINGS_SCHEMA = [
         "group":       "Library",
         "label":       "Media Library Paths",
         "type":        "string_list",
+        "placeholder": "/media/tv",
         "description": "Absolute paths to scan for media files.",
     },
     {
@@ -451,6 +452,7 @@ SETTINGS_SCHEMA = [
         "group":       "Audio",
         "label":       "Keep Audio Languages",
         "type":        "string_list",
+        "placeholder": "eng",
         "description": "ISO 639-2/B codes (e.g. eng, fre, jpn). "
                        "Tracks in other languages will be removed.",
     },
@@ -481,6 +483,7 @@ SETTINGS_SCHEMA = [
         "group":       "Subtitles",
         "label":       "Keep Subtitle Languages",
         "type":        "string_list",
+        "placeholder": "eng",
         "description": "ISO 639-2/B codes. Subtitles in other languages will be removed.",
     },
     {
@@ -707,6 +710,7 @@ SETTINGS_SCHEMA = [
         "group":   "Plex",
         "label":   "Plex Path Mappings",
         "type":    "string_list",
+        "placeholder": "/media/tv=/data/tv",
         "description": "Maps each Remuxarr scan path to the equivalent path "
                        "inside the Plex container, formatted as "
                        "local_path=plex_path — e.g. /media/movies=/Media/Movies "
@@ -834,6 +838,7 @@ SETTINGS_SCHEMA = [
         "group": "Email",
         "label": "Recipients",
         "type":  "string_list",
+        "placeholder": "you@example.com",
         "description": "One or more email addresses to notify on failure.",
     },
     {

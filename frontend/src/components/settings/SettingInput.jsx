@@ -84,6 +84,7 @@ export const SettingInput = ({ field, value, onChange }) => {
       <TagInput
       values={Array.isArray(value) ? value : []}
       onChange={onChange}
+      placeholder={field.placeholder || ""}
       normalize={!["scan_paths", "plex_path_mappings"].includes(field.key)}
       />
     );

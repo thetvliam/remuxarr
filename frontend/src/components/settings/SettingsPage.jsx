@@ -11,15 +11,15 @@ import { LogViewer } from "./LogViewer";
 const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVED", error: "✗ ERROR" };
 
 /* Category → which schema groups (or custom sections) live under it. The
-   config categories list schema `group` names; the two action categories
-   render their own components and have no saveable fields. */
+ * config categories list schema `group` names; the two action categories
+ * render their own components and have no saveable fields. */
 const CATEGORIES = [
   { id: "processing",    label: "Library & Processing", groups: ["Library", "Metadata", "Audio", "Subtitles"] },
-  { id: "worker",        label: "Worker",               groups: ["Worker"] },
-  { id: "integrations",  label: "Integrations",         groups: ["Sonarr", "Radarr", "Plex", "Plex Analyze Backlog"] },
-  { id: "notifications", label: "Notifications",        groups: ["Email"] },
-  { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
-  { id: "backup",        label: "Backup & Danger Zone", custom: "backup" },
+{ id: "worker",        label: "Worker",               groups: ["Worker"] },
+{ id: "integrations",  label: "Integrations",         groups: ["Sonarr", "Radarr", "Plex", "Plex Analyze Backlog"] },
+{ id: "notifications", label: "Notifications",        groups: ["Email"] },
+{ id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
+{ id: "backup",        label: "Backup & Danger Zone", custom: "backup" },
 ];
 const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
 const STORAGE_KEY = "remuxarr.settingsCategory";
@@ -34,9 +34,9 @@ const SectionHeader = ({ label, first }) => (
     paddingBottom: 8,
     borderBottom: `1px solid ${C.border}`,
   }}>
-    <span style={{ color: C.amber, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
-      {label.toUpperCase()}
-    </span>
+  <span style={{ color: C.amber, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
+  {label.toUpperCase()}
+  </span>
   </div>
 );
 
@@ -75,28 +75,28 @@ const TestConnectionButton = ({ api, service }) => {
 
   return (
     <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 0 4px" }}>
-      <button
-        onClick={run}
-        disabled={state === "loading"}
-        style={{
-          padding: "5px 14px",
-          background: state === "idle" ? "transparent" : `${color}18`,
-          border: `1px solid ${color}`,
-          color,
-          fontSize: 10,
-          fontFamily: "inherit",
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          cursor: state === "loading" ? "not-allowed" : "pointer",
-          transition: "all 0.15s",
-          maxWidth: 320,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {label}
-      </button>
+    <button
+    onClick={run}
+    disabled={state === "loading"}
+    style={{
+      padding: "5px 14px",
+      background: state === "idle" ? "transparent" : `${color}18`,
+      border: `1px solid ${color}`,
+      color,
+      fontSize: 10,
+      fontFamily: "inherit",
+      fontWeight: 700,
+      letterSpacing: "0.08em",
+      cursor: state === "loading" ? "not-allowed" : "pointer",
+      transition: "all 0.15s",
+      maxWidth: 320,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    }}
+    >
+    {label}
+    </button>
     </div>
   );
 };
@@ -108,9 +108,9 @@ const PlexBacklogStatus = ({ api }) => {
   useEffect(() => {
     const poll = () => {
       fetch(`${api}/api/plex/backlog`)
-        .then(r => r.json())
-        .then(d => setCount(d.count ?? 0))
-        .catch(() => {});
+      .then(r => r.json())
+      .then(d => setCount(d.count ?? 0))
+      .catch(() => {});
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -124,23 +124,23 @@ const PlexBacklogStatus = ({ api }) => {
       display: "flex", alignItems: "center", gap: 8,
       padding: "10px 0 4px", color: C.muted, fontSize: 11,
     }}>
-      <span style={{
-        padding: "1px 7px",
-        background: count > 0 ? C.amber + "18" : "transparent",
-        border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
-        color: count > 0 ? C.amber : C.dim,
-        fontSize: 10, fontWeight: 700,
-      }}
-        title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
-      >
-        {fmtCount(count)}
-      </span>
-      <span>
-        {count === 0
-          ? "files queued for Plex re-analysis"
-          : `${count === 1 ? "file" : "files"} queued for Plex re-analysis — drains during the configured window`
-        }
-      </span>
+    <span style={{
+      padding: "1px 7px",
+      background: count > 0 ? C.amber + "18" : "transparent",
+      border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
+      color: count > 0 ? C.amber : C.dim,
+      fontSize: 10, fontWeight: 700,
+    }}
+    title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
+    >
+    {fmtCount(count)}
+    </span>
+    <span>
+    {count === 0
+      ? "files queued for Plex re-analysis"
+      : `${count === 1 ? "file" : "files"} queued for Plex re-analysis — drains during the configured window`
+    }
+    </span>
     </div>
   );
 };
@@ -152,9 +152,9 @@ const EmailBreakerStatus = ({ api }) => {
   useEffect(() => {
     const poll = () => {
       fetch(`${api}/api/notifications/state`)
-        .then(r => r.json())
-        .then(setState)
-        .catch(() => {});
+      .then(r => r.json())
+      .then(setState)
+      .catch(() => {});
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -170,39 +170,110 @@ const EmailBreakerStatus = ({ api }) => {
       background: C.red + "12", border: `1px solid ${C.red}55`,
       color: C.red, fontSize: 11, lineHeight: 1.6,
     }}>
-      <span style={{ flexShrink: 0 }}>⚠</span>
-      <span>
-        Failure notifications are paused after {state.consecutive_failures} consecutive
-        job failures. No further emails will be sent until a job completes successfully —
-        check the History panel's Failed tab to diagnose the issue.
-      </span>
+    <span style={{ flexShrink: 0 }}>⚠</span>
+    <span>
+    Failure notifications are paused after {state.consecutive_failures} consecutive
+    job failures. No further emails will be sent until a job completes successfully —
+    check the History panel's Failed tab to diagnose the issue.
+    </span>
     </div>
   );
 };
 
-/* ── Settings field row ─────────────────────────────────────────────────── */
-const FieldRow = ({ field, value, onChange, isMobile }) => (
-  <div style={{
-    display: "flex",
-    flexDirection: isMobile ? "column" : "row",
-    alignItems: "flex-start",
-    gap: isMobile ? 10 : 24,
-    padding: "16px 0",
-    borderBottom: `1px solid ${C.border}`,
-  }}>
-    <div style={{ flex: 1 }}>
-      <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-        {field.label}
+/* ── Settings field row ─────────────────────────────────────────────────────
+ * The description is collapsed by default and revealed by clicking the
+ * setting's name — hovering the name surfaces a "?" to advertise that it's
+ * clickable. Descriptions vary from a few words to several lines, and
+ * showing them all at once was most of the page's height. The "?" slot is
+ * always laid out (just transparent until hover) so nothing shifts as the
+ * pointer moves down the list, and it stays visible on mobile, where there
+ * is no hover to discover it with. */
+const FieldRow = ({ field, value, onChange, isMobile }) => {
+  const [open,  setOpen]  = useState(false);
+  const [hover, setHover] = useState(false);
+
+  const hasDesc  = !!(field.description || "").trim();
+  const active   = open || hover;
+  const showHint = hasDesc && (active || isMobile);
+  const hintColor = active ? C.amber : C.dim;
+
+  return (
+    <div style={{ padding: "13px 0", borderBottom: `1px solid ${C.border}` }}>
+    <div style={{
+      display: "flex",
+      flexDirection: isMobile ? "column" : "row",
+      alignItems: "flex-start",
+      gap: isMobile ? 9 : 24,
+    }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+    <button
+    type="button"
+    onClick={() => hasDesc && setOpen(o => !o)}
+    onMouseEnter={() => setHover(true)}
+    onMouseLeave={() => setHover(false)}
+    aria-expanded={hasDesc ? open : undefined}
+    title={hasDesc ? (open ? "Hide description" : "Show description") : undefined}
+    style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: 0,
+      background: "none",
+      border: "none",
+      textAlign: "left",
+      color: active && hasDesc ? C.amber : C.text,
+      fontSize: 12,
+      fontFamily: "inherit",
+      fontWeight: 600,
+      cursor: hasDesc ? "pointer" : "default",
+      transition: "color 0.12s",
+    }}
+    >
+    {field.label}
+    {hasDesc && (
+      <span
+      aria-hidden="true"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 13,
+        height: 13,
+        flexShrink: 0,
+        borderRadius: "50%",
+        border: `1px solid ${showHint ? hintColor : "transparent"}`,
+        color: showHint ? hintColor : "transparent",
+        fontSize: 9,
+        fontWeight: 700,
+        lineHeight: 1,
+        transition: "color 0.12s, border-color 0.12s",
+      }}
+      >
+      ?
+      </span>
+    )}
+    </button>
+
+    {open && hasDesc && (
+      <div style={{
+        color: C.muted,
+        fontSize: 11,
+        lineHeight: 1.65,
+        marginTop: 7,
+        paddingRight: isMobile ? 0 : 14,
+      }}>
+      {field.description}
       </div>
-      <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65 }}>
-        {field.description}
-      </div>
+    )}
     </div>
-    <div style={{ flexShrink: 0, paddingTop: 2 }}>
-      <SettingInput field={field} value={value} onChange={onChange} />
+
+    <div style={{ flexShrink: 0, paddingTop: 1 }}>
+    <SettingInput field={field} value={value} onChange={onChange} />
     </div>
-  </div>
-);
+    </div>
+    </div>
+  );
+};
 
 /* ── Sidebar / dropdown navigation ──────────────────────────────────────── */
 const NavSidebar = ({ active, onSelect, dirty }) => (
@@ -218,77 +289,77 @@ const NavSidebar = ({ active, onSelect, dirty }) => (
     paddingRight: 18,
     borderRight: `1px solid ${C.border}`,
   }}>
-    {CATEGORIES.map(c => {
-      const on = c.id === active;
-      return (
-        <button
-          key={c.id}
-          onClick={() => onSelect(c.id)}
-          style={{
-            textAlign: "left",
-            padding: "9px 12px",
-            background: on ? C.amber + "14" : "transparent",
-            border: "none",
-            borderLeft: `2px solid ${on ? C.amber : "transparent"}`,
-            color: on ? C.amber : C.muted,
-            fontSize: 11,
-            fontFamily: "inherit",
-            fontWeight: on ? 700 : 500,
-            letterSpacing: "0.03em",
-            cursor: "pointer",
-            transition: "all 0.12s",
-          }}
-        >
-          {c.label}
-        </button>
-      );
-    })}
-    {dirty && (
-      <div style={{ marginTop: 14, paddingLeft: 12, color: C.amber, fontSize: 9, letterSpacing: "0.1em", fontWeight: 700 }}>
-        ● UNSAVED
-      </div>
-    )}
+  {CATEGORIES.map(c => {
+    const on = c.id === active;
+    return (
+      <button
+      key={c.id}
+      onClick={() => onSelect(c.id)}
+      style={{
+        textAlign: "left",
+        padding: "9px 12px",
+        background: on ? C.amber + "14" : "transparent",
+        border: "none",
+        borderLeft: `2px solid ${on ? C.amber : "transparent"}`,
+        color: on ? C.amber : C.muted,
+        fontSize: 11,
+        fontFamily: "inherit",
+        fontWeight: on ? 700 : 500,
+        letterSpacing: "0.03em",
+        cursor: "pointer",
+        transition: "all 0.12s",
+      }}
+      >
+      {c.label}
+      </button>
+    );
+  })}
+  {dirty && (
+    <div style={{ marginTop: 14, paddingLeft: 12, color: C.amber, fontSize: 9, letterSpacing: "0.1em", fontWeight: 700 }}>
+    ● UNSAVED
+    </div>
+  )}
   </nav>
 );
 
 const NavDropdown = ({ active, onSelect }) => (
   <select
-    value={active}
-    onChange={e => onSelect(e.target.value)}
-    style={{
-      flex: 1,
-      minWidth: 0,
-      padding: "9px 10px",
-      background: C.card,
-      border: `1px solid ${C.border}`,
-      color: C.text,
-      fontSize: 12,
-      fontFamily: "inherit",
-      fontWeight: 600,
-      cursor: "pointer",
-    }}
+  value={active}
+  onChange={e => onSelect(e.target.value)}
+  style={{
+    flex: 1,
+    minWidth: 0,
+    padding: "9px 10px",
+    background: C.card,
+    border: `1px solid ${C.border}`,
+    color: C.text,
+    fontSize: 12,
+    fontFamily: "inherit",
+    fontWeight: 600,
+    cursor: "pointer",
+  }}
   >
-    {CATEGORIES.map(c => (
-      <option key={c.id} value={c.id} style={{ background: C.card, color: C.text }}>
-        {c.label}
-      </option>
-    ))}
+  {CATEGORIES.map(c => (
+    <option key={c.id} value={c.id} style={{ background: C.card, color: C.text }}>
+    {c.label}
+    </option>
+  ))}
   </select>
 );
 
 /* ── Persistent save bar (status + button; caller wraps it sticky) ──────── */
 const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
   const btnColor = dirty
-    ? { idle: C.amber, saving: C.muted, saved: C.green, error: C.red }[status]
-    : C.dim;
+  ? { idle: C.amber, saving: C.muted, saved: C.green, error: C.red }[status]
+  : C.dim;
   const statusText = status === "saving" ? "Saving…"
-    : status === "error" ? "Save failed — check the connection"
-    : status === "saved" ? "Changes saved"
-    : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
-    : "All changes saved";
+  : status === "error" ? "Save failed — check the connection"
+  : status === "saved" ? "Changes saved"
+  : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
+  : "All changes saved";
   const statusColor = status === "error" ? C.red
-    : status === "saved" ? C.green
-    : dirty ? C.amber : C.muted;
+  : status === "saved" ? C.green
+  : dirty ? C.amber : C.muted;
 
   return (
     <div style={{
@@ -299,35 +370,35 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       background: C.bg,
       borderBottom: `1px solid ${C.border}`,
     }}>
-      <span style={{ color: statusColor, fontSize: 10, letterSpacing: "0.12em", fontWeight: 700 }}>
-        {dirty && status === "idle" ? "● " : ""}{statusText.toUpperCase()}
-      </span>
-      <button
-        onClick={onSave}
-        disabled={status === "saving" || !dirty}
-        style={{
-          marginLeft: "auto",
-          padding: "6px 18px",
-          background: btnColor + "22",
-          border: `1px solid ${btnColor}`,
-          color: btnColor,
-          fontSize: 10,
-          fontFamily: "inherit",
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+    <span style={{ color: statusColor, fontSize: 10, letterSpacing: "0.12em", fontWeight: 700 }}>
+    {dirty && status === "idle" ? "● " : ""}{statusText.toUpperCase()}
+    </span>
+    <button
+    onClick={onSave}
+    disabled={status === "saving" || !dirty}
+    style={{
+      marginLeft: "auto",
+      padding: "6px 18px",
+      background: btnColor + "22",
+      border: `1px solid ${btnColor}`,
+      color: btnColor,
+      fontSize: 10,
+      fontFamily: "inherit",
+      fontWeight: 700,
+      letterSpacing: "0.1em",
+      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
-        }}
-      >
-        {SAVE_LABEL[status]}
-      </button>
+    }}
+    >
+    {SAVE_LABEL[status]}
+    </button>
     </div>
   );
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SETTINGS PAGE
-═══════════════════════════════════════════════════════════════════════════ */
+ * SETTINGS PAGE
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
@@ -343,10 +414,10 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   useEffect(() => {
     Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-      fetch(`${api}/api/settings`).then(r => r.json()),
+                fetch(`${api}/api/settings`).then(r => r.json()),
     ])
-      .then(([s, v]) => { setSchema(s); setValues(v); setBaseline(v); })
-      .catch(() => {});
+    .then(([s, v]) => { setSchema(s); setValues(v); setBaseline(v); })
+    .catch(() => {});
   }, [api]);
 
   useEffect(() => {
@@ -355,8 +426,8 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
 
   // Dirty = any schema field whose current value differs from the saved snapshot.
   const dirtyKeys = schema
-    .map(f => f.key)
-    .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
+  .map(f => f.key)
+  .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
   const isDirty = dirtyKeys.length > 0;
 
   // Report dirtiness up so the app can guard navigation, and reset on unmount.
@@ -410,21 +481,21 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (fields.length === 0) return null;
     return (
       <div key={groupName}>
-        <SectionHeader label={groupName} first={first} />
-        {fields.map(field => (
-          <FieldRow
-            key={field.key}
-            field={field}
-            value={values[field.key]}
-            onChange={v => set(field.key, v)}
-            isMobile={isMobile}
-          />
-        ))}
-        {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
-          <TestConnectionButton api={api} service={groupName.toLowerCase()} />
-        )}
-        {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
-        {groupName === "Email" && <EmailBreakerStatus api={api} />}
+      <SectionHeader label={groupName} first={first} />
+      {fields.map(field => (
+        <FieldRow
+        key={field.key}
+        field={field}
+        value={values[field.key]}
+        onChange={v => set(field.key, v)}
+        isMobile={isMobile}
+        />
+      ))}
+      {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
+        <TestConnectionButton api={api} service={groupName.toLowerCase()} />
+      )}
+      {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
+      {groupName === "Email" && <EmailBreakerStatus api={api} />}
       </div>
     );
   };
@@ -435,24 +506,24 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (cat.custom === "maintenance") {
       return (
         <>
-          <MaintenanceSection api={api} toast={toast} />
-          <LogViewer api={api} />
+        <MaintenanceSection api={api} toast={toast} />
+        <LogViewer api={api} />
         </>
       );
     }
     if (cat.custom === "backup") {
       return (
         <>
-          <BackupRestoreSection api={api} toast={toast} />
-          <FullBackupSection api={api} toast={toast} />
-          <DangerZone api={api} toast={toast} />
+        <BackupRestoreSection api={api} toast={toast} />
+        <FullBackupSection api={api} toast={toast} />
+        <DangerZone api={api} toast={toast} />
         </>
       );
     }
     if (schema.length === 0) {
       return (
         <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: 32 }}>
-          Connect to the backend to load settings…
+        Connect to the backend to load settings…
         </div>
       );
     }
@@ -467,13 +538,13 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   if (isMobile) {
     return (
       <div style={{ maxWidth: 700, margin: "0 auto", padding: "16px 16px 40px" }}>
-        <div style={{ position: "sticky", top: 0, zIndex: 6, background: C.bg }}>
-          <div style={{ padding: "2px 0 8px" }}>
-            <NavDropdown active={active} onSelect={setActive} />
-          </div>
-          {saveBar}
-        </div>
-        <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+      <div style={{ position: "sticky", top: 0, zIndex: 6, background: C.bg }}>
+      <div style={{ padding: "2px 0 8px" }}>
+      <NavDropdown active={active} onSelect={setActive} />
+      </div>
+      {saveBar}
+      </div>
+      <div style={{ marginTop: 6 }}>{renderCategory()}</div>
       </div>
     );
   }
@@ -481,13 +552,13 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
   return (
     <div style={{ maxWidth: 940, margin: "0 auto", padding: "24px 22px 48px", display: "flex", gap: 26 }}>
-      <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ position: "sticky", top: 0, zIndex: 5 }}>
-          {saveBar}
-        </div>
-        <div style={{ marginTop: 6 }}>{renderCategory()}</div>
-      </div>
+    <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
+    <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ position: "sticky", top: 0, zIndex: 5 }}>
+    {saveBar}
+    </div>
+    <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+    </div>
     </div>
   );
 };
