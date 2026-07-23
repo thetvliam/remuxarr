@@ -16,6 +16,22 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}   # resolves to thetvliam/remuxarr
 
+  # Docker Hub namespace (your Docker Hub username). Set this as a
+  # repository VARIABLE, not a secret: Settings → Secrets and variables →
+  # Actions → Variables → New repository variable, named
+  # DOCKERHUB_USERNAME. It isn't sensitive, and keeping it out of secrets
+  # means the image name stays readable in the build log instead of being
+  # masked as *** — which matters when you're trying to see which tags
+  # were actually pushed.
+  #
+  # The matching DOCKERHUB_TOKEN *is* a secret: create it at Docker Hub →
+  # Account Settings → Personal access tokens (Read & Write scope), not
+  # your account password.
+  #
+  # Leave the variable unset and this workflow simply keeps publishing to
+  # GHCR only — every Docker Hub step below is skipped rather than failing.
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_USERNAME }}
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -36,19 +52,28 @@ jobs:
           # No secret to create or manage — GITHUB_TOKEN is generated
           # automatically for every workflow run.
 
-      # tags rules, explained (kept OUTSIDE the `tags: |` block deliberately
-      # — a genuine bug, found and fixed here: a previous version of this
-      # workflow had these same explanations written as "# ..." lines
-      # INSIDE the tags: | block scalar. Inside a YAML literal block scalar,
-      # every line — including ones starting with "#" — is literal STRING
-      # CONTENT, not a YAML comment; confirmed directly against a YAML
-      # parser. So docker/metadata-action was actually receiving each
-      # explanatory line as if it were its own malformed tag-rule entry,
-      # mixed in with the three real ones, which broke tag generation and
-      # failed the "Extract tags and labels" step outright (a GitHub.com
-      # HTML error page, not a normal action failure — consistent with the
-      # action's tag-rule parsing going somewhere unexpected on the garbled
-      # input rather than failing cleanly).
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_NAMESPACE != ''
+        uses: docker/login-action@v4
+        with:
+          # No `registry:` key — docker/login-action defaults to Docker Hub.
+          username: ${{ env.DOCKERHUB_NAMESPACE }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # tags rules, explained (kept OUTSIDE the `tags: |` block scalar
+      # deliberately — a genuine bug, found and fixed here: a previous
+      # version of this workflow had these same explanations written as
+      # "# ..." lines INSIDE the tags: | block scalar. Inside a YAML
+      # literal block scalar, every line — including ones starting with
+      # "#" — is literal STRING CONTENT, not a YAML comment; confirmed
+      # directly against a YAML parser. So docker/metadata-action was
+      # actually receiving each explanatory line as if it were its own
+      # malformed tag-rule entry, mixed in with the three real ones, which
+      # broke tag generation and failed the "Extract tags and labels" step
+      # outright (a GitHub.com HTML error page, not a normal action
+      # failure — consistent with the action's tag-rule parsing going
+      # somewhere unexpected on the garbled input rather than failing
+      # cleanly).
       #
       #   type=raw,value=latest,enable={{is_default_branch}} — :latest tag
       #     ONLY on the default branch (main); this enable= condition is
@@ -60,11 +85,19 @@ jobs:
       #     :a1b2c3d, giving a stable, exact reference to roll back to if
       #     a moving tag (:latest / :testing) ever turns out to have a
       #     problem.
+      #
+      # The same rules apply to BOTH registries: every image listed under
+      # `images:` receives the identical tag set, so GHCR and Docker Hub
+      # stay in lockstep rather than drifting apart. The Docker Hub line
+      # collapses to an empty string when DOCKERHUB_NAMESPACE is unset,
+      # and metadata-action ignores blank entries.
       - name: Extract tags and labels
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_NAMESPACE != '' && format('docker.io/{0}/remuxarr', env.DOCKERHUB_NAMESPACE) || '' }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
@@ -73,6 +106,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # No QEMU / `platforms:` here on purpose. This image can only be
+      # built for linux/amd64 today: the Dockerfile downloads BtbN's
+      # `...-linux64-gpl-...` FFmpeg, which is an x86-64 binary. Adding
+      # linux/arm64 would produce an image that BUILDS fine under
+      # emulation and then fails at runtime the first time it invokes
+      # ffmpeg ("exec format error"), which is a much worse failure than
+      # simply not offering arm64. Making that work means teaching the
+      # Dockerfile to pick its FFmpeg asset from TARGETARCH first.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
