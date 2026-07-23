@@ -4,7 +4,7 @@ import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * API CONFIGURATOR  (small inline bar in the header)
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ApiBar = ({ current, onSave }) => {
     const [draft, setDraft] = useState(current);
     return (
@@ -13,7 +13,7 @@ export const ApiBar = ({ current, onSave }) => {
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter") onSave(draft); if (e.key === "Escape") onSave(current); }}
-        placeholder="http://localhost:8000"
+        placeholder="http://localhost:9191"
         autoFocus
         style={{
             width: 210,

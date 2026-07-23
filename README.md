@@ -65,7 +65,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8000:8000"          # Web UI + API
+      - "9191:9191"          # Web UI + API
 
     volumes:
       # Settings and database. Map this to a host path that survives
@@ -98,7 +98,7 @@ Then:
    docker compose up -d
    ```
 
-3. Open `http://<your-host-ip>:8000`.
+3. Open `http://<your-host-ip>:9191`.
 
 ### Setting your time zone
 

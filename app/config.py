@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 9191
 
     # Database — lives in /config so it survives container restarts
     DATABASE_PATH: str = "/config/remuxarr.db"

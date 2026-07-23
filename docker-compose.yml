@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8000:8000"   # Web UI + API
+      - "9191:9191"   # Web UI + API
 
     volumes:
       # Persistent config/DB — map to a host path that survives updates.

@@ -15,7 +15,7 @@ Cleans up a Sonarr/Radarr media library for better playback compatibility withou
 Set your scan paths and preferred languages in Settings after first start. Dry run is on by default, so the first scan shows you exactly what would happen before anything real is touched.
   </Overview>
   <Category>MediaApp:Video Tools:Utilities</Category>
-  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <WebUI>http://[IP]:[PORT:9191]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/unraid-template/remuxarr.xml</TemplateURL>
   <Icon></Icon>
   <ExtraParams>--restart unless-stopped</ExtraParams>
@@ -41,7 +41,7 @@ Cleans up a Sonarr/Radarr media library for better playback compatibility withou
   <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory — leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
 
   <!-- Web UI -->
-  <Config Name="WebUI" Target="8000" Default="8000" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
 
   <!-- The one setting genuinely worth surfacing here — everything else
        already matches this app's own built-in default, and is better

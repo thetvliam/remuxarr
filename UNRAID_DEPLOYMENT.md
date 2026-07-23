@@ -27,7 +27,7 @@
 
    | Container Port | Host Port |
    |---|---|
-   | `8000` | `8000` (or whichever host port you prefer) |
+   | `9191` | `9191` (or whichever host port you prefer) |
 
 6. Click **Apply**. Unraid pulls the image and starts the container — the
    first pull can take a minute or two.
@@ -44,7 +44,7 @@ the table above is the version to actually rely on.
 This part is identical no matter how you deployed Remuxarr — it all happens
 in the web UI, not in Unraid itself.
 
-1. Open `http://<your-unraid-ip>:8000` (or whichever port you set above).
+1. Open `http://<your-unraid-ip>:9191` (or whichever port you set above).
 2. Go to **Settings → Library** and set your scan paths — this is empty by
    default, deliberately, so nothing happens until you point it somewhere.
    Use the *container-side* paths: `/media/movies` and `/media/tv` (these
@@ -76,7 +76,7 @@ this process.
 Name:       Remuxarr
 Image:      ghcr.io/thetvliam/remuxarr:latest
 Network:    Bridge
-Port:       8000  →  8000/tcp   (host port is your choice)
+Port:       9191  →  9191/tcp   (host port is your choice)
 
 Paths:
   /mnt/user/appdata/remuxarr/config  →  /config          (rw)

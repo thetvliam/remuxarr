@@ -119,12 +119,12 @@ COPY --from=ui-builder /ui/dist ./frontend/dist
 # Persistent volumes
 VOLUME ["/config", "/media"]
 
-EXPOSE 8000
+EXPOSE 9191
 
 ENV REMUXARR_DATABASE_PATH=/config/remuxarr.db \
     REMUXARR_TEMP_DIR=/tmp/remuxarr
 
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \
-     "--port", "8000", \
+     "--port", "9191", \
      "--workers", "1"]

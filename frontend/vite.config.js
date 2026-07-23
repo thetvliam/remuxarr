@@ -10,8 +10,8 @@ export default defineConfig({
   server: {
     // Dev server proxies /api and /ws to the FastAPI backend
     proxy: {
-      "/api": { target: "http://localhost:8000", changeOrigin: true },
-      "/ws":  { target: "ws://localhost:8000",   changeOrigin: true, ws: true },
+      "/api": { target: "http://localhost:9191", changeOrigin: true },
+      "/ws":  { target: "ws://localhost:9191",   changeOrigin: true, ws: true },
     },
   },
 });
