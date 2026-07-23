@@ -12,6 +12,56 @@ import { QueuePanel } from "./components/dashboard/QueuePanel";
 import { HistoryPanel } from "./components/dashboard/HistoryPanel";
 import { DetailModal } from "./components/DetailModal";
 
+/* ── Unsaved-changes navigation guard modal ─────────────────────────────── */
+const UnsavedChangesModal = ({ onKeep, onDiscard }) => (
+  <div
+    onClick={onKeep}
+    style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      background: "rgba(0,0,0,0.66)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}
+  >
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        width: "100%", maxWidth: 400,
+        background: C.card, border: `1px solid ${C.border}`,
+        padding: "22px 22px 18px",
+      }}
+    >
+      <div style={{ color: C.amber, fontSize: 10, letterSpacing: "0.16em", fontWeight: 700, marginBottom: 10 }}>
+        UNSAVED CHANGES
+      </div>
+      <div style={{ color: C.text, fontSize: 13, lineHeight: 1.6, marginBottom: 20 }}>
+        You have unsaved settings changes. Leave without saving? Your changes will be lost.
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button
+          onClick={onKeep}
+          style={{
+            padding: "7px 16px", background: "transparent",
+            border: `1px solid ${C.muted}`, color: C.text,
+            fontSize: 10, fontFamily: "inherit", fontWeight: 700, letterSpacing: "0.08em", cursor: "pointer",
+          }}
+        >
+          KEEP EDITING
+        </button>
+        <button
+          onClick={onDiscard}
+          style={{
+            padding: "7px 16px", background: C.red + "22",
+            border: `1px solid ${C.red}`, color: C.red,
+            fontSize: 10, fontFamily: "inherit", fontWeight: 700, letterSpacing: "0.08em", cursor: "pointer",
+          }}
+        >
+          DISCARD CHANGES
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
 /* ═══════════════════════════════════════════════════════════════════════════
  *  ROOT APP
  ═ *══════════════════════════════════════════════════════════════════════════ */
@@ -42,6 +92,31 @@ export default function App() {
     forgeAdd, forgeUndo,
   } = useActions(data);
 
+  /* ── Unsaved-changes navigation guard ─────────────────────────────────────
+   *  SettingsPage reports whether it has unsaved edits via onDirtyChange.
+   *  requestPage intercepts nav tab clicks: leaving Settings while dirty
+   *  opens a confirm modal instead of navigating. Switching CATEGORIES
+   *  inside Settings doesn't route (edits are kept in state), so it isn't
+   *  guarded. Browser back/refresh is covered separately by a beforeunload
+   *  handler inside SettingsPage. */
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [pendingPage,   setPendingPage]   = useState(null);
+
+  const requestPage = (target) => {
+    if (page === "settings" && settingsDirty && target !== "settings") {
+      setPendingPage(target);
+    } else {
+      setPage(target);
+    }
+  };
+
+  const discardAndLeave = () => {
+    const target = pendingPage;
+    setSettingsDirty(false);
+    setPendingPage(null);
+    if (target) setPage(target);
+  };
+
   /* ── Render ───────────────────────────────────────────────────────────── */
   return (
     <div style={{
@@ -58,7 +133,7 @@ export default function App() {
       ║  HEADER                                      ║
       ╚══════════════════════════════════════════════╝ */}
       <AppHeader
-      page={page} setPage={setPage}
+      page={page} setPage={requestPage}
       reviewCount={review.length}
       api={api} setApi={setApi} showApiBar={showApiBar} setShowApiBar={setShowApiBar}
       dryRun={dryRun} onToggleDryRun={toggleDryRun}
@@ -177,7 +252,7 @@ export default function App() {
 
         {page === "settings" && (
           <div style={{ flex: 1, overflowY: "auto" }}>
-          <SettingsPage api={api} toast={toast} isMobile={isMobile} />
+          <SettingsPage api={api} toast={toast} isMobile={isMobile} onDirtyChange={setSettingsDirty} />
           </div>
         )}
 
@@ -217,6 +292,12 @@ export default function App() {
                 />
           )}
           <Toasts items={toasts} isMobile={isMobile} />
+          {pendingPage && (
+            <UnsavedChangesModal
+              onKeep={() => setPendingPage(null)}
+              onDiscard={discardAndLeave}
+            />
+          )}
           </div>
   );
 }

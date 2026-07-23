@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # codec_name is consistently "h264"/"hevc" across every real probe output
 # seen throughout this project (confirmed directly, repeatedly); these two
 # can never actually match. Kept rather than removed since a stray, unused
-# alias here is genuinely harmless — flagged by independent review as
-# worth a comment rather than worth the risk of deleting.
+# alias here is genuinely harmless — worth a comment rather than the
+# risk of deleting.
 MP4_COMPATIBLE_VIDEO = frozenset({
     "h264", "avc", "hevc", "h265", "mpeg4", "mpeg2video", "mjpeg",
 })
@@ -303,7 +303,7 @@ def analyze_file(
     # language was dropped despite keep_forced_subtitles=True, defeating
     # the fallback's own stated purpose. It only ever affected
     # description strings and .forced.srt naming of tracks kept for
-    # OTHER reasons. Caught by independent review.
+    # OTHER reasons.
     #
     # Copies, not in-place writes — analyze_file must never mutate its
     # caller's inputs. All three flags are upgraded to mirror probe.py's
@@ -922,13 +922,19 @@ def analyze_file(
         has_language_fix = True
 
     # ── Is there anything to do? ───────────────────────────────────────────
+    # NOTE: no has_transcode term here. analyze_file never emits a
+    # transcode_track action — the only creator is
+    # worker._make_audio_transcode_decision, which runs on a COPY of the
+    # decision at retry time, after this function has returned. So
+    # `any(... == "transcode_track" ...)` is always False on `actions`
+    # here and contributed nothing to this OR (it was previously computed
+    # and included anyway, its own comment admitting it's always False).
     has_drops       = any(a.action_type == "drop_track" for a in actions)
-    has_transcode   = any(a.action_type == "transcode_track" for a in actions)
     has_container   = any(a.action_type == "change_container" for a in actions)
     has_extract     = any(a.action_type == "extract_subtitle" for a in actions)
     has_faststart_a = any(a.action_type == "add_faststart" for a in actions)
 
-    if not (has_drops or has_transcode or has_container or has_extract
+    if not (has_drops or has_container or has_extract
             or has_faststart_a or has_language_fix):
         return ProcessingDecision(
             should_process=False,
@@ -948,18 +954,15 @@ def analyze_file(
                       if a.action_type == "drop_track" and a.track_type == "subtitle")
         if n_audio: parts.append(f"Remove {n_audio} audio track{'s' if n_audio > 1 else ''}")
         if n_sub:   parts.append(f"Remove {n_sub} subtitle track{'s' if n_sub > 1 else ''}")
-    # NOTE: no reason-string branch for has_transcode here — analyze_file
-    # itself never produces a transcode_track action (confirmed directly:
-    # the only actual creator is worker._make_audio_transcode_decision,
-    # which operates on a COPY of the decision at retry time, after
-    # analyze_file has already returned and this reason string has
-    # already been built). has_transcode is always False whenever this
-    # code actually runs, so a "Transcode AAC 5.1 → AC3 5.1" branch here
-    # was unreachable dead code describing a feature that no longer
-    # exists (the AAC 5.1 -> AC3 setting was removed earlier this
-    # project). Caught by independent review. has_transcode itself is
-    # kept below for the "anything to do at all" check — only the
-    # reason-string branch was actually dead.
+    # NOTE: no reason-string branch for transcode here — analyze_file
+    # never produces a transcode_track action (the only creator is
+    # worker._make_audio_transcode_decision, on a COPY at retry time,
+    # after this function returns). A "Transcode AAC 5.1 → AC3 5.1"
+    # branch here was unreachable dead code for a feature that no longer
+    # exists (the AAC 5.1 → AC3 setting was removed earlier this
+    # project). The has_transcode flag it once shared with the
+    # anything-to-do check above was removed there too, for the same
+    # always-False reason.
     if has_container:
         parts.append(f"Convert {current_container.upper()} → MP4")
     if has_extract:
@@ -1009,14 +1012,14 @@ def _apply_language_override_pass(
     subtitle case the way there is for audio.
 
     Only ever applies to a track that's still present as copy/transcode
-    at this point — if the override's target track ended up dropped for
-    some other reason, there's nothing to relabel and this is a no-op
-    for it, which is the correct, safe outcome rather than an error.
-    For subtitles specifically, the action_type check also naturally
-    excludes a track that got extracted to an external .srt (that's an
-    extract_subtitle action, not copy_track/transcode_track) — no
-    separate check needed for that case the way dropped_si is handled
-    explicitly.
+    at this point. The `action_type in ("copy_track", "transcode_track")`
+    guard below is what enforces this: a track that got dropped
+    (drop_track action) or extracted to an external .srt
+    (extract_subtitle action) simply isn't copy/transcode, so it's
+    skipped — a no-op for it, the correct and safe outcome rather than an
+    error. (A previous explicit `stream_index not in dropped_si` set was
+    redundant with this guard — a stream has exactly one action, so a
+    dropped stream can never also be copy/transcode — and was removed.)
 
     Compares the override against each track's real, current language
     (current_language_by_stream, derived from the source file via
@@ -1038,13 +1041,11 @@ def _apply_language_override_pass(
     if not overrides:
         return fixed_indices
 
-    dropped_si = {a.stream_index for a in actions if a.action_type == "drop_track"}
     for i, action in enumerate(actions):
         override_lang = (overrides.get(action.stream_index) or "").strip().lower()
         if (
             action.track_type == track_type
             and action.stream_index in overrides
-            and action.stream_index not in dropped_si
             and action.action_type in ("copy_track", "transcode_track")
             and current_language_by_stream.get(action.stream_index) != override_lang
         ):

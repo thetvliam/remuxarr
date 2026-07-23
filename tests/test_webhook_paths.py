@@ -1,5 +1,5 @@
 """
-Regression tests for the Radarr Rename webhook payload fix (review item M4).
+Regression tests for Radarr Rename webhook payload handling.
 
 The bug: _radarr_paths read payload["renamedMovieFile"] — a singular
 object — but Radarr's Rename event emits "renamedMovieFiles", a LIST
@@ -66,7 +66,7 @@ def _radarr_download_payload():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M4 — the core regression
+# The core regression
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_radarr_rename_extracts_new_paths():
@@ -155,7 +155,7 @@ def test_radarr_empty_and_missing_fields_are_safe():
 def test_sonarr_rename_array_still_extracts_paths():
     """
     The sibling that was always correct. Kept here so the two rename
-    handlers are tested side by side — the whole point of M4 was that
+    handlers are tested side by side — the whole point being that
     they'd diverged.
     """
     payload = {

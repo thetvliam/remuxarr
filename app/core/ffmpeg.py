@@ -168,6 +168,13 @@ def build_ffmpeg_command(
         # for F-B2 earlier — genuinely unreachable, not just unlikely.
         "ts": "mpegts",
         "wmv": "asf",
+        # "webm" and "mov" are unreachable defensive keys, kept for
+        # intent (matching probe.py's annotated copy): _normalise_container
+        # can never return "webm" (its format_name always contains
+        # "matroska", matched first) and maps "mov"→"mp4", and
+        # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
+        # either value. Nothing reaches these; they just document the
+        # intended format if that ever changes.
         "webm": "webm",
         "mov": "mov",
     }
@@ -452,8 +459,8 @@ def determine_output_path(input_path: str, decision: ProcessingDecision) -> str:
     Movie.ts, with no change_container action, no mention in the reason,
     and the original deleted at the old path after success; .m4v/.mov
     (normalised "mp4") were renamed to .mp4 the same way. Nothing
-    informed Plex/Sonarr/Radarr of those renames. Caught by independent
-    review; ProcessingDecision.output_extension was removed entirely at
+    informed Plex/Sonarr/Radarr of those renames.
+    ProcessingDecision.output_extension was removed entirely at
     the same time, since carrying a second, derivable field alongside
     target_container is exactly what produced the divergence.
     """
@@ -553,8 +560,7 @@ async def execute_ffmpeg_combined(
     muxed output, so "main file staged, sidecar missing" means the
     subtitle no longer exists anywhere — gone from the media file, never
     written to disk — with nothing but a log line to show for it (and,
-    on a container change, the original deleted right after). Caught by
-    independent review.
+    on a container change, the original deleted right after).
 
     The partial-success contract only ever made sense when moves were
     destructive (delete original, then move) — "rolling back" the main

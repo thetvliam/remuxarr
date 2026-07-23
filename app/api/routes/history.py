@@ -142,8 +142,7 @@ def clear_history(
     unchanged from what was last stamped and return immediately, never
     calling analyze_file() again. So a dismissed file would only actually
     get re-evaluated on a forced FULL scan, not "the next scan" as this
-    endpoint's own behavior otherwise implies. Caught by independent
-    review.
+    endpoint's own behavior otherwise implies.
 
     status="failed" also matches "cancelled" — mirrors list_history's own
     folding of cancelled into the Failed tab exactly. Without this,

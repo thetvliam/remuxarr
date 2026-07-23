@@ -168,7 +168,7 @@ def extract_format_info(probe_data: dict) -> dict:
     Only container and duration — confirmed directly, at every call site
     across the codebase, that bit_rate and size were never actually read
     from this dict once computed (previously computed anyway, on every
-    scan, for values nothing consumed). Caught by independent review.
+    scan, for values nothing consumed).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
@@ -235,6 +235,20 @@ def is_faststart_mp4(path: str, max_boxes: int = 64) -> bool | None:
 
 def _normalise_container(format_names: list[str]) -> str:
     name = ",".join(format_names).lower()
+    # ⚠ "matroska" MUST be checked before "webm", and the "webm" branch is
+    # deliberately unreachable. ffprobe reports format_name="matroska,webm"
+    # for EVERY Matroska-family file — both real .mkv AND real .webm —
+    # because it's a property of the shared demuxer, not the individual
+    # file. So `name` contains "webm" for ordinary MKVs too, and checking
+    # "webm" first mislabels every MKV as a webm container. That routes
+    # normal H.264/HEVC/AC3/DTS/PGS MKVs to `-f webm` output, which FFmpeg
+    # rejects ("Only VP8/VP9/AV1 video and Vorbis/Opus audio and WebVTT
+    # subtitles are supported for WebM"), breaking every remux — a real
+    # regression that shipped once. format_name genuinely CANNOT
+    # distinguish mkv from webm (only the file extension or the EBML
+    # DocType can), so both are treated as "mkv": `-f matroska` muxes
+    # both correctly, and a real .webm keeps playing. Do not "fix" the
+    # dead webm branch by moving it up.
     if "matroska" in name: return "mkv"
     if "mp4"      in name: return "mp4"
     if "mov"      in name: return "mp4"
@@ -243,7 +257,7 @@ def _normalise_container(format_names: list[str]) -> str:
     if "mpeg"     in name: return "ts"
     if "wmv"      in name: return "wmv"
     if "asf"      in name: return "wmv"
-    if "webm"     in name: return "webm"
+    if "webm"     in name: return "webm"   # unreachable (see above); kept for intent
     return format_names[0].strip() if format_names else "unknown"
 
 

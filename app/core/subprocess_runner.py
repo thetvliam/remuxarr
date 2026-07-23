@@ -211,14 +211,13 @@ async def run_staged_subprocess(
         # file + SRT sidecars): a failure mid-loop left earlier originals
         # deleted-and-replaced and later ones deleted with nothing staged,
         # and the outer exception handler then deleted the temps too.
-        # Caught by independent review.
         #
-        # Phase 1 copies every temp to "<final>.part" on the DESTINATION
+        # The first pass copies every temp to "<final>.part" on the DESTINATION
         # filesystem — originals untouched, any failure (incl. ENOSPC)
         # cleans up the .part files and fails the job with every original
         # exactly as it was. The worker's disk-space preflight already
         # requires file-size free in the output dir while the original
-        # still exists, which is precisely this phase's peak requirement.
+        # still exists, which is precisely this pass's peak requirement.
         # Each .part is fsync'd: os.replace guarantees which NAME you
         # see, not that the new bytes survived a power cut — without the
         # fsync, a crash shortly after the swap could leave the new name
@@ -227,7 +226,7 @@ async def run_staged_subprocess(
         # disproportionate here — worst realistic post-crash outcome is
         # the OLD file still fully in place, i.e. a retry, not a loss.)
         #
-        # Phase 2 swaps each .part into place with os.replace — atomic on
+        # The second pass swaps each .part into place with os.replace — atomic on
         # POSIX, and guaranteed same-filesystem since the .part sits in
         # the final's own directory. The exposure drops from
         # "gigabytes of copying with no original" to per-file metadata

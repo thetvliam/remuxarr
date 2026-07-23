@@ -50,6 +50,8 @@ _FORMAT_MAP = {
     # why this is genuinely, provably unreachable, not just unlikely.
     "ts":   "mpegts",
     "wmv":  "asf",
+    # Unreachable defensive key — _normalise_container can never return
+    # "webm" (see ffmpeg.py's _CONTAINER_FORMAT comment). Kept for intent.
     "webm": "webm",
 }
 
@@ -208,7 +210,7 @@ async def run_forge_command(
     jobs got none of the job_timeout_minutes protection the main remux
     pipeline has always had, meaning a hung forge job (e.g. against a
     genuinely broken source file) could run indefinitely with no
-    recovery. Caught by independent review.
+    recovery.
     """
     duration = await probe_duration(input_path)
 
@@ -334,23 +336,37 @@ def get_candidates(
     total = query.count()
     files = query.order_by(*order_clause).offset(offset).limit(limit).all()
 
+    # Fetch every audio track for the whole page in ONE query, then group
+    # in Python — instead of two extra queries per file (aac_track +
+    # audio_count), i.e. 2N+1 for a 50-row page. Ordered by stream_index
+    # so "first AAC 5.1" is deterministic and matches what the previous
+    # per-file .first() returned (tracks are inserted in stream order, so
+    # SQLite's implicit rowid order already ≈ stream_index order).
+    from collections import defaultdict
+
+    file_ids = [f.id for f in files]
+    audio_by_file: dict[int, list] = defaultdict(list)
+    if file_ids:
+        audio_rows = (
+            db.query(Track)
+            .filter(Track.file_id.in_(file_ids), Track.track_type == "audio")
+            .order_by(Track.file_id, Track.stream_index)
+            .all()
+        )
+        for t in audio_rows:
+            audio_by_file[t.file_id].append(t)
+
     result = []
     for f in files:
-        aac_track = (
-            db.query(Track)
-            .filter(
-                Track.file_id    == f.id,
-                Track.track_type == "audio",
-                Track.codec      == "aac",
-                Track.channels   == 6,
-            )
-            .first()
+        file_audio = audio_by_file.get(f.id, [])
+        audio_count = len(file_audio)
+        aac_track = next(
+            (t for t in file_audio if t.codec == "aac" and t.channels == 6),
+            None,
         )
-        audio_count = (
-            db.query(Track)
-            .filter(Track.file_id == f.id, Track.track_type == "audio")
-            .count()
-        )
+        # Defensive: the outer query already restricts to files with an
+        # AAC 5.1 track, so this should always be truthy — but keep the
+        # guard in case a track row changed between the two queries.
         if not aac_track:
             continue
 
@@ -487,7 +503,7 @@ def resolve_forge_ac3_for_undo(tracks: list[dict]) -> tuple[str, int | None]:
     the entire file with every track kept and recorded the job as
     "undone" — a false success leaving the AC3 embedded forever while
     the UI reported it removed and the candidates list excluded the
-    file. Caught by independent review; failure mode confirmed
+    file. The failure mode was confirmed
     empirically during the fix. Resolving by verified properties at
     undo time closes it.
 

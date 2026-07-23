@@ -1,7 +1,7 @@
 """
-Regression tests for the queue-lifecycle fixes (review items M5 and M7).
+Regression tests for queue-lifecycle behavior.
 
-M5 — cancelled files never re-appeared on delta scans:
+Cancelled files never re-appeared on delta scans:
     cancel_item and clear_pending set MediaFile.status but left
     size/mtime matching the on-disk file, and the scanner's delta check
     compares ONLY size/mtime — so a cancelled file read as "unchanged"
@@ -13,7 +13,7 @@ M5 — cancelled files never re-appeared on delta scans:
     (they're plain functions once `db` is passed explicitly) against an
     in-memory database.
 
-M7 — a file could hold pending + manual_review items simultaneously:
+A file could hold pending + manual_review items simultaneously:
     the scanner's manual-review branch never touched an existing
     pending item, so the worker would later claim it, recompute, and
     convert it to manual_review too — a wasted claim ending in a
@@ -66,7 +66,7 @@ def _add_item(db, item_id, file_id=1, status="pending", n_actions=0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M5 — sentinel resets
+# Sentinel resets
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_cancel_item_resets_delta_sentinels():
@@ -74,7 +74,7 @@ def test_cancel_item_resets_delta_sentinels():
     After cancelling a pending item, the file's size/mtime must be the
     sentinel values — real files never have negative size or mtime, so
     the scanner's stat() comparison can never read the file as
-    "unchanged" again. Leaving the real values here is the M5 bug: the
+    "unchanged" again. Leaving the real values here is the bug: the
     file's bytes still match the DB and no delta scan ever re-evaluates
     it, despite the UI promising exactly that.
     """
@@ -135,12 +135,12 @@ def test_clear_pending_resets_sentinels_for_every_affected_file():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M7 — pending items superseded by a manual-review decision
+# Pending items superseded by a manual-review decision
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_supersede_deletes_pending_item_and_its_planned_actions():
     """
-    The M7 state: a pending item (with its scan-time PlannedActions)
+    The failing state: a pending item (with its scan-time PlannedActions)
     exists when a later scan decides manual-review. The pending item
     must be deleted AND its children must go with it — bulk deletes
     bypass ORM cascades and SQLite FK enforcement is off in this

@@ -1,8 +1,7 @@
 """
-Regression tests for the forge-undo track resolution fixes
-(review items M3 and M8).
+Regression tests for forge-undo track resolution.
 
-M3 — undo removed tracks by a positional index captured at ADD time:
+Undo removed tracks by a positional index captured at ADD time:
     the forge rewrite changes the file's size/mtime, the next delta scan
     re-evaluates it, and the main pipeline can drop audio tracks before
     the user ever clicks undo. The forge AC3 was appended LAST, so any
@@ -25,7 +24,7 @@ M3 — undo removed tracks by a positional index captured at ADD time:
     still excludes the real forge track; a forge track that's genuinely
     gone excludes nothing).
 
-M8 — _get_forged_ac3_audio_index couldn't see an undo mid-flight:
+_get_forged_ac3_audio_index couldn't see an undo mid-flight:
     claiming an undo job flips undo_pending → "processing", a status the
     old filter excluded even though the AC3 remains in the file for the
     whole rewrite. The query now matches processing+is_undo; tested
@@ -60,7 +59,7 @@ def _video(idx=0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M3 — resolve_forge_ac3_for_undo
+# resolve_forge_ac3_for_undo
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_unchanged_file_resolves_to_stored_position():
@@ -78,7 +77,7 @@ def test_unchanged_file_resolves_to_stored_position():
 
 def test_pipeline_drop_shifts_index_and_resolver_follows():
     """
-    The exact M3 incident shape. Original file: eng AAC 5.1 + fre AAC
+    The incident shape. Original file: eng AAC 5.1 + fre AAC
     5.1; forge appended its AC3 at audio index 2 (audio_track_count=2).
     The main pipeline then dropped the non-kept French track, shifting
     the AC3 to audio index 1. The stored index (2) now matches nothing —
@@ -151,7 +150,7 @@ def test_preexisting_ac3_51_before_forge_track_still_resolves_last():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M3 — analyze_file's und-threshold exclusion validates the index
+# analyze_file's und-threshold exclusion validates the index
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_stale_forge_index_still_excludes_the_real_forge_track():
@@ -191,7 +190,7 @@ def test_stale_index_landing_on_wrong_track_does_not_exclude_it():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M8 — mid-undo "processing" jobs are matched by the exclusion query
+# Mid-undo "processing" jobs are matched by the exclusion query
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _make_forge_db():
@@ -222,7 +221,7 @@ def _forge_job(db, status, is_undo):
 
 def test_processing_undo_is_matched():
     """
-    The M8 window: the worker claims an undo job, flipping undo_pending
+    The race window: the worker claims an undo job, flipping undo_pending
     → "processing" while the AC3 is still physically in the file for the
     entire rewrite. A scan landing in that window must still get the
     exclusion index — the old status list returned None here.
@@ -237,7 +236,7 @@ def test_processing_add_is_not_matched():
     """
     "processing" with is_undo=False is an ADD in flight — the AC3 does
     NOT exist yet, so excluding a track would wrongly lower the und
-    count. Must stay unmatched, exactly as before M8.
+    count. Must stay unmatched.
     """
     from app.core.scanner import _get_forged_ac3_audio_index
     db = _make_forge_db()
@@ -246,7 +245,7 @@ def test_processing_add_is_not_matched():
 
 
 def test_original_status_matrix_unchanged():
-    """The pre-M8 matches and non-matches must all behave identically."""
+    """The prior matches and non-matches must all behave identically."""
     from app.core.scanner import _get_forged_ac3_audio_index
     expectations = {
         "success":      True,

@@ -1,8 +1,7 @@
 """
-Regression tests for the subtitle-extraction failure handling fixes
-(review items M1 and M2).
+Regression tests for subtitle-extraction failure handling.
 
-M1 — combined pass silent subtitle loss:
+Combined pass silent subtitle loss:
     execute_ffmpeg_combined used to stage the main output first and move
     the SRT sidecars afterwards with partial-success semantics. Because
     extracted subtitles are removed from the muxed output, "main file
@@ -15,7 +14,7 @@ M1 — combined pass silent subtitle loss:
     that guarantee at the layer it lives in (run_staged_subprocess),
     using trivial shell commands rather than FFmpeg so they run anywhere.
 
-M2 — two-pass path lacked the encoding-failure → manual-review routing:
+Two-pass path lacked the encoding-failure → manual-review routing:
     only the combined path classified subtitle encoding failures via
     _is_subtitle_encoding_failure; the two-pass extraction loop failed
     the job outright for the identical underlying file. The routing fix
@@ -39,7 +38,7 @@ from app.core.worker import _is_subtitle_encoding_failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M1 — all-or-nothing staging invariant
+# All-or-nothing staging invariant
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _no_debris(*paths: str) -> bool:
@@ -51,7 +50,7 @@ def _no_debris(*paths: str) -> bool:
 
 def test_missing_output_fails_everything_and_originals_survive(tmp_path):
     """
-    The M1 scenario, reduced to its invariant: the subprocess exits
+    The scenario, reduced to its invariant: the subprocess exits
     cleanly (rc=0) but produces only SOME of its declared outputs — the
     exact "main remux fine, SRT temp missing" shape that previously
     recorded success while a subtitle silently vanished.
@@ -79,7 +78,7 @@ def test_missing_output_fails_everything_and_originals_survive(tmp_path):
     assert not result.success, (
         "A clean exit with a missing declared output must fail the whole "
         "run — reporting success here is the exact silent-subtitle-loss "
-        "bug (M1)."
+        "bug."
     )
     assert str(srt_tmp) in (result.error or ""), (
         "The error should name the missing temp so the failure is "
@@ -99,7 +98,7 @@ def test_complete_output_set_stages_together(tmp_path):
     """
     Success-path counterpart: when every declared output exists, all of
     them replace their destinations and no temps or .part files remain.
-    Guards against the M1 fix over-rotating into 'nothing ever stages'.
+    Guards against over-rotating into 'nothing ever stages'.
     """
     main_tmp = tmp_path / "main.tmp"
     srt_tmp  = tmp_path / "srt.tmp"
@@ -148,7 +147,7 @@ def test_nonzero_exit_fails_and_originals_survive(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# M2 — encoding-failure classifier must cover the single-command error shape
+# Encoding-failure classifier must cover the single-command error shape
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_classifier_matches_standalone_extraction_error():
@@ -158,7 +157,7 @@ def test_classifier_matches_standalone_extraction_error():
     emitted by a STANDALONE `-map 0:N -c:s srt` command — the two-pass
     path's shape, which carries no combined-command markers like
     "sist#". If the classifier ever stops matching this, the two-pass
-    routing silently degrades back to raw job failures (M2).
+    routing silently degrades back to raw job failures.
     """
     err = (
         "[srt @ 0x55d1c2a4b0c0] Invalid UTF-8 in decoded subtitles text; "

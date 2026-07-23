@@ -112,6 +112,19 @@ def abort_job(job_id: int) -> bool:
             job.error_message  = "Aborted by user"
             job.completed_at   = datetime.utcnow()
             if job.media_file:
+                # Reset the delta-scan sentinels alongside the status, the
+                # same as cancel_item / clear_pending / clear_dry_run and
+                # the history clear/delete paths. An aborted file's bytes
+                # are unchanged on disk (staging never completed), so the
+                # scanner's size/mtime delta check would read it as
+                # "nothing to do" and never re-evaluate it — leaving it
+                # reachable only via Retry or a forced full rescan. The
+                # abort scenario is exactly "fix the wrong setting and let
+                # it re-process," so the file must resurface on the next
+                # delta scan. abort_job was the one cancel path that reset
+                # status but not the sentinels.
+                job.media_file.size   = -1
+                job.media_file.mtime  = -1.0
                 job.media_file.status = "skipped"
             db.commit()
             logger.info("Job %d marked cancelled — aborting task now", job_id)
@@ -269,9 +282,29 @@ async def _run_and_broadcast(
     """Wrap _run_job with the completed broadcast."""
     try:
         await _run_job(job_id, ws_manager, loop)
+    except asyncio.CancelledError:
+        # User abort: abort_job() marked the DB row "cancelled" and then
+        # called task.cancel(), which raised this here at _run_job's await
+        # point. We re-raise so the task still ends cancelled — the
+        # broadcast itself happens in the finally below, which runs to
+        # completion even under cancellation (see the note there). This
+        # branch exists so an abort is explicit and logged rather than an
+        # unlabelled BaseException silently skipping past `except
+        # Exception`.
+        logger.info("Job %d cancelled by user abort — finalising", job_id)
+        raise
     except Exception:
         logger.exception("_run_job raised for job %d — attempting emergency cleanup", job_id)
     finally:
+        # This block runs on EVERY exit path — normal return, exception,
+        # and cancellation. It is safe under cancellation specifically
+        # because abort_job() issues a single task.cancel(): the resulting
+        # CancelledError is delivered once, at _run_job's await, so by the
+        # time control reaches here the cancellation is already consumed
+        # and the awaits below (executor calls + the broadcast) complete
+        # normally. That's what guarantees EVERY connected client gets the
+        # "cancelled" job_completed event, not just the one that clicked
+        # abort (which also re-fetches over REST). Verified empirically.
         post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
         if post_job:
             final = post_job["final"]
@@ -435,7 +468,7 @@ def _needs_audio_transcode_retry(result) -> bool:
     call genuinely different underlying functions with different return
     shapes (execute_ffmpeg_combined returns a tuple, execute_ffmpeg
     doesn't), and the log wording usefully distinguishes which of the
-    two retry paths actually fired. Caught by independent review.
+    two retry paths actually fired.
     """
     return not result.success and (
         _is_corrupt_audio_copy_failure(result.error)
@@ -484,20 +517,30 @@ def _is_subtitle_encoding_failure(error: str | None) -> bool:
     Either way, the user should get the per-track Keep/Remove review
     rather than a raw failure (or, worse, a silent drop).
 
-    Patterns cover both command shapes and won't false-positive on
-    video/audio or filesystem failures: "sist#" only ever appears in the
-    combined multi-output form, while "subtitle"/"sub_charenc" also match
-    the single-command form — FFmpeg's canonical message for the exact
-    production case this exists for is "Invalid UTF-8 in decoded
-    subtitles text; maybe missing -sub_charenc option", which matches on
-    two of the four patterns.
+    Patterns are encoding/decoding-specific and won't false-positive on
+    video/audio, filesystem, or container-capability failures — "sist#"
+    only appears in the combined multi-output form, while "invalid utf-8"
+    and "sub_charenc" match the single-command form. FFmpeg's canonical
+    message for the exact production case this exists for is "Invalid
+    UTF-8 in decoded subtitles text; maybe missing -sub_charenc option",
+    which matches on two of the three patterns. A bare "subtitle"
+    catch-all was deliberately removed — see the note at the return.
     """
     if not error:
         return False
     lower = error.lower()
+    # Patterns are encoding/decoding-specific and won't false-positive on
+    # video/audio, filesystem, or container-capability failures. Two
+    # bare-substring catch-alls have been removed for exactly that
+    # reason: "subtitle" (matched "...WebVTT subtitles are supported for
+    # WebM", a container rejection) and "mov_text" (would match a
+    # container/mux error naming that codec — e.g. muxing a kept mov_text
+    # track into a non-MP4 output). The canonical encoding failure
+    # ("Invalid UTF-8 in decoded subtitles text; maybe missing
+    # -sub_charenc option") still matches via both "invalid utf-8" and
+    # "sub_charenc", so no real coverage is lost.
     return any(pat in lower for pat in (
-        "subtitle",          # generic subtitle processing failures
-        "mov_text",          # the specific codec that triggered this fix
+        "invalid utf-8",     # the actual decode diagnostic for non-UTF-8 text subs
         "sub_charenc",       # FFmpeg's hint for the encoding issue
         "sist#",             # FFmpeg's notation for subtitle input streams in combined commands
     ))
@@ -762,7 +805,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # (removed from the mux, never written as a sidecar, only a
             # log warning to show for it). srt_results is retained in the
             # return shape for per-track detail, but no partial-failure
-            # branch exists anymore. Caught by independent review.
+            # branch exists anymore.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
             #
@@ -773,7 +816,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # different outcomes depending on which internal execution
             # path happened to run: per-track Keep/Remove review when a
             # remux was also needed, but a raw failed job when the only
-            # work was extraction. Caught by independent review.
+            # work was extraction.
             #
             # One deliberate asymmetry with the combined path remains: a
             # combined command's cascade can't be attributed to a specific
@@ -1098,7 +1141,8 @@ def _finish_job(
             job.status = "success" if success else "failed"
 
         job.completed_at  = datetime.utcnow()
-        job.progress      = 100.0 if success else job.progress
+        if success:
+            job.progress = 100.0   # leave progress untouched on failure
         job.output_path   = output_path
         job.output_size   = output_size
         job.error_message = error
@@ -1574,7 +1618,13 @@ def _load_email_notify_data(job_id: int) -> dict | None:
                             on again later. A dry-run preview success
                             counts as a reset too — it demonstrates the
                             pipeline is currently working for that file.
-      failed              → counter increments by 1.
+      failed              → counter increments by 1, UNTIL the breaker
+                            trips; once tripped the counter freezes and
+                            stays frozen until a success resets it —
+                            identically whether or not email is enabled
+                            (so toggling email off after a trip can't
+                            resume counting). The frozen value is the
+                            "tripped at N" figure.
                             A dry-run preview FAILURE counts as a real
                             failure here too — if dry-run previews are
                             failing due to a config mistake, that's exactly
@@ -1608,31 +1658,41 @@ def _load_email_notify_data(job_id: int) -> dict | None:
             return None
 
         # job.status == "failed"
+        threshold = cfg.get("email_failure_threshold", 5)
+
+        # Once tripped, the incident is already "open": no further
+        # counting and no further emails until a success resets it —
+        # identically whether or not email is enabled. Previously the
+        # email-DISABLED branch kept incrementing past the threshold
+        # while the email-ENABLED+tripped branch froze, so toggling email
+        # off after a trip silently resumed counting and the two paths
+        # disagreed about the same state. The frozen value is the
+        # "tripped at N" figure; keeping it stable is what makes that
+        # number meaningful.
+        if state.breaker_tripped:
+            return None
+
+        state.consecutive_failures += 1
+        if state.consecutive_failures >= threshold:
+            state.breaker_tripped = True
+
+        # Email off: breaker state is now updated and accurate (the
+        # reason this runs even while disabled — so it's coherent if
+        # email is re-enabled later); nothing to send.
         if not cfg.get("email_enabled", False):
-            # Keep the breaker accurate even while email is disabled.
-            state.consecutive_failures += 1
-            threshold = cfg.get("email_failure_threshold", 5)
-            if state.consecutive_failures >= threshold:
-                state.breaker_tripped = True
             db.commit()
             return None
 
         if state.breaker_tripped:
-            # Already silenced for this incident — stop counting further so
-            # the eventual "tripped at N" number stays meaningful, and don't
-            # send anything more until a success resets it.
-            return None
-
-        state.consecutive_failures += 1
-        threshold = cfg.get("email_failure_threshold", 5)
-        media    = job.media_file
-        filename = media.filename if media else "unknown file"
-
-        if state.consecutive_failures >= threshold:
-            state.breaker_tripped = True
+            # Crossed the threshold on THIS failure → the one tripped
+            # email (which doesn't include a filename).
             db.commit()
             return {"kind": "tripped", "count": state.consecutive_failures, "cfg": cfg}
 
+        # Only the per-failure email below needs the filename, so resolve
+        # it here rather than before the tripped branch that ignores it.
+        media    = job.media_file
+        filename = media.filename if media else "unknown file"
         db.commit()
         return {
             "kind":     "failure",
@@ -1719,8 +1779,7 @@ async def _process_next_forge(ws_manager) -> bool:
     # appending a suffix to an already-long Sonarr-style filename can push
     # it past the 255-byte filesystem component limit (confirmed in
     # production there: a 247-byte original filename failed). A job_id is
-    # always short and unique, so this can never happen here. Caught by
-    # independent review.
+    # always short and unique, so this can never happen here.
     tmp_dir   = _pick_temp_dir(input_path)
     temp_path = os.path.join(tmp_dir, f"forge_{job_id}.forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)

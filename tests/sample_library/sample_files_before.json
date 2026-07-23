@@ -1,0 +1,1702 @@
+[
+ {
+  "path": "./hi10_samples/[Underwater] Another - sample H264 Hi10P 1080p.avi",
+  "format_name": "avi",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {},
+    "disposition": {},
+    "channels": 2,
+    "channel_layout": "stereo"
+   }
+  ]
+ },
+ {
+  "path": "./hi10_samples/[Underwater] Another - sample H264 Hi10P 720p.avi",
+  "format_name": "avi",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {},
+    "disposition": {},
+    "channels": 2,
+    "channel_layout": "stereo"
+   }
+  ]
+ },
+ {
+  "path": "./hi10_samples/Clannad After Story OPA - sample HEVC main10 1080p.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "hevc",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 3,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {},
+    "disposition": {}
+   }
+  ]
+ },
+ {
+  "path": "./SPY.x.FAMILY.S03.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264-VARYG/SPY.x.FAMILY.S03E01.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264-VARYG.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {
+     "language": "jpn"
+    },
+    "disposition": {
+     "default": 1,
+     "original": 1
+    },
+    "channels": 2,
+    "channel_layout": "stereo"
+   },
+   {
+    "index": 2,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "dub": 1
+    },
+    "channels": 2,
+    "channel_layout": "stereo"
+   },
+   {
+    "index": 3,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "eng",
+     "title": "Forced"
+    },
+    "disposition": {
+     "forced": 1,
+     "dub": 1
+    }
+   },
+   {
+    "index": 4,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1,
+     "dub": 1
+    }
+   },
+   {
+    "index": 5,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "eng",
+     "title": "CC"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 6,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "ara",
+     "title": "Saudi Arabia"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 7,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "ger"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 8,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "ger",
+     "title": "CC"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 9,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "spa",
+     "title": "Latin American"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 10,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "spa",
+     "title": "Latin American (CC)"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 11,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "spa",
+     "title": "European"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 12,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "spa",
+     "title": "European (CC)"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 13,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "fre",
+     "title": "European"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 14,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "fre",
+     "title": "European (CC)"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 15,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "ind"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 16,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "ita"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 17,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "ita",
+     "title": "CC"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 18,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "may"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 19,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "por",
+     "title": "Brazilian"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 20,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "por",
+     "title": "Brazilian (CC)"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 21,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "rus"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 22,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "tha"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 23,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "vie"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 24,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "chi",
+     "title": "China"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 25,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "chi",
+     "title": "Hong Kong"
+    },
+    "disposition": {
+     "dub": 1
+    }
+   },
+   {
+    "index": 26,
+    "codec_type": "attachment",
+    "codec_name": "otf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 27,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 28,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 29,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 30,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 31,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 32,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 33,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 34,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 35,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 36,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 37,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 38,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 39,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 40,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 41,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 42,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 43,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 44,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 45,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 46,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 47,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 48,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 49,
+    "codec_type": "attachment",
+    "codec_name": "otf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 50,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 51,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 52,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 53,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 54,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   }
+  ]
+ },
+ {
+  "path": "./Main10 Anime Samples/Anime HEVC Main10 1080p Sample1.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "hevc",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "aac",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 3,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {},
+    "disposition": {}
+   }
+  ]
+ },
+ {
+  "path": "./Main10 Anime Samples/Anime HEVC Main10 1080p Sample3 (Heavy Subtitle Use).mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "hevc",
+    "tags": {
+     "title": "Presented By EMBER"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "eac3",
+    "tags": {
+     "language": "jpn"
+    },
+    "disposition": {},
+    "channels": 2,
+    "channel_layout": "stereo"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "eng",
+     "title": "Dialogue@NovaWorks"
+    },
+    "disposition": {
+     "default": 1,
+     "forced": 1
+    }
+   },
+   {
+    "index": 3,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 4,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 5,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 6,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 7,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 8,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 9,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 10,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 11,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 12,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 13,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 14,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 15,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 16,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 17,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 18,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 19,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 20,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 21,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 22,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 23,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 24,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 25,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 26,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 27,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 28,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 29,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 30,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 31,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 32,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 33,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 34,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 35,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 36,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 37,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 38,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 39,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 40,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 41,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 42,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 43,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 44,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 45,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 46,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 47,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 48,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 49,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 50,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 51,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 52,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 53,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 54,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 55,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 56,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 57,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 58,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 59,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 60,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 61,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 62,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 63,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 64,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 65,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 66,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 67,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 68,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 69,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 70,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 71,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 72,
+    "codec_type": "attachment",
+    "codec_name": "none",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 73,
+    "codec_type": "video",
+    "codec_name": "mjpeg",
+    "tags": {},
+    "disposition": {
+     "attached_pic": 1
+    }
+   }
+  ]
+ },
+ {
+  "path": "./Main10 Anime Samples/Anime HEVC Main10 1080p Sample2.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "hevc",
+    "tags": {
+     "language": "jpn",
+     "title": "BDrip by sam"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "flac",
+    "tags": {
+     "language": "jpn",
+     "title": "FLAC 2.0"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 2,
+    "channel_layout": "stereo"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "ass",
+    "tags": {
+     "language": "eng",
+     "title": "Full Subtitles [sam]"
+    },
+    "disposition": {
+     "default": 1,
+     "forced": 1
+    }
+   },
+   {
+    "index": 3,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 4,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 5,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 6,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 7,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 8,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 9,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 10,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 11,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 12,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 13,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 14,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 15,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 16,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 17,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   },
+   {
+    "index": 18,
+    "codec_type": "attachment",
+    "codec_name": "ttf",
+    "tags": {},
+    "disposition": {}
+   }
+  ]
+ },
+ {
+  "path": "./Forced Sub Sample.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "dts",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "language": "eng",
+     "title": "Forced Subtitles"
+    },
+    "disposition": {
+     "default": 1,
+     "forced": 1
+    }
+   }
+  ]
+ },
+ {
+  "path": "./Dolby Digital Plus 7.1 Channel Check.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "eac3",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 8,
+    "channel_layout": "7.1"
+   }
+  ]
+ },
+ {
+  "path": "./FPS_test_1080p23.976_L4.1.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "mp3",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 2,
+    "channel_layout": "stereo"
+   }
+  ]
+ },
+ {
+  "path": "./jellyfish-400-mbps-4k-uhd-hevc-10bit.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "hevc",
+    "tags": {
+     "language": "und"
+    },
+    "disposition": {
+     "default": 1
+    }
+   }
+  ]
+ },
+ {
+  "path": "./POCAWE_Sample.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {}
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "pcm_s24le",
+    "tags": {
+     "language": "eng",
+     "title": "Surround 5.1"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {}
+   }
+  ]
+ },
+ {
+  "path": "./Forced Sub Sample (PGS).mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "truehd",
+    "tags": {
+     "language": "eng",
+     "title": "Dolby TrueHD 5.1"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "hdmv_pgs_subtitle",
+    "tags": {
+     "language": "eng",
+     "title": "Forced English Subtitles"
+    },
+    "disposition": {
+     "default": 1,
+     "forced": 1
+    }
+   }
+  ]
+ },
+ {
+  "path": "./MPEG2_1080i_sample.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "mpeg2video",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "ac3",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   }
+  ]
+ },
+ {
+  "path": "./VC-1_23.976_sample.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "vc1",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "truehd",
+    "tags": {
+     "language": "eng",
+     "title": "5.1"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   }
+  ]
+ },
+ {
+  "path": "./Awaken AV1 DV Sample.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "av1",
+    "tags": {},
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "dts",
+    "tags": {
+     "language": "eng",
+     "title": "DTS-HD MA 7.1"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 8,
+    "channel_layout": "7.1"
+   }
+  ]
+ },
+ {
+  "path": "./The Redwoods.mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "vp9",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "vorbis",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 2,
+    "channel_layout": "stereo"
+   }
+  ]
+ },
+ {
+  "path": "./Forced Sub Sample (und test).mkv",
+  "format_name": "matroska,webm",
+  "streams": [
+   {
+    "index": 0,
+    "codec_type": "video",
+    "codec_name": "h264",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    }
+   },
+   {
+    "index": 1,
+    "codec_type": "audio",
+    "codec_name": "dts",
+    "tags": {
+     "language": "eng"
+    },
+    "disposition": {
+     "default": 1
+    },
+    "channels": 6,
+    "channel_layout": "5.1"
+   },
+   {
+    "index": 2,
+    "codec_type": "subtitle",
+    "codec_name": "subrip",
+    "tags": {
+     "title": "Forced Subtitles"
+    },
+    "disposition": {
+     "default": 1,
+     "forced": 1
+    }
+   }
+  ]
+ }
+]

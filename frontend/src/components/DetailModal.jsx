@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { C, STATUS_COLOR, ACTION_CFG } from "../constants";
+import { C, ACTION_CFG } from "../constants";
 import { fmtSize, fmtDur, formatBytesSaved } from "../utils";
 import { StatusBadge } from "./atoms/StatusBadge";
 import { ActionBadge } from "./atoms/ActionBadge";
@@ -17,7 +17,7 @@ import { Btn } from "./atoms/Btn";
  * a second fetch that includes planned_actions. An unoptimised component
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };

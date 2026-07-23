@@ -38,7 +38,11 @@ def _current_dry_run_mode(db: Session) -> bool:
 def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     """
     Re-queue a failed / cancelled / dry-run item by deleting it and
-    re-running the scanner's per-file evaluation with force_probe=True.
+    re-running the scanner's per-file evaluation with force_probe=True,
+    OR re-evaluate a success / skipped item WITHOUT deleting its history
+    record (surfaced in the UI as "RE-PROCESS" — see the delete guard
+    below). Any exception from the re-evaluation is rolled back and
+    reported as a 400 rather than a 500 (see the try/except below).
 
     Why re-probe on retry?
     -----------------------
@@ -68,7 +72,8 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         # Explicit "Process Now" override — regardless of current setting.
         dry_run = False
     else:
-        # failed / cancelled — honor dry_run_mode as it stands NOW.
+        # failed / cancelled / success / skipped — honor dry_run_mode as
+        # it stands NOW.
         dry_run = _current_dry_run_mode(db)
 
     file_path        = media.path
@@ -80,21 +85,52 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     sonarr_series_id = item.sonarr_series_id
     radarr_movie_id  = item.radarr_movie_id
 
-    # Remove the stale item (and its PlannedActions, via cascade) — the
-    # re-probe below creates a fresh QueueItem if one is actually needed.
-    db.delete(item)
-    db.flush()
+    # Delete only STALE ATTEMPTS (failed / cancelled / dry-run previews) —
+    # the re-probe below replaces them with a fresh item if one is needed.
+    # A success or skipped item is a COMPLETED EVALUATION and a terminal
+    # history record (a success row also carries real bytes-saved /
+    # output-size stats), surfaced in the UI as "RE-PROCESS" rather than
+    # "RETRY": re-evaluate the file WITHOUT erasing that record.
+    # Previously every status was deleted unconditionally, so
+    # re-processing an already-compliant success — the common case, since
+    # the file is compliant *because* it succeeded — destroyed the
+    # history row and its stats and created nothing to replace it.
+    # Preserving is safe: _process_file's queue path clears only
+    # ("skipped", "manual_review") stale records, never "success", so a
+    # kept success row survives a re-probe that queues new work (yielding
+    # two legitimate history rows for two operations), and a kept skipped
+    # row is updated in place by the skip path.
+    preserve_completed_record = item.status in ("success", "skipped")
+    if not preserve_completed_record:
+        # Removes the stale item and its PlannedActions via cascade.
+        db.delete(item)
+        db.flush()
 
     app_cfg = get_app_settings(db)
     stats   = ScanStats()
-    _process_file(
-        db, file_path, app_cfg,
-        force_probe      = True,
-        dry_run          = dry_run,
-        stats            = stats,
-        sonarr_series_id = sonarr_series_id,
-        radarr_movie_id  = radarr_movie_id,
-    )
+    try:
+        _process_file(
+            db, file_path, app_cfg,
+            force_probe      = True,
+            dry_run          = dry_run,
+            stats            = stats,
+            sonarr_series_id = sonarr_series_id,
+            radarr_movie_id  = radarr_movie_id,
+        )
+    except Exception as exc:
+        # Same failure class retry_all_failed guards against per-item
+        # (e.g. the ValueError decision.py raises for genuinely unknown
+        # container info). The bulk sibling collects these and continues;
+        # a single explicit retry instead surfaces the reason directly.
+        # Without this the exception propagated as an unhandled 500 with
+        # no indication of what went wrong — and, for a stale attempt,
+        # left the item already deleted above. Roll back so a failed
+        # retry never destroys the item it was meant to re-queue, then
+        # report the reason.
+        logger.exception("Retry failed for %s", file_path)
+        db.rollback()
+        raise HTTPException(400, f"Retry failed: {exc}") from exc
+
     db.commit()  # ensure the deletion above is persisted even on early-return paths
 
     new_item = (
@@ -294,7 +330,7 @@ def clear_pending(db: Session = Depends(get_db)):
     _process_file's "queued"-status disambiguation only special-cases a
     latest item of dry_run, not cancelled — so the file stayed
     (incorrectly) marked "queued" until a forced full scan happened to
-    touch it. Caught by independent review.
+    touch it.
 
     Also resets size/mtime to the delta-scan sentinels, matching
     cancel_item — see its docstring for the full rationale. The
@@ -310,7 +346,9 @@ def clear_pending(db: Session = Depends(get_db)):
     count = (
         db.query(QueueItem)
         .filter(QueueItem.status == "pending")
-        .update({"status": "cancelled"})
+        # completed_at stamped for the same reason as cancel_item — see
+        # its comment (NULLs sort last in the completed_at-DESC history).
+        .update({"status": "cancelled", "completed_at": datetime.utcnow()})
     )
     if file_ids:
         db.query(MediaFile).filter(
@@ -379,7 +417,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     next library scan" — useActions.dismissQueueItem), which was only
     true for forced full scans. The sibling endpoints that faced the
     identical problem all reset the sentinels; this one and
-    clear_pending were missed. Caught by independent review.
+    clear_pending were missed.
 
     For a manual_review item ("Skip" in the Review page) this means the
     review flag also resurfaces on the next DELTA scan — deliberately
@@ -395,6 +433,13 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
 
     item.status = "cancelled"
+    # Stamp completed_at, matching the skipped transition in
+    # _apply_decision_to_item (and abort_job): history orders by
+    # completed_at DESC and SQLite sorts NULLs last, so a cancelled row
+    # without it would sink to the bottom of the Failed tab regardless of
+    # recency and render a "—" timestamp. cancel_item and clear_pending
+    # were the two "cancelled"-producing paths that missed this.
+    item.completed_at = datetime.utcnow()
     if item.media_file:
         item.media_file.size   = -1
         item.media_file.mtime  = -1.0
@@ -443,8 +488,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
         # deleted the item and re-processed with no arr IDs at all, so
         # "Retry All" on webhook-originated failures produced jobs that
         # would never fire RescanSeries/RescanMovie on success, even
-        # though single-item retry preserved this correctly. Caught by
-        # independent review.
+        # though single-item retry preserved this correctly.
         sonarr_series_id = item.sonarr_series_id
         radarr_movie_id  = item.radarr_movie_id
         db.delete(item)
