@@ -127,3 +127,33 @@ jobs:
           # subsequent builds, since layers (npm install, pip install,
           # the ffmpeg download) can be reused across runs instead of
           # starting from scratch every single push.
+
+      # Docker Hub does NOT pull the GitHub README on its own the way the
+      # GHCR package page does, so without this the Docker Hub overview
+      # sits empty. Runs only on main (the testing branch shouldn't
+      # rewrite the public description) and only when Docker Hub is
+      # configured at all.
+      #
+      # enable-url-completion matters for this README specifically: it
+      # links to UNRAID_DEPLOYMENT.md, LICENSE and tests/README.md
+      # relatively, and those resolve to nothing on Docker Hub unless
+      # they're rewritten to absolute GitHub URLs.
+      #
+      # short-description comes from the GitHub repo's own description
+      # field (Docker Hub caps it at 100 bytes; the README body is capped
+      # at 25,000 — the action truncates and warns rather than failing).
+      #
+      # NOTE: this step needs a Docker Hub token with read/write/DELETE
+      # scope — wider than the read/write the push itself needs. If it
+      # fails with 401/403 while the push succeeded, that's the cause:
+      # regenerate DOCKERHUB_TOKEN with the broader scope.
+      - name: Sync README to Docker Hub
+        if: env.DOCKERHUB_NAMESPACE != '' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ env.DOCKERHUB_NAMESPACE }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_NAMESPACE }}/remuxarr
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
+          enable-url-completion: true
