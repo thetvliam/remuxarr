@@ -84,9 +84,13 @@ export const formatBytesSaved = (bytesSaved, bytesSavedPct) => {
     isNegative,
     isZero: !isPositive && !isNegative,
     sizeText: fmtSize(Math.abs(bytesSaved)),
-    // Guard against showing "0%" when the saving is real but rounds to
-    // less than 1% — without this, a small genuine saving misleadingly
-    // displays as "(0%)".
-    pctDisplay: (bytesSavedPct < 1 && bytesSavedPct > 0) ? "<1" : bytesSavedPct,
+    // Any genuine saving below 1% shows "<1" rather than a rounded
+    // percentage. The trigger is the real byte delta (bytesSaved > 0),
+    // NOT the percentage: bytesSavedPct arrives already rounded to one
+    // decimal from the backend, so a tiny saving on a large file (e.g.
+    // 5 KB on 300 MB ≈ 0.002%) reaches here as exactly 0. A previous
+    // check of `bytesSavedPct > 0` therefore let those through as "0%",
+    // which read as "saved nothing" when bytes were in fact saved.
+    pctDisplay: (isPositive && bytesSavedPct < 1) ? "<1" : bytesSavedPct,
   };
 };
