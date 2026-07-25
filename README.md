@@ -1,3 +1,5 @@
+![Remuxarr Logo](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-name.png)
+
 # Remuxarr
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/thetvliam/remuxarr?logo=docker&label=Docker%20Hub%20pulls)](https://hub.docker.com/r/thetvliam/remuxarr)

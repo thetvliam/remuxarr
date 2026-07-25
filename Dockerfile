@@ -109,7 +109,15 @@ COPY --from=ffmpeg-downloader /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip first so the pip that ends up in the final image is current.
+# The base python:3.12-slim ships an older pip that vulnerability scanners
+# flag (it sits in site-packages even though it only runs at build time);
+# upgrading here clears those findings. Left unpinned deliberately — paired
+# with periodic image rebuilds, this keeps pip patched without editing the
+# Dockerfile each time. The application's own dependencies stay pinned in
+# requirements.txt for reproducibility.
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
