@@ -1,4 +1,10 @@
+![Remuxarr Logo](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-name.png)
+
 # Remuxarr
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/thetvliam/remuxarr?logo=docker&label=Docker%20Hub%20pulls)](https://hub.docker.com/r/thetvliam/remuxarr)
+[![GHCR](https://img.shields.io/badge/ghcr.io-thetvliam%2Fremuxarr-blue?logo=github)](https://github.com/thetvliam/remuxarr/pkgs/container/remuxarr)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A Dockerized media-library tool for Unraid (and any Docker host) that cleans up your Sonarr/Radarr library for better playback compatibility - **without ever re-encoding video.**
 
@@ -44,16 +50,18 @@ This application was generated entirely using Claude. I acted as the architect, 
 
 ## Installation
 
-Prebuilt images are published to the GitHub Container Registry - you do not need to clone this repository to run Remuxarr.
+Prebuilt images are published to **both** the GitHub Container Registry (GHCR) and Docker Hub - you do not need to clone this repository to run Remuxarr. The two are identical, built from the same commit in the same workflow; use whichever your setup prefers. Unraid's Community Apps and template ecosystem lean toward Docker Hub, so that's the one to use there unless you have a reason not to.
 
-| Branch | Image |
-| --- | --- |
-| Main (stable) | `ghcr.io/thetvliam/remuxarr:latest` |
-| Testing (beta) | `ghcr.io/thetvliam/remuxarr:testing` |
+| Branch | Docker Hub | GHCR |
+| --- | --- | --- |
+| Main (stable) | `thetvliam/remuxarr:latest` | `ghcr.io/thetvliam/remuxarr:latest` |
+| Testing (beta) | `thetvliam/remuxarr:testing` | `ghcr.io/thetvliam/remuxarr:testing` |
+
+Every build also publishes an immutable `:<short-commit-sha>` tag (e.g. `:37a7265`) to both registries, so you can pin to an exact build and roll back if a `latest`/`testing` update ever misbehaves.
 
 ### Unraid
 
-See [`UNRAID_DEPLOYMENT.md`](UNRAID_DEPLOYMENT.md) for a step-by-step GUI walkthrough. Use `ghcr.io/thetvliam/remuxarr:latest` as the Repository value in the template.
+See [`UNRAID_DEPLOYMENT.md`](UNRAID_DEPLOYMENT.md) for a step-by-step GUI walkthrough. Use `thetvliam/remuxarr:latest` as the Repository value in the template.
 
 ### Docker Compose
 
@@ -62,7 +70,7 @@ Create a `docker-compose.yml` anywhere on your Docker host:
 ```yaml
 services:
   remuxarr:
-    image: ghcr.io/thetvliam/remuxarr:latest   # :testing for the beta branch
+    image: thetvliam/remuxarr:latest   # :testing for the beta branch, or ghcr.io/thetvliam/remuxarr:latest
     container_name: remuxarr
     restart: unless-stopped
 
