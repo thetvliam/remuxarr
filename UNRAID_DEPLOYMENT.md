@@ -10,7 +10,7 @@
    | Field | Value |
    |---|---|
    | Name | `Remuxarr` |
-   | Repository | `ghcr.io/thetvliam/remuxarr:latest` |
+   | Repository | `thetvliam/remuxarr:latest` |
    | Network Type | `Bridge` |
 
 4. Add four path mappings (**Add another Path, Port, Variable, or
@@ -32,7 +32,7 @@
 6. Click **Apply**. Unraid pulls the image and starts the container — the
    first pull can take a minute or two.
 
-There's also a template at [`unraid-template/remuxarr.xml`](unraid-template/remuxarr.xml)
+There's also a template at [`templates/remuxarr.xml`](templates/remuxarr.xml)
 in this repo, loadable via the **Select a template** dropdown if you place
 the file in `/boot/config/plugins/dockerMan/templates-user/` first. Worth
 trying — it does correctly pre-fill Name and Repository — but in practice
@@ -74,7 +74,7 @@ this process.
 
 ```
 Name:       Remuxarr
-Image:      ghcr.io/thetvliam/remuxarr:latest
+Image:      thetvliam/remuxarr:latest
 Network:    Bridge
 Port:       9191  →  9191/tcp   (host port is your choice)
 
