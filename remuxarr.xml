@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Remuxarr</Name>
+  <Repository>thetvliam/remuxarr:latest</Repository>
+  <Registry>https://hub.docker.com/r/thetvliam/remuxarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/thetvliam/remuxarr/issues</Support>
+  <Project>https://github.com/thetvliam/remuxarr</Project>
+  <ReadMe/>
+  <Overview>Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata - all through lossless stream copying. Video is never touched.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:9191]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/templates/remuxarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
+  <Config Name="Cache Directory" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="Location where task files are temporarily stored while workers are carrying out jobs on them." Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
+  <Config Name="Library Movies" Target="/media/movies" Default="" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="false" Mask="false" />
+  <Config Name="Library TV" Target="/media/tv" Default="" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="false" Mask="false" />
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <TailscaleStateDir/>
+</Container>
