@@ -24,7 +24,7 @@ Set your scan paths and preferred languages in Settings after first start. Dry r
   <DonateText/>
   <DonateLink/>
   <DonateImg/>
-  <Beta>true</Beta>
+  <Beta>false</Beta>
   <Description>
 Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying.
   </Description>
