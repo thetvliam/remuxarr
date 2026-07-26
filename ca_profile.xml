@@ -1,7 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+
 <CommunityApplications>
   <!-- Required profile -->
   <Profile>
-    Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility — without ever re-encoding video. It remuxes containers (MKV → MP4 when every track is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken language metadata, all through lossless stream copying. Video is never touched. Integrates with Sonarr, Radarr, and Plex.
+    Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility - without ever re-encoding video. It remuxes containers (MKV to MP4 when every track is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken language metadata, all through lossless stream copying. Video is never touched. Integrates with Sonarr, Radarr, and Plex.
   </Profile>
   <!-- Optional icon -->
   <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>

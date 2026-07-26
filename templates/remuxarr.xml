@@ -1,3 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+
 <Container version="2">
   <!-- Delete this file if your repository does not ship Docker apps. -->
   <Name>Remuxarr</Name>
@@ -21,7 +23,7 @@
   <WebUI>http://[IP]:[PORT:9191]</WebUI>
 
   <!-- Plain text description -->
-  <Overview>Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying. Video is never touched.</Overview>
+  <Overview>Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata - all through lossless stream copying. Video is never touched.</Overview>
 
   <!-- NOTE: Either Support or Project is REQUIRED -->
   <!-- Support forum -->
@@ -48,7 +50,7 @@
 
 
   <!-- Valid category entries can be generated from the Application Categorizer plugin available in Apps -->
-  <Category>Productivity MediaApp:Video Tools:Utilities</Category>
+  <Category>Productivity Media:Video Tools:Utilities</Category>
 
   <!-- Optional extra app search terms -->
   <ExtraSearchTerms>remux</ExtraSearchTerms>
@@ -96,11 +98,11 @@
   -->
 
   <!-- v2 templates should define ports/paths/variables with Config entries -->
-  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false"/>
-  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory — leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="Webhook Debounce Seconds" Target="REMUXARR_WEBHOOK_DEBOUNCE_SECONDS" Default="10" Description="Seconds to wait after the last Sonarr/Radarr webhook for a file before queuing it. Increase for very large season packs on slow disks." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
+  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/movies</Config>
+  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/tv</Config>
+  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory - leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
+  <Config Name="Webhook Debounce Seconds" Target="REMUXARR_WEBHOOK_DEBOUNCE_SECONDS" Default="10" Description="Seconds to wait after the last Sonarr/Radarr webhook for a file before queuing it. Increase for very large season packs on slow disks." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
 
 </Container>
