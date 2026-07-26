@@ -1,16 +1,24 @@
-<?xml version="1.0"?>
 <CommunityApplications>
+  <!-- Required profile -->
   <Profile>
-Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility — without ever re-encoding video. It remuxes containers (MKV → MP4 when every track is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken language metadata, all through lossless stream copying. Video is never touched. Integrates with Sonarr, Radarr, and Plex.
-
-This repository maintains a single application, Remuxarr. For bug reports, feature requests, and support, please open an issue on GitHub.
+    Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility — without ever re-encoding video. It remuxes containers (MKV → MP4 when every track is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken language metadata, all through lossless stream copying. Video is never touched. Integrates with Sonarr, Radarr, and Plex.
   </Profile>
-  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/frontend/public/logo.svg</Icon>
+  <!-- Optional icon -->
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
+  <!-- Optional web page -->
   <WebPage>https://github.com/thetvliam/remuxarr</WebPage>
-  <!-- Optional support links — uncomment and fill in if/when you create them -->
+  <!-- Optional support and donation links -->
   <!-- <Forum>https://forums.unraid.net/topic/YOUR_SUPPORT_TOPIC</Forum> -->
+  <!-- Optional Discord link -->
   <!-- <Discord>https://discord.gg/YOUR_INVITE_CODE</Discord> -->
-  <!-- Optional profile extras -->
-  <!-- <DonateLink>https://github.com/sponsors/thetvliam</DonateLink> -->
+  <!-- Optional donation link -->
+  <!-- <DonateLink>https://github.com/sponsors/YOUR_GITHUB_USERNAME</DonateLink> -->
+  <!-- Optional donation text -->
   <!-- <DonateText>Support this project</DonateText> -->
+  <!-- Optional photos -->
+  <Photo>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/screenshot.png</Photo>
+  <!-- You can add multiple photos by adding multiple <Photo> tags -->
+  <!-- Optional videos -->
+  <!-- <Video>URL to any video.  Youtube URLs are recommended</Video> -->
+  <!-- You can add multiple videos by adding multiple <Video> tags -->
 </CommunityApplications>

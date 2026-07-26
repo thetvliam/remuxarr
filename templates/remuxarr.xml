@@ -1,51 +1,106 @@
-<?xml version="1.0"?>
 <Container version="2">
+  <!-- Delete this file if your repository does not ship Docker apps. -->
   <Name>Remuxarr</Name>
-  <Repository>thetvliam/remuxarr:latest</Repository>
-  <Registry>https://hub.docker.com/r/thetvliam/remuxarr</Registry>
-  <Github>https://github.com/thetvliam/remuxarr</Github>
+  <Repository>ghcr.io/thetvliam/remuxarr:latest</Repository>
+  <Registry>https://ghcr.io/thetvliam/remuxarr</Registry>
   <Network>bridge</Network>
-  <MyIP/>
+
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
+
+  <!-- Optional but highly recommended: app icon -->
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
+
+  <!-- Optional theme-specific icon overrides -->
+  <!-- <Icon-black>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/icon-black.png</Icon-black> -->
+  <!-- <Icon-white>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/icon-white.png</Icon-white> -->
+  <!-- <Icon-azure>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/icon-azure.png</Icon-azure> -->
+  <!-- <Icon-gray>https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_PLUGIN_REPO/main/icon-gray.png</Icon-gray> -->
+
+  <!-- NOTE: The port in the entry ALWAYS refers to the container port, not the host port-->
+  <WebUI>http://[IP]:[PORT:9191]</WebUI>
+
+  <!-- Plain text description -->
+  <Overview>Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying. Video is never touched.</Overview>
+
+  <!-- NOTE: Either Support or Project is REQUIRED -->
+  <!-- Support forum -->
   <Support>https://github.com/thetvliam/remuxarr/issues</Support>
+
+  <!-- Project page -->
   <Project>https://github.com/thetvliam/remuxarr</Project>
-  <Overview>
-Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying. Video is never touched.
 
-Set your scan paths and preferred languages in Settings after first start. Dry run is on by default, so the first scan shows you exactly what would happen before anything real is touched.
-  </Overview>
-  <Category>MediaApp:Video Tools:Utilities</Category>
-  <WebUI>http://[IP]:[PORT:9191]/</WebUI>
+  <!-- Raw URL to this exact template file -->
   <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/templates/remuxarr.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/frontend/public/logo.svg</Icon>
-  <ExtraParams>--restart unless-stopped</ExtraParams>
-  <PostArgs/>
-  <DonateText/>
-  <DonateLink/>
-  <DonateImg/>
-  <Beta>false</Beta>
-  <Description>
-Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata — all through lossless stream copying.
-  </Description>
 
-  <!-- Persistent config + database -->
-  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config and database — must survive container updates/restarts" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
+  <!-- Readme first file -->
+  <ReadMe>https://raw.githubusercontent.com/thetvliam/remuxarr/main/README.md</ReadMe>
 
-  <!-- Media library — adjust to your own share paths -->
-  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/movies</Config>
-  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/tv</Config>
+  <!-- Optional Discord community URL -->
+  <!-- <Discord>https://discord.gg/YOUR_DISCORD_INVITE_CODE</Discord> -->
 
-  <!-- Temp staging for FFmpeg output before the final move. Unraid's own
-       /tmp is RAM-backed by default, so this host path avoids writing
-       intermediate files to your array during processing. -->
-  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory — leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
+  <!-- Optional Reddit community URL -->
+  <!-- <Reddit>https://www.reddit.com/r/YOUR_REDDIT_COMMUNITY</Reddit> -->
 
-  <!-- Web UI -->
-  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
+  <!-- Optional Facebook community URL -->
+  <!-- <Facebook>https://www.facebook.com/YOUR_FACEBOOK_PAGE</Facebook> -->
 
-  <!-- The one setting genuinely worth surfacing here — everything else
-       already matches this app's own built-in default, and is better
-       left to Settings in the web UI once it's running. -->
-  <Config Name="Webhook Debounce Seconds" Target="REMUXARR_WEBHOOK_DEBOUNCE_SECONDS" Default="10" Mode="" Description="Seconds to wait after the last Sonarr/Radarr webhook for a file before queuing it. Increase for very large season packs on slow disks." Type="Variable" Display="advanced" Required="false" Mask="false">10</Config>
+
+
+  <!-- Valid category entries can be generated from the Application Categorizer plugin available in Apps -->
+  <Category>Productivity MediaApp:Video Tools:Utilities</Category>
+
+  <!-- Optional extra app search terms -->
+  <ExtraSearchTerms>remux</ExtraSearchTerms>
+
+  <!-- Optional system requirements text -->
+  <!-- <Requires>Internet access for first run</Requires> -->
+
+  <!-- Optional changelog text -->
+  <!--<Changes>Initial release</Changes> -->
+
+  <!-- Optional date (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS) -->
+  <!--<Date>2026-01-01</Date> -->
+
+  <!-- Optional: set to true if this is a beta container -->
+  <!-- <Beta>true</Beta> -->
+
+  <!-- Minimum and maximum Unraid version.-->
+  <MinVer>6.1</MinVer>
+  <!-- <MaxVer>7.3</MaxVer>-->
+
+  <!-- Optionally set this if this container is deprecated for all OS versions -->
+  <!-- <Deprecated>true</Deprecated> -->
+
+  <!-- Optional: deprecate starting with a specific OS version -->
+  <!-- <DeprecatedMaxVer>7.2</DeprecatedMaxVer> -->
+
+  <!-- License of the container-->
+  <License>MIT</License>
+
+  <!-- Screenshots -->
+  <!-- You can add multiple screenshots by adding multiple <Screenshot> tags -->
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/screenshot.png</Screenshot>
+
+  <!-- Video. YouTube URLs are highly recommended -->
+  <!-- You can add multiple videos by adding multiple <Video> tags -->
+  <!-- <Video>https://www.youtube.com/watch?v=YOUR_YOUTUBE_VIDEO_ID</Video> -->
+
+  <!-- Optional release branch selectors -->
+  <!--
+  <DefaultTagDescription>Stable releases</DefaultTagDescription>
+  <Branch>
+  <Tag>main</Tag>
+  <TagDescription>Latest commits from main branch</TagDescription>
+  </Branch>
+  -->
+
+  <!-- v2 templates should define ports/paths/variables with Config entries -->
+  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false"/>
+  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory — leave under /tmp so it stays RAM-backed" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Webhook Debounce Seconds" Target="REMUXARR_WEBHOOK_DEBOUNCE_SECONDS" Default="10" Description="Seconds to wait after the last Sonarr/Radarr webhook for a file before queuing it. Increase for very large season packs on slow disks." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+
 </Container>
