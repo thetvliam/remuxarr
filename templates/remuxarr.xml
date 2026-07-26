@@ -1,4 +1,3 @@
-<?xml version="1.0"?>
 <Container version="2">
   <Name>Remuxarr</Name>
   <Repository>thetvliam/remuxarr:latest</Repository>
@@ -23,9 +22,12 @@
   <DonateText />
   <DonateLink />
   <Requires />
+  <License>MIT</License>
   <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
   <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
   <Config Name="Cache Directory" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="Location where task files are temporarily stored while workers are carrying out jobs on them." Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
   <Config Name="Library Movies" Target="/media/movies" Default="" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="false" Mask="false" />
   <Config Name="Library TV" Target="/media/tv" Default="" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="false" Mask="false" />
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
 </Container>
