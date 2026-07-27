@@ -2,30 +2,40 @@
 <Container version="2">
   <Name>Remuxarr</Name>
   <Repository>thetvliam/remuxarr:latest</Repository>
-  <Registry>https://hub.docker.com/r/thetvliam/remuxarr/</Registry>
+  <Registry>https://hub.docker.com/r/thetvliam/remuxarr</Registry>
   <Network>bridge</Network>
-  <MyIP />
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
+
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
+
+  <!-- The port here is the CONTAINER port, not the host port. -->
+  <WebUI>http://[IP]:[PORT:9191]</WebUI>
+
+  <Overview>
+    Cleans up a Sonarr/Radarr media library for better direct-play compatibility, without ever re-encoding video. Remuxes containers (MKV to MP4 when every track inside is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken or missing language metadata. Everything is done by lossless stream copy, so the video data itself is never touched.
+
+    Integrates with Sonarr, Radarr and Plex. After first start, set your library paths and preferred languages in Settings. Dry-run mode is on by default, so the first scan shows exactly what would happen to every file before anything is changed for real.
+  </Overview>
+
   <Support>https://github.com/thetvliam/remuxarr/issues</Support>
   <Project>https://github.com/thetvliam/remuxarr</Project>
-  <Overview>
-    Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata - all through lossless stream copying. Video is never touched.
-  </Overview>
-  <ExtraSearchTerms>remux auto automate ffmpeg sonarr radarr plex </ExtraSearchTerms>
-  <Category>Productivity: MediaApp:Video Status:Beta</Category>
-  <WebUI>http://[IP]:[PORT:9191]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/templates/remuxarr.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
-  <ExtraParams/>
-  <PostArgs />
-  <CPUset/>
-  <DonateText />
-  <DonateLink />
-  <Requires />
-  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="Web UI + API port" Type="Port" Display="always" Required="true" Mask="false">9191</Config>
-  <Config Name="Appdata" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent config files." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/remuxarr/config</Config>
-  <Config Name="Cache Directory" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="Location where task files are temporarily stored while workers are carrying out jobs on them." Type="Path" Display="always" Required="true" Mask="false">/tmp/remuxarr-temp</Config>
-  <Config Name="Library Movies" Target="/media/movies" Default="" Mode="rw" Description="Your movies library" Type="Path" Display="always" Required="false" Mask="false" />
-  <Config Name="Library TV" Target="/media/tv" Default="" Mode="rw" Description="Your TV library" Type="Path" Display="always" Required="false" Mask="false" />
+  <ReadMe>https://raw.githubusercontent.com/thetvliam/remuxarr/main/README.md</ReadMe>
+
+  <Category>MediaApp:Video Tools:Utilities</Category>
+
+  <!-- Web UI port -->
+  <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="HTTP port for the web UI and API." Type="Port" Display="always" Required="true" Mask="false"/>
+
+  <!-- Persistent config and database -->
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/remuxarr" Mode="rw" Description="Persistent settings and database. Must survive container updates." Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <!-- Media library -->
+  <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="TV Shows" Target="/media/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Your TV library." Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <!-- FFmpeg staging. Keep this under /tmp so it stays RAM-backed on Unraid
+  instead of writing intermediate files to the array during processing. -->
+  <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory. Keep under /tmp so it stays RAM-backed." Type="Path" Display="always" Required="true" Mask="false"/>
 </Container>
