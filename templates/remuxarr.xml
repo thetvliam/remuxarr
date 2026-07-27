@@ -9,8 +9,10 @@
   <Support>https://github.com/thetvliam/remuxarr/issues</Support>
   <Project>https://github.com/thetvliam/remuxarr</Project>
   <Overview>Cleans up a Sonarr/Radarr media library for better playback compatibility without ever re-encoding video. Remuxes containers, drops audio/subtitle tracks outside your kept languages, and fixes broken language metadata - all through lossless stream copying. Video is never touched.</Overview>
+  <Description>Remuxarr automatically manages your Sonarr and Radarr media libraries to maximize playback compatibility across your streaming devices without wasting CPU cycles on re-encoding. By leveraging lossless stream copying via ffmpeg, it remuxes video containers, strips unneeded audio or subtitle tracks outside your preferred languages, and corrects invalid language metadata. Since the underlying video stream is never transcoded, processing is incredibly fast and preserves 100% of the original visual quality.</Description>
+  <Beta>true</Beta>
   <ExtraSearchTerms>remux auto automate ffmpeg sonarr radarr plex</ExtraSearchTerms>
-  <Category>Productivity MediaApp:Video Status:Beta</Category>
+  <Category>MediaApp:Video Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:9191]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/templates/remuxarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
