@@ -1,16 +1,11 @@
 <?xml version="1.0"?>
 <CommunityApplications>
+  <!-- Required: non-empty Profile. Markdown is supported. -->
   <Profile>
-Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility — without ever re-encoding video. It remuxes containers (MKV → MP4 when every track is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken language metadata, all through lossless stream copying. Video is never touched. Integrates with Sonarr, Radarr, and Plex.
+    Remuxarr cleans up a Sonarr/Radarr media library for better direct-play compatibility, without ever re-encoding video. It remuxes containers (MKV to MP4 when every track inside is already compatible), drops audio and subtitle tracks outside your chosen languages, and fixes broken or missing language metadata. Everything is done by lossless stream copy, so the video data itself is never touched.
 
-This repository maintains a single application, Remuxarr. For bug reports, feature requests, and support, please open an issue on GitHub.
+    This repository maintains one application, Remuxarr. Support is handled through GitHub Issues, linked below.
   </Profile>
-  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/frontend/public/logo.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
   <WebPage>https://github.com/thetvliam/remuxarr</WebPage>
-  <!-- Optional support links — uncomment and fill in if/when you create them -->
-  <!-- <Forum>https://forums.unraid.net/topic/YOUR_SUPPORT_TOPIC</Forum> -->
-  <!-- <Discord>https://discord.gg/YOUR_INVITE_CODE</Discord> -->
-  <!-- Optional profile extras -->
-  <!-- <DonateLink>https://github.com/sponsors/thetvliam</DonateLink> -->
-  <!-- <DonateText>Support this project</DonateText> -->
 </CommunityApplications>
