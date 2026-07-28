@@ -45,18 +45,19 @@ This part is identical no matter how you deployed Remuxarr — it all happens
 in the web UI, not in Unraid itself.
 
 1. Open `http://<your-unraid-ip>:9191` (or whichever port you set above).
-2. Go to **Settings → Library** and set your scan paths — this is empty by
+2. Go to **Settings → Library & Processing → Library** and set your scan
+   paths — this is empty by
    default, deliberately, so nothing happens until you point it somewhere.
    Use the *container-side* paths: `/media/movies` and `/media/tv` (these
    are what the app itself sees, regardless of what your actual Unraid
    share paths are called).
 3. If you keep audio/subtitles in a language other than English, set that
-   in **Settings → Audio** / **Settings → Subtitles** — defaults to
-   English.
+   in **Settings → Library & Processing → Audio** / **→ Subtitles** —
+   defaults to English.
 4. Trigger a scan. **Dry run is on by default** — this first scan shows you
    exactly what would happen to every file, without touching anything.
 5. Review the **Dry Run** tab. Once the planned actions look right, turn
-   dry run off in **Settings → Library** — from here on, real processing
+   dry run off in **Settings → Worker** — from here on, real processing
    begins.
 6. Everything else — Sonarr/Radarr webhooks, Plex integration, email
    notifications — is off until you provide real connection details in

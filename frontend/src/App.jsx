@@ -17,7 +17,12 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => (
   <div
     onClick={onKeep}
     style={{
-      position: "fixed", inset: 0, zIndex: 100,
+      // Above every other layer, including the mobile header (600), its
+      // drawer (500) and the detail modal (1000). This dialog exists to
+      // block navigation, so anything rendering over it would defeat it —
+      // at z-index 100 the mobile header stayed tappable on top of the
+      // backdrop, letting nav buttons be used while the guard was open.
+      position: "fixed", inset: 0, zIndex: 1100,
       background: "rgba(0,0,0,0.66)",
       display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
     }}
