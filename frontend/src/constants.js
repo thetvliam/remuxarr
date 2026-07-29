@@ -1,26 +1,21 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * CONSTANTS & DESIGN TOKENS
+ * CONSTANTS
+ *
+ * Colour values moved to theme.js as `palette`. `C` is re-exported from
+ * there unchanged, so every existing `import { C } from "../constants"`
+ * keeps working while components migrate to the theme tokens one directory
+ * at a time. Nothing needs to change in a file until its turn comes.
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
+
+import { palette } from "./theme";
 
 // Derive the API base from whatever URL the page was loaded from.
 // This means it works correctly whether you access Remuxarr via IP, hostname,
 // or through a reverse proxy — no hardcoded localhost that only works locally.
 export const DEFAULT_API = `${window.location.protocol}//${window.location.host}`;
 
-export const C = {
-  bg:     "#07080b",
-  card:   "#0d0f14",
-  border: "#181b24",
-  text:   "#c4c8d8",
-  dim:    "#3a3f58",
-  muted:  "#5a607a",
-  amber:  "#e89a0a",
-  green:  "#1cb85e",
-  red:    "#d93535",
-  blue:   "#4080f0",
-  yellow: "#d4920a",
-  violet: "#9d6df0",
-};
+// Back-compat alias. New code should prefer `palette` from theme.js.
+export const C = palette;
 
 export const STATUS_COLOR = {
   pending:        C.dim,

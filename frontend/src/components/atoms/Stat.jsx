@@ -1,12 +1,21 @@
-import { C } from "../../constants";
+import { palette, type, legacy } from "../../theme";
 
 // Labelled stat cell
 export const Stat = ({ label, value, color }) => (
     <div>
-    <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.12em", marginBottom: 3 }}>
+    <div style={{
+        color: palette.dim,
+        fontSize: type.size.xs,
+        letterSpacing: type.tracking.wider,
+        marginBottom: legacy.statGapY,
+    }}>
     {label}
     </div>
-    <div style={{ color: color || C.text, fontSize: 12, fontWeight: 600 }}>
+    <div style={{
+        color: color || palette.text,
+        fontSize: type.size.base,
+        fontWeight: type.weight.semibold,
+    }}>
     {value ?? "—"}
     </div>
     </div>

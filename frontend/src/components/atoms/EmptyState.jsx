@@ -1,12 +1,12 @@
-import { C } from "../../constants";
+import { palette, type, legacy } from "../../theme";
 
 export const EmptyState = ({ msg }) => (
     <div style={{
-        padding: "38px 16px",
+        padding: `${legacy.emptyPadY}px ${legacy.emptyPadX}px`,
         textAlign: "center",
-        color: C.dim,
-        fontSize: 11,
-        letterSpacing: "0.06em",
+        color: palette.dim,
+        fontSize: type.size.md,
+        letterSpacing: type.tracking.snug,
     }}>
     {msg}
     </div>
