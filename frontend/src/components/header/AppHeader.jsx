@@ -251,43 +251,14 @@ export const AppHeader = ({
     {/* Logo mark only — no wordmark, saves space */}
     <Logo variant="mark" />
 
-    {/* Current page label. minWidth:0 + ellipsis so it yields space to the
-        controls on its right instead of pushing them off a narrow screen. */}
+    {/* Current page label */}
     <span style={{
       color: C.amber, fontSize: 9, fontWeight: 700,
       letterSpacing: "0.18em", flex: 1,
-      minWidth: 0, overflow: "hidden",
-      textOverflow: "ellipsis", whiteSpace: "nowrap",
     }}>
     {NAV_ITEMS.find(n => n.k === page)?.l ?? "REMUXARR"}
     {page === "review" && reviewCount > 0 ? ` (${reviewCount})` : ""}
     </span>
-
-    {/* Scan — kept in the always-visible row rather than the drawer. It's
-        the control reached for most often, and burying the app's primary
-        action two taps deep (open drawer, then tap) made it feel missing.
-        Doubles as the scan-in-progress indicator: while a scan runs it
-        shows live counts and becomes the cancel button, so mobile users
-        can see and stop a scan without opening anything. */}
-    <button
-    onClick={scanning ? onCancelScan : onTriggerScan}
-    title={scanning ? "Cancel the running scan" : "Scan library now"}
-    style={{
-      flexShrink: 0,
-      padding: "3px 8px",
-      background: scanning ? C.red + "18" : "transparent",
-      border: `1px solid ${scanning ? C.red : C.border}`,
-      color: scanning ? C.red : C.dim,
-      fontSize: 9, fontFamily: "inherit", fontWeight: 700,
-      letterSpacing: "0.08em", cursor: "pointer",
-      whiteSpace: "nowrap",
-      animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
-    }}
-    >
-    {scanning
-      ? (scanProgress ? `✕ ${scanProgress.scanned}/${scanProgress.total}` : "✕ STOP")
-      : "⟳ SCAN"}
-    </button>
 
     {/* WS status — compact */}
     <LED color={wsConnected ? C.green : C.red} pulse={wsConnected} size={7} />
@@ -318,27 +289,6 @@ export const AppHeader = ({
     </button>
     </header>
 
-    {/* API URL bar — its own row directly under the header, NOT inside the
-        drawer. It used to live in the drawer, so tapping ⚙ with the drawer
-        closed toggled state that nothing was rendering: the button looked
-        broken, and the input only appeared if you happened to open the
-        hamburger afterwards. Out here it behaves like the desktop layout —
-        ⚙ shows and hides it directly, drawer open or closed. */}
-    {showApiBar && (
-      <div style={{
-        padding: "10px 14px",
-        background: C.card,
-        borderBottom: `1px solid ${C.border}`,
-        position: "relative",
-        zIndex: 550,
-      }}>
-      <ApiBar
-      current={api}
-      onSave={(v) => { setApi(v); setShowApiBar(false); }}
-      />
-      </div>
-    )}
-
     {/* Drawer */}
     {drawerOpen && (
       <>
@@ -365,6 +315,16 @@ export const AppHeader = ({
         zIndex: 500,
         boxShadow: "0 4px 16px #00000066",
       }}>
+      {/* API bar (when open) */}
+      {showApiBar && (
+        <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}` }}>
+        <ApiBar
+        current={api}
+        onSave={(v) => { setApi(v); setShowApiBar(false); }}
+        />
+        </div>
+      )}
+
       {/* Nav links */}
       {NAV_ITEMS.map(n => {
         const active = page === n.k;
@@ -443,9 +403,25 @@ export const AppHeader = ({
       {workerPaused ? "▶ RESUME  — tap to resume processing" : "⏸ PAUSE  — tap to pause after current job"}
       </button>
 
-      {/* No Scan row here — scanning moved to the always-visible header row,
-          so duplicating it in the drawer would just be two controls for the
-          same action. */}
+      {/* Scan */}
+      <button
+      onClick={() => {
+        if (scanning) { onCancelScan(); }
+        else { onTriggerScan(); closeDrawer(); }
+      }}
+      style={{
+        padding: "10px 14px", textAlign: "left",
+        background: "transparent",
+        border: `1px solid ${scanning ? C.red : C.border}`,
+        color: scanning ? C.red : C.dim,
+        fontSize: 10, fontFamily: "inherit",
+        letterSpacing: "0.1em",
+        cursor: "pointer",
+        animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
+      }}
+      >
+      {scanLabel}
+      </button>
       </div>
       </div>
       </>
