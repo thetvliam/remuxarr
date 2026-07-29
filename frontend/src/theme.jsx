@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -43,8 +43,8 @@ export const alpha = (color, amount) => {
   }
   const base = color.length > 7 ? color.slice(0, 7) : color;
   const hex  = Math.round(Math.max(0, Math.min(1, amount)) * 255)
-    .toString(16)
-    .padStart(2, "0");
+  .toString(16)
+  .padStart(2, "0");
   return `${base}${hex}`;
 };
 
@@ -89,7 +89,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -143,6 +143,29 @@ const terminal = {
     badgeFallbackBg: "#111",
     badgeRadius: 0,
     barHeight: 3,
+    /* bars/ */
+    miniBarGap:    1,
+    segBarGap:     2,
+    segBarHeight:  13,
+    /* layout/ */
+    panelHeadPadY:  7,
+    panelHeadPadX:  14,
+    panelCountPadX: 5,
+    toastOffset:      20,
+    toastPadY:        8,
+    toastPadX:        14,
+    toastAccent:      3,
+    toastMinW:        210,
+    toastMaxW:        360,
+    toastLine:        1.5,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    activePadY:  14,
+    accentWidth: 3,
+    dryRunBg:    "#1a1400",
+    abortPadY:   3,
+    abortPadX:   11,
+    ledSizeLg:   8,
   },
 };
 
@@ -151,7 +174,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -205,6 +228,29 @@ const soft = {
     badgeFallbackBg: "#1d2029",
     badgeRadius: 4,
     barHeight: 4,
+    /* bars/ */
+    miniBarGap:    2,
+    segBarGap:     3,
+    segBarHeight:  14,
+    /* layout/ */
+    panelHeadPadY:  10,
+    panelHeadPadX:  16,
+    panelCountPadX: 7,
+    toastOffset:      24,
+    toastPadY:        11,
+    toastPadX:        16,
+    toastAccent:      3,
+    toastMinW:        230,
+    toastMaxW:        380,
+    toastLine:        1.55,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    activePadY:  18,
+    accentWidth: 3,
+    dryRunBg:    "#241d06",
+    abortPadY:   5,
+    abortPadX:   14,
+    ledSizeLg:   9,
   },
 };
 
@@ -245,8 +291,8 @@ export const ThemeProvider = ({ children }) => {
 
   const value = useMemo(() => ({
     ...(themes[themeId] || terminal),
-    themeId,
-    setThemeId,
+                               themeId,
+                               setThemeId,
   }), [themeId]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

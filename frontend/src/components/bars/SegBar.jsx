@@ -1,25 +1,27 @@
-import { C } from "../../constants";
+import { useTheme } from "../../theme";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SEGMENTED PROGRESS BAR  (VU-meter aesthetic)
  * Colour shifts green → amber → red as it fills up.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const SegBar = ({ value = 0, segments = 50, height = 13 }) => {
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+export const SegBar = ({ value = 0, segments = 50, height }) => {
+    const { palette, legacy } = useTheme();
+    const px     = height ?? legacy.segBarHeight;
     const filled = Math.round((Math.min(100, value) / 100) * segments);
     return (
-        <div style={{ display: "flex", gap: 2 }}>
+        <div style={{ display: "flex", gap: legacy.segBarGap }}>
         {Array.from({ length: segments }, (_, i) => {
             const on    = i < filled;
             const frac  = i / segments;
             const color = on
-            ? frac > 0.86 ? C.red
-            : frac > 0.62 ? C.amber
-            : C.green
-            : C.border;
+            ? frac > 0.86 ? palette.red
+            : frac > 0.62 ? palette.amber
+            : palette.green
+            : palette.border;
             return (
                 <div
                 key={i}
-                style={{ flex: 1, height, background: color, transition: "background 0.06s" }}
+                style={{ flex: 1, height: px, background: color, transition: "background 0.06s" }}
                 />
             );
         })}

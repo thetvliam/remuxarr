@@ -1,27 +1,33 @@
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtDur, fmtRel } from "../../utils";
 import { LED } from "../atoms/LED";
 import { Stat } from "../atoms/Stat";
 import { SegBar } from "../bars/SegBar";
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
-═══════════════════════════════════════════════════════════════════════════ */
+ * ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = false }) => {
+  const { palette, type, space, radius, legacy } = useTheme();
+
   if (!job && !transitioning) {
     return (
       <div style={{
-        padding: "16px 24px",
-        background: C.card,
-        borderBottom: `1px solid ${C.border}`,
+        padding: `${space.xl}px ${space.huge}px`,
+        background: palette.card,
+        borderBottom: `1px solid ${palette.border}`,
         display: "flex",
         alignItems: "center",
-        gap: 12,
+        gap: space.lg,
       }}>
-        <LED color={C.dim} size={8} />
-        <span style={{ color: C.dim, fontSize: 12, letterSpacing: "0.06em" }}>
-          WORKER IDLE — no active job
-        </span>
+      <LED color={palette.dim} size={legacy.ledSizeLg} />
+      <span style={{
+        color: palette.dim,
+        fontSize: type.size.base,
+        letterSpacing: type.tracking.snug,
+      }}>
+      WORKER IDLE — no active job
+      </span>
       </div>
     );
   }
@@ -38,94 +44,105 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
 
   return (
     <div style={{
-      padding: "14px 24px",
-      background: C.card,
-      borderBottom: `1px solid ${C.border}`,
-      borderLeft: `3px solid ${transitioning ? C.dim : C.amber}`,
+      padding: `${legacy.activePadY}px ${space.huge}px`,
+      background: palette.card,
+      borderBottom: `1px solid ${palette.border}`,
+      borderLeft: `${legacy.accentWidth}px solid ${transitioning ? palette.dim : palette.amber}`,
     }}>
-      {/* Row 1 — status labels */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <LED color={transitioning ? C.dim : C.amber} pulse={!transitioning} size={8} />
-        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
-          {transitioning ? "PICKING UP NEXT ITEM…" : "PROCESSING"}
-        </span>
-        {!transitioning && job.is_dry_run && (
-          <span style={{
-            padding: "1px 6px",
-            background: "#1a1400",
-            border: `1px solid ${C.yellow}55`,
-            color: C.yellow,
-            fontSize: 9,
-            letterSpacing: "0.1em",
-          }}>
-            DRY RUN
-          </span>
-        )}
-        <span style={{ marginLeft: "auto", color: C.muted, fontSize: 11 }}>
-          {transitioning ? "—" : (job.current_action || "—")}
-        </span>
-        {!transitioning && onAbort && (
-          <button
-            onClick={() => onAbort(job.id)}
-            title="Cancel this file and pause auto-start"
-            style={{
-              padding: "3px 11px",
-              background: "transparent",
-              border: `1px solid ${C.red}`,
-              color: C.red,
-              fontSize: 9,
-              fontFamily: "inherit",
-              fontWeight: 700,
-              letterSpacing: "0.1em",
-              cursor: "pointer",
-              flexShrink: 0,
-            }}
-          >
-            ■ ABORT
-          </button>
-        )}
-      </div>
+    {/* Row 1 — status labels */}
+    <div style={{ display: "flex", alignItems: "center", gap: space.md, marginBottom: space.md }}>
+    <LED
+    color={transitioning ? palette.dim : palette.amber}
+    pulse={!transitioning}
+    size={legacy.ledSizeLg}
+    />
+    <span style={{
+      color: palette.dim,
+      fontSize: type.size.xs,
+      letterSpacing: type.tracking.max,
+      fontWeight: type.weight.bold,
+    }}>
+    {transitioning ? "PICKING UP NEXT ITEM…" : "PROCESSING"}
+    </span>
+    {!transitioning && job.is_dry_run && (
+      <span style={{
+        padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+        background: legacy.dryRunBg,
+        border: `1px solid ${alpha(palette.yellow, ALPHA.heavy)}`,
+                                          borderRadius: legacy.badgeRadius,
+                                          color: palette.yellow,
+                                          fontSize: type.size.xs,
+                                          letterSpacing: type.tracking.wide,
+      }}>
+      DRY RUN
+      </span>
+    )}
+    <span style={{ marginLeft: "auto", color: palette.muted, fontSize: type.size.md }}>
+    {transitioning ? "—" : (job.current_action || "—")}
+    </span>
+    {!transitioning && onAbort && (
+      <button
+      onClick={() => onAbort(job.id)}
+      title="Cancel this file and pause auto-start"
+      style={{
+        padding: `${legacy.abortPadY}px ${legacy.abortPadX}px`,
+        background: "transparent",
+        border: `1px solid ${palette.red}`,
+        borderRadius: radius.sm,
+        color: palette.red,
+        fontSize: type.size.xs,
+        fontFamily: type.family,
+        fontWeight: type.weight.bold,
+        letterSpacing: type.tracking.wide,
+        cursor: "pointer",
+        flexShrink: 0,
+      }}
+      >
+      ■ ABORT
+      </button>
+    )}
+    </div>
 
-      {/* Row 2 — filename */}
+    {/* Row 2 — filename */}
+    <div style={{
+      color: transitioning ? palette.dim : palette.text,
+      fontSize: type.size.xl,
+      fontWeight: type.weight.semibold,
+      marginBottom: space.xxs,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    }}>
+    {transitioning ? "Waiting for the next queued file…" : (f.filename || "Unknown file")}
+    </div>
+
+    {/* Row 3 — path (hidden on mobile — filename is enough) */}
+    {!isMobile && (
       <div style={{
-        color: transitioning ? C.dim : C.text,
-        fontSize: 14,
-        fontWeight: 600,
-        marginBottom: 4,
+        color: palette.dim,
+        fontSize: type.size.md,
+        marginBottom: space.lg,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
       }}>
-        {transitioning ? "Waiting for the next queued file…" : (f.filename || "Unknown file")}
+      {transitioning ? "" : (f.path || "")}
       </div>
+    )}
 
-      {/* Row 3 — path (hidden on mobile — filename is enough) */}
-      {!isMobile && (
-        <div style={{
-          color: C.dim,
-          fontSize: 11,
-          marginBottom: 12,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}>
-          {transitioning ? "" : (f.path || "")}
-        </div>
-      )}
+    {/* Progress bar */}
+    <div style={{ marginTop: isMobile ? space.sm : 0, marginBottom: 0 }}>
+    <SegBar value={pct} />
+    </div>
 
-      {/* Progress bar */}
-      <div style={{ marginTop: isMobile ? 8 : 0, marginBottom: 0 }}>
-        <SegBar value={pct} />
-      </div>
-
-      {/* Row 4 — stats: all 5 on desktop, PROGRESS + SIZE only on mobile */}
-      <div style={{ display: "flex", gap: 28, marginTop: 10 }}>
-        <Stat label="PROGRESS"  value={transitioning ? "—" : `${pct.toFixed(1)}%`} color={transitioning ? C.dim : C.amber} />
-        <Stat label="SIZE"      value={transitioning ? "—" : fmtSize(f.size)} />
-        {!isMobile && <Stat label="DURATION"  value={transitioning ? "—" : fmtDur(f.duration)} />}
-        {!isMobile && <Stat label="CONTAINER" value={transitioning ? "—" : ((f.container || "").toUpperCase() || "—")} />}
-        {!isMobile && <Stat label="STARTED"   value={transitioning ? "—" : fmtRel(job.started_at)} />}
-      </div>
+    {/* Row 4 — stats: all 5 on desktop, PROGRESS + SIZE only on mobile */}
+    <div style={{ display: "flex", gap: space.max, marginTop: space.md }}>
+    <Stat label="PROGRESS"  value={transitioning ? "—" : `${pct.toFixed(1)}%`} color={transitioning ? palette.dim : palette.amber} />
+    <Stat label="SIZE"      value={transitioning ? "—" : fmtSize(f.size)} />
+    {!isMobile && <Stat label="DURATION"  value={transitioning ? "—" : fmtDur(f.duration)} />}
+    {!isMobile && <Stat label="CONTAINER" value={transitioning ? "—" : ((f.container || "").toUpperCase() || "—")} />}
+    {!isMobile && <Stat label="STARTED"   value={transitioning ? "—" : fmtRel(job.started_at)} />}
+    </div>
     </div>
   );
 };
