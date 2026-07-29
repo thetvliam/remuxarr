@@ -166,6 +166,13 @@ const terminal = {
     abortPadY:   3,
     abortPadX:   11,
     ledSizeLg:   8,
+    rowPadX:       14,
+    queueRowPadY:  9,
+    rowLabelGapY:  3,
+    ledSizeSm:     6,
+    clearPadY:     2,
+    clearPadX:     9,
+    rowHoverBg:    "#ffffff07",
   },
 };
 
@@ -251,6 +258,13 @@ const soft = {
     abortPadY:   5,
     abortPadX:   14,
     ledSizeLg:   9,
+    rowPadX:       16,
+    queueRowPadY:  12,
+    rowLabelGapY:  4,
+    ledSizeSm:     7,
+    clearPadY:     4,
+    clearPadX:     11,
+    rowHoverBg:    "#ffffff0a",
   },
 };
 
