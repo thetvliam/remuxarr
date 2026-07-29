@@ -58,6 +58,7 @@ export const ALPHA = {
   soft:   0.078,  // was "14"
   low:    0.094,  // was "18"
   medium: 0.133,  // was "22"
+  half:   0.533,  // was "88"
   strong: 0.267,  // was "44"
   heavy:  0.333,  // was "55"
 };
@@ -173,6 +174,8 @@ const terminal = {
     clearPadY:     2,
     clearPadX:     9,
     rowHoverBg:    "#ffffff07",
+    tabPadY:       2,
+    tabPadX:       10,
   },
 };
 
@@ -265,6 +268,8 @@ const soft = {
     clearPadY:     4,
     clearPadX:     11,
     rowHoverBg:    "#ffffff0a",
+    tabPadY:       4,
+    tabPadX:       13,
   },
 };
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { C, STATUS_COLOR } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtRel, fmtCount, formatBytesSaved } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
@@ -8,8 +8,9 @@ import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * HISTORY ROW
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
+  const { palette, type, space, radius, legacy, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
   const f      = item.file || {};
   const ok     = item.status === "success";
@@ -25,20 +26,20 @@ const HistoryRow = ({ item, onSelect }) => {
       display: "block",
       width: "100%",
       textAlign: "left",
-      padding: "9px 14px",
-      background: hover ? "#ffffff07" : "transparent",
+      padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+      background: hover ? legacy.rowHoverBg : "transparent",
       border: "none",
-      borderBottom: `1px solid ${C.border}`,
+      borderBottom: `1px solid ${palette.border}`,
       cursor: "pointer",
-      fontFamily: "inherit",
+      fontFamily: type.family,
     }}
     >
-    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-    <LED color={STATUS_COLOR[item.status] || C.dim} size={6} />
+    <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: legacy.rowLabelGapY }}>
+    <LED color={statusColor[item.status] || palette.dim} size={6} />
     <span style={{
-      color: C.text,
-      fontSize: 12,
-      fontWeight: 500,
+      color: palette.text,
+      fontSize: type.size.base,
+      fontWeight: type.weight.medium,
       flex: 1,
       overflow: "hidden",
       textOverflow: "ellipsis",
@@ -48,26 +49,26 @@ const HistoryRow = ({ item, onSelect }) => {
     </span>
     {dryRun && (
       <span style={{
-        padding: "1px 6px",
-        background: C.violet + "18",
-        border: `1px solid ${C.violet}44`,
-        color: C.violet,
-        fontSize: 9,
-        letterSpacing: "0.1em",
-        flexShrink: 0,
+        padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+        background: alpha(palette.violet, ALPHA.low),
+                border: `1px solid ${alpha(palette.violet, ALPHA.strong)}`,
+                color: palette.violet,
+                fontSize: type.size.xs,
+                letterSpacing: type.tracking.wide,
+                flexShrink: 0,
       }}>
       PREVIEW
       </span>
     )}
-    <span style={{ color: C.dim, fontSize: 9, flexShrink: 0 }}>
+    <span style={{ color: palette.dim, fontSize: type.size.xs, flexShrink: 0 }}>
     {fmtRel(item.completed_at)}
     </span>
     </div>
 
-    <div style={{ paddingLeft: 14 }}>
+    <div style={{ paddingLeft: legacy.rowPadX }}>
     {dryRun && (
       <span style={{
-        color: C.muted, fontSize: 10,
+        color: palette.muted, fontSize: type.size.sm,
         overflow: "hidden", textOverflow: "ellipsis",
         whiteSpace: "nowrap", display: "block",
       }}>
@@ -76,20 +77,20 @@ const HistoryRow = ({ item, onSelect }) => {
     )}
     {ok && bs ? (
       bs.isPositive ? (
-        <span style={{ color: C.green, fontSize: 10 }}>
+        <span style={{ color: palette.green, fontSize: type.size.sm }}>
         −{bs.sizeText} ({bs.pctDisplay}%)
         </span>
       ) : bs.isNegative ? (
-        <span style={{ color: C.dim, fontSize: 10 }}>+{bs.sizeText} overhead</span>
+        <span style={{ color: palette.dim, fontSize: type.size.sm }}>+{bs.sizeText} overhead</span>
       ) : (
-        <span style={{ color: C.muted, fontSize: 10 }}>no size change</span>
+        <span style={{ color: palette.muted, fontSize: type.size.sm }}>no size change</span>
       )
     ) : ok ? (
-      <span style={{ color: C.muted, fontSize: 10 }}>processed</span>
+      <span style={{ color: palette.muted, fontSize: type.size.sm }}>processed</span>
     ) : null}
     {item.status === "skipped" && (
       <span style={{
-        color: C.dim, fontSize: 10,
+        color: palette.dim, fontSize: type.size.sm,
         overflow: "hidden", textOverflow: "ellipsis",
         whiteSpace: "nowrap", display: "block",
       }}>
@@ -98,7 +99,7 @@ const HistoryRow = ({ item, onSelect }) => {
     )}
     {!ok && !dryRun && item.status !== "skipped" && (
       <span style={{
-        color: C.red, fontSize: 10,
+        color: palette.red, fontSize: type.size.sm,
         overflow: "hidden", textOverflow: "ellipsis",
         whiteSpace: "nowrap", display: "block",
       }}>
@@ -115,8 +116,9 @@ const HistoryRow = ({ item, onSelect }) => {
  * Self-fetching: receives api + historyRefreshKey instead of a pre-loaded
  * items array.  useHistoryData handles pagination; IntersectionObserver
  * triggers loadMore when the scroll sentinel comes into view.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
+  const { palette, type, space, radius, legacy, statusColor } = useTheme();
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -174,10 +176,10 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
   const tabs = (
     <div style={{ display: "flex", alignItems: "center" }}>
     {[
-      ["success", C.green],
-      ["skipped", C.muted],
-      ["failed",  C.red],
-      ["dry_run", C.violet],
+      ["success", palette.green],
+      ["skipped", palette.muted],
+      ["failed",  palette.red],
+      ["dry_run", palette.violet],
     ].map(([key, color]) => {
       const n       = counts[key] || 0;
       const label   = key === "dry_run" ? "DRY RUN" : key.toUpperCase();
@@ -188,14 +190,14 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         onClick={() => switchTab(key)}
         title={tooltip}
         style={{
-          padding: "2px 10px",
+          padding: `${legacy.tabPadY}px ${legacy.tabPadX}px`,
           background: tab === key ? `${color}18` : "transparent",
-          border: `1px solid ${tab === key ? color : C.border}`,
+          border: `1px solid ${tab === key ? color : palette.border}`,
           borderRight: "none",
-          color: tab === key ? color : C.dim,
-          fontSize: 9,
-          fontFamily: "inherit",
-          letterSpacing: "0.1em",
+          color: tab === key ? color : palette.dim,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.wide,
           cursor: "pointer",
         }}
         >
@@ -206,7 +208,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         </button>
       );
     })}
-    <div style={{ width: 1, background: C.border }} />
+    <div style={{ width: 1, background: palette.border }} />
 
     {tab === "failed" && counts.failed > 0 && !debouncedSearch && (
       <button
@@ -214,13 +216,13 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       title="Re-probe and re-queue every failed and cancelled item"
       style={{
         marginLeft: 8,
-        padding: "2px 9px",
+        padding: `${legacy.clearPadY}px ${legacy.clearPadX}px`,
         background: "transparent",
-        border: `1px solid ${C.amber}`,
-        color: C.amber,
-        fontSize: 9,
-        fontFamily: "inherit",
-        letterSpacing: "0.1em",
+        border: `1px solid ${palette.amber}`,
+        color: palette.amber,
+        fontSize: type.size.xs,
+        fontFamily: type.family,
+        letterSpacing: type.tracking.wide,
         cursor: "pointer",
       }}
       >
@@ -234,13 +236,13 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       title="Discard every dry-run preview — none of these files will be processed"
       style={{
         marginLeft: 8,
-        padding: "2px 9px",
+        padding: `${legacy.clearPadY}px ${legacy.clearPadX}px`,
         background: "transparent",
-        border: `1px solid ${C.violet}`,
-        color: C.violet,
-        fontSize: 9,
-        fontFamily: "inherit",
-        letterSpacing: "0.1em",
+        border: `1px solid ${palette.violet}`,
+        color: palette.violet,
+        fontSize: type.size.xs,
+        fontFamily: type.family,
+        letterSpacing: type.tracking.wide,
         cursor: "pointer",
       }}
       >
@@ -261,8 +263,8 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
     {/* Search — always visible so the user can search immediately */}
     <div style={{
-      padding: "6px 12px",
-      borderBottom: `1px solid ${C.border}`,
+      padding: `${space.xs}px ${space.lg}px`,
+      borderBottom: `1px solid ${palette.border}`,
       flexShrink: 0,
     }}>
     <input
@@ -271,13 +273,13 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
     placeholder="Search all history by filename…"
     style={{
       width: "100%",
-      padding: "4px 8px",
-      background: C.bg,
-      border: `1px solid ${search ? C.amber + "88" : C.border}`,
-      color: C.text,
-      fontSize: 11,
-      fontFamily: "inherit",
-      outline: "none",
+      padding: `${space.xxs}px ${space.sm}px`,
+      background: palette.bg,
+      border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
+          color: palette.text,
+          fontSize: type.size.md,
+          fontFamily: type.family,
+          outline: "none",
     }}
     />
     </div>
@@ -302,17 +304,17 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
       {/* Infinite scroll sentinel */}
       {hasMore && (
-        <div ref={sentinelRef} style={{ padding: "8px 14px" }}>
+        <div ref={sentinelRef} style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
         {loading && (
-          <span style={{ color: C.dim, fontSize: 10 }}>Loading…</span>
+          <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
         )}
         </div>
       )}
 
       {/* End-of-list indicator */}
       {!hasMore && items.length > 0 && (
-        <div style={{ padding: "8px 14px" }}>
-        <span style={{ color: C.dim, fontSize: 10 }}>
+        <div style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
+        <span style={{ color: palette.dim, fontSize: type.size.sm }}>
         {debouncedSearch
           ? `${total.toLocaleString()} result${total === 1 ? "" : "s"}`
           : `${items.length.toLocaleString()} item${items.length === 1 ? "" : "s"}`
@@ -325,8 +327,8 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
     {/* Loading spinner for first-page load */}
     {items.length === 0 && loading && (
-      <div style={{ padding: "16px 14px" }}>
-      <span style={{ color: C.dim, fontSize: 10 }}>Loading…</span>
+      <div style={{ padding: `${space.xl}px ${legacy.rowPadX}px` }}>
+      <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
       </div>
     )}
     </div>
