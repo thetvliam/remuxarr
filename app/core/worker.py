@@ -1582,6 +1582,82 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
         return refresh_data
 
 
+def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
+    """
+    Plex notification parameters for a completed AC3 Forge job — the forge
+    counterpart to _load_plex_notify_data.
+
+    Forge REPLACES a file in place with a changed audio layout, so Plex's
+    stored stream metadata goes stale the instant the job finishes: the AC3
+    track the user just created isn't in Plex's index, and clients won't be
+    offered it. Since bitstreaming that track to a receiver is the entire
+    point of the feature, having no notification here made a perfectly
+    successful forge look like it had done nothing at all. The main
+    pipeline notified Plex after every job; this path never did.
+
+    Sonarr/Radarr are deliberately NOT notified. Forge neither renames nor
+    moves the file, so their databases stay correct, and Ac3ForgeJob
+    carries no *arr IDs to notify with — forge jobs are user-initiated
+    from the Forge page, not webhook-originated.
+
+    Returns the same {url, token, mappings, local_path} payload
+    _trigger_plex_notify expects, or None when Plex is off or unconfigured.
+    """
+    from app.database.models import Ac3ForgeJob
+
+    with SessionLocal() as db:
+        job = db.get(Ac3ForgeJob, forge_job_id)
+        if not job:
+            return None
+        media = db.get(MediaFile, job.file_id)
+        if not media:
+            return None
+
+        cfg = get_app_settings(db)
+        if not cfg.get("plex_enabled", False):
+            return None
+
+        url   = (cfg.get("plex_url") or "").rstrip("/")
+        token = cfg.get("plex_token") or ""
+        if not url or not token:
+            logger.warning(
+                "Plex notification skipped for forge job %d: plex_url or "
+                "plex_token not configured",
+                forge_job_id,
+            )
+            return None
+
+        mappings = cfg.get("plex_path_mappings", [])
+        if not mappings:
+            logger.warning(
+                "Plex notification skipped for forge job %d: no "
+                "plex_path_mappings configured",
+                forge_job_id,
+            )
+            return None
+
+        # An audio track appearing or disappearing is precisely the case
+        # the backlog exists for: a plain refresh often won't make Plex
+        # re-read stream metadata, and the whole point of forging AC3 is
+        # that the track becomes visible to the client. Queue the deeper
+        # Analyze when the user has opted into it. No expected_language —
+        # forge changes the codec layout, not language tags.
+        if cfg.get("plex_analyze_backlog_enabled", False):
+            db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
+            db.commit()
+            logger.info(
+                "Plex: queued %s for backlog analyze after forge job %d",
+                media.path, forge_job_id,
+            )
+
+        return {
+            "url":        url,
+            "token":      token,
+            "mappings":   mappings,
+            "local_path": media.path,
+        }
+
+
 async def _trigger_plex_notify(data: dict, loop: asyncio.AbstractEventLoop) -> None:
     """
     Fire-and-forget task that fires the immediate lightweight refresh.
@@ -1856,5 +1932,18 @@ async def _process_next_forge(ws_manager) -> bool:
             "filename": final["filename"],
             "error":    final.get("error"),
         })
+
+        # Tell Plex the file changed on disk. "success" means an AC3 track
+        # was added, "undone" means it was removed — both rewrite the file
+        # in place, so Plex's indexed stream metadata is stale either way
+        # and the change won't reach clients until Plex re-reads it.
+        # Fire-and-forget, exactly as the main pipeline does it: a Plex
+        # outage must never mark an otherwise-successful forge job failed.
+        if final["status"] in ("success", "undone"):
+            plex_data = await loop.run_in_executor(
+                None, _load_forge_plex_notify_data, job_id
+            )
+            if plex_data:
+                asyncio.create_task(_trigger_plex_notify(plex_data, loop))
 
     return True
