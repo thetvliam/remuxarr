@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -104,7 +104,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -124,6 +124,11 @@ const terminalPalette = {
 const terminal = {
   id:    "terminal",
   label: "Terminal",
+  blurb: "Dense and sharp. Wide letter-spacing, square corners, tight rows.",
+  /* Loaded by ThemeProvider when this theme is active. A theme whose
+   * type.root names a webfont has to bring that font with it, or the stack
+   * silently falls through to whatever the OS supplies. */
+  fontHref: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap",
   palette: terminalPalette,
   statusColor: buildStatusColor(terminalPalette),
   levelColor: buildLevelColor(terminalPalette),
@@ -220,7 +225,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -240,6 +245,8 @@ const softPalette = {
 const soft = {
   id:    "soft",
   label: "Soft",
+  blurb: "Roomier and rounder. Larger type, tight tracking, generous padding.",
+  fontHref: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
   palette: softPalette,
   statusColor: buildStatusColor(softPalette),
   levelColor: buildLevelColor(softPalette),
@@ -353,6 +360,20 @@ export const ThemeProvider = ({ children }) => {
     document.body.style.color      = t.palette.text;
   }, [themeId]);
 
+  /* Each theme brings its own webfont. This lives here rather than with the
+   * app's other one-time <head> setup because it changes with the theme:
+   * loading only the default theme's font left any other theme's type.root
+   * falling through to whatever the OS happened to supply. */
+  useEffect(() => {
+    const href = (themes[themeId] || terminal).fontHref;
+    if (!href) return;
+    const link = document.createElement("link");
+    link.rel  = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+    return () => { document.head.removeChild(link); };
+  }, [themeId]);
+
   const value = useMemo(() => ({
     ...(themes[themeId] || terminal),
                                themeId,
@@ -362,12 +383,8 @@ export const ThemeProvider = ({ children }) => {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
-/* Default-theme values for modules that cannot use a hook (plain .js
- * helpers, and components not yet migrated). These do NOT follow theme
- * changes — anything importing them still renders in the default theme,
- * which is why migration needs to finish rather than stopping half-done. */
-export const palette = terminal.palette;
-export const type    = terminal.type;
-export const radius  = terminal.radius;
-export const space   = terminal.space;
-export const legacy  = terminal.legacy;
+/* There are deliberately no static value exports here. They existed so that
+ * unmigrated components could keep working, and they were frozen: anything
+ * importing them rendered in the default theme no matter what the user
+ * picked. Migration is finished, nothing imports them, and re-adding one
+ * would silently opt a component out of theming. Use useTheme(). */

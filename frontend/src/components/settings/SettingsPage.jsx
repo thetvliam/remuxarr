@@ -3,6 +3,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
 import { DangerZone } from "./DangerZone";
+import { AppearanceSection } from "./AppearanceSection";
 import { BackupRestoreSection } from "./BackupRestoreSection";
 import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
@@ -20,6 +21,7 @@ const CATEGORIES = [
 { id: "notifications", label: "Notifications",        groups: ["Email"] },
 { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
 { id: "backup",        label: "Backup & Danger Zone", custom: "backup" },
+{ id: "appearance",    label: "Appearance",           custom: "appearance" },
 ];
 const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
 const STORAGE_KEY = "remuxarr.settingsCategory";
@@ -534,6 +536,9 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
         <DangerZone api={api} toast={toast} />
         </>
       );
+    }
+    if (cat.custom === "appearance") {
+      return <AppearanceSection />;
     }
     if (schema.length === 0) {
       return (

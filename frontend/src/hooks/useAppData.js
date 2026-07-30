@@ -184,13 +184,8 @@ export function useAppData() {
    * mount-only effect they stayed on whichever theme was active at load,
    * leaving the page background behind while everything else moved. */
   useEffect(() => {
-    // Google Font
-    const link    = document.createElement("link");
-    link.rel      = "stylesheet";
-    link.href     = "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap";
-    document.head.appendChild(link);
-
-    // Theme-independent resets + keyframes
+    // Theme-independent resets + keyframes. The webfont is not here: it
+    // varies per theme, so ThemeProvider owns it.
     const style       = document.createElement("style");
     style.textContent = `
     *, *::before, *::after { box-sizing: border-box; }
