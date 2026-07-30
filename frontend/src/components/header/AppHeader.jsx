@@ -86,7 +86,7 @@ export const AppHeader = ({
   wsConnected,
   isMobile,
 }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, legacy } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -127,8 +127,8 @@ export const AppHeader = ({
           background: "transparent",
           border: "none",
           borderBottom: page === n.k
-          ? `2px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
-          : "2px solid transparent",
+          ? `${legacy.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
+          : `${legacy.accentThin}px solid transparent`,
           color: page === n.k
           ? (n.alertable && reviewCount > 0 ? palette.yellow : palette.amber)
           : palette.dim,
@@ -226,7 +226,7 @@ export const AppHeader = ({
 
         {/* WS status */}
         <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
-        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={7} />
+        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
         <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
         {wsConnected ? "LIVE" : "OFFLINE"}
         </span>
@@ -292,7 +292,7 @@ export const AppHeader = ({
           </button>
 
           {/* WS status — compact */}
-          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={7} />
+          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
 
           {/* ⚙ API */}
           <button
@@ -313,7 +313,7 @@ export const AppHeader = ({
             color: drawerOpen ? palette.amber : palette.dim,
             fontSize: type.size.h1, cursor: "pointer",
             padding: `0 ${space.xxs}px`, fontFamily: type.family,
-            lineHeight: 1,
+            lineHeight: type.leading.none,
           }}
           >
           {drawerOpen ? "✕" : "☰"}
@@ -365,7 +365,7 @@ export const AppHeader = ({
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
                 zIndex: 500,
-                boxShadow: "0 4px 16px #00000066",
+                boxShadow: legacy.drawerShadow,
               }}>
               {/* Nav links */}
               {NAV_ITEMS.map(n => {
@@ -382,7 +382,7 @@ export const AppHeader = ({
                     padding: `${legacy.drawerPadY}px ${legacy.drawerPadX}px`,
                     background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
                         border: "none",
-                        borderLeft: `3px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
+                        borderLeft: `${legacy.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
                         borderBottom: `1px solid ${palette.border}`,
                         color: active ? (alert ? palette.yellow : palette.amber) : palette.dim,
                         fontSize: type.size.md,

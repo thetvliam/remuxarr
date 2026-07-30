@@ -209,6 +209,8 @@ const terminal = {
     drawerPadY:    13,
     drawerPadX:    18,
     scrimBg:       "#00000066",
+    drawerShadow:  "0 4px 16px #00000066",
+    scrollbarW:    3,
     logoInk:       "#000",
     /* Thin active-state accent stroke: mobile tab underline, settings nav
      * item left border, modal top border. Distinct from accentWidth (3). */
@@ -369,6 +371,8 @@ const soft = {
     drawerPadY:    15,
     drawerPadX:    20,
     scrimBg:       "#00000073",
+    drawerShadow:  "0 6px 24px #0000004d",
+    scrollbarW:    5,
     logoInk:       "#000",
     /* Thin active-state accent stroke: mobile tab underline, settings nav
      * item left border, modal top border. Distinct from accentWidth (3). */

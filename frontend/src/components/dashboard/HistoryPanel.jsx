@@ -8,9 +8,9 @@ import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * HISTORY ROW
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
-  const { palette, type, space, radius, legacy, statusColor } = useTheme();
+  const { palette, type, space, legacy, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
   const f      = item.file || {};
   const ok     = item.status === "success";
@@ -35,7 +35,7 @@ const HistoryRow = ({ item, onSelect }) => {
     }}
     >
     <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: legacy.rowLabelGapY }}>
-    <LED color={statusColor[item.status] || palette.dim} size={6} />
+    <LED color={statusColor[item.status] || palette.dim} size={legacy.ledSizeSm} />
     <span style={{
       color: palette.text,
       fontSize: type.size.base,
@@ -116,9 +116,9 @@ const HistoryRow = ({ item, onSelect }) => {
  * Self-fetching: receives api + historyRefreshKey instead of a pre-loaded
  * items array.  useHistoryData handles pagination; IntersectionObserver
  * triggers loadMore when the scroll sentinel comes into view.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
-  const { palette, type, space, radius, legacy, statusColor } = useTheme();
+  const { palette, type, space, legacy } = useTheme();
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -191,14 +191,14 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         title={tooltip}
         style={{
           padding: `${legacy.tabPadY}px ${legacy.tabPadX}px`,
-          background: tab === key ? `${color}18` : "transparent",
-          border: `1px solid ${tab === key ? color : palette.border}`,
-          borderRight: "none",
-          color: tab === key ? color : palette.dim,
-          fontSize: type.size.xs,
-          fontFamily: type.family,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
+          background: tab === key ? alpha(color, ALPHA.low) : "transparent",
+              border: `1px solid ${tab === key ? color : palette.border}`,
+              borderRight: "none",
+              color: tab === key ? color : palette.dim,
+              fontSize: type.size.xs,
+              fontFamily: type.family,
+              letterSpacing: type.tracking.wide,
+              cursor: "pointer",
         }}
         >
         {label}

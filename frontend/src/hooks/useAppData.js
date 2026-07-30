@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DEFAULT_API, C } from "../constants";
+import { DEFAULT_API } from "../constants";
+import { useTheme } from "../theme";
 import { basename } from "../utils";
 import { useWebSocket } from "./useWebSocket";
 import { useBreakpoint } from "./useBreakpoint";
@@ -32,8 +33,9 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
+  const { palette, legacy } = useTheme();
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
   // read the current page without a stale closure.
@@ -176,6 +178,11 @@ export function useAppData() {
   }, []);
 
   /* ── Global CSS injection ─────────────────────────────────────────────── */
+  /* Split in two on purpose. The font link, title and keyframes never change,
+   * so they mount once. The background and scrollbar colours come from the
+   * palette, so they have to be re-applied when the theme switches — as one
+   * mount-only effect they stayed on whichever theme was active at load,
+   * leaving the page background behind while everything else moved. */
   useEffect(() => {
     // Google Font
     const link    = document.createElement("link");
@@ -183,14 +190,12 @@ export function useAppData() {
     link.href     = "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap";
     document.head.appendChild(link);
 
-    // Global resets + keyframes
+    // Theme-independent resets + keyframes
     const style       = document.createElement("style");
     style.textContent = `
     *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: ${C.bg}; }
-    ::-webkit-scrollbar        { width: 3px; }
+    html, body { margin: 0; height: 100%; }
     ::-webkit-scrollbar-track  { background: transparent; }
-    ::-webkit-scrollbar-thumb  { background: ${C.border}; }
     @keyframes ledPulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
     @keyframes toastIn  { from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:none} }
     @keyframes modalIn  { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
@@ -198,6 +203,18 @@ export function useAppData() {
     document.head.appendChild(style);
     document.title = "Remuxarr";
   }, []);
+
+  /* ── Theme-dependent global CSS ───────────────────────────────────────── */
+  useEffect(() => {
+    const style       = document.createElement("style");
+    style.textContent = `
+    html, body { background: ${palette.bg}; }
+    ::-webkit-scrollbar        { width: ${legacy.scrollbarW}px; }
+    ::-webkit-scrollbar-thumb  { background: ${palette.border}; }
+    `;
+    document.head.appendChild(style);
+    return () => { document.head.removeChild(style); };
+  }, [palette.bg, palette.border, legacy.scrollbarW]);
 
   /* ── Toast helper ─────────────────────────────────────────────────────── */
   const toast = useCallback((msg, color) => {
@@ -297,16 +314,16 @@ export function useAppData() {
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
               : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
-                  msg.status === "success" ? C.green
-                  : msg.status === "dry_run" ? C.violet
-                  : C.red,
+                  msg.status === "success" ? palette.green
+                  : msg.status === "dry_run" ? palette.violet
+                  : palette.red,
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
             break;
 
           case "file_queued":
-            toast(`Queued: ${basename(msg.file_path)}`, C.blue);
+            toast(`Queued: ${basename(msg.file_path)}`, palette.blue);
             fetchAll();
             break;
 
@@ -329,7 +346,7 @@ export function useAppData() {
               (msg.cancelled ? "Scan stopped — " : "Scan complete — ") +
               `${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
               (msg.removed ? `, ${msg.removed} removed` : ""),
-                  C.amber,
+                  palette.amber,
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
@@ -340,7 +357,7 @@ export function useAppData() {
               msg.removed === 0
               ? "Cleanup complete — no stale entries found"
               : `Cleanup complete — ${msg.removed} stale ${msg.removed === 1 ? "entry" : "entries"} removed`,
-              C.blue,
+              palette.blue,
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
@@ -361,9 +378,9 @@ export function useAppData() {
             toast(
               `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
-                  msg.status === "success" ? C.green
-                  : msg.status === "undone" ? C.blue
-                  : C.red,
+                  msg.status === "success" ? palette.green
+                  : msg.status === "undone" ? palette.blue
+                  : palette.red,
             );
             fetchForge();
             setForgeRefreshKey(k => k + 1);
