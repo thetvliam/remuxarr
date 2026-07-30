@@ -24,7 +24,7 @@ export const ForgeActivePanel = ({ job }) => {
 
     return (
         <div style={{
-            padding: `${legacy.activePadY}px ${space.huge}px`, background: palette.card,
+            padding: `${space.xl}px ${space.huge}px`, background: palette.card,
             borderBottom: `1px solid ${palette.border}`,
             borderLeft: `${legacy.accentWidth}px solid ${palette.blue}`,
         }}>

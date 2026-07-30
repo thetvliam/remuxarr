@@ -11,7 +11,7 @@ const CONFIRM_PHRASE = "REPLACE DATABASE";
  * elsewhere — the stakes here are meaningfully higher than anything
  * else in this file. ──────────────────────────────────────────────────── */
 export const FullBackupSection = ({ api, toast }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [pendingFile,    setPendingFile]    = useState(null);
   const [confirmText,    setConfirmText]    = useState("");
@@ -63,7 +63,7 @@ export const FullBackupSection = ({ api, toast }) => {
   // before the user actually restarts.
   if (restartNeeded) {
     return (
-      <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+      <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
       <div style={{
         padding: space.xxl,
         border: `1px solid ${palette.yellow}`,
@@ -91,7 +91,7 @@ export const FullBackupSection = ({ api, toast }) => {
   const canImport = !!pendingFile && confirmText === CONFIRM_PHRASE;
 
   return (
-    <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
     <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
     FULL DATABASE BACKUP &amp; RESTORE
     </div>
@@ -106,7 +106,7 @@ export const FullBackupSection = ({ api, toast }) => {
     {/* Export */}
     <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
     <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
     Export Full Backup
     </div>
     <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
@@ -121,7 +121,7 @@ export const FullBackupSection = ({ api, toast }) => {
     <button
     onClick={handleExport}
     style={{
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${palette.blue}`,
       color: palette.blue,
@@ -140,7 +140,7 @@ export const FullBackupSection = ({ api, toast }) => {
 
     {/* Import */}
     <div style={{ padding: `${space.xl}px 0` }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
     Import Full Backup
     </div>
     <div style={{ color: palette.red, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.lg }}>
@@ -185,7 +185,7 @@ export const FullBackupSection = ({ api, toast }) => {
     onClick={handleImport}
     disabled={!canImport || importing}
     style={{
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: canImport ? alpha(palette.red, ALPHA.medium) : "transparent",
           border: `1px solid ${canImport ? palette.red : palette.muted}`,
           color: canImport ? palette.red : palette.muted,

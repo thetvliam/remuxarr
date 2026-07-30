@@ -6,7 +6,7 @@ import { useTheme } from "../../theme";
 // about, since several components take a `type` prop. The external API is
 // unchanged: callers still write <ActionBadge type={...} />.
 export const ActionBadge = ({ type: actionType }) => {
-    const { palette, type, legacy, actionCfg } = useTheme();
+    const { palette, type, space, radius, legacy, actionCfg } = useTheme();
     const cfg = actionCfg[actionType] || {
         bg: legacy.badgeFallbackBg,
         border: palette.border,
@@ -16,10 +16,10 @@ export const ActionBadge = ({ type: actionType }) => {
     return (
         <span style={{
             display: "inline-block",
-            padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+            padding: `${space.hair}px ${space.xs}px`,
             background: cfg.bg,
             border: `1px solid ${cfg.border}`,
-            borderRadius: legacy.badgeRadius,
+            borderRadius: radius.none,
             color: cfg.text,
             fontSize: type.size.xs,
             fontFamily: type.family,

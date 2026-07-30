@@ -105,14 +105,14 @@ export const AppHeader = ({
         height: legacy.headerHeight,
         display: "flex",
         alignItems: "center",
-        padding: `0 ${legacy.drawerPadX}px`,
+        padding: `0 ${space.xxl}px`,
         background: palette.card,
         borderBottom: `1px solid ${palette.border}`,
         flexShrink: 0,
         gap: 0,
       }}>
       {/* Logo — icon + wordmark lockup */}
-      <div style={{ display: "flex", alignItems: "center", marginRight: legacy.headerLogoGap }}>
+      <div style={{ display: "flex", alignItems: "center", marginRight: space.huge }}>
       <Logo variant="full" />
       </div>
 
@@ -123,7 +123,7 @@ export const AppHeader = ({
         onClick={() => setPage(n.k)}
         style={{
           height: legacy.headerHeight,
-          padding: `0 ${legacy.rowPadX}px`,
+          padding: `0 ${space.xl}px`,
           background: "transparent",
           border: "none",
           borderBottom: page === n.k
@@ -160,13 +160,13 @@ export const AppHeader = ({
         background: "none", border: "none",
         color: showApiBar ? palette.amber : palette.dim,
         fontSize: type.size.xl, cursor: "pointer",
-        padding: `0 ${legacy.panelCountPadX + 2}px`, fontFamily: type.family,
+        padding: `0 ${space.xs + 2}px`, fontFamily: type.family,
       }}
       >⚙</button>
 
       {/* Dry-run */}
       <button onClick={onToggleDryRun} style={{
-        padding: `${legacy.navPadY}px ${legacy.navPadX}px`, marginRight: space.sm,
+        padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
         background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
             color: dryRun ? palette.yellow : palette.dim,
@@ -182,7 +182,7 @@ export const AppHeader = ({
         ? "Auto-start enabled — files process immediately after a scan"
         : "Auto-start disabled — files queue but won't process until you click Resume"}
         style={{
-          padding: `${legacy.navPadY}px ${legacy.navPadX}px`, marginRight: space.sm,
+          padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
             color: autoStart ? palette.dim : palette.blue,
@@ -197,7 +197,7 @@ export const AppHeader = ({
         onClick={onTogglePause}
         title={workerPaused ? "Resume processing" : "Pause processing — finish the current job then stop"}
         style={{
-          padding: `${legacy.navPadY}px ${legacy.navPadX}px`, marginRight: space.sm,
+          padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
             color: workerPaused ? palette.yellow : palette.dim,
@@ -212,7 +212,7 @@ export const AppHeader = ({
         <button
         onClick={scanning ? onCancelScan : onTriggerScan}
         style={{
-          padding: `${legacy.navPadY}px ${space.lg}px`, marginRight: space.xl,
+          padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
           background: "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
           color: scanning ? palette.red : palette.dim,
@@ -243,7 +243,7 @@ export const AppHeader = ({
       height: legacy.headerHeight,
       display: "flex",
       alignItems: "center",
-      padding: `0 ${legacy.rowPadX}px`,
+      padding: `0 ${space.xl}px`,
       background: palette.card,
       borderBottom: `1px solid ${palette.border}`,
       gap: space.sm,
@@ -276,7 +276,7 @@ export const AppHeader = ({
         title={scanning ? "Cancel the running scan" : "Scan library now"}
         style={{
           flexShrink: 0,
-          padding: `${legacy.navPadY}px ${space.sm}px`,
+          padding: `${space.xxs}px ${space.sm}px`,
           background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
           color: scanning ? palette.red : palette.dim,
@@ -328,7 +328,7 @@ export const AppHeader = ({
             ⚙ shows and hides it directly, drawer open or closed. */}
             {showApiBar && (
               <div style={{
-                padding: `${space.md}px ${legacy.rowPadX}px`,
+                padding: `${space.md}px ${space.xl}px`,
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
                 position: "relative",
@@ -379,7 +379,7 @@ export const AppHeader = ({
                     display: "block",
                     width: "100%",
                     textAlign: "left",
-                    padding: `${legacy.drawerPadY}px ${legacy.drawerPadX}px`,
+                    padding: `${space.lg}px ${space.xxl}px`,
                     background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
                         border: "none",
                         borderLeft: `${legacy.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
@@ -398,12 +398,12 @@ export const AppHeader = ({
               })}
 
               {/* Action controls */}
-              <div style={{ padding: `${space.md}px ${legacy.rowPadX}px`, display: "flex", flexDirection: "column", gap: space.sm }}>
+              <div style={{ padding: `${space.md}px ${space.xl}px`, display: "flex", flexDirection: "column", gap: space.sm }}>
               {/* Dry run */}
               <button
               onClick={() => { onToggleDryRun(); closeDrawer(); }}
               style={{
-                padding: `${space.md}px ${legacy.rowPadX}px`, textAlign: "left",
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
                             color: dryRun ? palette.yellow : palette.dim,
@@ -418,7 +418,7 @@ export const AppHeader = ({
               <button
               onClick={() => { onToggleAutoStart(); closeDrawer(); }}
               style={{
-                padding: `${space.md}px ${legacy.rowPadX}px`, textAlign: "left",
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
                             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
                             color: autoStart ? palette.dim : palette.blue,
@@ -433,7 +433,7 @@ export const AppHeader = ({
               <button
               onClick={() => { onTogglePause(); closeDrawer(); }}
               style={{
-                padding: `${space.md}px ${legacy.rowPadX}px`, textAlign: "left",
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
                             color: workerPaused ? palette.yellow : palette.dim,

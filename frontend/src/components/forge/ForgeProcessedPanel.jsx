@@ -41,7 +41,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             display: "flex",
             alignItems: "center",
             gap: space.md,
-            padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+            padding: `${space.md}px ${space.xl}px`,
             background: hover ? legacy.rowHoverBg : "transparent",
             borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",

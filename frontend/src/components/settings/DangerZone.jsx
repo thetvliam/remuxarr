@@ -7,7 +7,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * the backend endpoint only deletes from the scan-state tables.
  * Requires a second click within 4 seconds to confirm. ──────────────────── */
 export const DangerZone = ({ api, toast }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space } = useTheme();
     const [confirming, setConfirming] = useState(false);
     const [clearing,   setClearing]   = useState(false);
 
@@ -44,7 +44,7 @@ export const DangerZone = ({ api, toast }) => {
     };
 
     return (
-        <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+        <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
         <div style={{ color: palette.red, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
         DANGER ZONE
         </div>
@@ -56,7 +56,7 @@ export const DangerZone = ({ api, toast }) => {
             padding: `${space.xl}px 0`,
         }}>
         <div style={{ flex: 1 }}>
-        <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+        <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
         Clear Database
         </div>
         <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
@@ -71,7 +71,7 @@ export const DangerZone = ({ api, toast }) => {
         onClick={handleClick}
         disabled={clearing}
         style={{
-            padding: `${space.xs}px ${legacy.actionPadX}px`,
+            padding: `${space.xs}px ${space.xl}px`,
             background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
             border: `1px solid ${palette.red}`,
             color: palette.red,

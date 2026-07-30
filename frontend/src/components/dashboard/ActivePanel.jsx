@@ -6,7 +6,7 @@ import { SegBar } from "../bars/SegBar";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = false }) => {
   const { palette, type, space, radius, legacy } = useTheme();
 
@@ -44,7 +44,7 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
 
   return (
     <div style={{
-      padding: `${legacy.activePadY}px ${space.huge}px`,
+      padding: `${space.xl}px ${space.huge}px`,
       background: palette.card,
       borderBottom: `1px solid ${palette.border}`,
       borderLeft: `${legacy.accentWidth}px solid ${transitioning ? palette.dim : palette.amber}`,
@@ -66,10 +66,10 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
     </span>
     {!transitioning && job.is_dry_run && (
       <span style={{
-        padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+        padding: `${space.hair}px ${space.xs}px`,
         background: legacy.dryRunBg,
         border: `1px solid ${alpha(palette.yellow, ALPHA.heavy)}`,
-                                          borderRadius: legacy.badgeRadius,
+                                          borderRadius: radius.none,
                                           color: palette.yellow,
                                           fontSize: type.size.xs,
                                           letterSpacing: type.tracking.wide,
@@ -85,7 +85,7 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
       onClick={() => onAbort(job.id)}
       title="Cancel this file and pause auto-start"
       style={{
-        padding: `${legacy.abortPadY}px ${legacy.abortPadX}px`,
+        padding: `${space.xxs}px ${space.lg}px`,
         background: "transparent",
         border: `1px solid ${palette.red}`,
         borderRadius: radius.sm,

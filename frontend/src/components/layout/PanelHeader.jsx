@@ -6,9 +6,9 @@ import { fmtCount } from "../../utils";
  * count can be a number or a pre-formatted string (e.g. "3/47" for a
  * filtered queue view).  Numbers ≥ 1000 are abbreviated (19k, 19.5k) and
  * receive a native title tooltip with the exact localised value.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const PanelHeader = ({ label, count, right }) => {
-    const { palette, type, space, radius, legacy } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     const isNum   = typeof count === "number";
     const display = isNum ? fmtCount(count) : (count ?? "");
     const tooltip = isNum && count >= 1000 ? count.toLocaleString() + " items" : undefined;
@@ -18,7 +18,7 @@ export const PanelHeader = ({ label, count, right }) => {
             display: "flex",
             alignItems: "center",
             gap: space.sm,
-            padding: `${legacy.panelHeadPadY}px ${legacy.panelHeadPadX}px`,
+            padding: `${space.sm}px ${space.xl}px`,
             background: palette.card,
             borderBottom: `1px solid ${palette.border}`,
             flexShrink: 0,
@@ -34,7 +34,7 @@ export const PanelHeader = ({ label, count, right }) => {
         <span
         title={tooltip}
         style={{
-            padding: `0 ${legacy.panelCountPadX}px`,
+            padding: `0 ${space.xs}px`,
             border: `1px solid ${palette.border}`,
             borderRadius: radius.sm,
             color: palette.muted,

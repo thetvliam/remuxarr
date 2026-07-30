@@ -22,7 +22,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
             display: "flex",
             alignItems: "center",
             gap: space.md,
-            padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+            padding: `${space.md}px ${space.xl}px`,
             background: hover ? legacy.rowHoverBg : "transparent",
             borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
@@ -40,7 +40,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
         </div>
         <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
         <span style={{
-            padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+            padding: `${space.hair}px ${space.xs}px`,
             background: alpha(palette.amber, ALPHA.low),
             border: `1px solid ${alpha(palette.amber, ALPHA.strong)}`,
             color: palette.amber, fontSize: type.size.xs,
@@ -80,7 +80,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
  * ensures refreshKey changes always produce a clean, up-to-date list.
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space } = useTheme();
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -115,7 +115,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
         <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
         {/* Search bar */}
         <div style={{
-            padding: `${space.sm}px ${legacy.rowPadX}px`,
+            padding: `${space.sm}px ${space.xl}px`,
             background: palette.card,
             borderBottom: `1px solid ${palette.border}`,
             flexShrink: 0,
@@ -126,7 +126,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
         placeholder="Search all candidates by filename…"
         style={{
             width: "100%",
-            padding: `${legacy.inputPadY}px ${space.md}px`,
+            padding: `${space.xs}px ${space.md}px`,
             background: palette.bg,
             border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
             color: palette.text,
@@ -157,7 +157,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
 
             {/* Infinite scroll sentinel */}
             {hasMore && (
-                <div ref={sentinelRef} style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
+                <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.xl}px` }}>
                 {loading && (
                     <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
                 )}
@@ -166,7 +166,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
 
             {/* End-of-list indicator */}
             {!hasMore && items.length > 0 && (
-                <div style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
+                <div style={{ padding: `${space.sm}px ${space.xl}px` }}>
                 <span style={{ color: palette.dim, fontSize: type.size.sm }}>
                 {debouncedSearch
                     ? `${total.toLocaleString()} result${total === 1 ? "" : "s"}`
@@ -180,7 +180,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
 
         {/* Loading spinner for first-page load */}
         {items.length === 0 && loading && (
-            <div style={{ padding: `${space.xl}px ${legacy.rowPadX}px` }}>
+            <div style={{ padding: `${space.xl}px ${space.xl}px` }}>
             <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
             </div>
         )}

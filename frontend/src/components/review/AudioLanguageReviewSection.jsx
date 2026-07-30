@@ -113,7 +113,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
     };
 
     return (
-        <div style={{ marginTop: legacy.sectionGapY }}>
+        <div style={{ marginTop: space.xxxl }}>
         {/* Section header — visually distinct from the manual-review list above */}
         <div style={{
             display: "flex",
@@ -137,7 +137,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         {total}
         </span>
         </div>
-        <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${legacy.descGapY}px`, lineHeight: type.leading.relaxed }}>
+        <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
         Files whose kept audio track has a language tag that doesn't match
         your preferred languages — e.g. an English show mistagged with a
         different language. These files are already fully processed and
@@ -161,7 +161,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         placeholder="Search by filename…"
         style={{
             flex: "1 1 200px",
-            padding: `${legacy.inputPadY}px ${space.md}px`,
+            padding: `${space.xs}px ${space.md}px`,
             background: palette.bg,
             border: `1px solid ${search ? alpha(palette.blue, ALPHA.half) : palette.border}`,
             color: palette.text,
@@ -177,7 +177,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         title="ISO 639-2/B language code to apply to selected files"
         style={{
             width: 70,
-            padding: `${legacy.inputPadY}px ${space.sm}px`,
+            padding: `${space.xs}px ${space.sm}px`,
             background: palette.bg,
             border: `1px solid ${palette.border}`,
             color: palette.text,
@@ -263,7 +263,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
                 </span>
                 <span style={{
                     flexShrink: 0,
-                    padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+                    padding: `${space.hair}px ${space.xs}px`,
                     background: alpha(palette.yellow, ALPHA.low),
                                 border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
                                 color: palette.yellow,

@@ -2,13 +2,13 @@ import { useTheme } from "../../theme";
 
 // Small action button
 export const Btn = ({ label, color, bg, onClick, disabled }) => {
-    const { palette, type, radius, legacy } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     return (
         <button
         onClick={onClick}
         disabled={disabled}
         style={{
-            padding: `${legacy.btnPadY}px ${legacy.btnPadX}px`,
+            padding: `${space.xs}px ${space.lg}px`,
             background: bg || "transparent",
             border: `1px solid ${disabled ? palette.dim : color}`,
             borderRadius: radius.sm,

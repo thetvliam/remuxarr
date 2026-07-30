@@ -18,7 +18,7 @@ export const ApiBar = ({ current, onSave }) => {
         autoFocus
         style={{
             width: legacy.apiBarW,
-            padding: `${legacy.navPadY}px ${space.sm}px`,
+            padding: `${space.xxs}px ${space.sm}px`,
             background: palette.bg,
             border: `1px solid ${palette.border}`,
             color: palette.text,

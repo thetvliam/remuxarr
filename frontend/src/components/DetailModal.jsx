@@ -89,7 +89,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     >
     {/* Header */}
     <div style={{
-      padding: `${space.lg}px ${legacy.modalPadX}px`,
+      padding: `${space.lg}px ${space.xxl}px`,
       borderBottom: `1px solid ${palette.border}`,
       display: "flex",
       alignItems: "center",
@@ -128,7 +128,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
 
       {/* File meta row */}
       <div style={{
-        padding: `${space.lg}px ${legacy.modalPadX}px`,
+        padding: `${space.lg}px ${space.xxl}px`,
         borderBottom: `1px solid ${palette.border}`,
         display: "flex",
         gap: space.huge,
@@ -154,8 +154,8 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       </div>
 
       {/* Reason */}
-      <div style={{ padding: `${space.md}px ${legacy.modalPadX}px`, borderBottom: `1px solid ${palette.border}` }}>
-      <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: legacy.labelGapY }}>
+      <div style={{ padding: `${space.md}px ${space.xxl}px`, borderBottom: `1px solid ${palette.border}` }}>
+      <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: space.xs }}>
       REASON
       </div>
       <div style={{ color: palette.text, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
@@ -164,7 +164,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       </div>
 
       {/* Planned actions — the key "why" breakdown */}
-      <div style={{ flex: 1, overflowY: "auto", padding: `${space.lg}px ${legacy.modalPadX}px` }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: `${space.lg}px ${space.xxl}px` }}>
       <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: space.md }}>
       PLANNED ACTIONS
       </div>
@@ -182,7 +182,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
               display: "flex",
               alignItems: "flex-start",
               gap: space.md,
-              marginBottom: legacy.subGapY,
+              marginBottom: space.sm,
               padding: `${space.sm}px ${space.md}px`,
               background: cfg.bg,
               border: `1px solid ${cfg.border}`,
@@ -201,11 +201,11 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       {/* Error (failed items only) */}
       {item.error_message && (
         <div style={{
-          padding: `${space.md}px ${legacy.modalPadX}px`,
+          padding: `${space.md}px ${space.xxl}px`,
           borderTop: `1px solid ${palette.border}`,
           background: legacy.errorBg,
         }}>
-        <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: legacy.labelGapY }}>
+        <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: space.xs }}>
         ERROR
         </div>
         <div style={{
@@ -223,7 +223,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
 
       {/* Full path footer */}
       <div style={{
-        padding: `${legacy.modalFootPadY}px ${legacy.modalPadX}px`,
+        padding: `${space.sm}px ${space.xxl}px`,
         borderTop: `1px solid ${palette.border}`,
         overflow: "hidden",
       }}>
@@ -241,7 +241,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       {/* Action buttons — only shown for terminal states */}
       {(onRetry || onDismiss) && (
         <div style={{
-          padding: `${space.md}px ${legacy.modalPadX}px`,
+          padding: `${space.md}px ${space.xxl}px`,
           borderTop: `1px solid ${palette.border}`,
           display: "flex",
           gap: space.sm,

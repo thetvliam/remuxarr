@@ -3,13 +3,13 @@ import { useTheme } from "../../theme";
 /* ═══════════════════════════════════════════════════════════════════════════
  * SEGMENTED PROGRESS BAR  (VU-meter aesthetic)
  * Colour shifts green → amber → red as it fills up.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const SegBar = ({ value = 0, segments = 50, height }) => {
-    const { palette, legacy } = useTheme();
+    const { palette, space, legacy } = useTheme();
     const px     = height ?? legacy.segBarHeight;
     const filled = Math.round((Math.min(100, value) / 100) * segments);
     return (
-        <div style={{ display: "flex", gap: legacy.segBarGap }}>
+        <div style={{ display: "flex", gap: space.hair }}>
         {Array.from({ length: segments }, (_, i) => {
             const on    = i < filled;
             const frac  = i / segments;

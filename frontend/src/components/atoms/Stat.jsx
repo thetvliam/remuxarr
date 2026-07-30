@@ -2,14 +2,14 @@ import { useTheme } from "../../theme";
 
 // Labelled stat cell
 export const Stat = ({ label, value, color }) => {
-    const { palette, type, legacy } = useTheme();
+    const { palette, type, space } = useTheme();
     return (
         <div>
         <div style={{
             color: palette.dim,
             fontSize: type.size.xs,
             letterSpacing: type.tracking.wider,
-            marginBottom: legacy.statGapY,
+            marginBottom: space.xxs,
         }}>
         {label}
         </div>

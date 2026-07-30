@@ -14,7 +14,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 // format nothing else hinted at). Fields with no schema placeholder fall
 // back to a neutral prompt rather than an example from an unrelated setting.
 export const TagInput = ({ values, onChange, normalize = true, placeholder = "" }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space } = useTheme();
     const [draft, setDraft] = useState("");
 
     const add = () => {
@@ -30,7 +30,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
     return (
         <div style={{ width: 220 }}>
         {/* Existing tags */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: space.xxs, marginBottom: legacy.subGapY }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: space.xxs, marginBottom: space.sm }}>
         {values.map(v => (
             <span
             key={v}
@@ -38,7 +38,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
                 display: "inline-flex",
                 alignItems: "center",
                 gap: space.xxs,
-                padding: `${legacy.tagPadY}px ${legacy.tagPadX}px`,
+                padding: `${space.hair}px ${space.sm}px`,
                 background: alpha(palette.blue, ALPHA.low),
                           border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
                           color: palette.blue,

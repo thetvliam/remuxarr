@@ -26,13 +26,13 @@ const STORAGE_KEY = "remuxarr.settingsCategory";
 
 /* ── Section header ─────────────────────────────────────────────────────── */
 const SectionHeader = ({ label, first }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   return (
     <div style={{
       display: "flex",
       alignItems: "center",
       gap: space.md,
-      margin: first ? `${space.xxs}px 0 0` : `${legacy.sectionGapY}px 0 0`,
+      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
       paddingBottom: space.sm,
       borderBottom: `1px solid ${palette.border}`,
     }}>
@@ -45,7 +45,7 @@ const SectionHeader = ({ label, first }) => {
 
 /* ── Test connection button ─────────────────────────────────────────────── */
 const TestConnectionButton = ({ api, service }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [state,  setState]  = useState("idle");   // idle | loading | ok | err
   const [result, setResult] = useState("");
 
@@ -83,7 +83,7 @@ const TestConnectionButton = ({ api, service }) => {
     onClick={run}
     disabled={state === "loading"}
     style={{
-      padding: `${legacy.inputPadY}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
           border: `1px solid ${color}`,
           color,
@@ -107,7 +107,7 @@ const TestConnectionButton = ({ api, service }) => {
 
 /* ── Plex Analyze backlog status ────────────────────────────────────────── */
 const PlexBacklogStatus = ({ api }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [count, setCount] = useState(null);
 
   useEffect(() => {
@@ -130,7 +130,7 @@ const PlexBacklogStatus = ({ api }) => {
       padding: `${space.md}px 0 ${space.xxs}px`, color: palette.muted, fontSize: type.size.md,
     }}>
     <span style={{
-      padding: `${legacy.chipPadY}px ${legacy.chipPadX}px`,
+      padding: `${space.hair}px ${space.sm}px`,
       background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
           border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
           color: count > 0 ? palette.amber : palette.dim,
@@ -195,7 +195,7 @@ const EmailBreakerStatus = ({ api }) => {
  * pointer moves down the list, and it stays visible on mobile, where there
  * is no hover to discover it with. */
 const FieldRow = ({ field, value, onChange, isMobile }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [open,  setOpen]  = useState(false);
   const [hover, setHover] = useState(false);
 
@@ -205,12 +205,12 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
   const hintColor = active ? palette.amber : palette.dim;
 
   return (
-    <div style={{ padding: `${legacy.fieldRowPadY}px 0`, borderBottom: `1px solid ${palette.border}` }}>
+    <div style={{ padding: `${space.lg}px 0`, borderBottom: `1px solid ${palette.border}` }}>
     <div style={{
       display: "flex",
       flexDirection: isMobile ? "column" : "row",
       alignItems: "flex-start",
-      gap: isMobile ? legacy.mobileFieldGap : space.huge,
+      gap: isMobile ? space.md : space.huge,
     }}>
     <div style={{ flex: 1, minWidth: 0 }}>
     <button
@@ -266,7 +266,7 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
         color: palette.muted,
         fontSize: type.size.md,
         lineHeight: type.leading.relaxed,
-        marginTop: legacy.subGapY,
+        marginTop: space.sm,
         paddingRight: isMobile ? 0 : 14,
       }}>
       {field.description}
@@ -274,7 +274,7 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
     )}
     </div>
 
-    <div style={{ flexShrink: 0, paddingTop: legacy.nudge }}>
+    <div style={{ flexShrink: 0, paddingTop: space.hair }}>
     <SettingInput field={field} value={value} onChange={onChange} />
     </div>
     </div>
@@ -295,7 +295,7 @@ const NavSidebar = ({ active, onSelect, dirty }) => {
       display: "flex",
       flexDirection: "column",
       gap: space.hair,
-      paddingRight: legacy.navPadR,
+      paddingRight: space.xxl,
       borderRight: `1px solid ${palette.border}`,
     }}>
     {CATEGORIES.map(c => {
@@ -306,7 +306,7 @@ const NavSidebar = ({ active, onSelect, dirty }) => {
         onClick={() => onSelect(c.id)}
         style={{
           textAlign: "left",
-          padding: `${legacy.navItemPadY}px ${space.lg}px`,
+          padding: `${space.md}px ${space.lg}px`,
           background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
               border: "none",
               borderLeft: `${legacy.accentThin}px solid ${on ? palette.amber : "transparent"}`,
@@ -324,7 +324,7 @@ const NavSidebar = ({ active, onSelect, dirty }) => {
       );
     })}
     {dirty && (
-      <div style={{ marginTop: legacy.navUnsavedGapY, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
       ● UNSAVED
       </div>
     )}
@@ -333,7 +333,7 @@ const NavSidebar = ({ active, onSelect, dirty }) => {
 };
 
 const NavDropdown = ({ active, onSelect }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   return (
     <select
     value={active}
@@ -341,7 +341,7 @@ const NavDropdown = ({ active, onSelect }) => {
     style={{
       flex: 1,
       minWidth: 0,
-      padding: `${legacy.navItemPadY}px ${space.md}px`,
+      padding: `${space.md}px ${space.md}px`,
       background: palette.card,
       border: `1px solid ${palette.border}`,
       color: palette.text,
@@ -362,7 +362,7 @@ const NavDropdown = ({ active, onSelect }) => {
 
 /* ── Persistent save bar (status + button; caller wraps it sticky) ──────── */
 const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const btnColor = dirty
   ? { idle: palette.amber, saving: palette.muted, saved: palette.green, error: palette.red }[status]
   : palette.dim;
@@ -392,7 +392,7 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
     disabled={status === "saving" || !dirty}
     style={{
       marginLeft: "auto",
-      padding: `${space.xs}px ${legacy.savePadX}px`,
+      padding: `${space.xs}px ${space.xxl}px`,
       background: alpha(btnColor, ALPHA.medium),
           border: `1px solid ${btnColor}`,
           color: btnColor,
@@ -414,7 +414,7 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
  * SETTINGS PAGE
  ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
   const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
@@ -537,7 +537,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     }
     if (schema.length === 0) {
       return (
-        <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: legacy.blankPad }}>
+        <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: space.xxxl }}>
         Connect to the backend to load settings…
         </div>
       );
@@ -552,7 +552,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
   if (isMobile) {
     return (
-      <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${legacy.pageBotPadMobile}px` }}>
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
       <div style={{ position: "sticky", top: 0, zIndex: 6, background: palette.bg }}>
       <div style={{ padding: `${space.hair}px 0 ${space.sm}px` }}>
       <NavDropdown active={active} onSelect={setActive} />
@@ -566,7 +566,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
 
   // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
   return (
-    <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${legacy.pagePadX}px ${legacy.pageBotPad}px`, display: "flex", gap: legacy.colGap }}>
+    <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
     <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
     <div style={{ flex: 1, minWidth: 0 }}>
     <div style={{ position: "sticky", top: 0, zIndex: 5 }}>

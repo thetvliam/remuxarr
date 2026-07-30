@@ -3,14 +3,14 @@ import { TagInput } from "./TagInput";
 
 // Renders the appropriate control for each setting type
 export const SettingInput = ({ field, value, onChange }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   if (field.type === "boolean") {
     const on = !!value;
     return (
       <button
       onClick={() => onChange(!on)}
       style={{
-        padding: `${legacy.inputPadY}px ${legacy.actionPadX}px`,
+        padding: `${space.xs}px ${space.xl}px`,
         background: on ? alpha(palette.green, ALPHA.low) : "transparent",
             border: `1px solid ${on ? palette.green : palette.border}`,
             color: on ? palette.green : palette.dim,
@@ -47,7 +47,7 @@ export const SettingInput = ({ field, value, onChange }) => {
       }}
       style={{
         width: 72,
-        padding: `${legacy.inputPadY}px ${space.sm}px`,
+        padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
         color: palette.text,
@@ -68,7 +68,7 @@ export const SettingInput = ({ field, value, onChange }) => {
       placeholder={field.placeholder || ""}
       style={{
         width: 220,
-        padding: `${legacy.inputPadY}px ${space.sm}px`,
+        padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
         color: palette.text,
@@ -98,7 +98,7 @@ export const SettingInput = ({ field, value, onChange }) => {
       onChange={e => onChange(e.target.value)}
       style={{
         width: 260,
-        padding: `${legacy.inputPadY}px ${space.sm}px`,
+        padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
         color: palette.text,

@@ -10,7 +10,7 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
     const { palette, type, space, radius, legacy, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
@@ -30,7 +30,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
                                                     fontSize: type.size.xs,
                                                     fontFamily: type.family,
                                                     letterSpacing: type.tracking.normal,
-                                                    padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+                                                    padding: `${space.hair}px ${space.xs}px`,
                                                     cursor: "pointer",
                                                     flexShrink: 0,
                                                     opacity: hover ? 1 : 0,
@@ -50,7 +50,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
             display: "block",
             width: "100%",
             textAlign: "left",
-            padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+            padding: `${space.md}px ${space.xl}px`,
             background: hover ? legacy.rowHoverBg : "transparent",
             border: "none",
             borderBottom: `1px solid ${palette.border}`,
@@ -61,7 +61,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         {/* Row: LED + name + action buttons + time */}
         <div style={{
             display: "flex", alignItems: "center",
-            gap: space.xs, marginBottom: legacy.rowLabelGapY,
+            gap: space.xs, marginBottom: space.xxs,
         }}>
         <LED
         color={statusColor[item.status] || palette.dim}
@@ -96,7 +96,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         <div style={{
             color: palette.muted,
             fontSize: type.size.sm,
-            paddingLeft: legacy.rowPadX,
+            paddingLeft: space.xl,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -109,9 +109,9 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
-    const { palette, type, space, radius, legacy } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     const [search,     setSearch]     = useState("");
     const [clearArmed, setClearArmed] = useState(false);
 
@@ -138,7 +138,7 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
         onClick={handleClear}
         title={clearArmed ? "Click again to confirm" : "Remove all pending items from queue"}
         style={{
-            padding: `${legacy.clearPadY}px ${legacy.clearPadX}px`,
+            padding: `${space.hair}px ${space.md}px`,
             background: clearArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
                                       border: `1px solid ${clearArmed ? palette.red : palette.border}`,
                                       borderRadius: radius.sm,

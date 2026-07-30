@@ -9,7 +9,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
 export const BackupRestoreSection = ({ api, toast }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [importing,  setImporting]  = useState(false);
@@ -68,7 +68,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
   };
 
   return (
-    <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
     <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
     BACKUP &amp; RESTORE
     </div>
@@ -76,7 +76,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
     {/* Export */}
     <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
     <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
     Export Settings
     </div>
     <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.sm }}>
@@ -102,7 +102,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
     <button
     onClick={handleExport}
     style={{
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${palette.blue}`,
       color: palette.blue,
@@ -122,7 +122,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
     {/* Import */}
     <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0` }}>
     <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
     Import Settings
     </div>
     <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
@@ -144,7 +144,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
     onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
     disabled={importing}
     style={{
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
           border: `1px solid ${palette.red}`,
           color: palette.red,

@@ -17,13 +17,13 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   return (
     <div style={{
       display: "flex",
       alignItems: "flex-start",
       gap: space.xxl,
-      padding: `${legacy.settingRowPadY}px 0`,
+      padding: `${space.xl}px 0`,
       borderBottom: `1px solid ${palette.border}`,
     }}>
     <div style={{ flex: 1 }}>
@@ -67,7 +67,7 @@ const ToggleRow = ({ label, description, checked, onChange, disabled = false }) 
 
 /* ── Tag input for HH:MM times ──────────────────────────────────────────── */
 const TimeTagInput = ({ value = [], onChange }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
 
@@ -100,14 +100,14 @@ const TimeTagInput = ({ value = [], onChange }) => {
     <div style={{ minWidth: 200, maxWidth: 300 }}>
     {/* Existing tags */}
     {value.length > 0 && (
-      <div style={{ display: "flex", flexWrap: "wrap", gap: legacy.tagGap, marginBottom: space.sm }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: space.xs, marginBottom: space.sm }}>
       {value.map(t => (
         <span
         key={t}
         style={{
           display: "inline-flex",
           alignItems: "center",
-          gap: legacy.tagGap,
+          gap: space.xs,
           padding: `${space.hair}px ${space.sm}px`,
           background: alpha(palette.amber, ALPHA.low),
                        border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
@@ -165,7 +165,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
     >ADD</button>
     </div>
     {error && (
-      <div style={{ color: palette.red, fontSize: type.size.sm, marginTop: legacy.labelGapY }}>{error}</div>
+      <div style={{ color: palette.red, fontSize: type.size.sm, marginTop: space.xs }}>{error}</div>
     )}
     </div>
   );
@@ -364,7 +364,7 @@ export const MaintenanceSection = ({ api, toast }) => {
   );
 
   return (
-    <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
     {sectionLabel("MAINTENANCE")}
 
     {/* ── Card 1: Scheduled Scans ─────────────────────────────────────── */}
@@ -373,7 +373,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       border: `1px solid ${palette.border}`,
       marginBottom: space.xl,
     }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.descGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
     Scheduled Scans
     </div>
 
@@ -386,7 +386,7 @@ export const MaintenanceSection = ({ api, toast }) => {
 
     {/* Scan times — always visible so times can be configured before enabling */}
     <div style={{
-      padding: `${legacy.settingRowPadY}px 0`,
+      padding: `${space.xl}px 0`,
       borderBottom: `1px solid ${palette.border}`,
     }}>
     <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
@@ -415,7 +415,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       padding: space.xl,
       border: `1px solid ${palette.border}`,
     }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.descGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
     Manual Cleanup
     </div>
 
@@ -440,7 +440,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     disabled={cleanupRunning}
     style={{
       flexShrink: 0,
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${cleanupRunning ? palette.muted : palette.blue}`,
       color: cleanupRunning ? palette.muted : palette.blue,
@@ -463,7 +463,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       border: `1px solid ${palette.border}`,
       marginTop: space.xl,
     }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.descGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
     Force Full Rescan
     </div>
 
@@ -485,7 +485,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     onClick={runForceFullScan}
     style={{
       flexShrink: 0,
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
           border: `1px solid ${palette.amber}`,
           color: palette.amber,
@@ -508,7 +508,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       border: `1px solid ${palette.border}`,
       marginTop: space.xl,
     }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.descGapY }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
     Orphaned Files
     </div>
 
@@ -532,7 +532,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     disabled={orphanedLoading}
     style={{
       flexShrink: 0,
-      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${orphanedLoading ? palette.muted : palette.blue}`,
       color: orphanedLoading ? palette.muted : palette.blue,
@@ -608,7 +608,7 @@ export const MaintenanceSection = ({ api, toast }) => {
         </div>
         <span style={{
           flexShrink: 0,
-          padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+          padding: `${space.hair}px ${space.xs}px`,
           background: item.on_disk ? (alpha(palette.blue, ALPHA.low)) : (alpha(palette.dim, ALPHA.low)),
                                   border: `1px solid ${alpha(item.on_disk ? palette.blue : palette.dim, ALPHA.strong)}`,
                                   color: item.on_disk ? palette.blue : palette.dim,
@@ -626,7 +626,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       onClick={removeSelectedOrphaned}
       disabled={orphanedRemoving || orphanedSelected.size === 0}
       style={{
-        padding: `${space.xs}px ${legacy.actionPadX}px`,
+        padding: `${space.xs}px ${space.xl}px`,
         background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
                                                      border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
                                                      color: orphanedSelected.size === 0 ? palette.muted : palette.red,

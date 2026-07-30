@@ -34,7 +34,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     style={{
       width: "100%", maxWidth: 400,
       background: palette.card, border: `1px solid ${palette.border}`,
-      padding: `${legacy.guardPad}px ${legacy.guardPad}px ${legacy.guardPadB}px`,
+      padding: `${space.huge}px ${space.huge}px ${space.xxl}px`,
     }}
     >
     <div style={{ color: palette.amber, fontSize: type.size.sm, letterSpacing: type.tracking.ultra, fontWeight: type.weight.bold, marginBottom: space.md }}>
@@ -47,7 +47,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     <button
     onClick={onKeep}
     style={{
-      padding: `${legacy.guardBtnPadY}px ${space.xl}px`, background: "transparent",
+      padding: `${space.sm}px ${space.xl}px`, background: "transparent",
       border: `1px solid ${palette.muted}`, color: palette.text,
       fontSize: type.size.sm, fontFamily: type.family, fontWeight: type.weight.bold, letterSpacing: type.tracking.normal, cursor: "pointer",
     }}
@@ -57,7 +57,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     <button
     onClick={onDiscard}
     style={{
-      padding: `${legacy.guardBtnPadY}px ${space.xl}px`, background: alpha(palette.red, ALPHA.medium),
+      padding: `${space.sm}px ${space.xl}px`, background: alpha(palette.red, ALPHA.medium),
           border: `1px solid ${palette.red}`, color: palette.red,
           fontSize: type.size.sm, fontFamily: type.family, fontWeight: type.weight.bold, letterSpacing: type.tracking.normal, cursor: "pointer",
     }}

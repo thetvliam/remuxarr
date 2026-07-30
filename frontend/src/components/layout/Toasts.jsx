@@ -5,7 +5,7 @@ import { useTheme } from "../../theme";
  * NOTE: the cap-at-8 logic and 5s auto-dismiss timer live in the parent's
  * `toast()` function (App.jsx / useAppData), not here — this component is a
  * pure renderer of whatever `items` array it is given.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const Toasts = ({ items, isMobile = false }) => {
   const { palette, type, space, radius, legacy } = useTheme();
   return (
@@ -29,7 +29,7 @@ export const Toasts = ({ items, isMobile = false }) => {
       <div
       key={t.id}
       style={{
-        padding: `${legacy.toastPadY}px ${legacy.toastPadX}px`,
+        padding: `${space.sm}px ${space.xl}px`,
         background: palette.card,
         border: `1px solid ${t.color || palette.border}`,
         borderLeft: `${legacy.toastAccent}px solid ${t.color || palette.amber}`,

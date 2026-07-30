@@ -75,7 +75,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
     };
 
     return (
-        <div style={{ maxWidth: 860, margin: "0 auto", padding: `${legacy.pagePadY}px ${legacy.pagePadX}px` }}>
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: `${space.max}px ${space.huge}px` }}>
         {/* Page header */}
         <div style={{ marginBottom: space.huge }}>
         <div style={{ display: "flex", alignItems: "center", gap: space.md, marginBottom: space.sm }}>
@@ -127,7 +127,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                         <div
                         key={item.id}
                         style={{
-                            padding: `${legacy.cardPadY}px ${space.xl}px`,
+                            padding: `${space.xl}px ${space.xl}px`,
                             background: palette.card,
                             border: `1px solid ${legacy.reviewBorder}`,
                             borderLeft: `${legacy.accentWidth}px solid ${palette.yellow}`,
@@ -140,7 +140,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                             color: palette.text,
                             fontSize: type.size.lg,
                             fontWeight: type.weight.semibold,
-                            marginBottom: legacy.rowLabelGapY,
+                            marginBottom: space.xxs,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -150,7 +150,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                         <div style={{
                             color: palette.dim,
                             fontSize: type.size.sm,
-                            marginBottom: legacy.subGapY,
+                            marginBottom: space.sm,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -197,7 +197,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                                 </div>
                                 <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
                                 <span style={{
-                                    padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+                                    padding: `${space.hair}px ${space.xs}px`,
                                     background: alpha(palette.yellow, ALPHA.low),
                                                    border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
                                                    color: palette.yellow,

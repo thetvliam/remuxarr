@@ -77,14 +77,14 @@ export const LogViewer = ({ api }) => {
     };
 
     return (
-      <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+      <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
       {/* Section header */}
       <div style={{
         color: palette.amber,
         fontSize: type.size.xs,
         letterSpacing: type.tracking.max,
         fontWeight: type.weight.bold,
-        marginBottom: legacy.descGapY,
+        marginBottom: space.xl,
       }}>
       APPLICATION LOGS
       </div>
@@ -107,7 +107,7 @@ export const LogViewer = ({ api }) => {
           key={l}
           onClick={() => setLevelFilter(l)}
           style={{
-            padding: `${legacy.ctlPadY}px ${space.md}px`,
+            padding: `${space.xxs}px ${space.md}px`,
             background: active ? `${alpha(color, ALPHA.medium)}` : "transparent",
                 border: `1px solid ${active ? color : palette.border}`,
                 borderRight: i < LEVELS.length - 1 ? "none" : undefined,
@@ -129,7 +129,7 @@ export const LogViewer = ({ api }) => {
       onClick={() => setAutoScroll(a => !a)}
       title="Toggle auto-scroll to newest entry"
       style={{
-        padding: `${legacy.ctlPadY}px ${space.md}px`,
+        padding: `${space.xxs}px ${space.md}px`,
         background: autoScroll ? `${alpha(palette.blue, ALPHA.medium)}` : "transparent",
             border: `1px solid ${autoScroll ? palette.blue : palette.border}`,
             color: autoScroll ? palette.blue : palette.dim,
@@ -153,7 +153,7 @@ export const LogViewer = ({ api }) => {
       disabled={clearing || allRecords.length === 0}
       style={{
         marginLeft: "auto",
-        padding: `${legacy.ctlPadY}px ${space.md}px`,
+        padding: `${space.xxs}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.border}`,
         color: palette.dim,
@@ -184,7 +184,7 @@ export const LogViewer = ({ api }) => {
       }}
       >
       {records.length === 0 ? (
-        <div style={{ color: palette.dim, padding: `${space.sm}px ${legacy.rowPadX}px`, fontSize: type.size.md }}>
+        <div style={{ color: palette.dim, padding: `${space.sm}px ${space.xl}px`, fontSize: type.size.md }}>
         {allRecords.length === 0
           ? "No log records yet — records appear here as the application logs events."
           : `No ${levelFilter} or higher records in the buffer.`
@@ -199,7 +199,7 @@ export const LogViewer = ({ api }) => {
             style={{
               display: "flex",
               gap: 0,
-              padding: `0 ${legacy.rowPadX}px`,
+              padding: `0 ${space.xl}px`,
               background: i % 2 === 0 ? "transparent" : legacy.zebraBg,
               whiteSpace: "pre-wrap",
               wordBreak: "break-all",

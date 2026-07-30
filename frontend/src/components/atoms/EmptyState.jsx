@@ -1,10 +1,10 @@
 import { useTheme } from "../../theme";
 
 export const EmptyState = ({ msg }) => {
-    const { palette, type, legacy } = useTheme();
+    const { palette, type, space } = useTheme();
     return (
         <div style={{
-            padding: `${legacy.emptyPadY}px ${legacy.emptyPadX}px`,
+            padding: `${space.giant}px ${space.xl}px`,
             textAlign: "center",
             color: palette.dim,
             fontSize: type.size.md,

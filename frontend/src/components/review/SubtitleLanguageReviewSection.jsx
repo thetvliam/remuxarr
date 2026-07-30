@@ -108,7 +108,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
   };
 
   return (
-    <div style={{ marginTop: legacy.sectionGapY }}>
+    <div style={{ marginTop: space.xxxl }}>
     <div style={{
       display: "flex",
       alignItems: "center",
@@ -131,7 +131,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     {total}
     </span>
     </div>
-    <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${legacy.descGapY}px`, lineHeight: type.leading.relaxed }}>
+    <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
     Files whose kept subtitle track has an undefined language tag,
     flagged because Fix Undefined Language Tags is set to Always Ask.
     These files are already fully processed and playable; this is
@@ -153,7 +153,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     placeholder="Search by filename…"
     style={{
       flex: "1 1 200px",
-      padding: `${legacy.inputPadY}px ${space.md}px`,
+      padding: `${space.xs}px ${space.md}px`,
       background: palette.bg,
       border: `1px solid ${search ? alpha(SUB_COLOR, ALPHA.half) : palette.border}`,
           color: palette.text,
@@ -169,7 +169,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     title="ISO 639-2/B language code to apply to selected files"
     style={{
       width: 70,
-      padding: `${legacy.inputPadY}px ${space.sm}px`,
+      padding: `${space.xs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${palette.border}`,
       color: palette.text,
@@ -254,7 +254,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
         </span>
         <span style={{
           flexShrink: 0,
-          padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+          padding: `${space.hair}px ${space.xs}px`,
           background: alpha(palette.yellow, ALPHA.low),
                           border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
                           color: palette.yellow,

@@ -26,7 +26,7 @@ const HistoryRow = ({ item, onSelect }) => {
       display: "block",
       width: "100%",
       textAlign: "left",
-      padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+      padding: `${space.md}px ${space.xl}px`,
       background: hover ? legacy.rowHoverBg : "transparent",
       border: "none",
       borderBottom: `1px solid ${palette.border}`,
@@ -34,7 +34,7 @@ const HistoryRow = ({ item, onSelect }) => {
       fontFamily: type.family,
     }}
     >
-    <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: legacy.rowLabelGapY }}>
+    <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: space.xxs }}>
     <LED color={statusColor[item.status] || palette.dim} size={legacy.ledSizeSm} />
     <span style={{
       color: palette.text,
@@ -49,7 +49,7 @@ const HistoryRow = ({ item, onSelect }) => {
     </span>
     {dryRun && (
       <span style={{
-        padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+        padding: `${space.hair}px ${space.xs}px`,
         background: alpha(palette.violet, ALPHA.low),
                 border: `1px solid ${alpha(palette.violet, ALPHA.strong)}`,
                 color: palette.violet,
@@ -65,7 +65,7 @@ const HistoryRow = ({ item, onSelect }) => {
     </span>
     </div>
 
-    <div style={{ paddingLeft: legacy.rowPadX }}>
+    <div style={{ paddingLeft: space.xl }}>
     {dryRun && (
       <span style={{
         color: palette.muted, fontSize: type.size.sm,
@@ -118,7 +118,7 @@ const HistoryRow = ({ item, onSelect }) => {
  * triggers loadMore when the scroll sentinel comes into view.
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space } = useTheme();
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -190,7 +190,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         onClick={() => switchTab(key)}
         title={tooltip}
         style={{
-          padding: `${legacy.tabPadY}px ${legacy.tabPadX}px`,
+          padding: `${space.hair}px ${space.md}px`,
           background: tab === key ? alpha(color, ALPHA.low) : "transparent",
               border: `1px solid ${tab === key ? color : palette.border}`,
               borderRight: "none",
@@ -216,7 +216,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       title="Re-probe and re-queue every failed and cancelled item"
       style={{
         marginLeft: 8,
-        padding: `${legacy.clearPadY}px ${legacy.clearPadX}px`,
+        padding: `${space.hair}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.amber}`,
         color: palette.amber,
@@ -236,7 +236,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       title="Discard every dry-run preview — none of these files will be processed"
       style={{
         marginLeft: 8,
-        padding: `${legacy.clearPadY}px ${legacy.clearPadX}px`,
+        padding: `${space.hair}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.violet}`,
         color: palette.violet,
@@ -304,7 +304,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
       {/* Infinite scroll sentinel */}
       {hasMore && (
-        <div ref={sentinelRef} style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
+        <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.xl}px` }}>
         {loading && (
           <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
         )}
@@ -313,7 +313,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
       {/* End-of-list indicator */}
       {!hasMore && items.length > 0 && (
-        <div style={{ padding: `${space.sm}px ${legacy.rowPadX}px` }}>
+        <div style={{ padding: `${space.sm}px ${space.xl}px` }}>
         <span style={{ color: palette.dim, fontSize: type.size.sm }}>
         {debouncedSearch
           ? `${total.toLocaleString()} result${total === 1 ? "" : "s"}`
@@ -327,7 +327,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
     {/* Loading spinner for first-page load */}
     {items.length === 0 && loading && (
-      <div style={{ padding: `${space.xl}px ${legacy.rowPadX}px` }}>
+      <div style={{ padding: `${space.xl}px ${space.xl}px` }}>
       <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
       </div>
     )}
