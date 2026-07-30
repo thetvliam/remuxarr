@@ -11,7 +11,7 @@
  * Migration is complete, so they are gone. Their absence is load-bearing: if
  * a static visual export reappears here, whatever imports it silently stops
  * responding to the theme.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */ *
+ ═ ══════════════════════════════════════════════════════════════════════════ */
 
  // Derive the API base from whatever URL the page was loaded from.
  // This means it works correctly whether you access Remuxarr via IP, hostname,
