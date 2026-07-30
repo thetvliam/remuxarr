@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { C, ACTION_CFG } from "../constants";
+import { useTheme, alpha, ALPHA } from "../theme";
 import { fmtSize, fmtDur, formatBytesSaved } from "../utils";
 import { StatusBadge } from "./atoms/StatusBadge";
 import { ActionBadge } from "./atoms/ActionBadge";
@@ -17,8 +17,9 @@ import { Btn } from "./atoms/Btn";
  * a second fetch that includes planned_actions. An unoptimised component
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
+  const { palette, type, space, radius, legacy, actionCfg } = useTheme();
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
@@ -34,8 +35,8 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
   const actions  = item.planned_actions;
   const loading  = actions === undefined || actions === null;
   const topColor = (actions?.length > 0)
-  ? (ACTION_CFG[actions[0].action_type]?.text || C.amber)
-  : C.amber;
+  ? (actionCfg[actions[0].action_type]?.text || palette.amber)
+  : palette.amber;
   const bs = formatBytesSaved(item.bytes_saved, item.bytes_saved_pct);
 
   return (
@@ -47,7 +48,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       // Desktop: dimmed backdrop centred over content.
       // Mobile: solid background — the sheet fills the full screen so
       // there's nothing to blur behind it.
-      background: isMobile ? C.card : "#000000bb",
+      background: isMobile ? palette.card : legacy.modalScrimBg,
       display: "flex",
       alignItems: isMobile ? "flex-start" : "center",
       justifyContent: "center",
@@ -58,9 +59,9 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     <div
     onClick={e => e.stopPropagation()}
     style={{
-      background: C.card,
-      border: `1px solid ${C.border}`,
-      borderTop: `2px solid ${topColor}`,
+      background: palette.card,
+      border: `1px solid ${palette.border}`,
+      borderTop: `${legacy.accentThin}px solid ${topColor}`,
       // Desktop: centred card with max dimensions.
       // Mobile: full-screen — use 100dvh so the browser address bar
       // doesn't cause overflow (dvh accounts for the visible viewport
@@ -71,7 +72,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
         height: "100dvh",
         maxHeight: "100dvh",
         maxWidth: "none",
-        borderRadius: 0,
+        borderRadius: radius.none,
         display: "flex",
         flexDirection: "column",
       }
@@ -88,18 +89,18 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     >
     {/* Header */}
     <div style={{
-      padding: "12px 18px",
-      borderBottom: `1px solid ${C.border}`,
+      padding: `${space.lg}px ${legacy.modalPadX}px`,
+      borderBottom: `1px solid ${palette.border}`,
       display: "flex",
       alignItems: "center",
-      gap: 10,
+      gap: space.md,
     }}>
     <StatusBadge status={item.status} />
     <span style={{
       flex: 1,
-      color: C.text,
-      fontSize: 13,
-      fontWeight: 600,
+      color: palette.text,
+      fontSize: type.size.lg,
+      fontWeight: type.weight.semibold,
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
@@ -113,12 +114,12 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       style={{
         background: "none",
         border: "none",
-        color: C.muted,
-        fontSize: isMobile ? 24 : 20,
+        color: palette.muted,
+        fontSize: isMobile ? legacy.closeGlyphMobile : legacy.closeGlyph,
         cursor: "pointer",
-        lineHeight: 1,
-        padding: isMobile ? "0 4px" : "0 2px",
-        fontFamily: "inherit",
+        lineHeight: type.leading.none,
+        padding: isMobile ? `0 ${space.xxs}px` : `0 ${space.hair}px`,
+        fontFamily: type.family,
       }}
       >
       ×
@@ -127,10 +128,10 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
 
       {/* File meta row */}
       <div style={{
-        padding: "12px 18px",
-        borderBottom: `1px solid ${C.border}`,
+        padding: `${space.lg}px ${legacy.modalPadX}px`,
+        borderBottom: `1px solid ${palette.border}`,
         display: "flex",
-        gap: 24,
+        gap: space.huge,
         flexWrap: "wrap",
       }}>
       <Stat label="SIZE"      value={fmtSize(f.size)} />
@@ -140,55 +141,55 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
         <Stat
         label="SAVED"
         value={`−${bs.sizeText} (${bs.pctDisplay}%)`}
-        color={C.green}
+        color={palette.green}
         />
       )}
       {bs?.isNegative && (
         <Stat
         label="OVERHEAD"
         value={`+${bs.sizeText}`}
-        color={C.dim}
+        color={palette.dim}
         />
       )}
       </div>
 
       {/* Reason */}
-      <div style={{ padding: "10px 18px", borderBottom: `1px solid ${C.border}` }}>
-      <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.12em", marginBottom: 5 }}>
+      <div style={{ padding: `${space.md}px ${legacy.modalPadX}px`, borderBottom: `1px solid ${palette.border}` }}>
+      <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: legacy.labelGapY }}>
       REASON
       </div>
-      <div style={{ color: C.text, fontSize: 11, lineHeight: 1.65 }}>
+      <div style={{ color: palette.text, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
       {item.reason || "No reason recorded"}
       </div>
       </div>
 
       {/* Planned actions — the key "why" breakdown */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 18px" }}>
-      <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.12em", marginBottom: 10 }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: `${space.lg}px ${legacy.modalPadX}px` }}>
+      <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: space.md }}>
       PLANNED ACTIONS
       </div>
       {loading ? (
-        <span style={{ color: C.dim, fontSize: 11 }}>Loading…</span>
+        <span style={{ color: palette.dim, fontSize: type.size.md }}>Loading…</span>
       ) : actions.length === 0 ? (
-        <span style={{ color: C.muted, fontSize: 11 }}>No actions recorded</span>
+        <span style={{ color: palette.muted, fontSize: type.size.md }}>No actions recorded</span>
       ) : (
         actions.map((a, i) => {
-          const cfg = ACTION_CFG[a.action_type] || { bg: "#111", border: C.border };
+          const cfg = actionCfg[a.action_type] || { bg: legacy.badgeFallbackBg, border: palette.border };
           return (
             <div
             key={i}
             style={{
               display: "flex",
               alignItems: "flex-start",
-              gap: 10,
-              marginBottom: 7,
-              padding: "8px 10px",
+              gap: space.md,
+              marginBottom: legacy.subGapY,
+              padding: `${space.sm}px ${space.md}px`,
               background: cfg.bg,
               border: `1px solid ${cfg.border}`,
             }}
             >
             <ActionBadge type={a.action_type} />
-            <span style={{ color: C.text, fontSize: 11, lineHeight: 1.6 }}>
+            <span style={{ color: palette.text, fontSize: type.size.md, lineHeight: type.leading.normal }}>
             {a.description}
             </span>
             </div>
@@ -200,17 +201,17 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       {/* Error (failed items only) */}
       {item.error_message && (
         <div style={{
-          padding: "10px 18px",
-          borderTop: `1px solid ${C.border}`,
-          background: "#180a0a",
+          padding: `${space.md}px ${legacy.modalPadX}px`,
+          borderTop: `1px solid ${palette.border}`,
+          background: legacy.errorBg,
         }}>
-        <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.12em", marginBottom: 5 }}>
+        <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: legacy.labelGapY }}>
         ERROR
         </div>
         <div style={{
-          color: C.red,
-          fontSize: 10,
-          lineHeight: 1.55,
+          color: palette.red,
+          fontSize: type.size.sm,
+          lineHeight: type.leading.snug,
           maxHeight: 90,
           overflowY: "auto",
           whiteSpace: "pre-wrap",
@@ -222,13 +223,13 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
 
       {/* Full path footer */}
       <div style={{
-        padding: "7px 18px",
-        borderTop: `1px solid ${C.border}`,
+        padding: `${legacy.modalFootPadY}px ${legacy.modalPadX}px`,
+        borderTop: `1px solid ${palette.border}`,
         overflow: "hidden",
       }}>
       <div style={{
-        color: C.dim,
-        fontSize: 10,
+        color: palette.dim,
+        fontSize: type.size.sm,
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
@@ -240,21 +241,21 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       {/* Action buttons — only shown for terminal states */}
       {(onRetry || onDismiss) && (
         <div style={{
-          padding: "10px 18px",
-          borderTop: `1px solid ${C.border}`,
+          padding: `${space.md}px ${legacy.modalPadX}px`,
+          borderTop: `1px solid ${palette.border}`,
           display: "flex",
-          gap: 8,
+          gap: space.sm,
           justifyContent: "flex-end",
-          background: C.card,
+          background: palette.card,
         }}>
         {onDismiss && (
-          <Btn label="DISMISS" color={C.muted} onClick={onDismiss} />
+          <Btn label="DISMISS" color={palette.muted} onClick={onDismiss} />
         )}
         {onRetry && (
           item.status === "dry_run" ? (
-            <Btn label="▶ PROCESS NOW" color={C.green} bg={C.green + "18"} onClick={onRetry} />
+            <Btn label="▶ PROCESS NOW" color={palette.green} bg={alpha(palette.green, ALPHA.low)} onClick={onRetry} />
           ) : (
-            <Btn label={`↻ ${retryLabel}`} color={C.amber} bg={C.amber + "18"} onClick={onRetry} />
+            <Btn label={`↻ ${retryLabel}`} color={palette.amber} bg={alpha(palette.amber, ALPHA.low)} onClick={onRetry} />
           )
         )}
         </div>

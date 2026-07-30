@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 
 // Chip-based tag editor for string_list settings (language codes, paths, etc.)
 //
@@ -14,6 +14,7 @@ import { C } from "../../constants";
 // format nothing else hinted at). Fields with no schema placeholder fall
 // back to a neutral prompt rather than an example from an unrelated setting.
 export const TagInput = ({ values, onChange, normalize = true, placeholder = "" }) => {
+    const { palette, type, space, legacy } = useTheme();
     const [draft, setDraft] = useState("");
 
     const add = () => {
@@ -29,19 +30,19 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
     return (
         <div style={{ width: 220 }}>
         {/* Existing tags */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 7 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: space.xxs, marginBottom: legacy.subGapY }}>
         {values.map(v => (
             <span
             key={v}
             style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 4,
-                padding: "2px 7px",
-                background: C.blue + "18",
-                border: `1px solid ${C.blue}44`,
-                color: C.blue,
-                fontSize: 11,
+                gap: space.xxs,
+                padding: `${legacy.tagPadY}px ${legacy.tagPadX}px`,
+                background: alpha(palette.blue, ALPHA.low),
+                          border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
+                          color: palette.blue,
+                          fontSize: type.size.md,
             }}
             >
             {v}
@@ -50,12 +51,12 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
             style={{
                 background: "none",
                 border: "none",
-                color: C.muted,
+                color: palette.muted,
                 cursor: "pointer",
-                fontSize: 14,
-                lineHeight: 1,
+                fontSize: type.size.xl,
+                lineHeight: type.leading.none,
                 padding: 0,
-                fontFamily: "inherit",
+                fontFamily: type.family,
             }}
             >
             ×
@@ -65,7 +66,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
         </div>
 
         {/* Add new tag */}
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: space.xxs }}>
         <input
         value={draft}
         onChange={e => setDraft(e.target.value)}
@@ -73,24 +74,24 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
         placeholder={placeholder || "add an entry…"}
         style={{
             flex: 1,
-            padding: "4px 8px",
-            background: C.bg,
-            border: `1px solid ${C.border}`,
-            color: C.text,
-            fontFamily: "inherit",
-            fontSize: 11,
+            padding: `${space.xxs}px ${space.sm}px`,
+            background: palette.bg,
+            border: `1px solid ${palette.border}`,
+            color: palette.text,
+            fontFamily: type.family,
+            fontSize: type.size.md,
             outline: "none",
         }}
         />
         <button
         onClick={add}
         style={{
-            padding: "4px 10px",
-            background: C.border,
+            padding: `${space.xxs}px ${space.md}px`,
+            background: palette.border,
             border: "none",
-            color: C.muted,
-            fontFamily: "inherit",
-            fontSize: 11,
+            color: palette.muted,
+            fontFamily: type.family,
+            fontSize: type.size.md,
             cursor: "pointer",
         }}
         >

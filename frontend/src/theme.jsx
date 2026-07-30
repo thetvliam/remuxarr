@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -60,6 +60,7 @@ export const ALPHA = {
   mild:   0.125,  // was "20"
   low:    0.094,  // was "18"
   medium: 0.133,  // was "22"
+  firm:   0.2,    // was "33"
   half:   0.533,  // was "88"
   strong: 0.267,  // was "44"
   heavy:  0.333,  // was "55"
@@ -78,6 +79,17 @@ const buildStatusColor = (p) => ({
   dry_run:       p.violet,
 });
 
+/* Log severity colours. Was a module-level const in LogViewer.jsx built from
+ * the static palette, which froze the log output to the default theme even
+ * once the surrounding page followed the switch. */
+const buildLevelColor = (p) => ({
+  DEBUG:    p.dim,
+  INFO:     p.muted,
+  WARNING:  p.amber,
+  ERROR:    p.red,
+  CRITICAL: p.red,
+});
+
 const buildActionCfg = (p, tint) => ({
   copy_track:         { bg: tint.green,  border: tint.greenB,  text: p.green,   label: "COPY"      },
   drop_track:         { bg: tint.red,    border: tint.redB,    text: p.red,     label: "DROP"      },
@@ -92,7 +104,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -114,6 +126,7 @@ const terminal = {
   label: "Terminal",
   palette: terminalPalette,
   statusColor: buildStatusColor(terminalPalette),
+  levelColor: buildLevelColor(terminalPalette),
   actionCfg: buildActionCfg(terminalPalette, {
     green: "#091a0f", greenB: "#122a1a",
     red:   "#1a0909", redB:   "#2a1212",
@@ -125,12 +138,22 @@ const terminal = {
   }),
   type: {
     family: "inherit",
+    /* The app shell's font stack. Everything else inherits it via `family`,
+     * so this one value carries most of the theme's character. */
+    root:   "'JetBrains Mono', 'Courier New', monospace",
+    /* Log output is deliberately monospaced — column alignment carries
+     * meaning there, so it does not follow `family`. */
+    mono:   "'Courier New', 'Lucida Console', monospace",
     size:   { xs: 9, sm: 10, md: 11, base: 12, lg: 13, xl: 14, xxl: 15, h2: 16, h1: 18 },
-    weight: { medium: 500, semibold: 600, bold: 700, black: 900 },
+    weight: { normal: 400, medium: 500, semibold: 600, bold: 700, black: 900 },
     tracking: {
       tight: "0.03em", snug: "0.06em", normal: "0.08em", wide: "0.1em",
       wider: "0.12em", widest: "0.14em", ultra: "0.16em", max: "0.18em",
     },
+    /* Line height belongs to the type scale, not to spacing: it scales with
+     * the font size rather than with padding, and a roomier theme wants
+     * looser leading at every step. */
+    leading: { none: 1, snug: 1.55, normal: 1.6, relaxed: 1.65, loose: 1.7 },
   },
   radius: { none: 0, sm: 0, pill: 11, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16, xxl: 20, huge: 24, max: 28 },
@@ -187,6 +210,58 @@ const terminal = {
     drawerPadX:    18,
     scrimBg:       "#00000066",
     logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    pagePadY:      28,
+    pagePadX:      22,
+    cardPadY:      14,
+    sectionGapY:   32,
+    labelGapY:     5,
+    subGapY:       7,
+    descGapY:      14,
+    inputPadY:     5,
+    reviewBorder:  "#3a2800",
+    trackRowBg:    "#00000022",
+    rowSelectedBg: "#ffffff08",
+    /* settings/ */
+    sectionSepGapY:   36,
+    fieldRowPadY:     13,
+    settingRowPadY:   14,
+    ctlPadY:          3,
+    actionPadX:       14,
+    savePadX:         18,
+    navPadR:          18,
+    navItemPadY:      9,
+    navUnsavedGapY:   14,
+    chipPadY:         1,
+    chipPadX:         7,
+    tagPadY:          2,
+    tagPadX:          7,
+    tagGap:           5,
+    nudge:            1,
+    colGap:           26,
+    mobileFieldGap:   9,
+    pageBotPad:       48,
+    pageBotPadMobile: 40,
+    blankPad:         32,
+    logBg:            "#0d0f1a",
+    logMeta:          "#3a4060",
+    logText:          "#c8cce8",
+    zebraBg:          "#ffffff04",
+    /* DetailModal */
+    modalPadX:      18,
+    modalFootPadY:  7,
+    modalScrimBg:   "#000000bb",
+    closeGlyph:       20,
+    closeGlyphMobile: 24,
+    errorBg:        "#180a0a",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.66)",
+    guardPad:     22,
+    guardPadB:    18,
+    guardBtnPadY: 7,
   },
 };
 
@@ -195,7 +270,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════**═══════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -217,6 +292,7 @@ const soft = {
   label: "Soft",
   palette: softPalette,
   statusColor: buildStatusColor(softPalette),
+  levelColor: buildLevelColor(softPalette),
   actionCfg: buildActionCfg(softPalette, {
     green: "#0e2417", greenB: "#1a3a27",
     red:   "#241010", redB:   "#3a1c1c",
@@ -228,15 +304,19 @@ const soft = {
   }),
   type: {
     family: "inherit",
+    root:   "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    mono:   "ui-monospace, 'SF Mono', Menlo, monospace",
     /* One step larger throughout — same hierarchy, softer density. */
     size:   { xs: 10, sm: 11, md: 12, base: 13, lg: 14, xl: 15, xxl: 16, h2: 17, h1: 20 },
-    weight: { medium: 500, semibold: 600, bold: 600, black: 800 },
+    weight: { normal: 400, medium: 500, semibold: 600, bold: 600, black: 800 },
     /* Much tighter tracking — the single biggest driver of the
      * "terminal vs. modern app" feel. */
     tracking: {
       tight: "0", snug: "0.01em", normal: "0.02em", wide: "0.03em",
       wider: "0.04em", widest: "0.05em", ultra: "0.06em", max: "0.08em",
     },
+    /* Looser at every step than terminal's. */
+    leading: { none: 1, snug: 1.6, normal: 1.65, relaxed: 1.7, loose: 1.75 },
   },
   radius: { none: 0, sm: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20, xxl: 26, huge: 30, max: 34 },
@@ -290,6 +370,58 @@ const soft = {
     drawerPadX:    20,
     scrimBg:       "#00000073",
     logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    pagePadY:      32,
+    pagePadX:      26,
+    cardPadY:      18,
+    sectionGapY:   38,
+    labelGapY:     7,
+    subGapY:       9,
+    descGapY:      16,
+    inputPadY:     7,
+    reviewBorder:  "#3a2c0c",
+    trackRowBg:    "#00000033",
+    rowSelectedBg: "#ffffff0d",
+    /* settings/ */
+    sectionSepGapY:   42,
+    fieldRowPadY:     16,
+    settingRowPadY:   18,
+    ctlPadY:          5,
+    actionPadX:       16,
+    savePadX:         22,
+    navPadR:          22,
+    navItemPadY:      11,
+    navUnsavedGapY:   16,
+    chipPadY:         2,
+    chipPadX:         9,
+    tagPadY:          3,
+    tagPadX:          9,
+    tagGap:           7,
+    nudge:            2,
+    colGap:           30,
+    mobileFieldGap:   11,
+    pageBotPad:       56,
+    pageBotPadMobile: 48,
+    blankPad:         38,
+    logBg:            "#1b1f2b",
+    logMeta:          "#575f7d",
+    logText:          "#dde0ec",
+    zebraBg:          "#ffffff07",
+    /* DetailModal */
+    modalPadX:      22,
+    modalFootPadY:  9,
+    modalScrimBg:   "#000000cc",
+    closeGlyph:       22,
+    closeGlyphMobile: 26,
+    errorBg:        "#241010",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.72)",
+    guardPad:     26,
+    guardPadB:    22,
+    guardBtnPadY: 9,
   },
 };
 

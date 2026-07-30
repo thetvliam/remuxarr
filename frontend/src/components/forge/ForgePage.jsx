@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { C } from "../../constants";
+import { useTheme } from "../../theme";
 import { ForgeActivePanel } from "./ForgeActivePanel";
 import { CandidatesPanel } from "./CandidatesPanel";
 import { ForgeProcessedPanel } from "./ForgeProcessedPanel";
@@ -12,6 +12,7 @@ export const ForgePage = ({
   onAdd, onUndo,
   isMobile = false,
 }) => {
+  const { palette, type, space, legacy } = useTheme();
   const [forgeTab, setForgeTab] = useState("candidates"); // mobile only
 
   return (
@@ -23,15 +24,15 @@ export const ForgePage = ({
       display: "flex",
       flexDirection: "column",
       overflow: "hidden",
-      borderTop: `1px solid ${C.border}`,
+      borderTop: `1px solid ${palette.border}`,
     }}>
     {/* Mobile tab bar */}
     {isMobile && (
       <div style={{
         display: "flex",
         flexShrink: 0,
-        borderBottom: `1px solid ${C.border}`,
-        background: C.card,
+        borderBottom: `1px solid ${palette.border}`,
+        background: palette.card,
       }}>
       {[["candidates", "CANDIDATES"], ["processed", "PROCESSED"]].map(([k, l]) => (
         <button
@@ -39,16 +40,16 @@ export const ForgePage = ({
         onClick={() => setForgeTab(k)}
         style={{
           flex: 1,
-          padding: "10px 0",
+          padding: `${space.md}px 0`,
           background: "transparent",
           border: "none",
           borderBottom: forgeTab === k
-          ? `2px solid ${C.amber}` : "2px solid transparent",
-          color: forgeTab === k ? C.amber : C.dim,
-          fontSize: 9,
-          fontFamily: "inherit",
-          letterSpacing: "0.14em",
-          fontWeight: 700,
+          ? `${legacy.accentThin}px solid ${palette.amber}` : `${legacy.accentThin}px solid transparent`,
+          color: forgeTab === k ? palette.amber : palette.dim,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.widest,
+          fontWeight: type.weight.bold,
           cursor: "pointer",
         }}
         >
@@ -67,7 +68,7 @@ export const ForgePage = ({
     {(!isMobile || forgeTab === "candidates") && (
       <div style={{
         flex: 1,
-        borderRight: !isMobile ? `1px solid ${C.border}` : "none",
+        borderRight: !isMobile ? `1px solid ${palette.border}` : "none",
         overflow: "hidden",
         display: "flex",
         flexDirection: "column",

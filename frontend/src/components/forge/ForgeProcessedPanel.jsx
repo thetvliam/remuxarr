@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtRel } from "../../utils";
 import { LED } from "../atoms/LED";
 import { StatusBadge } from "../atoms/StatusBadge";
@@ -22,6 +22,7 @@ export const ForgeProcessedPanel = ({ jobs, onUndo }) => (
 );
 
 const ForgeProcessedRow = ({ job, onUndo }) => {
+    const { palette, type, space, legacy } = useTheme();
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
@@ -39,45 +40,45 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
         style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
-            padding: "9px 14px",
-            background: hover ? "#ffffff07" : "transparent",
-            borderBottom: `1px solid ${C.border}`,
+            gap: space.md,
+            padding: `${legacy.queueRowPadY}px ${legacy.rowPadX}px`,
+            background: hover ? legacy.rowHoverBg : "transparent",
+            borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
         }}
         >
         <LED
         color={
-            isUndoPending ? C.blue
-            : isFailed || isUndoFailed ? C.red
-            : C.green
+            isUndoPending ? palette.blue
+            : isFailed || isUndoFailed ? palette.red
+            : palette.green
         }
         pulse={isUndoPending}
-        size={6}
+        size={legacy.ledSizeSm}
         />
 
         {/* File info */}
         <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-            color: C.text, fontSize: 12, fontWeight: 500,
+            color: palette.text, fontSize: type.size.base, fontWeight: type.weight.medium,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            marginBottom: 2,
+            marginBottom: space.hair,
         }}>
         {f.filename || "—"}
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: space.md, alignItems: "center" }}>
         {/* Status badge */}
         <StatusBadge status={job.status} />
 
         {/* Size delta */}
         {sizeDiff !== null && (
-            <span style={{ color: C.muted, fontSize: 10 }}>
+            <span style={{ color: palette.muted, fontSize: type.size.sm }}>
             {fmtSize(job.original_size)}
-            <span style={{ color: C.dim }}> → </span>
+            <span style={{ color: palette.dim }}> → </span>
             {fmtSize(job.output_size)}
             <span style={{
-                color: C.amber,
-                marginLeft: 4,
+                color: palette.amber,
+                marginLeft: space.xxs,
             }}>
             (+{fmtSize(Math.abs(sizeDiff))})
             </span>
@@ -87,7 +88,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
         {/* Error excerpt */}
         {(isFailed || isUndoFailed) && job.error_message && (
             <span style={{
-                color: C.red, fontSize: 10,
+                color: palette.red, fontSize: type.size.sm,
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             }}>
             {job.error_message.slice(0, 60)}
@@ -95,7 +96,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
         )}
 
         {!sizeDiff && !isFailed && !isUndoFailed && (
-            <span style={{ color: C.dim, fontSize: 10 }}>{fmtRel(job.completed_at)}</span>
+            <span style={{ color: palette.dim, fontSize: type.size.sm }}>{fmtRel(job.completed_at)}</span>
         )}
         </div>
         </div>
@@ -105,18 +106,18 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             <button
             onClick={() => onUndo(job.id)}
             style={{
-                padding: "4px 12px",
+                padding: `${space.xxs}px ${space.lg}px`,
                 flexShrink: 0,
-                background: hover ? C.red + "18" : "transparent",
-                border: `1px solid ${hover ? C.red : C.border}`,
-                color: hover ? C.red : C.dim,
-                fontSize: 9,
-                fontFamily: "inherit",
-                fontWeight: 700,
-                letterSpacing: "0.1em",
-                cursor: "pointer",
-                transition: "all 0.15s",
-                whiteSpace: "nowrap",
+                background: hover ? alpha(palette.red, ALPHA.low) : "transparent",
+                                                                        border: `1px solid ${hover ? palette.red : palette.border}`,
+                                                                        color: hover ? palette.red : palette.dim,
+                                                                        fontSize: type.size.xs,
+                                                                        fontFamily: type.family,
+                                                                        fontWeight: type.weight.bold,
+                                                                        letterSpacing: type.tracking.wide,
+                                                                        cursor: "pointer",
+                                                                        transition: "all 0.15s",
+                                                                        whiteSpace: "nowrap",
             }}
             >
             {job.status === "undo_failed" ? "↺ RETRY UNDO" : "↺ UNDO AC3"}
@@ -126,8 +127,8 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
         {/* Undo pending indicator */}
         {isUndoPending && (
             <span style={{
-                color: C.blue, fontSize: 9, fontFamily: "inherit",
-                letterSpacing: "0.1em", flexShrink: 0,
+                color: palette.blue, fontSize: type.size.xs, fontFamily: type.family,
+                letterSpacing: type.tracking.wide, flexShrink: 0,
             }}>
             REMOVING…
             </span>

@@ -1,16 +1,17 @@
 import { useState, useRef } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
 
 /* ── Full Database Backup & Restore ───────────────────────────────────────
-   Distinct from Backup & Restore above — this is the entire database
-   (every scanned file, track, queue item, history entry, Forge job),
-   not just settings. Import is genuinely destructive, so it needs a
-   typed confirmation phrase rather than the two-click pattern used
-   elsewhere — the stakes here are meaningfully higher than anything
-   else in this file. ──────────────────────────────────────────────────── */
+ * Distinct from Backup & Restore above — this is the entire database
+ * (every scanned file, track, queue item, history entry, Forge job),
+ * not just settings. Import is genuinely destructive, so it needs a
+ * typed confirmation phrase rather than the two-click pattern used
+ * elsewhere — the stakes here are meaningfully higher than anything
+ * else in this file. ──────────────────────────────────────────────────── */
 export const FullBackupSection = ({ api, toast }) => {
+  const { palette, type, space, legacy } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [pendingFile,    setPendingFile]    = useState(null);
   const [confirmText,    setConfirmText]    = useState("");
@@ -46,10 +47,10 @@ export const FullBackupSection = ({ api, toast }) => {
       if (r.ok && data.success) {
         setRestartNeeded({ backupPath: data.previous_database_backup });
       } else {
-        toast?.(data.detail || "Import failed", C.red);
+        toast?.(data.detail || "Import failed", palette.red);
       }
     } catch (_) {
-      toast?.("Import failed", C.red);
+      toast?.("Import failed", palette.red);
     } finally {
       setImporting(false);
       setPendingFile(null);
@@ -62,27 +63,27 @@ export const FullBackupSection = ({ api, toast }) => {
   // before the user actually restarts.
   if (restartNeeded) {
     return (
-      <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
-        <div style={{
-          padding: 20,
-          border: `1px solid ${C.yellow}`,
-          background: C.yellow + "14",
-        }}>
-          <div style={{ color: C.yellow, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
-            RESTART REQUIRED
-          </div>
-          <div style={{ color: C.text, fontSize: 12, lineHeight: 1.7 }}>
-            The database has been replaced on disk, but this running instance
-            is still using the old one — nothing changes here until you
-            restart the container.
-          </div>
-          <div style={{ color: C.muted, fontSize: 11, marginTop: 12, lineHeight: 1.7 }}>
-            Your previous database was saved to:
-            <div style={{ color: C.text, fontFamily: "monospace", marginTop: 4, wordBreak: "break-all" }}>
-              {restartNeeded.backupPath}
-            </div>
-          </div>
-        </div>
+      <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+      <div style={{
+        padding: space.xxl,
+        border: `1px solid ${palette.yellow}`,
+        background: alpha(palette.yellow, ALPHA.soft),
+      }}>
+      <div style={{ color: palette.yellow, fontSize: type.size.base, fontWeight: type.weight.bold, marginBottom: space.sm }}>
+      RESTART REQUIRED
+      </div>
+      <div style={{ color: palette.text, fontSize: type.size.base, lineHeight: type.leading.loose }}>
+      The database has been replaced on disk, but this running instance
+      is still using the old one — nothing changes here until you
+      restart the container.
+      </div>
+      <div style={{ color: palette.muted, fontSize: type.size.md, marginTop: space.lg, lineHeight: type.leading.loose }}>
+      Your previous database was saved to:
+      <div style={{ color: palette.text, fontFamily: type.mono, marginTop: space.xxs, wordBreak: "break-all" }}>
+      {restartNeeded.backupPath}
+      </div>
+      </div>
+      </div>
       </div>
     );
   }
@@ -90,117 +91,117 @@ export const FullBackupSection = ({ api, toast }) => {
   const canImport = !!pendingFile && confirmText === CONFIRM_PHRASE;
 
   return (
-    <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
-      <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700, marginBottom: 16 }}>
-        FULL DATABASE BACKUP &amp; RESTORE
-      </div>
-      <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65, marginBottom: 20 }}>
-        The entire database — every scanned file, track, queue item, history
-        entry, and Forge job — not just settings. A restore on a different
-        system assumes the same container-side media paths as the system it
-        was exported from; if they don't match, use Orphaned Files above
-        afterward to clean up anything that doesn't correspond to a real file.
-      </div>
+    <div style={{ marginTop: legacy.sectionSepGapY, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
+    FULL DATABASE BACKUP &amp; RESTORE
+    </div>
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.xxl }}>
+    The entire database — every scanned file, track, queue item, history
+    entry, and Forge job — not just settings. A restore on a different
+    system assumes the same container-side media paths as the system it
+    was exported from; if they don't match, use Orphaned Files above
+    afterward to clean up anything that doesn't correspond to a real file.
+    </div>
 
-      {/* Export */}
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 24, padding: "16px 0", borderBottom: `1px solid ${C.border}` }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-            Export Full Backup
-          </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, color: C.muted, fontSize: 11, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={includeSecrets}
-              onChange={e => setIncludeSecrets(e.target.checked)}
-            />
-            Include connection secrets
-          </label>
-        </div>
-        <button
-          onClick={handleExport}
-          style={{
-            padding: "6px 14px",
-            background: "transparent",
-            border: `1px solid ${C.blue}`,
-            color: C.blue,
-            fontSize: 10,
-            fontFamily: "inherit",
-            fontWeight: 700,
-            letterSpacing: "0.1em",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          EXPORT
-        </button>
-      </div>
+    {/* Export */}
+    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
+    <div style={{ flex: 1 }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    Export Full Backup
+    </div>
+    <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
+    <input
+    type="checkbox"
+    checked={includeSecrets}
+    onChange={e => setIncludeSecrets(e.target.checked)}
+    />
+    Include connection secrets
+    </label>
+    </div>
+    <button
+    onClick={handleExport}
+    style={{
+      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      background: "transparent",
+      border: `1px solid ${palette.blue}`,
+      color: palette.blue,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.wide,
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      flexShrink: 0,
+    }}
+    >
+    EXPORT
+    </button>
+    </div>
 
-      {/* Import */}
-      <div style={{ padding: "16px 0" }}>
-        <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-          Import Full Backup
-        </div>
-        <div style={{ color: C.red, fontSize: 11, lineHeight: 1.65, marginBottom: 12 }}>
-          Replaces this instance's entire database. The current database is
-          backed up first, but everything currently here — scanned files,
-          history, queue — will otherwise be gone. Requires a manual
-          container restart to actually take effect.
-        </div>
+    {/* Import */}
+    <div style={{ padding: `${space.xl}px 0` }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: legacy.labelGapY }}>
+    Import Full Backup
+    </div>
+    <div style={{ color: palette.red, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.lg }}>
+    Replaces this instance's entire database. The current database is
+    backed up first, but everything currently here — scanned files,
+    history, queue — will otherwise be gone. Requires a manual
+    container restart to actually take effect.
+    </div>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".zip"
-          onChange={handleFilePicked}
-          style={{
-            display: "block",
-            marginBottom: 10,
-            color: C.muted,
-            fontSize: 11,
-          }}
-        />
+    <input
+    ref={fileInputRef}
+    type="file"
+    accept=".zip"
+    onChange={handleFilePicked}
+    style={{
+      display: "block",
+      marginBottom: space.md,
+      color: palette.muted,
+      fontSize: type.size.md,
+    }}
+    />
 
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <input
-            type="text"
-            value={confirmText}
-            onChange={e => setConfirmText(e.target.value)}
-            placeholder={`Type "${CONFIRM_PHRASE}" to confirm`}
-            style={{
-              flex: 1,
-              maxWidth: 280,
-              padding: "6px 10px",
-              background: C.bg,
-              border: `1px solid ${confirmText === CONFIRM_PHRASE ? C.red : C.border}`,
-              color: C.text,
-              fontFamily: "inherit",
-              fontSize: 11,
-              outline: "none",
-            }}
-          />
-          <button
-            onClick={handleImport}
-            disabled={!canImport || importing}
-            style={{
-              padding: "6px 14px",
-              background: canImport ? C.red + "22" : "transparent",
-              border: `1px solid ${canImport ? C.red : C.muted}`,
-              color: canImport ? C.red : C.muted,
-              fontSize: 10,
-              fontFamily: "inherit",
-              fontWeight: 700,
-              letterSpacing: "0.1em",
-              cursor: canImport && !importing ? "pointer" : "not-allowed",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
-            {importing ? "IMPORTING…" : "REPLACE DATABASE"}
-          </button>
-        </div>
-      </div>
+    <div style={{ display: "flex", alignItems: "center", gap: space.md }}>
+    <input
+    type="text"
+    value={confirmText}
+    onChange={e => setConfirmText(e.target.value)}
+    placeholder={`Type "${CONFIRM_PHRASE}" to confirm`}
+    style={{
+      flex: 1,
+      maxWidth: 280,
+      padding: `${space.xs}px ${space.md}px`,
+      background: palette.bg,
+      border: `1px solid ${confirmText === CONFIRM_PHRASE ? palette.red : palette.border}`,
+      color: palette.text,
+      fontFamily: type.family,
+      fontSize: type.size.md,
+      outline: "none",
+    }}
+    />
+    <button
+    onClick={handleImport}
+    disabled={!canImport || importing}
+    style={{
+      padding: `${space.xs}px ${legacy.actionPadX}px`,
+      background: canImport ? alpha(palette.red, ALPHA.medium) : "transparent",
+          border: `1px solid ${canImport ? palette.red : palette.muted}`,
+          color: canImport ? palette.red : palette.muted,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: canImport && !importing ? "pointer" : "not-allowed",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+    }}
+    >
+    {importing ? "IMPORTING…" : "REPLACE DATABASE"}
+    </button>
+    </div>
+    </div>
     </div>
   );
 };
