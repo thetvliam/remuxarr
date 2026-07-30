@@ -55,7 +55,9 @@ export const ALPHA = {
   ghost:  0.027,  // was "07"
   hint:   0.031,  // was "08"
   subtle: 0.047,  // was "0c"
+  trace:  0.071,  // was "12"
   soft:   0.078,  // was "14"
+  mild:   0.125,  // was "20"
   low:    0.094,  // was "18"
   medium: 0.133,  // was "22"
   half:   0.533,  // was "88"
@@ -176,6 +178,15 @@ const terminal = {
     rowHoverBg:    "#ffffff07",
     tabPadY:       2,
     tabPadX:       10,
+    headerHeight:  46,
+    headerLogoGap: 22,
+    apiBarW:       210,
+    navPadY:       3,
+    navPadX:       10,
+    drawerPadY:    13,
+    drawerPadX:    18,
+    scrimBg:       "#00000066",
+    logoInk:       "#000",
   },
 };
 
@@ -270,6 +281,15 @@ const soft = {
     rowHoverBg:    "#ffffff0a",
     tabPadY:       4,
     tabPadX:       13,
+    headerHeight:  52,
+    headerLogoGap: 24,
+    apiBarW:       230,
+    navPadY:       5,
+    navPadX:       13,
+    drawerPadY:    15,
+    drawerPadX:    20,
+    scrimBg:       "#00000073",
+    logoInk:       "#000",
   },
 };
 
