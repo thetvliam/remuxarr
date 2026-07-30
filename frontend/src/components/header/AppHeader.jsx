@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -36,6 +36,7 @@ const NAV_ITEMS = [
 const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
 
 const Logo = ({ variant = "mark", height = 24 }) => {
+  const { palette, type, space, legacy } = useTheme();
   const [failed, setFailed] = useState(false);
 
   if (failed) {
