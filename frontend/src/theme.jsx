@@ -351,11 +351,14 @@ export const ThemeProvider = ({ children }) => {
     try { localStorage.setItem(STORAGE_KEY, themeId); } catch (_) { /* ignore */ }
   }, [themeId]);
 
-  /* The page background sits on <body>, outside React's tree, so it has to
-   * be pushed there explicitly or a light theme would leave a dark gutter
-   * around the app. */
+  /* The page background sits outside React's tree, so it has to be pushed
+   * there explicitly or a light theme would leave a dark gutter around the
+   * app. Both <html> and <body> are set: <body> alone leaves <html> showing
+   * the static background in index.html, which is visible in the overscroll
+   * area on any theme that is not the one that value was written for. */
   useEffect(() => {
     const t = themes[themeId] || terminal;
+    document.documentElement.style.background = t.palette.bg;
     document.body.style.background = t.palette.bg;
     document.body.style.color      = t.palette.text;
   }, [themeId]);

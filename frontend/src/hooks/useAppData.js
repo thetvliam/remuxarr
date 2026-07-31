@@ -178,14 +178,15 @@ export function useAppData() {
   }, []);
 
   /* ── Global CSS injection ─────────────────────────────────────────────── */
-  /* Split in two on purpose. The font link, title and keyframes never change,
-   * so they mount once. The background and scrollbar colours come from the
-   * palette, so they have to be re-applied when the theme switches — as one
-   * mount-only effect they stayed on whichever theme was active at load,
-   * leaving the page background behind while everything else moved. */
+  /* Split in two on purpose. The resets and keyframes never change, so they
+   * mount once. The scrollbar colours come from the palette, so they have to
+   * be re-applied when the theme switches — as one mount-only effect they
+   * stayed on whichever theme was active at load. */
   useEffect(() => {
-    // Theme-independent resets + keyframes. The webfont is not here: it
-    // varies per theme, so ThemeProvider owns it.
+    // Theme-independent resets + keyframes. Two things are deliberately
+    // absent: the webfont, which varies per theme, and the page background.
+    // Both belong to ThemeProvider, which already re-applies them on every
+    // theme change.
     const style       = document.createElement("style");
     style.textContent = `
     *, *::before, *::after { box-sizing: border-box; }
@@ -197,19 +198,28 @@ export function useAppData() {
     `;
     document.head.appendChild(style);
     document.title = "Remuxarr";
+    // Every other appendChild in this file has a matching removal; this one
+    // did not. StrictMode runs effects twice in development, so it left a
+    // duplicate <style> in <head> on every dev load, and it would leak again
+    // on any future remount of this hook.
+    return () => { document.head.removeChild(style); };
   }, []);
 
   /* ── Theme-dependent global CSS ───────────────────────────────────────── */
+  /* Scrollbars only. The page background used to be set here as well as by
+   * ThemeProvider, which sets it inline on <body>. Inline always wins, so
+   * this rule never actually did anything — but two owners for one value is
+   * how they drift, and the dead one is the one someone edits when the
+   * background looks wrong. */
   useEffect(() => {
     const style       = document.createElement("style");
     style.textContent = `
-    html, body { background: ${palette.bg}; }
     ::-webkit-scrollbar        { width: ${legacy.scrollbarW}px; }
     ::-webkit-scrollbar-thumb  { background: ${palette.border}; }
     `;
     document.head.appendChild(style);
     return () => { document.head.removeChild(style); };
-  }, [palette.bg, palette.border, legacy.scrollbarW]);
+  }, [palette.border, legacy.scrollbarW]);
 
   /* ── Toast helper ─────────────────────────────────────────────────────── */
   const toast = useCallback((msg, color) => {
@@ -381,7 +391,22 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-      }, [fetchAll, fetchForge, toast]);
+        /* `palette` and `api` are read in the body above and so belong here.
+         * They were missing, and the omission was silent: `fetchAll` and
+         * `fetchForge` only change when `api` changes and `toast` never
+         * changes, so this callback was rebuilt on an api change and at no
+         * other time. In particular it was never rebuilt on a theme switch,
+         * leaving every toast raised from a WebSocket event coloured from
+         * whichever palette was active when the socket handler was last
+         * built. Between the two current themes that is a near-identical
+         * green; against a light palette it would be an unreadable toast.
+         *
+         * The bug arrived with the theme migration, which replaced a static
+         * `C.green` — a module constant, correctly absent from this array —
+         * with a context value that does change. Nothing flagged the
+         * difference, which is why the lint rule that would have is now
+         * installed. */
+      }, [fetchAll, fetchForge, toast, palette, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
