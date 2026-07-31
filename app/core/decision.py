@@ -363,9 +363,21 @@ def analyze_file(
             und_audio = [t for t in und_audio if t is not forged_track]
 
     if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
+        # Names the setting that caused this rather than just the count. The
+        # count alone reads like a fault in the file ("Contains 1 audio
+        # tracks" — also ungrammatical at the threshold's minimum of 1,
+        # which is the value most likely to produce this message), when it
+        # is really a configured policy the user owns and can change. Saying
+        # which threshold it hit turns an alarm into something actionable:
+        # either fix this file, or raise the threshold so files like it stop
+        # arriving here.
+        count  = len(und_audio)
+        plural = "" if count == 1 else "s"
         msg = (
-            f"Contains {len(und_audio)} audio tracks with undefined language — "
-            f"manual review required to prevent accidental track deletion."
+            f"Contains {count} audio track{plural} with an undefined "
+            f"language — at or above the Undefined Audio Track Threshold "
+            f"of {und_threshold}. Held for review so no track is dropped "
+            f"by mistake."
         )
         return ProcessingDecision(
             should_process=False,
@@ -496,24 +508,63 @@ def analyze_file(
     # track — leaving the file with zero audio tracks after the drop
     # pass runs. That's not an acceptable outcome under any configuration.
     #
-    # This only ever activates when NEITHER of the two normal tiers has
-    # anything to offer — it does not override a real preferred-language
-    # match or a genuine default flag, only fires when both are absent —
-    # and force-keeps the first audio track by stream index as the
+    # This only ever activates when no track would survive on its own, and
+    # force-keeps the first audio track by stream index as the
     # unconditional floor: a file may end up with the wrong language
     # audible, but it will never end up with none at all.
-    has_default_audio = any(track.get("is_default") for track in audio_tracks)
+    #
+    # The condition below deliberately restates should_keep's own terms
+    # rather than approximating them. It previously tested
+    # "not has_preferred_audio and not has_default_audio", which drifted
+    # from the real keep rule in two directions and produced a bug each way:
+    #
+    #   Fired when it should not have — should_keep ALWAYS retains "und"
+    #   audio (see its comment below), but this guard did not know that, so
+    #   an und-only file triggered the fallback and logged a warning saying
+    #   its language tag was "likely wrong". The tag was not wrong, it was
+    #   absent, which is normal and handled elsewhere entirely
+    #   (fix_undefined_language, und_audio_threshold, Audio Language
+    #   Review). The false alarm was the common case, which made the
+    #   warning easy to dismiss on the rare occasion it mattered.
+    #
+    #   Did not fire when it should have — "not has_default_audio" ignored
+    #   whether keep_default_audio was actually enabled. With that setting
+    #   off, a lone non-preferred track carrying the default flag satisfied
+    #   this guard (so no fallback) while failing should_keep's
+    #   keep_default_audio term (so it was dropped): a silent output file,
+    #   the precise outcome this tier exists to prevent.
+    #
+    # Keeping the two expressions in step is what makes the invariant hold,
+    # so any future change to should_keep's terms belongs here too.
+    survives_without_fallback = any(
+        (t["language"] or "und") in keep_audio_langs
+        or (t["language"] or "und") == "und"
+        or (keep_default_audio and t.get("is_default") and not has_preferred_audio)
+        for t in audio_tracks
+    )
     absolute_fallback_stream_index = None
-    if audio_tracks and not has_preferred_audio and not has_default_audio:
+    if audio_tracks and not survives_without_fallback:
         absolute_fallback_stream_index = min(
             t["stream_index"] for t in audio_tracks
         )
+        fallback_track = next(
+            t for t in audio_tracks
+            if t["stream_index"] == absolute_fallback_stream_index
+        )
+        # Names the file and the offending tag. Reaching here means every
+        # audio track carries a defined language that is not in the keep
+        # list and none is usable via the default flag, so the tag really
+        # is the thing to look at — and the file is already waiting in
+        # Audio Language Review, where it can be corrected in bulk
+        # alongside every other file with the same wrong tag.
         logger.warning(
-            "No preferred-language or default-flagged audio track found — "
-            "force-keeping stream %d as a last resort to avoid a silent "
-            "output file. This file should be checked: its audio language "
-            "tag is likely wrong.",
+            "No usable audio track for %s — every track has a defined, "
+            "non-preferred language (kept stream %d, tagged '%s') and none "
+            "is default-flagged. Force-keeping it to avoid a silent output "
+            "file. Correct the tag in Audio Language Review.",
+            file_info.get("path", "<unknown path>"),
             absolute_fallback_stream_index,
+            fallback_track.get("language") or "und",
         )
 
     for track in audio_tracks:

@@ -12,6 +12,7 @@ Run from the project root:
     pip install -r tests/requirements-test.txt
     pytest tests/ -v
 """
+import logging
 import sys
 import os
 
@@ -81,6 +82,156 @@ def test_single_default_flagged_track_survives_via_tier2_fallback(settings):
     assert not dropped_audio
     assert decision.audio_language_mismatch is not None
     assert decision.audio_language_mismatch["language"] == "dut"
+
+
+def test_und_only_file_does_not_trigger_absolute_fallback(settings, caplog):
+    """
+    The absolute fallback's guard used to test "no preferred-language track
+    and no default-flagged track", which is not what should_keep actually
+    does: should_keep ALWAYS retains "und" audio. So a file whose only
+    audio track was undefined tripped the fallback and logged a warning
+    saying its language tag was "likely wrong".
+
+    The tag was not wrong, it was absent — an ordinary condition with its
+    own handling (fix_undefined_language, und_audio_threshold, Audio
+    Language Review). Undefined-language audio is by far the most common
+    reason to reach this point, so the false alarm fired constantly, which
+    is precisely what teaches people to ignore a warning that does matter
+    on the rare occasions it fires for real.
+
+    The track must still survive — just via the "und" rule, silently.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="hevc"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="und", is_default=False),
+    ]
+    with caplog.at_level(logging.WARNING, logger="app.core.decision"):
+        decision = analyze_file(make_file_info(), tracks, settings)
+
+    dropped_audio = [
+        a for a in decision.actions
+        if a.track_type == "audio" and a.action_type == "drop_track"
+    ]
+    assert not dropped_audio, "The und track should be kept by the und rule."
+    assert not any("No usable audio track" in r.getMessage() for r in caplog.records), (
+        "The absolute fallback warned about an undefined-language file. "
+        "That tier is for tracks with a DEFINED but non-preferred language; "
+        "und audio is kept by should_keep's own rule and needs no rescue."
+    )
+
+
+def test_default_flagged_track_survives_when_keep_default_audio_disabled(settings):
+    """
+    The mirror image of the und bug, from the same drifted guard, and the
+    more serious of the two: a silent output file.
+
+    The guard tested "not has_default_audio" without asking whether
+    keep_default_audio was actually enabled. With that setting off, a lone
+    non-preferred track carrying the default flag satisfied the guard — so
+    the absolute fallback declined to fire — while also failing
+    should_keep's keep_default_audio term, so it was dropped. Nothing kept
+    it, and the output had zero audio tracks.
+
+    That is the exact outcome this whole safety net exists to prevent, and
+    turning OFF a setting called "keep default audio" should never be able
+    to cause it: the setting scopes which track is preferred, not whether
+    the file is allowed to end up silent.
+    """
+    settings["keep_default_audio"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="hevc"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="dan", is_default=True),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+
+    dropped_audio = [
+        a for a in decision.actions
+        if a.track_type == "audio" and a.action_type == "drop_track"
+    ]
+    assert not dropped_audio, (
+        "The only audio track was dropped with keep_default_audio off — "
+        "a silent output file."
+    )
+
+
+def test_absolute_fallback_warning_names_the_file_and_the_tag(settings, caplog):
+    """
+    The warning used to identify the file only by stream index, which is
+    the one detail that is useless on its own — every file has a stream 1.
+    Anyone hitting this in a log had no way to tell which of thousands of
+    files it referred to.
+
+    It must name the path and the offending language tag, since those are
+    what the reader has to act on, and point at Audio Language Review,
+    where the file is already queued and can be fixed in bulk.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="hevc"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="dan", is_default=False),
+    ]
+    info = make_file_info()
+    with caplog.at_level(logging.WARNING, logger="app.core.decision"):
+        analyze_file(info, tracks, settings)
+
+    warnings = [r.getMessage() for r in caplog.records
+                if "No usable audio track" in r.getMessage()]
+    assert warnings, "The absolute fallback fired but logged nothing."
+    msg = warnings[0]
+    assert info["path"] in msg, "Warning does not name the file."
+    assert "'dan'" in msg, "Warning does not name the offending language tag."
+    assert "Audio Language Review" in msg, (
+        "Warning does not point at the workflow that already exists for this."
+    )
+
+
+def test_manual_review_reason_is_grammatical_and_names_the_threshold(settings):
+    """
+    The reason string said "Contains 1 audio tracks with undefined
+    language" — ungrammatical exactly at und_audio_threshold's minimum of
+    1, which is the setting most likely to produce it.
+
+    More importantly it never mentioned the threshold, so the message read
+    as a fault in the file rather than a configured policy the user owns.
+    Without that, the only obvious response is to fix the file one at a
+    time; knowing which threshold it hit makes "raise the threshold" a
+    visible option too.
+    """
+    settings["und_audio_threshold"] = 1
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="hevc"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="und", is_default=False),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+
+    assert decision.is_manual_review
+    assert "1 audio track " in decision.reason, (
+        f"Expected singular 'audio track', got: {decision.reason}"
+    )
+    assert "audio tracks" not in decision.reason
+    assert "Undefined Audio Track Threshold of 1" in decision.reason, (
+        f"Reason does not name the setting that caused it: {decision.reason}"
+    )
+
+
+def test_manual_review_reason_pluralises_above_one(settings):
+    """The singular fix must not break the ordinary multi-track case."""
+    settings["und_audio_threshold"] = 2
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="hevc"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="und", is_default=False),
+        make_track(stream_index=2, track_type="audio", codec="ac3",
+                   language="und", is_default=False),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+
+    assert decision.is_manual_review
+    assert "2 audio tracks" in decision.reason, decision.reason
+    assert "Undefined Audio Track Threshold of 2" in decision.reason, decision.reason
 
 
 def test_normal_multi_language_file_unaffected(settings):
