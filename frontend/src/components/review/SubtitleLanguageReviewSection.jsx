@@ -1,13 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
-
-// Matches the existing extract_subtitle action color in constants.js —
-// the established subtitle-related color in this codebase already,
-// rather than introducing a new, arbitrary one.
-const SUB_COLOR = "#2dd4d4";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SUBTITLE LANGUAGE REVIEW SECTION
@@ -16,8 +11,14 @@ const SUB_COLOR = "#2dd4d4";
  * than shared, since the two flag independent things. Every row here
  * originates from an undefined ("und") tag, not a defined-but-wrong one —
  * see fix_undefined_language's "always ask" mode.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
+  const { palette, type, space, legacy } = useTheme();
+
+  // The established subtitle colour in this codebase — the same one the
+  // extract_subtitle action badge uses. Read from the palette rather than
+  // hardcoded, so it follows the theme like every other colour.
+  const SUB_COLOR = palette.cyan;
   const [search,          setSearch]          = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selected,        setSelected]        = useState(new Set());
@@ -107,30 +108,30 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
   };
 
   return (
-    <div style={{ marginTop: 32 }}>
+    <div style={{ marginTop: space.xxxl }}>
     <div style={{
       display: "flex",
       alignItems: "center",
-      gap: 10,
-      marginBottom: 8,
-      paddingTop: 24,
-      borderTop: `1px solid ${C.border}`,
+      gap: space.md,
+      marginBottom: space.sm,
+      paddingTop: space.huge,
+      borderTop: `1px solid ${palette.border}`,
     }}>
-    <span style={{ color: SUB_COLOR, fontSize: 15 }}>▭</span>
-    <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
+    <span style={{ color: SUB_COLOR, fontSize: type.size.xxl }}>▭</span>
+    <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
     SUBTITLE LANGUAGE REVIEW
     </span>
     <span style={{
-      padding: "0 6px",
-      background: SUB_COLOR + "20",
-      border: `1px solid ${SUB_COLOR}44`,
-      color: SUB_COLOR,
-      fontSize: 9,
+      padding: `0 ${space.xs}px`,
+      background: alpha(SUB_COLOR, ALPHA.mild),
+          border: `1px solid ${alpha(SUB_COLOR, ALPHA.strong)}`,
+          color: SUB_COLOR,
+          fontSize: type.size.xs,
     }}>
     {total}
     </span>
     </div>
-    <p style={{ color: C.muted, fontSize: 11, margin: "0 0 14px", lineHeight: 1.65 }}>
+    <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
     Files whose kept subtitle track has an undefined language tag,
     flagged because Fix Undefined Language Tags is set to Always Ask.
     These files are already fully processed and playable; this is
@@ -141,10 +142,10 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
 
     <div style={{
       display: "flex",
-      gap: 8,
+      gap: space.sm,
       alignItems: "center",
       flexWrap: "wrap",
-      marginBottom: 10,
+      marginBottom: space.md,
     }}>
     <input
     value={search}
@@ -152,13 +153,13 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     placeholder="Search by filename…"
     style={{
       flex: "1 1 200px",
-      padding: "5px 10px",
-      background: C.bg,
-      border: `1px solid ${search ? SUB_COLOR + "88" : C.border}`,
-      color: C.text,
-      fontFamily: "inherit",
-      fontSize: 11,
-      outline: "none",
+      padding: `${space.xs}px ${space.md}px`,
+      background: palette.bg,
+      border: `1px solid ${search ? alpha(SUB_COLOR, ALPHA.half) : palette.border}`,
+          color: palette.text,
+          fontFamily: type.family,
+          fontSize: type.size.md,
+          outline: "none",
     }}
     />
     <input
@@ -168,26 +169,26 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     title="ISO 639-2/B language code to apply to selected files"
     style={{
       width: 70,
-      padding: "5px 8px",
-      background: C.bg,
-      border: `1px solid ${C.border}`,
-      color: C.text,
-      fontFamily: "inherit",
-      fontSize: 11,
+      padding: `${space.xs}px ${space.sm}px`,
+      background: palette.bg,
+      border: `1px solid ${palette.border}`,
+      color: palette.text,
+      fontFamily: type.family,
+      fontSize: type.size.md,
       outline: "none",
       textTransform: "lowercase",
     }}
     />
     <Btn
     label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
-    color={C.green}
-    bg={C.green + "18"}
+    color={palette.green}
+    bg={alpha(palette.green, ALPHA.low)}
     onClick={applyLanguage}
     disabled={busy || selected.size === 0 || !targetLang.trim()}
     />
     <Btn
     label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
-    color={C.dim}
+    color={palette.dim}
     bg="transparent"
     onClick={ignoreSelected}
     disabled={busy || selected.size === 0}
@@ -201,20 +202,20 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
         : "No undefined subtitle languages found ✓"
       } />
     ) : (
-      <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${C.border}` }}>
+      <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}` }}>
       {items.length > 0 && (
         <div style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "6px 12px",
-          background: C.card,
-          borderBottom: `1px solid ${C.border}`,
+          gap: space.md,
+          padding: `${space.xs}px ${space.lg}px`,
+          background: palette.card,
+          borderBottom: `1px solid ${palette.border}`,
           position: "sticky",
           top: 0,
         }}>
         <input type="checkbox" checked={allLoadedSelected} onChange={toggleAll} />
-        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.08em" }}>
+        <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
         SELECT ALL LOADED ({items.length}{total > items.length ? ` of ${total}` : ""})
         </span>
         </div>
@@ -227,11 +228,11 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "8px 12px",
-          borderBottom: `1px solid ${C.border}`,
+          gap: space.md,
+          padding: `${space.sm}px ${space.lg}px`,
+          borderBottom: `1px solid ${palette.border}`,
           cursor: "pointer",
-          background: selected.has(item.file_id) ? "#ffffff08" : "transparent",
+          background: selected.has(item.file_id) ? legacy.rowSelectedBg : "transparent",
         }}
         >
         <input
@@ -243,8 +244,8 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
         <span style={{
           flex: 1,
           minWidth: 0,
-          color: C.text,
-          fontSize: 11,
+          color: palette.text,
+          fontSize: type.size.md,
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -253,12 +254,12 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
         </span>
         <span style={{
           flexShrink: 0,
-          padding: "1px 6px",
-          background: C.yellow + "18",
-          border: `1px solid ${C.yellow}44`,
-          color: C.yellow,
-          fontSize: 9,
-          letterSpacing: "0.1em",
+          padding: `${space.hair}px ${space.xs}px`,
+          background: alpha(palette.yellow, ALPHA.low),
+                          border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                          color: palette.yellow,
+                          fontSize: type.size.xs,
+                          letterSpacing: type.tracking.wide,
         }}>
         {(item.detected_language || "?").toUpperCase()}
         </span>
@@ -266,8 +267,8 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
       ))}
 
       {hasMore && (
-        <div ref={sentinelRef} style={{ padding: "8px 12px" }}>
-        {loading && <span style={{ color: C.dim, fontSize: 10 }}>Loading…</span>}
+        <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.lg}px` }}>
+        {loading && <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>}
         </div>
       )}
       </div>

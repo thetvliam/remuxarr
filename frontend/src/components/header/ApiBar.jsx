@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * API CONFIGURATOR  (small inline bar in the header)
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ApiBar = ({ current, onSave }) => {
+    const { palette, type, space, legacy } = useTheme();
     const [draft, setDraft] = useState(current);
     return (
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
         <input
         value={draft}
         onChange={e => setDraft(e.target.value)}
@@ -16,17 +17,17 @@ export const ApiBar = ({ current, onSave }) => {
         placeholder="http://localhost:9191"
         autoFocus
         style={{
-            width: 210,
-            padding: "3px 8px",
-            background: C.bg,
-            border: `1px solid ${C.border}`,
-            color: C.text,
-            fontFamily: "inherit",
-            fontSize: 10,
+            width: legacy.apiBarW,
+            padding: `${space.xxs}px ${space.sm}px`,
+            background: palette.bg,
+            border: `1px solid ${palette.border}`,
+            color: palette.text,
+            fontFamily: type.family,
+            fontSize: type.size.sm,
             outline: "none",
         }}
         />
-        <Btn label="SET" color={C.amber} onClick={() => onSave(draft)} />
+        <Btn label="SET" color={palette.amber} onClick={() => onSave(draft)} />
         </div>
     );
 };

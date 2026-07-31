@@ -1,18 +1,25 @@
-import { ACTION_CFG } from "../../constants";
-import { palette, type, legacy } from "../../theme";
+import { useTheme } from "../../theme";
 
 // Action type badge (COPY / DROP / TRANSCODE / CONVERT / FLAG / EXTRACT / FASTSTART)
+// NOTE: the incoming prop is destructured as `actionType` because `type` is
+// also the name of the theme's typography token — a collision worth knowing
+// about, since several components take a `type` prop. The external API is
+// unchanged: callers still write <ActionBadge type={...} />.
 export const ActionBadge = ({ type: actionType }) => {
-    const cfg = ACTION_CFG[actionType] || {
-        bg: legacy.badgeFallbackBg, border: palette.border, text: palette.dim,
+    const { palette, type, space, radius, legacy, actionCfg } = useTheme();
+    const cfg = actionCfg[actionType] || {
+        bg: legacy.badgeFallbackBg,
+        border: palette.border,
+        text: palette.dim,
         label: (actionType || "?").toUpperCase(),
     };
     return (
         <span style={{
             display: "inline-block",
-            padding: `${legacy.badgePadY}px ${legacy.badgePadX}px`,
+            padding: `${space.hair}px ${space.xs}px`,
             background: cfg.bg,
             border: `1px solid ${cfg.border}`,
+            borderRadius: radius.none,
             color: cfg.text,
             fontSize: type.size.xs,
             fontFamily: type.family,

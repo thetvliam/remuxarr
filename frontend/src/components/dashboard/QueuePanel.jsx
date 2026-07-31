@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { C, STATUS_COLOR } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtTime } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
@@ -10,15 +10,11 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
+    const { palette, type, space, radius, legacy, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
-    const f          = item.file || {};
-    // NOTE: this row only ever renders PENDING items. Its parent passes
-    // pendingQueue = queue.filter(status !== "processing"), so an
-    // item.status === "processing" branch here was unreachable — the LED
-    // pulse, the action-hide guard, and the MiniBar block below never
-    // fired (processing items render in ActivePanel instead). Removed.
+    const f = item.file || {};
 
     const stopProp = (fn) => (e) => { e.stopPropagation(); fn(); };
 
@@ -28,16 +24,17 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         title={title}
         style={{
             background: "none",
-            border: `1px solid ${color}55`,
-            color,
-            fontSize: 9,
-            fontFamily: "inherit",
-            letterSpacing: "0.08em",
-            padding: "1px 6px",
-            cursor: "pointer",
-            flexShrink: 0,
-            opacity: hover ? 1 : 0,
-            transition: "opacity 0.1s",
+            border: `1px solid ${alpha(color, ALPHA.heavy)}`,
+                                                    borderRadius: radius.sm,
+                                                    color,
+                                                    fontSize: type.size.xs,
+                                                    fontFamily: type.family,
+                                                    letterSpacing: type.tracking.normal,
+                                                    padding: `${space.hair}px ${space.xs}px`,
+                                                    cursor: "pointer",
+                                                    flexShrink: 0,
+                                                    opacity: hover ? 1 : 0,
+                                                    transition: "opacity 0.1s",
         }}
         >
         {label}
@@ -53,25 +50,28 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
             display: "block",
             width: "100%",
             textAlign: "left",
-            padding: "9px 14px",
-            background: hover ? "#ffffff07" : "transparent",
+            padding: `${space.md}px ${space.xl}px`,
+            background: hover ? legacy.rowHoverBg : "transparent",
             border: "none",
-            borderBottom: `1px solid ${C.border}`,
+            borderBottom: `1px solid ${palette.border}`,
             cursor: "pointer",
-            fontFamily: "inherit",
+            fontFamily: type.family,
         }}
         >
         {/* Row: LED + name + action buttons + time */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+        <div style={{
+            display: "flex", alignItems: "center",
+            gap: space.xs, marginBottom: space.xxs,
+        }}>
         <LED
-        color={STATUS_COLOR[item.status] || C.dim}
+        color={statusColor[item.status] || palette.dim}
         pulse={false}
-        size={6}
+        size={legacy.ledSizeSm}
         />
         <span style={{
-            color: C.text,
-            fontSize: 12,
-            fontWeight: 500,
+            color: palette.text,
+            fontSize: type.size.base,
+            fontWeight: type.weight.medium,
             flex: 1,
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -82,21 +82,21 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         </span>
 
         {/* Per-row actions (this row is always a pending item) */}
-        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        {actionBtn("↑ TOP", C.amber, () => onPrioritize(item), "Move to top of queue")}
-        {actionBtn("×", C.red, () => onDismiss(item), "Remove from queue")}
+        <div style={{ display: "flex", gap: space.xxs, alignItems: "center" }}>
+        {actionBtn("↑ TOP", palette.amber, () => onPrioritize(item), "Move to top of queue")}
+        {actionBtn("×", palette.red, () => onDismiss(item), "Remove from queue")}
         </div>
 
-        <span style={{ color: C.dim, fontSize: 9, flexShrink: 0 }}>
+        <span style={{ color: palette.dim, fontSize: type.size.xs, flexShrink: 0 }}>
         {fmtTime(item.created_at)}
         </span>
         </div>
 
         {/* Reason */}
         <div style={{
-            color: C.muted,
-            fontSize: 10,
-            paddingLeft: 14,
+            color: palette.muted,
+            fontSize: type.size.sm,
+            paddingLeft: space.xl,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -109,9 +109,10 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
-    const [search,    setSearch]    = useState("");
+    const { palette, type, space, radius } = useTheme();
+    const [search,     setSearch]     = useState("");
     const [clearArmed, setClearArmed] = useState(false);
 
     const pendingCount = items.filter(i => i.status === "pending").length;
@@ -137,15 +138,16 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
         onClick={handleClear}
         title={clearArmed ? "Click again to confirm" : "Remove all pending items from queue"}
         style={{
-            padding: "2px 9px",
-            background: clearArmed ? C.red + "22" : "transparent",
-            border: `1px solid ${clearArmed ? C.red : C.border}`,
-            color: clearArmed ? C.red : C.dim,
-            fontSize: 9,
-            fontFamily: "inherit",
-            letterSpacing: "0.1em",
-            cursor: "pointer",
-            transition: "all 0.15s",
+            padding: `${space.hair}px ${space.md}px`,
+            background: clearArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
+                                      border: `1px solid ${clearArmed ? palette.red : palette.border}`,
+                                      borderRadius: radius.sm,
+                                      color: clearArmed ? palette.red : palette.dim,
+                                      fontSize: type.size.xs,
+                                      fontFamily: type.family,
+                                      letterSpacing: type.tracking.wide,
+                                      cursor: "pointer",
+                                      transition: "all 0.15s",
         }}
         >
         {clearArmed ? "CONFIRM CLEAR" : "CLEAR QUEUE"}
@@ -163,8 +165,8 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
         {/* Search */}
         {items.length > 0 && (
             <div style={{
-                padding: "6px 12px",
-                borderBottom: `1px solid ${C.border}`,
+                padding: `${space.xs}px ${space.lg}px`,
+                borderBottom: `1px solid ${palette.border}`,
                 flexShrink: 0,
             }}>
             <input
@@ -173,12 +175,13 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
             placeholder="Filter by filename…"
             style={{
                 width: "100%",
-                padding: "4px 8px",
-                background: C.bg,
-                border: `1px solid ${C.border}`,
-                color: C.text,
-                fontSize: 11,
-                fontFamily: "inherit",
+                padding: `${space.xxs}px ${space.sm}px`,
+                background: palette.bg,
+                border: `1px solid ${palette.border}`,
+                borderRadius: radius.sm,
+                color: palette.text,
+                fontSize: type.size.md,
+                fontFamily: type.family,
                 outline: "none",
             }}
             />

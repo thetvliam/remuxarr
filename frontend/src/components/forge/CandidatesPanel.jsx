@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtDur } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
@@ -8,8 +8,9 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * CANDIDATE ROW
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const CandidateRow = ({ candidate: c, onAdd }) => {
+    const { palette, type, space, legacy } = useTheme();
     const [hover, setHover] = useState(false);
     const lang = c.aac_track?.language?.toUpperCase() || "UND";
 
@@ -20,48 +21,48 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
         style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
-            padding: "9px 14px",
-            background: hover ? "#ffffff07" : "transparent",
-            borderBottom: `1px solid ${C.border}`,
+            gap: space.md,
+            padding: `${space.md}px ${space.xl}px`,
+            background: hover ? legacy.rowHoverBg : "transparent",
+            borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
         }}
         >
-        <LED color={C.green} size={6} />
+        <LED color={palette.green} size={legacy.ledSizeSm} />
 
         <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-            color: C.text, fontSize: 12, fontWeight: 500,
+            color: palette.text, fontSize: type.size.base, fontWeight: type.weight.medium,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            marginBottom: 2,
+            marginBottom: space.hair,
         }}>
         {c.filename}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
         <span style={{
-            padding: "1px 6px",
-            background: C.amber + "18",
-            border: `1px solid ${C.amber}44`,
-            color: C.amber, fontSize: 9,
-            fontFamily: "inherit", letterSpacing: "0.1em",
+            padding: `${space.hair}px ${space.xs}px`,
+            background: alpha(palette.amber, ALPHA.low),
+            border: `1px solid ${alpha(palette.amber, ALPHA.strong)}`,
+            color: palette.amber, fontSize: type.size.xs,
+            fontFamily: type.family, letterSpacing: type.tracking.wide,
         }}>
         {lang} · AAC 5.1
         </span>
-        <span style={{ color: C.dim, fontSize: 10 }}>{fmtSize(c.size)}</span>
-        <span style={{ color: C.dim, fontSize: 10 }}>{fmtDur(c.duration)}</span>
-        <span style={{ color: C.dim, fontSize: 10 }}>{(c.container || "").toUpperCase()}</span>
+        <span style={{ color: palette.dim, fontSize: type.size.sm }}>{fmtSize(c.size)}</span>
+        <span style={{ color: palette.dim, fontSize: type.size.sm }}>{fmtDur(c.duration)}</span>
+        <span style={{ color: palette.dim, fontSize: type.size.sm }}>{(c.container || "").toUpperCase()}</span>
         </div>
         </div>
 
         <button
         onClick={() => onAdd(c.id)}
         style={{
-            padding: "4px 12px", flexShrink: 0,
-            background: hover ? C.amber + "22" : "transparent",
-            border: `1px solid ${hover ? C.amber : C.border}`,
-            color: hover ? C.amber : C.dim,
-            fontSize: 9, fontFamily: "inherit",
-            fontWeight: 700, letterSpacing: "0.1em",
+            padding: `${space.xxs}px ${space.lg}px`, flexShrink: 0,
+            background: hover ? alpha(palette.amber, ALPHA.medium) : "transparent",
+            border: `1px solid ${hover ? palette.amber : palette.border}`,
+            color: hover ? palette.amber : palette.dim,
+            fontSize: type.size.xs, fontFamily: type.family,
+            fontWeight: type.weight.bold, letterSpacing: type.tracking.wide,
             cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
         }}
         >
@@ -77,8 +78,9 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
  * candidates array.  usePaginatedFetch handles pagination; the same
  * IntersectionObserver + generation-counter pattern used in HistoryPanel
  * ensures refreshKey changes always produce a clean, up-to-date list.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
+    const { palette, type, space } = useTheme();
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -113,9 +115,9 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
         <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
         {/* Search bar */}
         <div style={{
-            padding: "8px 14px",
-            background: C.card,
-            borderBottom: `1px solid ${C.border}`,
+            padding: `${space.sm}px ${space.xl}px`,
+            background: palette.card,
+            borderBottom: `1px solid ${palette.border}`,
             flexShrink: 0,
         }}>
         <input
@@ -124,12 +126,12 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
         placeholder="Search all candidates by filename…"
         style={{
             width: "100%",
-            padding: "5px 10px",
-            background: C.bg,
-            border: `1px solid ${search ? C.amber + "88" : C.border}`,
-            color: C.text,
-            fontFamily: "inherit",
-            fontSize: 11,
+            padding: `${space.xs}px ${space.md}px`,
+            background: palette.bg,
+            border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
+            color: palette.text,
+            fontFamily: type.family,
+            fontSize: type.size.md,
             outline: "none",
         }}
         />
@@ -155,17 +157,17 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
 
             {/* Infinite scroll sentinel */}
             {hasMore && (
-                <div ref={sentinelRef} style={{ padding: "8px 14px" }}>
+                <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.xl}px` }}>
                 {loading && (
-                    <span style={{ color: C.dim, fontSize: 10 }}>Loading…</span>
+                    <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
                 )}
                 </div>
             )}
 
             {/* End-of-list indicator */}
             {!hasMore && items.length > 0 && (
-                <div style={{ padding: "8px 14px" }}>
-                <span style={{ color: C.dim, fontSize: 10 }}>
+                <div style={{ padding: `${space.sm}px ${space.xl}px` }}>
+                <span style={{ color: palette.dim, fontSize: type.size.sm }}>
                 {debouncedSearch
                     ? `${total.toLocaleString()} result${total === 1 ? "" : "s"}`
                     : `${items.length.toLocaleString()} candidate${items.length === 1 ? "" : "s"}`
@@ -178,8 +180,8 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
 
         {/* Loading spinner for first-page load */}
         {items.length === 0 && loading && (
-            <div style={{ padding: "16px 14px" }}>
-            <span style={{ color: C.dim, fontSize: 10 }}>Loading…</span>
+            <div style={{ padding: `${space.xl}px ${space.xl}px` }}>
+            <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>
             </div>
         )}
         </div>

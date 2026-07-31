@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
-   Export is safe/read-only — no confirmation needed. Import overwrites
-   current settings for whatever keys are present in the file, so it uses
-   the same 4-second auto-cancel confirm pattern as DangerZone's destructive
-   actions. Merge semantics, not replace: keys absent from the imported
-   file (most notably secrets deliberately excluded at export time) are
-   left completely untouched here. ──────────────────────────────────────── */
+ * Export is safe/read-only — no confirmation needed. Import overwrites
+ * current settings for whatever keys are present in the file, so it uses
+ * the same 4-second auto-cancel confirm pattern as DangerZone's destructive
+ * actions. Merge semantics, not replace: keys absent from the imported
+ * file (most notably secrets deliberately excluded at export time) are
+ * left completely untouched here. ──────────────────────────────────────── */
 export const BackupRestoreSection = ({ api, toast }) => {
+  const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [importing,  setImporting]  = useState(false);
@@ -51,13 +52,13 @@ export const BackupRestoreSection = ({ api, toast }) => {
         toast?.(
           `Imported ${data.applied} setting${data.applied === 1 ? "" : "s"}` +
           (data.skipped ? ` — ${data.skipped} unrecognized key${data.skipped === 1 ? "" : "s"} skipped` : ""),
-          C.green,
+                palette.green,
         );
       } else {
-        toast?.(data.detail || "Import failed", C.red);
+        toast?.(data.detail || "Import failed", palette.red);
       }
     } catch (_) {
-      toast?.("Import failed", C.red);
+      toast?.("Import failed", palette.red);
     } finally {
       setImporting(false);
       setConfirming(false);
@@ -67,98 +68,98 @@ export const BackupRestoreSection = ({ api, toast }) => {
   };
 
   return (
-    <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
-      <div style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700, marginBottom: 16 }}>
-        BACKUP &amp; RESTORE
+    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
+    BACKUP &amp; RESTORE
+    </div>
+
+    {/* Export */}
+    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
+    <div style={{ flex: 1 }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
+    Export Settings
+    </div>
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.sm }}>
+    Downloads your current configuration as a JSON file — useful for
+    backing up before a change, or moving to a new system.
+    </div>
+    <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
+    <input
+    type="checkbox"
+    checked={includeSecrets}
+    onChange={e => setIncludeSecrets(e.target.checked)}
+    />
+    Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)
+    </label>
+    {includeSecrets && (
+      <div style={{ color: palette.yellow, fontSize: type.size.sm, marginTop: space.xxs }}>
+      The exported file will contain live credentials — handle it like
+      you would any file containing API keys.
       </div>
+    )}
+    </div>
 
-      {/* Export */}
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 24, padding: "16px 0", borderBottom: `1px solid ${C.border}` }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-            Export Settings
-          </div>
-          <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65, marginBottom: 8 }}>
-            Downloads your current configuration as a JSON file — useful for
-            backing up before a change, or moving to a new system.
-          </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, color: C.muted, fontSize: 11, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={includeSecrets}
-              onChange={e => setIncludeSecrets(e.target.checked)}
-            />
-            Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)
-          </label>
-          {includeSecrets && (
-            <div style={{ color: C.yellow, fontSize: 10, marginTop: 4 }}>
-              The exported file will contain live credentials — handle it like
-              you would any file containing API keys.
-            </div>
-          )}
-        </div>
+    <button
+    onClick={handleExport}
+    style={{
+      padding: `${space.xs}px ${space.xl}px`,
+      background: "transparent",
+      border: `1px solid ${palette.blue}`,
+      color: palette.blue,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.wide,
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      flexShrink: 0,
+    }}
+    >
+    EXPORT
+    </button>
+    </div>
 
-        <button
-          onClick={handleExport}
-          style={{
-            padding: "6px 14px",
-            background: "transparent",
-            border: `1px solid ${C.blue}`,
-            color: C.blue,
-            fontSize: 10,
-            fontFamily: "inherit",
-            fontWeight: 700,
-            letterSpacing: "0.1em",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          EXPORT
-        </button>
-      </div>
+    {/* Import */}
+    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0` }}>
+    <div style={{ flex: 1 }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
+    Import Settings
+    </div>
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
+    Applies settings from a previously exported file. Only keys
+    actually present in the file are changed — anything not in it
+    (e.g. secrets that were excluded at export time) is left exactly
+    as it is now.
+    </div>
+    </div>
 
-      {/* Import */}
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 24, padding: "16px 0" }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ color: C.text, fontSize: 12, fontWeight: 600, marginBottom: 5 }}>
-            Import Settings
-          </div>
-          <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.65 }}>
-            Applies settings from a previously exported file. Only keys
-            actually present in the file are changed — anything not in it
-            (e.g. secrets that were excluded at export time) is left exactly
-            as it is now.
-          </div>
-        </div>
-
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/json"
-          onChange={handleFilePicked}
-          style={{ display: "none" }}
-        />
-        <button
-          onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
-          disabled={importing}
-          style={{
-            padding: "6px 14px",
-            background: confirming ? C.red + "22" : "transparent",
-            border: `1px solid ${C.red}`,
-            color: C.red,
-            fontSize: 10,
-            fontFamily: "inherit",
-            fontWeight: 700,
-            letterSpacing: "0.1em",
-            cursor: importing ? "not-allowed" : "pointer",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-          }}
-        >
-          {importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
-        </button>
-      </div>
+    <input
+    ref={fileInputRef}
+    type="file"
+    accept="application/json"
+    onChange={handleFilePicked}
+    style={{ display: "none" }}
+    />
+    <button
+    onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
+    disabled={importing}
+    style={{
+      padding: `${space.xs}px ${space.xl}px`,
+      background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
+          border: `1px solid ${palette.red}`,
+          color: palette.red,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: importing ? "not-allowed" : "pointer",
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+    }}
+    >
+    {importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
+    </button>
+    </div>
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtDur } from "../../utils";
 import { Stat } from "../atoms/Stat";
 import { Btn } from "../atoms/Btn";
@@ -11,8 +11,9 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * MANUAL REVIEW PAGE
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey }) => {
+    const { palette, type, space, legacy } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
 
@@ -33,14 +34,14 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                 const data = await r.json();
                 toast?.(
                     `Resolved ${data.resolved}${data.still_unresolved ? `, ${data.still_unresolved} still needed review` : ""}`,
-                    C.blue,
+                    palette.blue,
                 );
                 onRefresh();
             } else {
-                toast?.("Bulk resolve failed", C.red);
+                toast?.("Bulk resolve failed", palette.red);
             }
         } catch (_) {
-            toast?.("Bulk resolve failed", C.red);
+            toast?.("Bulk resolve failed", palette.red);
         } finally {
             setBulkResolving(false);
         }
@@ -74,20 +75,20 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
     };
 
     return (
-        <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 22px" }}>
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: `${space.max}px ${space.huge}px` }}>
         {/* Page header */}
-        <div style={{ marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <span style={{ color: C.yellow, fontSize: 15 }}>⚠</span>
-        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
+        <div style={{ marginBottom: space.huge }}>
+        <div style={{ display: "flex", alignItems: "center", gap: space.md, marginBottom: space.sm }}>
+        <span style={{ color: palette.yellow, fontSize: type.size.xxl }}>⚠</span>
+        <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
         MANUAL REVIEW
         </span>
         <span style={{
-            padding: "0 6px",
-            background: C.yellow + "20",
-            border: `1px solid ${C.yellow}44`,
-            color: C.yellow,
-            fontSize: 9,
+            padding: `0 ${space.xs}px`,
+            background: alpha(palette.yellow, ALPHA.mild),
+            border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+            color: palette.yellow,
+            fontSize: type.size.xs,
         }}>
         {items.length}
         </span>
@@ -95,14 +96,14 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
         {subtitleItemCount > 0 && imgSubSetting !== "always_ask" && (
             <Btn
             label={bulkResolving ? "RESOLVING…" : `RESOLVE ALL ${subtitleItemCount} SUBTITLE ITEMS`}
-            color={C.blue}
-            bg={C.blue + "18"}
+            color={palette.blue}
+            bg={alpha(palette.blue, ALPHA.low)}
             onClick={resolveAllSubtitles}
             disabled={bulkResolving}
             />
         )}
         </div>
-        <p style={{ color: C.muted, fontSize: 11, margin: 0, lineHeight: 1.65 }}>
+        <p style={{ color: palette.muted, fontSize: type.size.md, margin: 0, lineHeight: type.leading.relaxed }}>
         Files end up here for two reasons: two or more audio tracks with an
         undefined language (approve to process anyway, or skip to dismiss),
             or subtitle tracks that can't be converted to external SRT — choose
@@ -126,20 +127,20 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                         <div
                         key={item.id}
                         style={{
-                            padding: "14px 16px",
-                            background: C.card,
-                            border: `1px solid #3a2800`,
-                            borderLeft: `3px solid ${C.yellow}`,
-                            marginBottom: 10,
+                            padding: `${space.xl}px ${space.xl}px`,
+                            background: palette.card,
+                            border: `1px solid ${legacy.reviewBorder}`,
+                            borderLeft: `${legacy.accentWidth}px solid ${palette.yellow}`,
+                            marginBottom: space.md,
                         }}
                         >
-                        <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: space.xl }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{
-                            color: C.text,
-                            fontSize: 13,
-                            fontWeight: 600,
-                            marginBottom: 3,
+                            color: palette.text,
+                            fontSize: type.size.lg,
+                            fontWeight: type.weight.semibold,
+                            marginBottom: space.xxs,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -147,87 +148,108 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                         {f.filename || "—"}
                         </div>
                         <div style={{
-                            color: C.dim,
-                            fontSize: 10,
-                            marginBottom: 7,
+                            color: palette.dim,
+                            fontSize: type.size.sm,
+                            marginBottom: space.sm,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
                         }}>
                         {f.path}
                         </div>
-                        <div style={{ color: C.yellow, fontSize: 11, lineHeight: 1.55 }}>
+                        <div style={{ color: palette.yellow, fontSize: type.size.md, lineHeight: type.leading.snug }}>
                         {item.reason}
                         </div>
-                        <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
-                        <Stat label="SIZE"     value={fmtSize(f.size)} />
-                        <Stat label="DURATION" value={fmtDur(f.duration)} />
-                        </div>
-                        </div>
-
-                        {/* Audio-type review: simple Approve / Skip */}
-                        {!flagged && (
-                            <div style={{ display: "flex", gap: 8, flexShrink: 0, paddingTop: 2 }}>
-                            <Btn label="APPROVE" color={C.green} bg={C.green + "18"} onClick={() => approve(item.id)} />
-                            <Btn label="SKIP"    color={C.red}   bg={C.red   + "18"} onClick={() => skip(item.id)} />
-                            </div>
-                        )}
-                        </div>
-
-                        {/* Subtitle-type review: per-track Keep/Remove */}
-                        {flagged && flagged.length > 0 && (
-                            <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
-                            {flagged.map(track => (
-                                <div
-                                key={track.stream_index}
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 12,
-                                    padding: "8px 10px",
-                                    background: "#00000022",
-                                    border: `1px solid ${C.border}`,
-                                    marginBottom: 6,
-                                }}
-                                >
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ color: C.text, fontSize: 11, fontWeight: 600, marginBottom: 2 }}>
-                                {track.title || `Stream ${track.stream_index}`}
-                                </div>
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                <span style={{
-                                    padding: "1px 6px",
-                                    background: C.yellow + "18",
-                                    border: `1px solid ${C.yellow}44`,
-                                    color: C.yellow,
-                                    fontSize: 9,
-                                    letterSpacing: "0.1em",
+                        {/* The two buttons are not opposites and nothing else
+                            * says so: Approve is permanent (it acknowledges the
+                            * threshold for this file, so it is never flagged
+                            * again), while Skip only cancels this pass and the
+                            * file returns on the next scan. Read cold, "Skip"
+                            * looks like the cautious, more reversible choice —
+                            * it is the other way round, and that is worth one
+                            * line to prevent. */}
+                            {!flagged && (
+                                <div style={{
+                                    color: palette.dim,
+                                    fontSize: type.size.sm,
+                                    lineHeight: type.leading.relaxed,
+                                    marginTop: space.xs,
                                 }}>
-                                {(track.language || "und").toUpperCase()} · {track.codec}
-                                {track.is_forced ? " · FORCED" : ""}
-                                </span>
-                                <span style={{ color: C.dim, fontSize: 10 }}>stream {track.stream_index}</span>
+                                <b style={{ color: palette.green, fontWeight: type.weight.semibold }}>Approve</b>
+                                {" processes it now, keeping every audio track — and won't ask again. "}
+                                <b style={{ color: palette.red, fontWeight: type.weight.semibold }}>Skip</b>
+                                {" leaves it untouched; it returns on the next scan."}
                                 </div>
-                                </div>
-                                <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                                <Btn
-                                label="KEEP"
-                                color={C.green}
-                                bg={C.green + "18"}
-                                onClick={() => resolveSubtitle(item.id, track.stream_index, "keep")}
-                                />
-                                <Btn
-                                label="REMOVE"
-                                color={C.red}
-                                bg={C.red + "18"}
-                                onClick={() => resolveSubtitle(item.id, track.stream_index, "remove")}
-                                />
-                                </div>
-                                </div>
-                            ))}
+                            )}
+                            <div style={{ display: "flex", gap: space.xl, marginTop: space.sm }}>
+                            <Stat label="SIZE"     value={fmtSize(f.size)} />
+                            <Stat label="DURATION" value={fmtDur(f.duration)} />
                             </div>
-                        )}
-                        </div>
+                            </div>
+
+                            {/* Audio-type review: simple Approve / Skip */}
+                            {!flagged && (
+                                <div style={{ display: "flex", gap: space.sm, flexShrink: 0, paddingTop: space.hair }}>
+                                <Btn label="APPROVE" color={palette.green} bg={alpha(palette.green, ALPHA.low)} onClick={() => approve(item.id)} />
+                                <Btn label="SKIP"    color={palette.red}   bg={alpha(palette.red, ALPHA.low)} onClick={() => skip(item.id)} />
+                                </div>
+                            )}
+                            </div>
+
+                            {/* Subtitle-type review: per-track Keep/Remove */}
+                            {flagged && flagged.length > 0 && (
+                                <div style={{ marginTop: space.lg, borderTop: `1px solid ${palette.border}`, paddingTop: space.lg }}>
+                                {flagged.map(track => (
+                                    <div
+                                    key={track.stream_index}
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: space.lg,
+                                        padding: `${space.sm}px ${space.md}px`,
+                                        background: legacy.trackRowBg,
+                                        border: `1px solid ${palette.border}`,
+                                        marginBottom: space.xs,
+                                    }}
+                                    >
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ color: palette.text, fontSize: type.size.md, fontWeight: type.weight.semibold, marginBottom: space.hair }}>
+                                    {track.title || `Stream ${track.stream_index}`}
+                                    </div>
+                                    <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
+                                    <span style={{
+                                        padding: `${space.hair}px ${space.xs}px`,
+                                        background: alpha(palette.yellow, ALPHA.low),
+                                                       border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                                       color: palette.yellow,
+                                                       fontSize: type.size.xs,
+                                                       letterSpacing: type.tracking.wide,
+                                    }}>
+                                    {(track.language || "und").toUpperCase()} · {track.codec}
+                                    {track.is_forced ? " · FORCED" : ""}
+                                    </span>
+                                    <span style={{ color: palette.dim, fontSize: type.size.sm }}>stream {track.stream_index}</span>
+                                    </div>
+                                    </div>
+                                    <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
+                                    <Btn
+                                    label="KEEP"
+                                    color={palette.green}
+                                    bg={alpha(palette.green, ALPHA.low)}
+                                    onClick={() => resolveSubtitle(item.id, track.stream_index, "keep")}
+                                    />
+                                    <Btn
+                                    label="REMOVE"
+                                    color={palette.red}
+                                    bg={alpha(palette.red, ALPHA.low)}
+                                    onClick={() => resolveSubtitle(item.id, track.stream_index, "remove")}
+                                    />
+                                    </div>
+                                    </div>
+                                ))}
+                                </div>
+                            )}
+                            </div>
                     );
                 })
             }

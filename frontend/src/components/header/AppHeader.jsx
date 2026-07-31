@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { LED } from "../atoms/LED";
 import { ApiBar } from "./ApiBar";
 
@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -36,20 +36,21 @@ const NAV_ITEMS = [
 const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
 
 const Logo = ({ variant = "mark", height = 24 }) => {
+  const { palette, type, space, legacy } = useTheme();
   const [failed, setFailed] = useState(false);
 
   if (failed) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: space.xs + 3 }}>
       <div style={{
         width: height, height, flexShrink: 0,
-        background: C.amber,
+        background: palette.amber,
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
-      <span style={{ color: "#000", fontSize: 12, fontWeight: 900 }}>R</span>
+      <span style={{ color: legacy.logoInk, fontSize: type.size.base, fontWeight: type.weight.black }}>R</span>
       </div>
       {variant === "full" && (
-        <span style={{ color: C.text, fontSize: 12, fontWeight: 700, letterSpacing: "0.18em" }}>
+        <span style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.bold, letterSpacing: type.tracking.max }}>
         REMUXARR
         </span>
       )}
@@ -85,6 +86,7 @@ export const AppHeader = ({
   wsConnected,
   isMobile,
 }) => {
+  const { palette, type, space, legacy } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -100,17 +102,17 @@ export const AppHeader = ({
   if (!isMobile) {
     return (
       <header style={{
-        height: 46,
+        height: legacy.headerHeight,
         display: "flex",
         alignItems: "center",
-        padding: "0 18px",
-        background: C.card,
-        borderBottom: `1px solid ${C.border}`,
+        padding: `0 ${space.xxl}px`,
+        background: palette.card,
+        borderBottom: `1px solid ${palette.border}`,
         flexShrink: 0,
         gap: 0,
       }}>
       {/* Logo — icon + wordmark lockup */}
-      <div style={{ display: "flex", alignItems: "center", marginRight: 22 }}>
+      <div style={{ display: "flex", alignItems: "center", marginRight: space.huge }}>
       <Logo variant="full" />
       </div>
 
@@ -120,20 +122,20 @@ export const AppHeader = ({
         key={n.k}
         onClick={() => setPage(n.k)}
         style={{
-          height: 46,
-          padding: "0 14px",
+          height: legacy.headerHeight,
+          padding: `0 ${space.xl}px`,
           background: "transparent",
           border: "none",
           borderBottom: page === n.k
-          ? `2px solid ${n.alertable && reviewCount > 0 ? C.yellow : C.amber}`
-          : "2px solid transparent",
+          ? `${legacy.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
+          : `${legacy.accentThin}px solid transparent`,
           color: page === n.k
-          ? (n.alertable && reviewCount > 0 ? C.yellow : C.amber)
-          : C.dim,
-          fontSize: 9,
-          fontFamily: "inherit",
-          letterSpacing: "0.14em",
-          fontWeight: 700,
+          ? (n.alertable && reviewCount > 0 ? palette.yellow : palette.amber)
+          : palette.dim,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.widest,
+          fontWeight: type.weight.bold,
           cursor: "pointer",
         }}
         >
@@ -145,7 +147,7 @@ export const AppHeader = ({
 
       {/* Inline API configurator */}
       {showApiBar && (
-        <div style={{ marginRight: 12 }}>
+        <div style={{ marginRight: space.lg }}>
         <ApiBar current={api} onSave={(v) => { setApi(v); setShowApiBar(false); }} />
         </div>
       )}
@@ -156,19 +158,19 @@ export const AppHeader = ({
       title={`API: ${api}`}
       style={{
         background: "none", border: "none",
-        color: showApiBar ? C.amber : C.dim,
-        fontSize: 14, cursor: "pointer",
-        padding: "0 7px", fontFamily: "inherit",
+        color: showApiBar ? palette.amber : palette.dim,
+        fontSize: type.size.xl, cursor: "pointer",
+        padding: `0 ${space.xs + 2}px`, fontFamily: type.family,
       }}
       >⚙</button>
 
       {/* Dry-run */}
       <button onClick={onToggleDryRun} style={{
-        padding: "3px 10px", marginRight: 8,
-        background: dryRun ? C.yellow + "20" : "transparent",
-        border: `1px solid ${dryRun ? C.yellow : C.border}`,
-        color: dryRun ? C.yellow : C.dim,
-        fontSize: 9, fontFamily: "inherit", letterSpacing: "0.1em", cursor: "pointer",
+        padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
+        background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
+            border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+            color: dryRun ? palette.yellow : palette.dim,
+            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
       }}>
       {dryRun ? "◆ DRY RUN" : "◇ DRY RUN"}
       </button>
@@ -180,11 +182,11 @@ export const AppHeader = ({
         ? "Auto-start enabled — files process immediately after a scan"
         : "Auto-start disabled — files queue but won't process until you click Resume"}
         style={{
-          padding: "3px 10px", marginRight: 8,
-          background: autoStart ? "transparent" : C.blue + "18",
-          border: `1px solid ${autoStart ? C.border : C.blue}`,
-          color: autoStart ? C.dim : C.blue,
-          fontSize: 9, fontFamily: "inherit", letterSpacing: "0.1em", cursor: "pointer",
+          padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
+          background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
+            border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+            color: autoStart ? palette.dim : palette.blue,
+            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
         }}
         >
         {autoStart ? "⚡ AUTO" : "⏸ MANUAL"}
@@ -195,12 +197,12 @@ export const AppHeader = ({
         onClick={onTogglePause}
         title={workerPaused ? "Resume processing" : "Pause processing — finish the current job then stop"}
         style={{
-          padding: "3px 10px", marginRight: 8,
-          background: workerPaused ? C.yellow + "20" : "transparent",
-          border: `1px solid ${workerPaused ? C.yellow : C.border}`,
-          color: workerPaused ? C.yellow : C.dim,
-          fontSize: 9, fontFamily: "inherit", letterSpacing: "0.1em", cursor: "pointer",
-          animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
+          padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
+          background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
+            border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+            color: workerPaused ? palette.yellow : palette.dim,
+            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
+            animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
         }}
         >
         {workerPaused ? "▶ RESUME" : "⏸ PAUSE"}
@@ -210,11 +212,11 @@ export const AppHeader = ({
         <button
         onClick={scanning ? onCancelScan : onTriggerScan}
         style={{
-          padding: "3px 12px", marginRight: 16,
+          padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
           background: "transparent",
-          border: `1px solid ${scanning ? C.red : C.border}`,
-          color: scanning ? C.red : C.dim,
-          fontSize: 9, fontFamily: "inherit", letterSpacing: "0.1em",
+          border: `1px solid ${scanning ? palette.red : palette.border}`,
+          color: scanning ? palette.red : palette.dim,
+          fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
           cursor: "pointer",
           animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
         }}
@@ -223,9 +225,9 @@ export const AppHeader = ({
         </button>
 
         {/* WS status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <LED color={wsConnected ? C.green : C.red} pulse={wsConnected} size={7} />
-        <span style={{ color: C.dim, fontSize: 9, letterSpacing: "0.08em" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
+        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
+        <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
         {wsConnected ? "LIVE" : "OFFLINE"}
         </span>
         </div>
@@ -238,13 +240,13 @@ export const AppHeader = ({
     <div style={{ position: "relative", flexShrink: 0 }}>
     {/* Row 1 — always visible */}
     <header style={{
-      height: 46,
+      height: legacy.headerHeight,
       display: "flex",
       alignItems: "center",
-      padding: "0 14px",
-      background: C.card,
-      borderBottom: `1px solid ${C.border}`,
-      gap: 8,
+      padding: `0 ${space.xl}px`,
+      background: palette.card,
+      borderBottom: `1px solid ${palette.border}`,
+      gap: space.sm,
       zIndex: 600,
       position: "relative",
     }}>
@@ -252,204 +254,204 @@ export const AppHeader = ({
     <Logo variant="mark" />
 
     {/* Current page label. minWidth:0 + ellipsis so it yields space to the
-        controls on its right instead of pushing them off a narrow screen. */}
-    <span style={{
-      color: C.amber, fontSize: 9, fontWeight: 700,
-      letterSpacing: "0.18em", flex: 1,
-      minWidth: 0, overflow: "hidden",
-      textOverflow: "ellipsis", whiteSpace: "nowrap",
-    }}>
-    {NAV_ITEMS.find(n => n.k === page)?.l ?? "REMUXARR"}
-    {page === "review" && reviewCount > 0 ? ` (${reviewCount})` : ""}
-    </span>
+      controls on its right instead of pushing them off a narrow screen. */}
+      <span style={{
+        color: palette.amber, fontSize: type.size.xs, fontWeight: type.weight.bold,
+        letterSpacing: type.tracking.max, flex: 1,
+        minWidth: 0, overflow: "hidden",
+        textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>
+      {NAV_ITEMS.find(n => n.k === page)?.l ?? "REMUXARR"}
+      {page === "review" && reviewCount > 0 ? ` (${reviewCount})` : ""}
+      </span>
 
-    {/* Scan — kept in the always-visible row rather than the drawer. It's
+      {/* Scan — kept in the always-visible row rather than the drawer. It's
         the control reached for most often, and burying the app's primary
         action two taps deep (open drawer, then tap) made it feel missing.
         Doubles as the scan-in-progress indicator: while a scan runs it
         shows live counts and becomes the cancel button, so mobile users
         can see and stop a scan without opening anything. */}
-    <button
-    onClick={scanning ? onCancelScan : onTriggerScan}
-    title={scanning ? "Cancel the running scan" : "Scan library now"}
-    style={{
-      flexShrink: 0,
-      padding: "3px 8px",
-      background: scanning ? C.red + "18" : "transparent",
-      border: `1px solid ${scanning ? C.red : C.border}`,
-      color: scanning ? C.red : C.dim,
-      fontSize: 9, fontFamily: "inherit", fontWeight: 700,
-      letterSpacing: "0.08em", cursor: "pointer",
-      whiteSpace: "nowrap",
-      animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
-    }}
-    >
-    {scanning
-      ? (scanProgress ? `✕ ${scanProgress.scanned}/${scanProgress.total}` : "✕ STOP")
-      : "⟳ SCAN"}
-    </button>
+        <button
+        onClick={scanning ? onCancelScan : onTriggerScan}
+        title={scanning ? "Cancel the running scan" : "Scan library now"}
+        style={{
+          flexShrink: 0,
+          padding: `${space.xxs}px ${space.sm}px`,
+          background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
+          border: `1px solid ${scanning ? palette.red : palette.border}`,
+          color: scanning ? palette.red : palette.dim,
+          fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.normal, cursor: "pointer",
+          whiteSpace: "nowrap",
+          animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
+        }}
+        >
+        {scanning
+          ? (scanProgress ? `✕ ${scanProgress.scanned}/${scanProgress.total}` : "✕ STOP")
+          : "⟳ SCAN"}
+          </button>
 
-    {/* WS status — compact */}
-    <LED color={wsConnected ? C.green : C.red} pulse={wsConnected} size={7} />
+          {/* WS status — compact */}
+          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
 
-    {/* ⚙ API */}
-    <button
-    onClick={() => setShowApiBar(v => !v)}
-    style={{
-      background: "none", border: "none",
-      color: showApiBar ? C.amber : C.dim,
-      fontSize: 16, cursor: "pointer",
-      padding: "0 4px", fontFamily: "inherit",
-    }}
-    >⚙</button>
-
-    {/* ☰ Hamburger */}
-    <button
-    onClick={() => setDrawerOpen(v => !v)}
-    style={{
-      background: "none", border: "none",
-      color: drawerOpen ? C.amber : C.dim,
-      fontSize: 18, cursor: "pointer",
-      padding: "0 4px", fontFamily: "inherit",
-      lineHeight: 1,
-    }}
-    >
-    {drawerOpen ? "✕" : "☰"}
-    </button>
-    </header>
-
-    {/* API URL bar — its own row directly under the header, NOT inside the
-        drawer. It used to live in the drawer, so tapping ⚙ with the drawer
-        closed toggled state that nothing was rendering: the button looked
-        broken, and the input only appeared if you happened to open the
-        hamburger afterwards. Out here it behaves like the desktop layout —
-        ⚙ shows and hides it directly, drawer open or closed. */}
-    {showApiBar && (
-      <div style={{
-        padding: "10px 14px",
-        background: C.card,
-        borderBottom: `1px solid ${C.border}`,
-        position: "relative",
-        zIndex: 550,
-      }}>
-      <ApiBar
-      current={api}
-      onSave={(v) => { setApi(v); setShowApiBar(false); }}
-      />
-      </div>
-    )}
-
-    {/* Drawer */}
-    {drawerOpen && (
-      <>
-      {/* Backdrop — closes drawer on tap */}
-      <div
-      onClick={closeDrawer}
-      style={{
-        position: "fixed",
-        inset: 0,
-        top: 46,
-        zIndex: 490,
-        background: "transparent",
-      }}
-      />
-
-      {/* Drawer panel */}
-      <div style={{
-        position: "absolute",
-        top: "100%",
-        left: 0,
-        right: 0,
-        background: C.card,
-        borderBottom: `1px solid ${C.border}`,
-        zIndex: 500,
-        boxShadow: "0 4px 16px #00000066",
-      }}>
-      {/* Nav links */}
-      {NAV_ITEMS.map(n => {
-        const active = page === n.k;
-        const alert  = n.alertable && reviewCount > 0;
-        return (
+          {/* ⚙ API */}
           <button
-          key={n.k}
-          onClick={() => { setPage(n.k); closeDrawer(); }}
+          onClick={() => setShowApiBar(v => !v)}
           style={{
-            display: "block",
-            width: "100%",
-            textAlign: "left",
-            padding: "13px 18px",
-            background: active ? (alert ? C.yellow + "12" : C.amber + "12") : "transparent",
-                border: "none",
-                borderLeft: `3px solid ${active ? (alert ? C.yellow : C.amber) : "transparent"}`,
-                borderBottom: `1px solid ${C.border}`,
-                color: active ? (alert ? C.yellow : C.amber) : C.dim,
-                fontSize: 11,
-                fontFamily: "inherit",
-                letterSpacing: "0.12em",
-                fontWeight: 700,
-                cursor: "pointer",
+            background: "none", border: "none",
+            color: showApiBar ? palette.amber : palette.dim,
+            fontSize: type.size.h2, cursor: "pointer",
+            padding: `0 ${space.xxs}px`, fontFamily: type.family,
+          }}
+          >⚙</button>
+
+          {/* ☰ Hamburger */}
+          <button
+          onClick={() => setDrawerOpen(v => !v)}
+          style={{
+            background: "none", border: "none",
+            color: drawerOpen ? palette.amber : palette.dim,
+            fontSize: type.size.h1, cursor: "pointer",
+            padding: `0 ${space.xxs}px`, fontFamily: type.family,
+            lineHeight: type.leading.none,
           }}
           >
-          {navLabel(n)}
+          {drawerOpen ? "✕" : "☰"}
           </button>
-        );
-      })}
+          </header>
 
-      {/* Action controls */}
-      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-      {/* Dry run */}
-      <button
-      onClick={() => { onToggleDryRun(); closeDrawer(); }}
-      style={{
-        padding: "10px 14px", textAlign: "left",
-        background: dryRun ? C.yellow + "20" : "transparent",
-        border: `1px solid ${dryRun ? C.yellow : C.border}`,
-        color: dryRun ? C.yellow : C.dim,
-        fontSize: 10, fontFamily: "inherit",
-        letterSpacing: "0.1em", cursor: "pointer",
-      }}
-      >
-      {dryRun ? "◆ DRY RUN  — tap to disable" : "◇ DRY RUN  — tap to enable"}
-      </button>
+          {/* API URL bar — its own row directly under the header, NOT inside the
+            drawer. It used to live in the drawer, so tapping ⚙ with the drawer
+            closed toggled state that nothing was rendering: the button looked
+            broken, and the input only appeared if you happened to open the
+            hamburger afterwards. Out here it behaves like the desktop layout —
+            ⚙ shows and hides it directly, drawer open or closed. */}
+            {showApiBar && (
+              <div style={{
+                padding: `${space.md}px ${space.xl}px`,
+                background: palette.card,
+                borderBottom: `1px solid ${palette.border}`,
+                position: "relative",
+                zIndex: 550,
+              }}>
+              <ApiBar
+              current={api}
+              onSave={(v) => { setApi(v); setShowApiBar(false); }}
+              />
+              </div>
+            )}
 
-      {/* Auto-start */}
-      <button
-      onClick={() => { onToggleAutoStart(); closeDrawer(); }}
-      style={{
-        padding: "10px 14px", textAlign: "left",
-        background: autoStart ? "transparent" : C.blue + "18",
-        border: `1px solid ${autoStart ? C.border : C.blue}`,
-        color: autoStart ? C.dim : C.blue,
-        fontSize: 10, fontFamily: "inherit",
-        letterSpacing: "0.1em", cursor: "pointer",
-      }}
-      >
-      {autoStart ? "⚡ AUTO-START  — tap to disable" : "⏸ MANUAL  — tap to enable auto-start"}
-      </button>
+            {/* Drawer */}
+            {drawerOpen && (
+              <>
+              {/* Backdrop — closes drawer on tap */}
+              <div
+              onClick={closeDrawer}
+              style={{
+                position: "fixed",
+                inset: 0,
+                top: legacy.headerHeight,
+                zIndex: 490,
+                background: "transparent",
+              }}
+              />
 
-      {/* Pause / Resume */}
-      <button
-      onClick={() => { onTogglePause(); closeDrawer(); }}
-      style={{
-        padding: "10px 14px", textAlign: "left",
-        background: workerPaused ? C.yellow + "20" : "transparent",
-        border: `1px solid ${workerPaused ? C.yellow : C.border}`,
-        color: workerPaused ? C.yellow : C.dim,
-        fontSize: 10, fontFamily: "inherit",
-        letterSpacing: "0.1em", cursor: "pointer",
-        animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
-      }}
-      >
-      {workerPaused ? "▶ RESUME  — tap to resume processing" : "⏸ PAUSE  — tap to pause after current job"}
-      </button>
+              {/* Drawer panel */}
+              <div style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                right: 0,
+                background: palette.card,
+                borderBottom: `1px solid ${palette.border}`,
+                zIndex: 500,
+                boxShadow: legacy.drawerShadow,
+              }}>
+              {/* Nav links */}
+              {NAV_ITEMS.map(n => {
+                const active = page === n.k;
+                const alert  = n.alertable && reviewCount > 0;
+                return (
+                  <button
+                  key={n.k}
+                  onClick={() => { setPage(n.k); closeDrawer(); }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: `${space.lg}px ${space.xxl}px`,
+                    background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
+                        border: "none",
+                        borderLeft: `${legacy.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
+                        borderBottom: `1px solid ${palette.border}`,
+                        color: active ? (alert ? palette.yellow : palette.amber) : palette.dim,
+                        fontSize: type.size.md,
+                        fontFamily: type.family,
+                        letterSpacing: type.tracking.wider,
+                        fontWeight: type.weight.bold,
+                        cursor: "pointer",
+                  }}
+                  >
+                  {navLabel(n)}
+                  </button>
+                );
+              })}
 
-      {/* No Scan row here — scanning moved to the always-visible header row,
-          so duplicating it in the drawer would just be two controls for the
-          same action. */}
-      </div>
-      </div>
-      </>
-    )}
-    </div>
+              {/* Action controls */}
+              <div style={{ padding: `${space.md}px ${space.xl}px`, display: "flex", flexDirection: "column", gap: space.sm }}>
+              {/* Dry run */}
+              <button
+              onClick={() => { onToggleDryRun(); closeDrawer(); }}
+              style={{
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
+                background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
+                            border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+                            color: dryRun ? palette.yellow : palette.dim,
+                            fontSize: type.size.sm, fontFamily: type.family,
+                            letterSpacing: type.tracking.wide, cursor: "pointer",
+              }}
+              >
+              {dryRun ? "◆ DRY RUN  — tap to disable" : "◇ DRY RUN  — tap to enable"}
+              </button>
+
+              {/* Auto-start */}
+              <button
+              onClick={() => { onToggleAutoStart(); closeDrawer(); }}
+              style={{
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
+                background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
+                            border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+                            color: autoStart ? palette.dim : palette.blue,
+                            fontSize: type.size.sm, fontFamily: type.family,
+                            letterSpacing: type.tracking.wide, cursor: "pointer",
+              }}
+              >
+              {autoStart ? "⚡ AUTO-START  — tap to disable" : "⏸ MANUAL  — tap to enable auto-start"}
+              </button>
+
+              {/* Pause / Resume */}
+              <button
+              onClick={() => { onTogglePause(); closeDrawer(); }}
+              style={{
+                padding: `${space.md}px ${space.xl}px`, textAlign: "left",
+                background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
+                            border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+                            color: workerPaused ? palette.yellow : palette.dim,
+                            fontSize: type.size.sm, fontFamily: type.family,
+                            letterSpacing: type.tracking.wide, cursor: "pointer",
+                            animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
+              }}
+              >
+              {workerPaused ? "▶ RESUME  — tap to resume processing" : "⏸ PAUSE  — tap to pause after current job"}
+              </button>
+
+              {/* No Scan row here — scanning moved to the always-visible header row,
+                so duplicating it in the drawer would just be two controls for the
+                same action. */}
+                </div>
+                </div>
+                </>
+            )}
+            </div>
   );
 };

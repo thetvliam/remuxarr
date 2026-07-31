@@ -1,22 +1,23 @@
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { TagInput } from "./TagInput";
 
 // Renders the appropriate control for each setting type
 export const SettingInput = ({ field, value, onChange }) => {
+  const { palette, type, space } = useTheme();
   if (field.type === "boolean") {
     const on = !!value;
     return (
       <button
       onClick={() => onChange(!on)}
       style={{
-        padding: "5px 14px",
-        background: on ? C.green + "18" : "transparent",
-        border: `1px solid ${on ? C.green : C.border}`,
-        color: on ? C.green : C.dim,
-        fontSize: 10,
-        fontFamily: "inherit",
-        letterSpacing: "0.1em",
-        cursor: "pointer",
+        padding: `${space.xs}px ${space.xl}px`,
+        background: on ? alpha(palette.green, ALPHA.low) : "transparent",
+            border: `1px solid ${on ? palette.green : palette.border}`,
+            color: on ? palette.green : palette.dim,
+            fontSize: type.size.sm,
+            fontFamily: type.family,
+            letterSpacing: type.tracking.wide,
+            cursor: "pointer",
       }}
       >
       {on ? "■ ON" : "□ OFF"}
@@ -46,12 +47,12 @@ export const SettingInput = ({ field, value, onChange }) => {
       }}
       style={{
         width: 72,
-        padding: "5px 8px",
-        background: C.bg,
-        border: `1px solid ${C.border}`,
-        color: C.text,
-        fontFamily: "inherit",
-        fontSize: 12,
+        padding: `${space.xs}px ${space.sm}px`,
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        color: palette.text,
+        fontFamily: type.family,
+        fontSize: type.size.base,
         outline: "none",
       }}
       />
@@ -67,12 +68,12 @@ export const SettingInput = ({ field, value, onChange }) => {
       placeholder={field.placeholder || ""}
       style={{
         width: 220,
-        padding: "5px 8px",
-        background: C.bg,
-        border: `1px solid ${C.border}`,
-        color: C.text,
-        fontFamily: "inherit",
-        fontSize: 11,
+        padding: `${space.xs}px ${space.sm}px`,
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        color: palette.text,
+        fontFamily: type.family,
+        fontSize: type.size.md,
         outline: "none",
       }}
       />
@@ -97,18 +98,18 @@ export const SettingInput = ({ field, value, onChange }) => {
       onChange={e => onChange(e.target.value)}
       style={{
         width: 260,
-        padding: "5px 8px",
-        background: C.bg,
-        border: `1px solid ${C.border}`,
-        color: C.text,
-        fontFamily: "inherit",
-        fontSize: 11,
+        padding: `${space.xs}px ${space.sm}px`,
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        color: palette.text,
+        fontFamily: type.family,
+        fontSize: type.size.md,
         outline: "none",
         cursor: "pointer",
       }}
       >
       {(field.options || []).map(opt => (
-        <option key={opt.value} value={opt.value} style={{ background: C.card }}>
+        <option key={opt.value} value={opt.value} style={{ background: palette.card }}>
         {opt.label}
         </option>
       ))}

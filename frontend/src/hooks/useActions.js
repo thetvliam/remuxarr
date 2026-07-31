@@ -1,4 +1,4 @@
-import { C } from "../constants";
+import { useTheme } from "../theme";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  useActions
@@ -6,7 +6,7 @@ import { C } from "../constants";
  *  the setters passed in from useAppData. Has no state of its own — accepts
  *  the full data bundle returned by useAppData() and destructures what it
  *  needs, so the call site can simply do `useActions(data)`.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useActions({
   api,
   dryRun, setDryRun,
@@ -19,6 +19,7 @@ export function useActions({
   fetchForge,
   setHistoryRefreshKey,
 }) {
+  const { palette } = useTheme();
   const toggleDryRun = async () => {
     const next = !dryRun;
     setDryRun(next);
@@ -27,7 +28,7 @@ export function useActions({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value: next }),
     }).catch(() => {});
-    toast(`Dry run ${next ? "enabled" : "disabled"}`, C.yellow);
+    toast(`Dry run ${next ? "enabled" : "disabled"}`, palette.yellow);
   };
 
   const togglePause = async () => {
@@ -36,7 +37,7 @@ export function useActions({
     if (r?.ok) {
       const next = !workerPaused;
       setWorkerPaused(next);
-      toast(next ? "Processing paused" : "Processing resumed", next ? C.yellow : C.green);
+      toast(next ? "Processing paused" : "Processing resumed", next ? palette.yellow : palette.green);
     }
   };
 
@@ -48,10 +49,10 @@ export function useActions({
     const r = await fetch(`${api}/api/worker/abort/${jobId}`, { method: "POST" }).catch(() => null);
     if (r?.ok) {
       setAutoStart(false);
-      toast("Job aborted — auto-start disabled", C.red);
+      toast("Job aborted — auto-start disabled", palette.red);
       fetchAll();
     } else {
-      toast("Failed to abort job", C.red);
+      toast("Failed to abort job", palette.red);
     }
   };
 
@@ -61,13 +62,13 @@ export function useActions({
   const clearDryRun = async () => {
     try {
       const r = await fetch(`${api}/api/queue/dry-run`, { method: "DELETE" });
-      if (!r.ok) { toast("Failed to clear dry-run previews", C.red); return; }
+      if (!r.ok) { toast("Failed to clear dry-run previews", palette.red); return; }
       const { cleared } = await r.json();
       toast(
         cleared > 0
         ? `Cleared ${cleared} dry-run preview${cleared === 1 ? "" : "s"}`
         : "No dry-run previews to clear",
-        C.muted,
+        palette.muted,
       );
       fetchAll();
       // This is a synchronous DELETE with no corresponding WS event (unlike
@@ -78,7 +79,7 @@ export function useActions({
       // dry-run previews has no effect on success/failed/skipped items.
       setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "dry_run" }));
     } catch (_) {
-      toast("Failed to clear dry-run previews", C.red);
+      toast("Failed to clear dry-run previews", palette.red);
     }
   };
 
@@ -90,7 +91,7 @@ export function useActions({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value: next }),
     }).catch(() => {});
-    toast(`Auto-start ${next ? "enabled" : "disabled"}`, C.dim);
+    toast(`Auto-start ${next ? "enabled" : "disabled"}`, palette.dim);
   };
 
   const triggerScan = async () => {
@@ -102,7 +103,7 @@ export function useActions({
     }).catch(() => null);
     if (!r?.ok) setScanning(false);
     else {
-      toast("Library scan started", C.amber);
+      toast("Library scan started", palette.amber);
       // If auto-start is off, the backend will pause the worker after the
       // scan — reflect that immediately in the UI.
       if (!autoStart) setWorkerPaused(true);
@@ -112,7 +113,7 @@ export function useActions({
   const cancelScan = async () => {
     const r = await fetch(`${api}/api/scan/cancel`, { method: "POST" }).catch(() => null);
     if (r?.ok) {
-      toast("Stopping scan…", C.amber);
+      toast("Stopping scan…", palette.amber);
       // Deliberately not setScanning(false) here — the scan loop takes a
       // moment to actually notice the flag (it's checked once per file,
       // right after whatever file it's currently on finishes) and the
@@ -121,7 +122,7 @@ export function useActions({
       // stops. Clearing it here early would show "idle" while the scan
       // is, for a brief moment, still actually running.
     } else {
-      toast("Failed to stop scan", C.red);
+      toast("Failed to stop scan", palette.red);
     }
   };
 
@@ -147,7 +148,7 @@ export function useActions({
     // failure. Bump directly so the Failed tab reflects the removal now,
     // regardless of what the retry eventually resolves to.
     setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
-    toast(`Re-queued: ${item.file?.filename || "file"}`, C.amber);
+    toast(`Re-queued: ${item.file?.filename || "file"}`, palette.amber);
   };
 
   // Remove a completed/failed item from history, resetting it for re-scan
@@ -155,7 +156,7 @@ export function useActions({
     await fetch(`${api}/api/history/${item.id}/`, { method: "DELETE" }).catch(() => {});
     setModal(null);
     fetchAll();
-    toast(`Dismissed: ${item.file?.filename || "file"}`, C.muted);
+    toast(`Dismissed: ${item.file?.filename || "file"}`, palette.muted);
   };
 
   // ── Forge actions ─────────────────────────────────────────────────────
@@ -178,10 +179,10 @@ export function useActions({
   const dismissQueueItem = async (item) => {
     try {
       await fetch(`${api}/api/queue/${item.id}`, { method: "DELETE" });
-      toast(`Removed from queue: ${item.file?.filename || "file"}`, C.muted);
+      toast(`Removed from queue: ${item.file?.filename || "file"}`, palette.muted);
       fetchAll();
     } catch (_) {
-      toast("Failed to remove item", C.red);
+      toast("Failed to remove item", palette.red);
     }
   };
 
@@ -189,17 +190,17 @@ export function useActions({
   const clearQueue = async () => {
     try {
       const r = await fetch(`${api}/api/queue/`, { method: "DELETE" });
-      if (!r.ok) { toast("Failed to clear queue", C.red); return; }
+      if (!r.ok) { toast("Failed to clear queue", palette.red); return; }
       const { cancelled } = await r.json();
       toast(
         cancelled > 0
         ? `Queue cleared — ${cancelled} item${cancelled === 1 ? "" : "s"} removed`
         : "Queue is already empty",
-        C.muted,
+        palette.muted,
       );
       fetchAll();
     } catch (_) {
-      toast("Failed to clear queue", C.red);
+      toast("Failed to clear queue", palette.red);
     }
   };
 
@@ -207,11 +208,11 @@ export function useActions({
   const prioritizeItem = async (item) => {
     try {
       const r = await fetch(`${api}/api/queue/${item.id}/prioritize`, { method: "POST" });
-      if (!r.ok) { toast("Failed to prioritize item", C.red); return; }
-      toast(`Moved to top: ${item.file?.filename || "file"}`, C.amber);
+      if (!r.ok) { toast("Failed to prioritize item", palette.red); return; }
+      toast(`Moved to top: ${item.file?.filename || "file"}`, palette.amber);
       fetchAll();
     } catch (_) {
-      toast("Failed to prioritize item", C.red);
+      toast("Failed to prioritize item", palette.red);
     }
   };
 
@@ -219,14 +220,14 @@ export function useActions({
   const retryAllFailed = async () => {
     try {
       const r = await fetch(`${api}/api/queue/retry-all`, { method: "POST" });
-      if (!r.ok) { toast("Retry all failed", C.red); return; }
+      if (!r.ok) { toast("Retry all failed", palette.red); return; }
       const { retried, skipped } = await r.json();
       const parts = [];
       if (retried > 0) parts.push(`${retried} requeued`);
       if (skipped > 0) parts.push(`${skipped} skipped (file missing)`);
       toast(
         parts.length ? `Retry all: ${parts.join(", ")}` : "No failed items to retry",
-            retried > 0 ? C.amber : C.muted,
+            retried > 0 ? palette.amber : palette.muted,
       );
       fetchAll();
       // Same reasoning as retryItem above, just for the bulk case — every
@@ -237,7 +238,7 @@ export function useActions({
         setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
       }
     } catch (_) {
-      toast("Retry all failed", C.red);
+      toast("Retry all failed", palette.red);
     }
   };
 

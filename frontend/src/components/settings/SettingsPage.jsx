@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { C } from "../../constants";
+import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
 import { DangerZone } from "./DangerZone";
+import { AppearanceSection } from "./AppearanceSection";
 import { BackupRestoreSection } from "./BackupRestoreSection";
 import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
@@ -20,28 +21,33 @@ const CATEGORIES = [
 { id: "notifications", label: "Notifications",        groups: ["Email"] },
 { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
 { id: "backup",        label: "Backup & Danger Zone", custom: "backup" },
+{ id: "appearance",    label: "Appearance",           custom: "appearance" },
 ];
 const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
 const STORAGE_KEY = "remuxarr.settingsCategory";
 
 /* ── Section header ─────────────────────────────────────────────────────── */
-const SectionHeader = ({ label, first }) => (
-  <div style={{
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    margin: first ? "4px 0 0" : "32px 0 0",
-    paddingBottom: 8,
-    borderBottom: `1px solid ${C.border}`,
-  }}>
-  <span style={{ color: C.amber, fontSize: 9, letterSpacing: "0.18em", fontWeight: 700 }}>
-  {label.toUpperCase()}
-  </span>
-  </div>
-);
+const SectionHeader = ({ label, first }) => {
+  const { palette, type, space } = useTheme();
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: space.md,
+      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
+      paddingBottom: space.sm,
+      borderBottom: `1px solid ${palette.border}`,
+    }}>
+    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+    {label.toUpperCase()}
+    </span>
+    </div>
+  );
+};
 
 /* ── Test connection button ─────────────────────────────────────────────── */
 const TestConnectionButton = ({ api, service }) => {
+  const { palette, type, space } = useTheme();
   const [state,  setState]  = useState("idle");   // idle | loading | ok | err
   const [result, setResult] = useState("");
 
@@ -65,7 +71,7 @@ const TestConnectionButton = ({ api, service }) => {
     setTimeout(() => { setState("idle"); setResult(""); }, 8000);
   };
 
-  const color = { idle: C.dim, loading: C.muted, ok: C.green, err: C.red }[state];
+  const color = { idle: palette.dim, loading: palette.muted, ok: palette.green, err: palette.red }[state];
   const label = {
     idle:    "TEST CONNECTION",
     loading: "TESTING…",
@@ -74,25 +80,25 @@ const TestConnectionButton = ({ api, service }) => {
   }[state];
 
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 0 4px" }}>
+    <div style={{ display: "flex", justifyContent: "flex-end", padding: `${space.lg}px 0 ${space.xxs}px` }}>
     <button
     onClick={run}
     disabled={state === "loading"}
     style={{
-      padding: "5px 14px",
-      background: state === "idle" ? "transparent" : `${color}18`,
-      border: `1px solid ${color}`,
-      color,
-      fontSize: 10,
-      fontFamily: "inherit",
-      fontWeight: 700,
-      letterSpacing: "0.08em",
-      cursor: state === "loading" ? "not-allowed" : "pointer",
-      transition: "all 0.15s",
-      maxWidth: 320,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+      padding: `${space.xs}px ${space.xl}px`,
+      background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
+          border: `1px solid ${color}`,
+          color,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.normal,
+          cursor: state === "loading" ? "not-allowed" : "pointer",
+          transition: "all 0.15s",
+          maxWidth: 320,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
     }}
     >
     {label}
@@ -103,6 +109,7 @@ const TestConnectionButton = ({ api, service }) => {
 
 /* ── Plex Analyze backlog status ────────────────────────────────────────── */
 const PlexBacklogStatus = ({ api }) => {
+  const { palette, type, space } = useTheme();
   const [count, setCount] = useState(null);
 
   useEffect(() => {
@@ -121,15 +128,15 @@ const PlexBacklogStatus = ({ api }) => {
 
   return (
     <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      padding: "10px 0 4px", color: C.muted, fontSize: 11,
+      display: "flex", alignItems: "center", gap: space.sm,
+      padding: `${space.md}px 0 ${space.xxs}px`, color: palette.muted, fontSize: type.size.md,
     }}>
     <span style={{
-      padding: "1px 7px",
-      background: count > 0 ? C.amber + "18" : "transparent",
-      border: `1px solid ${count > 0 ? C.amber + "55" : C.border}`,
-      color: count > 0 ? C.amber : C.dim,
-      fontSize: 10, fontWeight: 700,
+      padding: `${space.hair}px ${space.sm}px`,
+      background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
+          border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
+          color: count > 0 ? palette.amber : palette.dim,
+          fontSize: type.size.sm, fontWeight: type.weight.bold,
     }}
     title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
     >
@@ -147,6 +154,7 @@ const PlexBacklogStatus = ({ api }) => {
 
 /* ── Email circuit-breaker status banner ──────────────────────────────────── */
 const EmailBreakerStatus = ({ api }) => {
+  const { palette, type, space } = useTheme();
   const [state, setState] = useState(null);
 
   useEffect(() => {
@@ -165,10 +173,10 @@ const EmailBreakerStatus = ({ api }) => {
 
   return (
     <div style={{
-      display: "flex", alignItems: "flex-start", gap: 8,
-      padding: "10px 12px", marginTop: 8,
-      background: C.red + "12", border: `1px solid ${C.red}55`,
-      color: C.red, fontSize: 11, lineHeight: 1.6,
+      display: "flex", alignItems: "flex-start", gap: space.sm,
+      padding: `${space.md}px ${space.lg}px`, marginTop: space.sm,
+      background: alpha(palette.red, ALPHA.trace), border: `1px solid ${alpha(palette.red, ALPHA.heavy)}`,
+          color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
     }}>
     <span style={{ flexShrink: 0 }}>⚠</span>
     <span>
@@ -189,21 +197,22 @@ const EmailBreakerStatus = ({ api }) => {
  * pointer moves down the list, and it stays visible on mobile, where there
  * is no hover to discover it with. */
 const FieldRow = ({ field, value, onChange, isMobile }) => {
+  const { palette, type, space, radius } = useTheme();
   const [open,  setOpen]  = useState(false);
   const [hover, setHover] = useState(false);
 
   const hasDesc  = !!(field.description || "").trim();
   const active   = open || hover;
   const showHint = hasDesc && (active || isMobile);
-  const hintColor = active ? C.amber : C.dim;
+  const hintColor = active ? palette.amber : palette.dim;
 
   return (
-    <div style={{ padding: "13px 0", borderBottom: `1px solid ${C.border}` }}>
+    <div style={{ padding: `${space.lg}px 0`, borderBottom: `1px solid ${palette.border}` }}>
     <div style={{
       display: "flex",
       flexDirection: isMobile ? "column" : "row",
       alignItems: "flex-start",
-      gap: isMobile ? 9 : 24,
+      gap: isMobile ? space.md : space.huge,
     }}>
     <div style={{ flex: 1, minWidth: 0 }}>
     <button
@@ -216,15 +225,15 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
     style={{
       display: "inline-flex",
       alignItems: "center",
-      gap: 6,
+      gap: space.xs,
       padding: 0,
       background: "none",
       border: "none",
       textAlign: "left",
-      color: active && hasDesc ? C.amber : C.text,
-      fontSize: 12,
-      fontFamily: "inherit",
-      fontWeight: 600,
+      color: active && hasDesc ? palette.amber : palette.text,
+      fontSize: type.size.base,
+      fontFamily: type.family,
+      fontWeight: type.weight.semibold,
       cursor: hasDesc ? "pointer" : "default",
       transition: "color 0.12s",
     }}
@@ -240,12 +249,12 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
         width: 13,
         height: 13,
         flexShrink: 0,
-        borderRadius: "50%",
+        borderRadius: radius.full,
         border: `1px solid ${showHint ? hintColor : "transparent"}`,
         color: showHint ? hintColor : "transparent",
-        fontSize: 9,
-        fontWeight: 700,
-        lineHeight: 1,
+        fontSize: type.size.xs,
+        fontWeight: type.weight.bold,
+        lineHeight: type.leading.none,
         transition: "color 0.12s, border-color 0.12s",
       }}
       >
@@ -256,10 +265,10 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 
     {open && hasDesc && (
       <div style={{
-        color: C.muted,
-        fontSize: 11,
-        lineHeight: 1.65,
-        marginTop: 7,
+        color: palette.muted,
+        fontSize: type.size.md,
+        lineHeight: type.leading.relaxed,
+        marginTop: space.sm,
         paddingRight: isMobile ? 0 : 14,
       }}>
       {field.description}
@@ -267,7 +276,7 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
     )}
     </div>
 
-    <div style={{ flexShrink: 0, paddingTop: 1 }}>
+    <div style={{ flexShrink: 0, paddingTop: space.hair }}>
     <SettingInput field={field} value={value} onChange={onChange} />
     </div>
     </div>
@@ -276,101 +285,108 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 };
 
 /* ── Sidebar / dropdown navigation ──────────────────────────────────────── */
-const NavSidebar = ({ active, onSelect, dirty }) => (
-  <nav style={{
-    flexShrink: 0,
-    width: 190,
-    position: "sticky",
-    top: 0,
-    alignSelf: "flex-start",
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    paddingRight: 18,
-    borderRight: `1px solid ${C.border}`,
-  }}>
-  {CATEGORIES.map(c => {
-    const on = c.id === active;
-    return (
-      <button
-      key={c.id}
-      onClick={() => onSelect(c.id)}
-      style={{
-        textAlign: "left",
-        padding: "9px 12px",
-        background: on ? C.amber + "14" : "transparent",
-        border: "none",
-        borderLeft: `2px solid ${on ? C.amber : "transparent"}`,
-        color: on ? C.amber : C.muted,
-        fontSize: 11,
-        fontFamily: "inherit",
-        fontWeight: on ? 700 : 500,
-        letterSpacing: "0.03em",
-        cursor: "pointer",
-        transition: "all 0.12s",
-      }}
-      >
-      {c.label}
-      </button>
-    );
-  })}
-  {dirty && (
-    <div style={{ marginTop: 14, paddingLeft: 12, color: C.amber, fontSize: 9, letterSpacing: "0.1em", fontWeight: 700 }}>
-    ● UNSAVED
-    </div>
-  )}
-  </nav>
-);
+const NavSidebar = ({ active, onSelect, dirty }) => {
+  const { palette, type, space, legacy } = useTheme();
+  return (
+    <nav style={{
+      flexShrink: 0,
+      width: 190,
+      position: "sticky",
+      top: 0,
+      alignSelf: "flex-start",
+      display: "flex",
+      flexDirection: "column",
+      gap: space.hair,
+      paddingRight: space.xxl,
+      borderRight: `1px solid ${palette.border}`,
+    }}>
+    {CATEGORIES.map(c => {
+      const on = c.id === active;
+      return (
+        <button
+        key={c.id}
+        onClick={() => onSelect(c.id)}
+        style={{
+          textAlign: "left",
+          padding: `${space.md}px ${space.lg}px`,
+          background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
+              border: "none",
+              borderLeft: `${legacy.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+              color: on ? palette.amber : palette.muted,
+              fontSize: type.size.md,
+              fontFamily: type.family,
+              fontWeight: on ? type.weight.bold : type.weight.medium,
+              letterSpacing: type.tracking.tight,
+              cursor: "pointer",
+              transition: "all 0.12s",
+        }}
+        >
+        {c.label}
+        </button>
+      );
+    })}
+    {dirty && (
+      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+      ● UNSAVED
+      </div>
+    )}
+    </nav>
+  );
+};
 
-const NavDropdown = ({ active, onSelect }) => (
-  <select
-  value={active}
-  onChange={e => onSelect(e.target.value)}
-  style={{
-    flex: 1,
-    minWidth: 0,
-    padding: "9px 10px",
-    background: C.card,
-    border: `1px solid ${C.border}`,
-    color: C.text,
-    fontSize: 12,
-    fontFamily: "inherit",
-    fontWeight: 600,
-    cursor: "pointer",
-  }}
-  >
-  {CATEGORIES.map(c => (
-    <option key={c.id} value={c.id} style={{ background: C.card, color: C.text }}>
-    {c.label}
-    </option>
-  ))}
-  </select>
-);
+const NavDropdown = ({ active, onSelect }) => {
+  const { palette, type, space } = useTheme();
+  return (
+    <select
+    value={active}
+    onChange={e => onSelect(e.target.value)}
+    style={{
+      flex: 1,
+      minWidth: 0,
+      padding: `${space.md}px ${space.md}px`,
+      background: palette.card,
+      border: `1px solid ${palette.border}`,
+      color: palette.text,
+      fontSize: type.size.base,
+      fontFamily: type.family,
+      fontWeight: type.weight.semibold,
+      cursor: "pointer",
+    }}
+    >
+    {CATEGORIES.map(c => (
+      <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
+      {c.label}
+      </option>
+    ))}
+    </select>
+  );
+};
 
 /* ── Persistent save bar (status + button; caller wraps it sticky) ──────── */
 const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
+  const { palette, type, space } = useTheme();
   const btnColor = dirty
-  ? { idle: C.amber, saving: C.muted, saved: C.green, error: C.red }[status]
-  : C.dim;
+  ? { idle: palette.amber, saving: palette.muted, saved: palette.green, error: palette.red }[status]
+  : palette.dim;
   const statusText = status === "saving" ? "Saving…"
   : status === "error" ? "Save failed — check the connection"
   : status === "saved" ? "Changes saved"
   : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
   : "All changes saved";
-  const statusColor = status === "error" ? C.red
-  : status === "saved" ? C.green
-  : dirty ? C.amber : C.muted;
+  const statusColor = status === "error" ? palette.red
+  : status === "saved" ? palette.green
+  : dirty ? palette.amber : palette.muted;
 
   return (
     <div style={{
       display: "flex",
       alignItems: "center",
-      gap: 12,
-      padding: "12px 0",
-      background: C.bg,
-      borderBottom: `1px solid ${C.border}`,
+      gap: space.lg,
+      padding: `${space.lg}px 0`,
+      background: palette.bg,
+      borderBottom: `1px solid ${palette.border}`,
     }}>
-    <span style={{ color: statusColor, fontSize: 10, letterSpacing: "0.12em", fontWeight: 700 }}>
+    <span style={{ color: statusColor, fontSize: type.size.sm, letterSpacing: type.tracking.wider, fontWeight: type.weight.bold }}>
     {dirty && status === "idle" ? "● " : ""}{statusText.toUpperCase()}
     </span>
     <button
@@ -378,15 +394,15 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
     disabled={status === "saving" || !dirty}
     style={{
       marginLeft: "auto",
-      padding: "6px 18px",
-      background: btnColor + "22",
-      border: `1px solid ${btnColor}`,
-      color: btnColor,
-      fontSize: 10,
-      fontFamily: "inherit",
-      fontWeight: 700,
-      letterSpacing: "0.1em",
-      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+      padding: `${space.xs}px ${space.xxl}px`,
+      background: alpha(btnColor, ALPHA.medium),
+          border: `1px solid ${btnColor}`,
+          color: btnColor,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
     }}
     >
@@ -398,8 +414,9 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
+  const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
   const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
@@ -520,9 +537,12 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
         </>
       );
     }
+    if (cat.custom === "appearance") {
+      return <AppearanceSection />;
+    }
     if (schema.length === 0) {
       return (
-        <div style={{ color: C.muted, fontSize: 11, textAlign: "center", padding: 32 }}>
+        <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: space.xxxl }}>
         Connect to the backend to load settings…
         </div>
       );
@@ -537,27 +557,27 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
   if (isMobile) {
     return (
-      <div style={{ maxWidth: 700, margin: "0 auto", padding: "16px 16px 40px" }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 6, background: C.bg }}>
-      <div style={{ padding: "2px 0 8px" }}>
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
+      <div style={{ position: "sticky", top: 0, zIndex: 6, background: palette.bg }}>
+      <div style={{ padding: `${space.hair}px 0 ${space.sm}px` }}>
       <NavDropdown active={active} onSelect={setActive} />
       </div>
       {saveBar}
       </div>
-      <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+      <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
       </div>
     );
   }
 
   // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
   return (
-    <div style={{ maxWidth: 940, margin: "0 auto", padding: "24px 22px 48px", display: "flex", gap: 26 }}>
+    <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
     <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
     <div style={{ flex: 1, minWidth: 0 }}>
     <div style={{ position: "sticky", top: 0, zIndex: 5 }}>
     {saveBar}
     </div>
-    <div style={{ marginTop: 6 }}>{renderCategory()}</div>
+    <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
     </div>
     </div>
   );
