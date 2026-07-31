@@ -160,75 +160,96 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                         <div style={{ color: palette.yellow, fontSize: type.size.md, lineHeight: type.leading.snug }}>
                         {item.reason}
                         </div>
-                        <div style={{ display: "flex", gap: space.xl, marginTop: space.sm }}>
-                        <Stat label="SIZE"     value={fmtSize(f.size)} />
-                        <Stat label="DURATION" value={fmtDur(f.duration)} />
-                        </div>
-                        </div>
-
-                        {/* Audio-type review: simple Approve / Skip */}
-                        {!flagged && (
-                            <div style={{ display: "flex", gap: space.sm, flexShrink: 0, paddingTop: space.hair }}>
-                            <Btn label="APPROVE" color={palette.green} bg={alpha(palette.green, ALPHA.low)} onClick={() => approve(item.id)} />
-                            <Btn label="SKIP"    color={palette.red}   bg={alpha(palette.red, ALPHA.low)} onClick={() => skip(item.id)} />
-                            </div>
-                        )}
-                        </div>
-
-                        {/* Subtitle-type review: per-track Keep/Remove */}
-                        {flagged && flagged.length > 0 && (
-                            <div style={{ marginTop: space.lg, borderTop: `1px solid ${palette.border}`, paddingTop: space.lg }}>
-                            {flagged.map(track => (
-                                <div
-                                key={track.stream_index}
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: space.lg,
-                                    padding: `${space.sm}px ${space.md}px`,
-                                    background: legacy.trackRowBg,
-                                    border: `1px solid ${palette.border}`,
-                                    marginBottom: space.xs,
-                                }}
-                                >
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ color: palette.text, fontSize: type.size.md, fontWeight: type.weight.semibold, marginBottom: space.hair }}>
-                                {track.title || `Stream ${track.stream_index}`}
-                                </div>
-                                <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
-                                <span style={{
-                                    padding: `${space.hair}px ${space.xs}px`,
-                                    background: alpha(palette.yellow, ALPHA.low),
-                                                   border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                                                   color: palette.yellow,
-                                                   fontSize: type.size.xs,
-                                                   letterSpacing: type.tracking.wide,
+                        {/* The two buttons are not opposites and nothing else
+                            * says so: Approve is permanent (it acknowledges the
+                            * threshold for this file, so it is never flagged
+                            * again), while Skip only cancels this pass and the
+                            * file returns on the next scan. Read cold, "Skip"
+                            * looks like the cautious, more reversible choice —
+                            * it is the other way round, and that is worth one
+                            * line to prevent. */}
+                            {!flagged && (
+                                <div style={{
+                                    color: palette.dim,
+                                    fontSize: type.size.sm,
+                                    lineHeight: type.leading.relaxed,
+                                    marginTop: space.xs,
                                 }}>
-                                {(track.language || "und").toUpperCase()} · {track.codec}
-                                {track.is_forced ? " · FORCED" : ""}
-                                </span>
-                                <span style={{ color: palette.dim, fontSize: type.size.sm }}>stream {track.stream_index}</span>
+                                <b style={{ color: palette.green, fontWeight: type.weight.semibold }}>Approve</b>
+                                {" processes it now, keeping every audio track — and won't ask again. "}
+                                <b style={{ color: palette.red, fontWeight: type.weight.semibold }}>Skip</b>
+                                {" leaves it untouched; it returns on the next scan."}
                                 </div>
-                                </div>
-                                <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
-                                <Btn
-                                label="KEEP"
-                                color={palette.green}
-                                bg={alpha(palette.green, ALPHA.low)}
-                                onClick={() => resolveSubtitle(item.id, track.stream_index, "keep")}
-                                />
-                                <Btn
-                                label="REMOVE"
-                                color={palette.red}
-                                bg={alpha(palette.red, ALPHA.low)}
-                                onClick={() => resolveSubtitle(item.id, track.stream_index, "remove")}
-                                />
-                                </div>
-                                </div>
-                            ))}
+                            )}
+                            <div style={{ display: "flex", gap: space.xl, marginTop: space.sm }}>
+                            <Stat label="SIZE"     value={fmtSize(f.size)} />
+                            <Stat label="DURATION" value={fmtDur(f.duration)} />
                             </div>
-                        )}
-                        </div>
+                            </div>
+
+                            {/* Audio-type review: simple Approve / Skip */}
+                            {!flagged && (
+                                <div style={{ display: "flex", gap: space.sm, flexShrink: 0, paddingTop: space.hair }}>
+                                <Btn label="APPROVE" color={palette.green} bg={alpha(palette.green, ALPHA.low)} onClick={() => approve(item.id)} />
+                                <Btn label="SKIP"    color={palette.red}   bg={alpha(palette.red, ALPHA.low)} onClick={() => skip(item.id)} />
+                                </div>
+                            )}
+                            </div>
+
+                            {/* Subtitle-type review: per-track Keep/Remove */}
+                            {flagged && flagged.length > 0 && (
+                                <div style={{ marginTop: space.lg, borderTop: `1px solid ${palette.border}`, paddingTop: space.lg }}>
+                                {flagged.map(track => (
+                                    <div
+                                    key={track.stream_index}
+                                    style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: space.lg,
+                                        padding: `${space.sm}px ${space.md}px`,
+                                        background: legacy.trackRowBg,
+                                        border: `1px solid ${palette.border}`,
+                                        marginBottom: space.xs,
+                                    }}
+                                    >
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ color: palette.text, fontSize: type.size.md, fontWeight: type.weight.semibold, marginBottom: space.hair }}>
+                                    {track.title || `Stream ${track.stream_index}`}
+                                    </div>
+                                    <div style={{ display: "flex", gap: space.sm, alignItems: "center" }}>
+                                    <span style={{
+                                        padding: `${space.hair}px ${space.xs}px`,
+                                        background: alpha(palette.yellow, ALPHA.low),
+                                                       border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                                       color: palette.yellow,
+                                                       fontSize: type.size.xs,
+                                                       letterSpacing: type.tracking.wide,
+                                    }}>
+                                    {(track.language || "und").toUpperCase()} · {track.codec}
+                                    {track.is_forced ? " · FORCED" : ""}
+                                    </span>
+                                    <span style={{ color: palette.dim, fontSize: type.size.sm }}>stream {track.stream_index}</span>
+                                    </div>
+                                    </div>
+                                    <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
+                                    <Btn
+                                    label="KEEP"
+                                    color={palette.green}
+                                    bg={alpha(palette.green, ALPHA.low)}
+                                    onClick={() => resolveSubtitle(item.id, track.stream_index, "keep")}
+                                    />
+                                    <Btn
+                                    label="REMOVE"
+                                    color={palette.red}
+                                    bg={alpha(palette.red, ALPHA.low)}
+                                    onClick={() => resolveSubtitle(item.id, track.stream_index, "remove")}
+                                    />
+                                    </div>
+                                    </div>
+                                ))}
+                                </div>
+                            )}
+                            </div>
                     );
                 })
             }
