@@ -9,7 +9,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
    file (most notably secrets deliberately excluded at export time) are
    left completely untouched here. ──────────────────────────────────────── */
 export const BackupRestoreSection = ({ api, toast }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [importing,  setImporting]  = useState(false);
@@ -105,6 +105,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
             padding: `${space.xs}px ${space.xl}px`,
             background: "transparent",
             border: `1px solid ${palette.blue}`,
+            borderRadius: radius.sm,
             color: palette.blue,
             fontSize: type.size.sm,
             fontFamily: type.family,
@@ -147,6 +148,7 @@ export const BackupRestoreSection = ({ api, toast }) => {
             padding: `${space.xs}px ${space.xl}px`,
             background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
             border: `1px solid ${palette.red}`,
+            borderRadius: radius.sm,
             color: palette.red,
             fontSize: type.size.sm,
             fontFamily: type.family,

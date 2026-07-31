@@ -11,7 +11,7 @@ const CONFIRM_PHRASE = "REPLACE DATABASE";
    elsewhere — the stakes here are meaningfully higher than anything
    else in this file. ──────────────────────────────────────────────────── */
 export const FullBackupSection = ({ api, toast }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [pendingFile,    setPendingFile]    = useState(null);
   const [confirmText,    setConfirmText]    = useState("");
@@ -67,6 +67,7 @@ export const FullBackupSection = ({ api, toast }) => {
         <div style={{
           padding: space.xxl,
           border: `1px solid ${palette.yellow}`,
+          borderRadius: radius.sm,
           background: alpha(palette.yellow, ALPHA.soft),
         }}>
           <div style={{ color: palette.yellow, fontSize: type.size.base, fontWeight: type.weight.bold, marginBottom: space.sm }}>
@@ -124,6 +125,7 @@ export const FullBackupSection = ({ api, toast }) => {
             padding: `${space.xs}px ${space.xl}px`,
             background: "transparent",
             border: `1px solid ${palette.blue}`,
+            borderRadius: radius.sm,
             color: palette.blue,
             fontSize: type.size.sm,
             fontFamily: type.family,
@@ -175,6 +177,7 @@ export const FullBackupSection = ({ api, toast }) => {
               padding: `${space.xs}px ${space.md}px`,
               background: palette.bg,
               border: `1px solid ${confirmText === CONFIRM_PHRASE ? palette.red : palette.border}`,
+              borderRadius: radius.sm,
               color: palette.text,
               fontFamily: type.family,
               fontSize: type.size.md,
@@ -188,6 +191,7 @@ export const FullBackupSection = ({ api, toast }) => {
               padding: `${space.xs}px ${space.xl}px`,
               background: canImport ? alpha(palette.red, ALPHA.medium) : "transparent",
               border: `1px solid ${canImport ? palette.red : palette.muted}`,
+              borderRadius: radius.sm,
               color: canImport ? palette.red : palette.muted,
               fontSize: type.size.sm,
               fontFamily: type.family,

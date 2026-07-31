@@ -9,9 +9,9 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * Self-contained: search, multi-select, and two bulk actions. Distinct
  * from the manual-review list above it — files here are already fully
  * processed and playable; this is purely an optional correction workflow.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, radius, legacy } = useTheme();
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
     const [selected,        setSelected]        = useState(new Set());
@@ -131,6 +131,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             padding: `0 ${space.xs}px`,
             background: alpha(palette.blue, ALPHA.mild),
             border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
+            borderRadius: radius.sm,
             color: palette.blue,
             fontSize: type.size.xs,
         }}>
@@ -164,6 +165,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             padding: `${space.xs}px ${space.md}px`,
             background: palette.bg,
             border: `1px solid ${search ? alpha(palette.blue, ALPHA.half) : palette.border}`,
+            borderRadius: radius.sm,
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
@@ -180,6 +182,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             padding: `${space.xs}px ${space.sm}px`,
             background: palette.bg,
             border: `1px solid ${palette.border}`,
+            borderRadius: radius.sm,
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
@@ -211,6 +214,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             } />
         ) : (
             <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}` }}>
+            borderRadius: radius.sm,
             {/* Select-all header row */}
             {items.length > 0 && (
                 <div style={{
@@ -265,10 +269,11 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
                     flexShrink: 0,
                     padding: `${space.hair}px ${space.xs}px`,
                     background: alpha(palette.yellow, ALPHA.low),
-                                border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                                color: palette.yellow,
-                                fontSize: type.size.xs,
-                                letterSpacing: type.tracking.wide,
+                    border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                    borderRadius: radius.sm,
+                    color: palette.yellow,
+                    fontSize: type.size.xs,
+                    letterSpacing: type.tracking.wide,
                 }}>
                 {(item.detected_language || "?").toUpperCase()}
                 </span>

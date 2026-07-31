@@ -8,9 +8,9 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * CANDIDATE ROW
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const CandidateRow = ({ candidate: c, onAdd }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, radius, legacy } = useTheme();
     const [hover, setHover] = useState(false);
     const lang = c.aac_track?.language?.toUpperCase() || "UND";
 
@@ -43,6 +43,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
             padding: `${space.hair}px ${space.xs}px`,
             background: alpha(palette.amber, ALPHA.low),
             border: `1px solid ${alpha(palette.amber, ALPHA.strong)}`,
+            borderRadius: radius.sm,
             color: palette.amber, fontSize: type.size.xs,
             fontFamily: type.family, letterSpacing: type.tracking.wide,
         }}>
@@ -60,6 +61,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
             padding: `${space.xxs}px ${space.lg}px`, flexShrink: 0,
             background: hover ? alpha(palette.amber, ALPHA.medium) : "transparent",
             border: `1px solid ${hover ? palette.amber : palette.border}`,
+            borderRadius: radius.sm,
             color: hover ? palette.amber : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family,
             fontWeight: type.weight.bold, letterSpacing: type.tracking.wide,
@@ -78,9 +80,9 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
  * candidates array.  usePaginatedFetch handles pagination; the same
  * IntersectionObserver + generation-counter pattern used in HistoryPanel
  * ensures refreshKey changes always produce a clean, up-to-date list.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
-    const { palette, type, space } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
 
@@ -129,6 +131,7 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
             padding: `${space.xs}px ${space.md}px`,
             background: palette.bg,
             border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
+            borderRadius: radius.sm,
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,

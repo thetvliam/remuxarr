@@ -17,7 +17,7 @@ import { Btn } from "./atoms/Btn";
  * a second fetch that includes planned_actions. An unoptimised component
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
   const { palette, type, space, radius, legacy, actionCfg } = useTheme();
   useEffect(() => {
@@ -186,6 +186,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
               padding: `${space.sm}px ${space.md}px`,
               background: cfg.bg,
               border: `1px solid ${cfg.border}`,
+              borderRadius: radius.sm,
             }}
             >
             <ActionBadge type={a.action_type} />

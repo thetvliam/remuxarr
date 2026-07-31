@@ -3,7 +3,7 @@ import { TagInput } from "./TagInput";
 
 // Renders the appropriate control for each setting type
 export const SettingInput = ({ field, value, onChange }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   if (field.type === "boolean") {
     const on = !!value;
     return (
@@ -12,12 +12,13 @@ export const SettingInput = ({ field, value, onChange }) => {
       style={{
         padding: `${space.xs}px ${space.xl}px`,
         background: on ? alpha(palette.green, ALPHA.low) : "transparent",
-            border: `1px solid ${on ? palette.green : palette.border}`,
-            color: on ? palette.green : palette.dim,
-            fontSize: type.size.sm,
-            fontFamily: type.family,
-            letterSpacing: type.tracking.wide,
-            cursor: "pointer",
+        border: `1px solid ${on ? palette.green : palette.border}`,
+        borderRadius: radius.sm,
+        color: on ? palette.green : palette.dim,
+        fontSize: type.size.sm,
+        fontFamily: type.family,
+        letterSpacing: type.tracking.wide,
+        cursor: "pointer",
       }}
       >
       {on ? "■ ON" : "□ OFF"}
@@ -50,6 +51,7 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.base,
@@ -71,6 +73,7 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,
@@ -101,6 +104,7 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,

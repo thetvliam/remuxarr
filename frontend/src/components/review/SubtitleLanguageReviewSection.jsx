@@ -11,9 +11,9 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * than shared, since the two flag independent things. Every row here
  * originates from an undefined ("und") tag, not a defined-but-wrong one —
  * see fix_undefined_language's "always ask" mode.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, radius, legacy } = useTheme();
 
   // The established subtitle colour in this codebase — the same one the
   // extract_subtitle action badge uses. Read from the palette rather than
@@ -124,9 +124,10 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     <span style={{
       padding: `0 ${space.xs}px`,
       background: alpha(SUB_COLOR, ALPHA.mild),
-          border: `1px solid ${alpha(SUB_COLOR, ALPHA.strong)}`,
-          color: SUB_COLOR,
-          fontSize: type.size.xs,
+      border: `1px solid ${alpha(SUB_COLOR, ALPHA.strong)}`,
+      borderRadius: radius.sm,
+      color: SUB_COLOR,
+      fontSize: type.size.xs,
     }}>
     {total}
     </span>
@@ -156,10 +157,11 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
       padding: `${space.xs}px ${space.md}px`,
       background: palette.bg,
       border: `1px solid ${search ? alpha(SUB_COLOR, ALPHA.half) : palette.border}`,
-          color: palette.text,
-          fontFamily: type.family,
-          fontSize: type.size.md,
-          outline: "none",
+      borderRadius: radius.sm,
+      color: palette.text,
+      fontFamily: type.family,
+      fontSize: type.size.md,
+      outline: "none",
     }}
     />
     <input
@@ -172,6 +174,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
       padding: `${space.xs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       color: palette.text,
       fontFamily: type.family,
       fontSize: type.size.md,
@@ -203,6 +206,7 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
       } />
     ) : (
       <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}` }}>
+      borderRadius: radius.sm,
       {items.length > 0 && (
         <div style={{
           display: "flex",
@@ -256,10 +260,11 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
           flexShrink: 0,
           padding: `${space.hair}px ${space.xs}px`,
           background: alpha(palette.yellow, ALPHA.low),
-                          border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                          color: palette.yellow,
-                          fontSize: type.size.xs,
-                          letterSpacing: type.tracking.wide,
+          border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+          borderRadius: radius.sm,
+          color: palette.yellow,
+          fontSize: type.size.xs,
+          letterSpacing: type.tracking.wide,
         }}>
         {(item.detected_language || "?").toUpperCase()}
         </span>

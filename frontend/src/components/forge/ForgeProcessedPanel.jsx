@@ -22,7 +22,7 @@ export const ForgeProcessedPanel = ({ jobs, onUndo }) => (
 );
 
 const ForgeProcessedRow = ({ job, onUndo }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, radius, legacy } = useTheme();
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
@@ -109,15 +109,16 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
                 padding: `${space.xxs}px ${space.lg}px`,
                 flexShrink: 0,
                 background: hover ? alpha(palette.red, ALPHA.low) : "transparent",
-                                                                        border: `1px solid ${hover ? palette.red : palette.border}`,
-                                                                        color: hover ? palette.red : palette.dim,
-                                                                        fontSize: type.size.xs,
-                                                                        fontFamily: type.family,
-                                                                        fontWeight: type.weight.bold,
-                                                                        letterSpacing: type.tracking.wide,
-                                                                        cursor: "pointer",
-                                                                        transition: "all 0.15s",
-                                                                        whiteSpace: "nowrap",
+                border: `1px solid ${hover ? palette.red : palette.border}`,
+                borderRadius: radius.sm,
+                color: hover ? palette.red : palette.dim,
+                fontSize: type.size.xs,
+                fontFamily: type.family,
+                fontWeight: type.weight.bold,
+                letterSpacing: type.tracking.wide,
+                cursor: "pointer",
+                transition: "all 0.15s",
+                whiteSpace: "nowrap",
             }}
             >
             {job.status === "undo_failed" ? "↺ RETRY UNDO" : "↺ UNDO AC3"}

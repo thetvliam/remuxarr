@@ -13,7 +13,7 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * User can approve (send to queue) or skip (dismiss).
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, radius, legacy } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
 
@@ -87,6 +87,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
             padding: `0 ${space.xs}px`,
             background: alpha(palette.yellow, ALPHA.mild),
             border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+            borderRadius: radius.sm,
             color: palette.yellow,
             fontSize: type.size.xs,
         }}>
@@ -130,6 +131,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                             padding: `${space.xl}px ${space.xl}px`,
                             background: palette.card,
                             border: `1px solid ${legacy.reviewBorder}`,
+                            borderRadius: radius.sm,
                             borderLeft: `${legacy.accentWidth}px solid ${palette.yellow}`,
                             marginBottom: space.md,
                         }}
@@ -209,6 +211,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                                     padding: `${space.sm}px ${space.md}px`,
                                     background: legacy.trackRowBg,
                                     border: `1px solid ${palette.border}`,
+                                    borderRadius: radius.sm,
                                     marginBottom: space.xs,
                                 }}
                                 >
@@ -221,6 +224,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey 
                                     padding: `${space.hair}px ${space.xs}px`,
                                     background: alpha(palette.yellow, ALPHA.low),
                                     border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                    borderRadius: radius.sm,
                                     color: palette.yellow,
                                     fontSize: type.size.xs,
                                     letterSpacing: type.tracking.wide,

@@ -8,9 +8,9 @@ import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * HISTORY ROW
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
-  const { palette, type, space, legacy, statusColor } = useTheme();
+  const { palette, type, space, radius, legacy, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
   const f      = item.file || {};
   const ok     = item.status === "success";
@@ -52,6 +52,7 @@ const HistoryRow = ({ item, onSelect }) => {
         padding: `${space.hair}px ${space.xs}px`,
         background: alpha(palette.violet, ALPHA.low),
                 border: `1px solid ${alpha(palette.violet, ALPHA.strong)}`,
+                borderRadius: radius.sm,
                 color: palette.violet,
                 fontSize: type.size.xs,
                 letterSpacing: type.tracking.wide,
@@ -116,9 +117,9 @@ const HistoryRow = ({ item, onSelect }) => {
  * Self-fetching: receives api + historyRefreshKey instead of a pre-loaded
  * items array.  useHistoryData handles pagination; IntersectionObserver
  * triggers loadMore when the scroll sentinel comes into view.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -192,18 +193,27 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         style={{
           padding: `${space.hair}px ${space.md}px`,
           background: tab === key ? alpha(color, ALPHA.low) : "transparent",
-              border: `1px solid ${tab === key ? color : palette.border}`,
-              borderRight: "none",
-              color: tab === key ? color : palette.dim,
-              fontSize: type.size.xs,
-              fontFamily: type.family,
-              letterSpacing: type.tracking.wide,
-              cursor: "pointer",
+          // No borderRadius here, deliberately. These four buttons are a
+          // single segmented control: each drops its right border so the
+          // neighbouring one's left border serves both. Rounding a segment
+          // would round the edges it shares, leaving gaps down the middle of
+          // the strip on any theme with a real radius. Only the outer two
+          // corners of the group should curve, which needs a clipping
+          // wrapper around just the segments — the flex container here also
+          // holds the divider and the RETRY ALL button, so it cannot take
+          // that role without clipping those too.
+          border: `1px solid ${tab === key ? color : palette.border}`,
+          borderRight: "none",
+          color: tab === key ? color : palette.dim,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.wide,
+          cursor: "pointer",
         }}
         >
         {label}
         {n > 0 && (
-          <span style={{ marginLeft: 5, color }}>{fmtCount(n)}</span>
+          <span style={{ marginLeft: space.xs, color }}>{fmtCount(n)}</span>
         )}
         </button>
       );
@@ -215,10 +225,11 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       onClick={onRetryAll}
       title="Re-probe and re-queue every failed and cancelled item"
       style={{
-        marginLeft: 8,
+        marginLeft: space.sm,
         padding: `${space.hair}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.amber}`,
+        borderRadius: radius.sm,
         color: palette.amber,
         fontSize: type.size.xs,
         fontFamily: type.family,
@@ -235,10 +246,11 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       onClick={onClearDryRun}
       title="Discard every dry-run preview — none of these files will be processed"
       style={{
-        marginLeft: 8,
+        marginLeft: space.sm,
         padding: `${space.hair}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.violet}`,
+        borderRadius: radius.sm,
         color: palette.violet,
         fontSize: type.size.xs,
         fontFamily: type.family,
@@ -276,6 +288,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       padding: `${space.xxs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
+      borderRadius: radius.sm,
           color: palette.text,
           fontSize: type.size.md,
           fontFamily: type.family,

@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -86,7 +86,7 @@ export const AppHeader = ({
   wsConnected,
   isMobile,
 }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, radius, legacy } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -169,6 +169,7 @@ export const AppHeader = ({
         padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
         background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+            borderRadius: radius.sm,
             color: dryRun ? palette.yellow : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
       }}>
@@ -185,6 +186,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+            borderRadius: radius.sm,
             color: autoStart ? palette.dim : palette.blue,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
         }}
@@ -200,6 +202,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+            borderRadius: radius.sm,
             color: workerPaused ? palette.yellow : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
             animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
@@ -215,6 +218,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
           background: "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
+          borderRadius: radius.sm,
           color: scanning ? palette.red : palette.dim,
           fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
           cursor: "pointer",
@@ -279,6 +283,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.sm}px`,
           background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
+          borderRadius: radius.sm,
           color: scanning ? palette.red : palette.dim,
           fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
           letterSpacing: type.tracking.normal, cursor: "pointer",
@@ -406,6 +411,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+                            borderRadius: radius.sm,
                             color: dryRun ? palette.yellow : palette.dim,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",
@@ -421,6 +427,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
                             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+                            borderRadius: radius.sm,
                             color: autoStart ? palette.dim : palette.blue,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",
@@ -436,6 +443,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+                            borderRadius: radius.sm,
                             color: workerPaused ? palette.yellow : palette.dim,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",
