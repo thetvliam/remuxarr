@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -82,6 +82,32 @@ const buildStatusColor = (p) => ({
 /* Log severity colours. Was a module-level const in LogViewer.jsx built from
  * the static palette, which froze the log output to the default theme even
  * once the surrounding page followed the switch. */
+/* Toast tones. Callers name the MEANING of a message — "error", "success" —
+ * and the theme decides the colour. Previously every toast() call passed a
+ * palette value directly, which meant the data hooks had to read the theme
+ * to raise a message, coupling the whole data layer to appearance for the
+ * sake of one argument. It also went wrong quietly: a colour captured in a
+ * callback stayed captured, so a toast could arrive wearing the previous
+ * theme's palette long after the switch.
+ *
+ * Naming the tone instead means the colour is resolved at render, by the
+ * component doing the rendering, from the theme that is current then. There
+ * is no colour to capture and nothing to go stale.
+ *
+ * The eight tones are the ones actually in use, not an invented taxonomy —
+ * collapsing them further would silently merge distinctions the app already
+ * makes, like the violet reserved for dry-run previews. */
+const buildToastTone = (p) => ({
+  success: p.green,   // completed, resumed
+  error:   p.red,     // failed, rejected, unreachable
+  warning: p.yellow,  // a mode is on that changes behaviour: dry run, paused
+  notice:  p.amber,   // an action was taken: scan started, re-queued, moved
+  info:    p.blue,    // neutral progress: queued, cleaned up, undone
+  preview: p.violet,  // dry-run output ready — deliberately its own colour
+  neutral: p.muted,   // quiet acknowledgement: dismissed, removed
+  quiet:   p.dim,     // quietest: a background preference was toggled
+});
+
 const buildLevelColor = (p) => ({
   DEBUG:    p.dim,
   INFO:     p.muted,
@@ -104,7 +130,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -132,6 +158,7 @@ const terminal = {
   palette: terminalPalette,
   statusColor: buildStatusColor(terminalPalette),
   levelColor: buildLevelColor(terminalPalette),
+  toastTone:  buildToastTone(terminalPalette),
   actionCfg: buildActionCfg(terminalPalette, {
     green: "#091a0f", greenB: "#122a1a",
     red:   "#1a0909", redB:   "#2a1212",
@@ -162,62 +189,62 @@ const terminal = {
   },
   radius: { none: 0, sm: 0, pill: 11, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16,
-    xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
-    /* Everything that is not spacing rhythm. Padding, margin and gap all live
-     * on the `space` scale above; what remains here is component geometry
-     * (element sizes, border widths, shadow radii, position offsets) and the
-     * per-theme colours with no home in the palette — overlays, scrims and
-     * surfaces that must darken on a dark theme and lighten on a light one,
-     * so they cannot be derived by alpha from an existing colour.
-     *
-     * Several are load-bearing and must not be snapped to a scale: headerHeight
-     * drives both the bar height and the mobile drawer's top offset, and the
-     * ledGlow radii are tuned to the ledSize values. */
-    legacy: {
-      ledSize:   7,  ledGlow:   5,  ledGlowFar: 10,
-      badgeFallbackBg: "#111",
-      barHeight: 3,
-      /* bars/ */
-      segBarHeight:  13,
-      /* layout/ */
-      toastOffset:      20,
-      toastAccent:      3,
-      toastMinW:        210,
-      toastMaxW:        360,
-      toastLine:        1.5,
-      toastMobileInset: 32,
-      /* dashboard/ */
-      accentWidth: 3,
-      dryRunBg:    "#1a1400",
-      ledSizeLg:   8,
-      ledSizeSm:     6,
-      rowHoverBg:    "#ffffff07",
-      headerHeight:  46,
-      apiBarW:       210,
-      scrimBg:       "#00000066",
-      drawerShadow:  "0 4px 16px #00000066",
-      scrollbarW:    3,
-      logoInk:       "#000",
-      /* Thin active-state accent stroke: mobile tab underline, settings nav
-       * item left border, modal top border. Distinct from accentWidth (3). */
-      accentThin:    2,
-      /* review/ */
-      reviewBorder:  "#3a2800",
-      trackRowBg:    "#00000022",
-      rowSelectedBg: "#ffffff08",
-      /* settings/ */
-      logBg:            "#0d0f1a",
-      logMeta:          "#3a4060",
-      logText:          "#c8cce8",
-      zebraBg:          "#ffffff04",
-      /* DetailModal */
-      modalScrimBg:   "#000000bb",
-      closeGlyph:       20,
-      closeGlyphMobile: 24,
-      errorBg:        "#180a0a",
-      /* App */
-      guardScrimBg: "rgba(0,0,0,0.66)",
-    },
+            xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
+  /* Everything that is not spacing rhythm. Padding, margin and gap all live
+   * on the `space` scale above; what remains here is component geometry
+   * (element sizes, border widths, shadow radii, position offsets) and the
+   * per-theme colours with no home in the palette — overlays, scrims and
+   * surfaces that must darken on a dark theme and lighten on a light one,
+   * so they cannot be derived by alpha from an existing colour.
+   *
+   * Several are load-bearing and must not be snapped to a scale: headerHeight
+   * drives both the bar height and the mobile drawer's top offset, and the
+   * ledGlow radii are tuned to the ledSize values. */
+  legacy: {
+    ledSize:   7,  ledGlow:   5,  ledGlowFar: 10,
+    badgeFallbackBg: "#111",
+    barHeight: 3,
+    /* bars/ */
+    segBarHeight:  13,
+    /* layout/ */
+    toastOffset:      20,
+    toastAccent:      3,
+    toastMinW:        210,
+    toastMaxW:        360,
+    toastLine:        1.5,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    accentWidth: 3,
+    dryRunBg:    "#1a1400",
+    ledSizeLg:   8,
+    ledSizeSm:     6,
+    rowHoverBg:    "#ffffff07",
+    headerHeight:  46,
+    apiBarW:       210,
+    scrimBg:       "#00000066",
+    drawerShadow:  "0 4px 16px #00000066",
+    scrollbarW:    3,
+    logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    reviewBorder:  "#3a2800",
+    trackRowBg:    "#00000022",
+    rowSelectedBg: "#ffffff08",
+    /* settings/ */
+    logBg:            "#0d0f1a",
+    logMeta:          "#3a4060",
+    logText:          "#c8cce8",
+    zebraBg:          "#ffffff04",
+    /* DetailModal */
+    modalScrimBg:   "#000000bb",
+    closeGlyph:       20,
+    closeGlyphMobile: 24,
+    errorBg:        "#180a0a",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.66)",
+  },
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -225,7 +252,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -250,6 +277,7 @@ const soft = {
   palette: softPalette,
   statusColor: buildStatusColor(softPalette),
   levelColor: buildLevelColor(softPalette),
+  toastTone:  buildToastTone(softPalette),
   actionCfg: buildActionCfg(softPalette, {
     green: "#0e2417", greenB: "#1a3a27",
     red:   "#241010", redB:   "#3a1c1c",
@@ -277,52 +305,52 @@ const soft = {
   },
   radius: { none: 0, sm: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20,
-    xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
-    legacy: {
-      ledSize:   8,  ledGlow:   6,  ledGlowFar: 12,
-      badgeFallbackBg: "#1d2029",
-      barHeight: 4,
-      /* bars/ */
-      segBarHeight:  14,
-      /* layout/ */
-      toastOffset:      24,
-      toastAccent:      3,
-      toastMinW:        230,
-      toastMaxW:        380,
-      toastLine:        1.55,
-      toastMobileInset: 32,
-      /* dashboard/ */
-      accentWidth: 3,
-      dryRunBg:    "#241d06",
-      ledSizeLg:   9,
-      ledSizeSm:     7,
-      rowHoverBg:    "#ffffff0a",
-      headerHeight:  52,
-      apiBarW:       230,
-      scrimBg:       "#00000073",
-      drawerShadow:  "0 6px 24px #0000004d",
-      scrollbarW:    5,
-      logoInk:       "#000",
-      /* Thin active-state accent stroke: mobile tab underline, settings nav
-       * item left border, modal top border. Distinct from accentWidth (3). */
-      accentThin:    2,
-      /* review/ */
-      reviewBorder:  "#3a2c0c",
-      trackRowBg:    "#00000033",
-      rowSelectedBg: "#ffffff0d",
-      /* settings/ */
-      logBg:            "#1b1f2b",
-      logMeta:          "#575f7d",
-      logText:          "#dde0ec",
-      zebraBg:          "#ffffff07",
-      /* DetailModal */
-      modalScrimBg:   "#000000cc",
-      closeGlyph:       22,
-      closeGlyphMobile: 26,
-      errorBg:        "#241010",
-      /* App */
-      guardScrimBg: "rgba(0,0,0,0.72)",
-    },
+            xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
+  legacy: {
+    ledSize:   8,  ledGlow:   6,  ledGlowFar: 12,
+    badgeFallbackBg: "#1d2029",
+    barHeight: 4,
+    /* bars/ */
+    segBarHeight:  14,
+    /* layout/ */
+    toastOffset:      24,
+    toastAccent:      3,
+    toastMinW:        230,
+    toastMaxW:        380,
+    toastLine:        1.55,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    accentWidth: 3,
+    dryRunBg:    "#241d06",
+    ledSizeLg:   9,
+    ledSizeSm:     7,
+    rowHoverBg:    "#ffffff0a",
+    headerHeight:  52,
+    apiBarW:       230,
+    scrimBg:       "#00000073",
+    drawerShadow:  "0 6px 24px #0000004d",
+    scrollbarW:    5,
+    logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    reviewBorder:  "#3a2c0c",
+    trackRowBg:    "#00000033",
+    rowSelectedBg: "#ffffff0d",
+    /* settings/ */
+    logBg:            "#1b1f2b",
+    logMeta:          "#575f7d",
+    logText:          "#dde0ec",
+    zebraBg:          "#ffffff07",
+    /* DetailModal */
+    modalScrimBg:   "#000000cc",
+    closeGlyph:       22,
+    closeGlyphMobile: 26,
+    errorBg:        "#241010",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.72)",
+  },
 };
 
 export const themes = { terminal, soft };
@@ -375,6 +403,23 @@ export const ThemeProvider = ({ children }) => {
     link.href = href;
     document.head.appendChild(link);
     return () => { document.head.removeChild(link); };
+  }, [themeId]);
+
+  /* Scrollbars can only be coloured through a stylesheet — there is no
+   * element to set them on — so unlike the background they need an injected
+   * rule rather than an inline style. Grouped here with the background and
+   * the font because all three are global, all three follow the theme, and
+   * splitting them across files is how one of them gets forgotten on a
+   * theme that changes the other two. */
+  useEffect(() => {
+    const t = themes[themeId] || terminal;
+    const style = document.createElement("style");
+    style.textContent = `
+    ::-webkit-scrollbar       { width: ${t.legacy.scrollbarW}px; }
+    ::-webkit-scrollbar-thumb { background: ${t.palette.border}; }
+    `;
+    document.head.appendChild(style);
+    return () => { document.head.removeChild(style); };
   }, [themeId]);
 
   const value = useMemo(() => ({

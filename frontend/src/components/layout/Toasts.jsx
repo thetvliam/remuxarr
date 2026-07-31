@@ -5,9 +5,17 @@ import { useTheme } from "../../theme";
  * NOTE: the cap-at-8 logic and 5s auto-dismiss timer live in the parent's
  * `toast()` function (App.jsx / useAppData), not here — this component is a
  * pure renderer of whatever `items` array it is given.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const Toasts = ({ items, isMobile = false }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, radius, legacy, toastTone } = useTheme();
+
+  /* Toasts carry a tone name, not a colour, and it is resolved here — at
+   * render, from the theme that is current at render. An unrecognised tone
+   * falls back to the accent rather than throwing or rendering an invisible
+   * border: a mistyped tone should look slightly wrong, not break the only
+   * channel the app has for telling you something failed. */
+  const colorFor = (tone) => toastTone[tone] || palette.amber;
+
   return (
     <div style={{
       position: "fixed",
@@ -31,8 +39,8 @@ export const Toasts = ({ items, isMobile = false }) => {
       style={{
         padding: `${space.sm}px ${space.xl}px`,
         background: palette.card,
-        border: `1px solid ${t.color || palette.border}`,
-        borderLeft: `${legacy.toastAccent}px solid ${t.color || palette.amber}`,
+        border: `1px solid ${colorFor(t.tone)}`,
+        borderLeft: `${legacy.toastAccent}px solid ${colorFor(t.tone)}`,
         borderRadius: radius.sm,
         color: palette.text,
         fontSize: type.size.md,

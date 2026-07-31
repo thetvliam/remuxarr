@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { DEFAULT_API } from "../constants";
-import { useTheme } from "../theme";
 import { basename } from "../utils";
 import { useWebSocket } from "./useWebSocket";
 import { useBreakpoint } from "./useBreakpoint";
@@ -33,9 +32,8 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
-  const { palette, legacy } = useTheme();
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
   // read the current page without a stale closure.
@@ -178,10 +176,10 @@ export function useAppData() {
   }, []);
 
   /* ── Global CSS injection ─────────────────────────────────────────────── */
-  /* Split in two on purpose. The resets and keyframes never change, so they
-   * mount once. The scrollbar colours come from the palette, so they have to
-   * be re-applied when the theme switches — as one mount-only effect they
-   * stayed on whichever theme was active at load. */
+  /* Everything injected here is theme-independent and mounts once. Anything
+   * that follows the theme — background, webfont, scrollbar colours — lives
+   * in ThemeProvider, which re-applies it on every switch. This hook is the
+   * data layer and no longer reads the theme at all. */
   useEffect(() => {
     // Theme-independent resets + keyframes. Two things are deliberately
     // absent: the webfont, which varies per theme, and the page background.
@@ -204,22 +202,6 @@ export function useAppData() {
     // on any future remount of this hook.
     return () => { document.head.removeChild(style); };
   }, []);
-
-  /* ── Theme-dependent global CSS ───────────────────────────────────────── */
-  /* Scrollbars only. The page background used to be set here as well as by
-   * ThemeProvider, which sets it inline on <body>. Inline always wins, so
-   * this rule never actually did anything — but two owners for one value is
-   * how they drift, and the dead one is the one someone edits when the
-   * background looks wrong. */
-  useEffect(() => {
-    const style       = document.createElement("style");
-    style.textContent = `
-    ::-webkit-scrollbar        { width: ${legacy.scrollbarW}px; }
-    ::-webkit-scrollbar-thumb  { background: ${palette.border}; }
-    `;
-    document.head.appendChild(style);
-    return () => { document.head.removeChild(style); };
-  }, [palette.border, legacy.scrollbarW]);
 
   /* ── Toast helper ─────────────────────────────────────────────────────── */
   const toast = useCallback((msg, color) => {
@@ -319,16 +301,16 @@ export function useAppData() {
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
               : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
-                  msg.status === "success" ? palette.green
-                  : msg.status === "dry_run" ? palette.violet
-                  : palette.red,
+                  msg.status === "success" ? "success"
+                  : msg.status === "dry_run" ? "preview"
+                  : "error",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
             break;
 
           case "file_queued":
-            toast(`Queued: ${basename(msg.file_path)}`, palette.blue);
+            toast(`Queued: ${basename(msg.file_path)}`, "info");
             fetchAll();
             break;
 
@@ -351,7 +333,7 @@ export function useAppData() {
               (msg.cancelled ? "Scan stopped — " : "Scan complete — ") +
               `${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
               (msg.removed ? `, ${msg.removed} removed` : ""),
-                  palette.amber,
+                  "notice",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
@@ -362,7 +344,7 @@ export function useAppData() {
               msg.removed === 0
               ? "Cleanup complete — no stale entries found"
               : `Cleanup complete — ${msg.removed} stale ${msg.removed === 1 ? "entry" : "entries"} removed`,
-              palette.blue,
+              "info",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
@@ -383,30 +365,21 @@ export function useAppData() {
             toast(
               `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
-                  msg.status === "success" ? palette.green
-                  : msg.status === "undone" ? palette.blue
-                  : palette.red,
+                  msg.status === "success" ? "success"
+                  : msg.status === "undone" ? "info"
+                  : "error",
             );
             fetchForge();
             setForgeRefreshKey(k => k + 1);
             break;
         }
-        /* `palette` and `api` are read in the body above and so belong here.
-         * They were missing, and the omission was silent: `fetchAll` and
-         * `fetchForge` only change when `api` changes and `toast` never
-         * changes, so this callback was rebuilt on an api change and at no
-         * other time. In particular it was never rebuilt on a theme switch,
-         * leaving every toast raised from a WebSocket event coloured from
-         * whichever palette was active when the socket handler was last
-         * built. Between the two current themes that is a near-identical
-         * green; against a light palette it would be an unreadable toast.
-         *
-         * The bug arrived with the theme migration, which replaced a static
-         * `C.green` — a module constant, correctly absent from this array —
-         * with a context value that does change. Nothing flagged the
-         * difference, which is why the lint rule that would have is now
-         * installed. */
-      }, [fetchAll, fetchForge, toast, palette, api]);
+      /* No theme value appears in this callback any more — the toasts it
+       * raises name a tone, and the colour is resolved by Toasts at render.
+       * That is the point of the change: a dependency array cannot go stale
+       * on a value it never captures. `api` stays because the body reads it
+       * directly; it was missing before, masked only by `fetchAll` happening
+       * to close over the same value. */
+      }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);

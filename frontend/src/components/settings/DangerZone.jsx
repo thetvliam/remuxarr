@@ -31,12 +31,12 @@ export const DangerZone = ({ api, toast }) => {
         try {
             const r = await fetch(`${api}/api/settings/clear-database`, { method: "POST" });
             if (r.ok) {
-                toast?.("Database cleared — next scan will treat all files as new", palette.green);
+                toast?.("Database cleared — next scan will treat all files as new", "success");
             } else {
-                toast?.("Failed to clear database", palette.red);
+                toast?.("Failed to clear database", "error");
             }
         } catch (_) {
-            toast?.("Failed to clear database", palette.red);
+            toast?.("Failed to clear database", "error");
         } finally {
             setClearing(false);
             setConfirming(false);

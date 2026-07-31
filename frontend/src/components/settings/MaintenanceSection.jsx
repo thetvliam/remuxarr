@@ -13,55 +13,55 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *
  * Each toggle/tag saves immediately via PATCH /api/settings/{key} so
  * there's no separate Save button needed (mirrors how DangerZone works).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-    <div style={{
-      display: "flex",
-      alignItems: "flex-start",
-      gap: space.xxl,
-      padding: `${space.xl}px 0`,
-      borderBottom: `1px solid ${palette.border}`,
-    }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
-    {label}
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    {description}
-    </div>
-    </div>
-    <button
-    onClick={() => !disabled && onChange(!checked)}
-    disabled={disabled}
-    style={{
-      flexShrink: 0,
-      marginTop: space.hair,
-      width: 40,
-      height: 22,
-      borderRadius: radius.pill,
-      border: `1px solid ${checked ? palette.amber : palette.border}`,
-      background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
-          cursor: disabled ? "not-allowed" : "pointer",
-          position: "relative",
-          transition: "border-color 0.15s, background 0.15s",
-    }}
-    >
-    <span style={{
-      position: "absolute",
-      top: 2,
-      left: checked ? 20 : 2,
-      width: 16,
-      height: 16,
-      borderRadius: radius.full,
-      background: checked ? palette.amber : palette.dim,
-      transition: "left 0.15s, background 0.15s",
-    }} />
-    </button>
-    </div>
+  <div style={{
+    display: "flex",
+    alignItems: "flex-start",
+    gap: space.xxl,
+    padding: `${space.xl}px 0`,
+    borderBottom: `1px solid ${palette.border}`,
+  }}>
+  <div style={{ flex: 1 }}>
+  <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
+  {label}
+  </div>
+  <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
+  {description}
+  </div>
+  </div>
+  <button
+  onClick={() => !disabled && onChange(!checked)}
+  disabled={disabled}
+  style={{
+    flexShrink: 0,
+    marginTop: space.hair,
+    width: 40,
+    height: 22,
+    borderRadius: radius.pill,
+    border: `1px solid ${checked ? palette.amber : palette.border}`,
+    background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
+    cursor: disabled ? "not-allowed" : "pointer",
+    position: "relative",
+    transition: "border-color 0.15s, background 0.15s",
+  }}
+  >
+  <span style={{
+    position: "absolute",
+    top: 2,
+    left: checked ? 20 : 2,
+    width: 16,
+    height: 16,
+    borderRadius: radius.full,
+    background: checked ? palette.amber : palette.dim,
+    transition: "left 0.15s, background 0.15s",
+  }} />
+  </button>
+  </div>
   );
 };
 
@@ -110,10 +110,10 @@ const TimeTagInput = ({ value = [], onChange }) => {
           gap: space.xs,
           padding: `${space.hair}px ${space.sm}px`,
           background: alpha(palette.amber, ALPHA.low),
-                       border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
-                       color: palette.amber,
-                       fontSize: type.size.md,
-                       fontFamily: type.family,
+          border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
+          color: palette.amber,
+          fontSize: type.size.md,
+          fontFamily: type.family,
         }}
         >
         {t}
@@ -230,9 +230,9 @@ export const MaintenanceSection = ({ api, toast }) => {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ value }),
       });
-      if (!r.ok) toast?.("Failed to save setting", palette.red);
+      if (!r.ok) toast?.("Failed to save setting", "error");
     } catch (_) {
-      toast?.("Failed to save setting", palette.red);
+      toast?.("Failed to save setting", "error");
     }
   };
 
@@ -248,13 +248,13 @@ export const MaintenanceSection = ({ api, toast }) => {
           data.removed === 0
           ? "Cleanup complete — no stale entries found"
           : `Cleanup complete — removed ${data.removed} stale ${data.removed === 1 ? "entry" : "entries"}`,
-          palette.blue,
+          "info",
         );
       } else {
-        toast?.("Cleanup failed", palette.red);
+        toast?.("Cleanup failed", "error");
       }
     } catch (_) {
-      toast?.("Cleanup failed", palette.red);
+      toast?.("Cleanup failed", "error");
     } finally {
       setCleanupRunning(false);
     }
@@ -273,14 +273,14 @@ export const MaintenanceSection = ({ api, toast }) => {
         body:    JSON.stringify({ force_probe: true }),
       });
       if (r.ok) {
-        toast?.("Force full rescan started — progress shown in the header", palette.amber);
+        toast?.("Force full rescan started — progress shown in the header", "notice");
       } else if (r.status === 409) {
-        toast?.("A scan is already in progress", palette.red);
+        toast?.("A scan is already in progress", "error");
       } else {
-        toast?.("Failed to start rescan", palette.red);
+        toast?.("Failed to start rescan", "error");
       }
     } catch (_) {
-      toast?.("Failed to start rescan", palette.red);
+      toast?.("Failed to start rescan", "error");
     }
   };
 
@@ -295,10 +295,10 @@ export const MaintenanceSection = ({ api, toast }) => {
         setOrphanedItems(data.items || []);
         setOrphanedChecked(true);
       } else {
-        toast?.("Failed to check for orphaned files", palette.red);
+        toast?.("Failed to check for orphaned files", "error");
       }
     } catch (_) {
-      toast?.("Failed to check for orphaned files", palette.red);
+      toast?.("Failed to check for orphaned files", "error");
     } finally {
       setOrphanedLoading(false);
     }
@@ -337,15 +337,15 @@ export const MaintenanceSection = ({ api, toast }) => {
         const data = await r.json();
         toast?.(
           `Removed ${data.removed} orphaned ${data.removed === 1 ? "entry" : "entries"}`,
-          palette.blue,
+          "info",
         );
         // Re-check rather than assume — reflects the real current state
         await checkOrphaned();
       } else {
-        toast?.("Failed to remove orphaned files", palette.red);
+        toast?.("Failed to remove orphaned files", "error");
       }
     } catch (_) {
-      toast?.("Failed to remove orphaned files", palette.red);
+      toast?.("Failed to remove orphaned files", "error");
     } finally {
       setOrphanedRemoving(false);
     }
@@ -487,14 +487,14 @@ export const MaintenanceSection = ({ api, toast }) => {
       flexShrink: 0,
       padding: `${space.xs}px ${space.xl}px`,
       background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
-          border: `1px solid ${palette.amber}`,
-          color: palette.amber,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
+      border: `1px solid ${palette.amber}`,
+      color: palette.amber,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.wide,
+      cursor: "pointer",
+      whiteSpace: "nowrap",
     }}
     >
     {forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
@@ -628,13 +628,13 @@ export const MaintenanceSection = ({ api, toast }) => {
       style={{
         padding: `${space.xs}px ${space.xl}px`,
         background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
-                                                     border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
-                                                     color: orphanedSelected.size === 0 ? palette.muted : palette.red,
-                                                     fontSize: type.size.sm,
-                                                     fontFamily: type.family,
-                                                     fontWeight: type.weight.bold,
-                                                     letterSpacing: type.tracking.wide,
-                                                     cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
+        border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
+        color: orphanedSelected.size === 0 ? palette.muted : palette.red,
+        fontSize: type.size.sm,
+        fontFamily: type.family,
+        fontWeight: type.weight.bold,
+        letterSpacing: type.tracking.wide,
+        cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
       }}
       >
       {orphanedRemoving
