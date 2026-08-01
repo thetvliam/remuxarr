@@ -42,8 +42,26 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
     );
 
     return (
-        <button
+        /* A div with button semantics rather than a real <button>, because
+         * this row contains its own ↑ TOP and × buttons. A <button> may not
+         * contain interactive content: the parser is entitled to hoist the
+         * inner buttons out, and the outer button swallows their focus
+         * semantics, so keyboard users could not reach them at all.
+         * stopPropagation fixes the click bubbling but not the structure.
+         *
+         * role + tabIndex + the Enter/Space handler restore what the real
+         * element gave for free. Space is preventDefault'ed because its
+         * default action on a focused element is to scroll the page. */
+        <div
+        role="button"
+        tabIndex={0}
         onClick={() => onSelect(item)}
+        onKeyDown={e => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(item);
+            }
+        }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
@@ -103,7 +121,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         }}>
         {item.reason || "—"}
         </div>
-        </button>
+        </div>
     );
 };
 
