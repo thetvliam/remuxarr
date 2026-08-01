@@ -36,7 +36,7 @@ const NAV_ITEMS = [
 const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
 
 const Logo = ({ variant = "mark", height = 24 }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, surface } = useTheme();
   const [failed, setFailed] = useState(false);
 
   if (failed) {
@@ -47,7 +47,7 @@ const Logo = ({ variant = "mark", height = 24 }) => {
         background: palette.amber,
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
-      <span style={{ color: legacy.logoInk, fontSize: type.size.base, fontWeight: type.weight.black }}>R</span>
+      <span style={{ color: surface.logoInk, fontSize: type.size.base, fontWeight: type.weight.black }}>R</span>
       </div>
       {variant === "full" && (
         <span style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.bold, letterSpacing: type.tracking.max }}>
@@ -86,7 +86,7 @@ export const AppHeader = ({
   wsConnected,
   isMobile,
 }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, radius, size, surface } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -102,7 +102,7 @@ export const AppHeader = ({
   if (!isMobile) {
     return (
       <header style={{
-        height: legacy.headerHeight,
+        height: size.headerHeight,
         display: "flex",
         alignItems: "center",
         padding: `0 ${space.xxl}px`,
@@ -122,13 +122,13 @@ export const AppHeader = ({
         key={n.k}
         onClick={() => setPage(n.k)}
         style={{
-          height: legacy.headerHeight,
+          height: size.headerHeight,
           padding: `0 ${space.xl}px`,
           background: "transparent",
           border: "none",
           borderBottom: page === n.k
-          ? `${legacy.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
-          : `${legacy.accentThin}px solid transparent`,
+          ? `${size.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
+          : `${size.accentThin}px solid transparent`,
           color: page === n.k
           ? (n.alertable && reviewCount > 0 ? palette.yellow : palette.amber)
           : palette.dim,
@@ -230,7 +230,7 @@ export const AppHeader = ({
 
         {/* WS status */}
         <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
-        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
+        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={size.ledSize} />
         <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
         {wsConnected ? "LIVE" : "OFFLINE"}
         </span>
@@ -244,7 +244,7 @@ export const AppHeader = ({
     <div style={{ position: "relative", flexShrink: 0 }}>
     {/* Row 1 — always visible */}
     <header style={{
-      height: legacy.headerHeight,
+      height: size.headerHeight,
       display: "flex",
       alignItems: "center",
       padding: `0 ${space.xl}px`,
@@ -297,7 +297,7 @@ export const AppHeader = ({
           </button>
 
           {/* WS status — compact */}
-          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
+          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={size.ledSize} />
 
           {/* ⚙ API */}
           <button
@@ -355,7 +355,7 @@ export const AppHeader = ({
               style={{
                 position: "fixed",
                 inset: 0,
-                top: legacy.headerHeight,
+                top: size.headerHeight,
                 zIndex: 490,
                 background: "transparent",
               }}
@@ -370,7 +370,7 @@ export const AppHeader = ({
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
                 zIndex: 500,
-                boxShadow: legacy.drawerShadow,
+                boxShadow: surface.drawerShadow,
               }}>
               {/* Nav links */}
               {NAV_ITEMS.map(n => {
@@ -387,7 +387,7 @@ export const AppHeader = ({
                     padding: `${space.lg}px ${space.xxl}px`,
                     background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
                         border: "none",
-                        borderLeft: `${legacy.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
+                        borderLeft: `${size.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
                         borderBottom: `1px solid ${palette.border}`,
                         color: active ? (alert ? palette.yellow : palette.amber) : palette.dim,
                         fontSize: type.size.md,

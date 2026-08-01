@@ -22,7 +22,7 @@ export const ForgeProcessedPanel = ({ jobs, onUndo }) => (
 );
 
 const ForgeProcessedRow = ({ job, onUndo }) => {
-    const { palette, type, space, radius, legacy } = useTheme();
+    const { palette, type, space, radius, size, surface } = useTheme();
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
@@ -42,7 +42,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             alignItems: "center",
             gap: space.md,
             padding: `${space.md}px ${space.xl}px`,
-            background: hover ? legacy.rowHoverBg : "transparent",
+            background: hover ? surface.rowHoverBg : "transparent",
             borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
         }}
@@ -54,7 +54,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             : palette.green
         }
         pulse={isUndoPending}
-        size={legacy.ledSizeSm}
+        size={size.ledSizeSm}
         />
 
         {/* File info */}

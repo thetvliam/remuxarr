@@ -41,7 +41,15 @@ export const alpha = (color, amount) => {
   if (typeof color !== "string" || !color.startsWith("#")) {
     return `color-mix(in srgb, ${color} ${Math.round(amount * 100)}%, transparent)`;
   }
-  const base = color.length > 7 ? color.slice(0, 7) : color;
+  // Expand 3- and 4-digit hex before appending. Without this, "#111" came
+  // straight through and became "#11180" — a five-digit string CSS silently
+  // ignores, so the element renders with no background at all rather than a
+  // faint one. Two surface tokens are written short (#111, #000), so this
+  // was one call away from being a real bug.
+  let base = color.length > 7 ? color.slice(0, 7) : color;
+  if (base.length === 4 || base.length === 5) {
+    base = "#" + base.slice(1, 4).split("").map(c => c + c).join("");
+  }
   const hex  = Math.round(Math.max(0, Math.min(1, amount)) * 255)
   .toString(16)
   .padStart(2, "0");
@@ -190,7 +198,7 @@ const terminal = {
     /* Line height belongs to the type scale, not to spacing: it scales with
      * the font size rather than with padding, and a roomier theme wants
      * looser leading at every step. */
-    leading: { none: 1, snug: 1.55, normal: 1.6, relaxed: 1.65, loose: 1.7 },
+    leading: { none: 1, tight: 1.5, snug: 1.55, normal: 1.6, relaxed: 1.65, loose: 1.7 },
   },
   radius: { none: 0, sm: 0, pill: 11, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16,
@@ -205,52 +213,68 @@ const terminal = {
    * Several are load-bearing and must not be snapped to a scale: headerHeight
    * drives both the bar height and the mobile drawer's top offset, and the
    * ledGlow radii are tuned to the ledSize values. */
-  legacy: {
-    ledSize:   7,  ledGlow:   5,  ledGlowFar: 10,
-    badgeFallbackBg: "#111",
-    barHeight: 3,
-    /* bars/ */
-    segBarHeight:  13,
-    /* layout/ */
+    /* Component geometry — the fixed dimensions of the app's own furniture,
+   * as distinct from the spacing rhythm on the `space` scale above. These
+   * are sizes of things, not gaps between things, which is why they are not
+   * on a scale: an LED is 7px because that reads as a status dot, not
+   * because 7 is a step in a series.
+   *
+   * Mostly leave-alone when defining a new theme. A denser or roomier theme
+   * scales these a little; nothing here needs rethinking the way the
+   * surfaces below do.
+   *
+   * Two are load-bearing and must not be nudged casually: headerHeight
+   * drives both the bar height and the mobile drawer's top offset, and the
+   * ledGlow radii are tuned to the ledSize values. */
+  size: {
+    ledSize:          7,
+    ledGlow:          5,
+    ledGlowFar:       10,
+    barHeight:        3,
+    segBarHeight:     13,
     toastOffset:      20,
     toastAccent:      3,
     toastMinW:        210,
     toastMaxW:        360,
-    toastLine:        1.5,
     toastMobileInset: 32,
-    /* dashboard/ */
-    accentWidth: 3,
-    dryRunBg:    "#1a1400",
-    ledSizeLg:   8,
-    ledSizeSm:     6,
-    rowHoverBg:    "#ffffff07",
-    headerHeight:  46,
-    apiBarW:       210,
-    scrimBg:       "#00000066",
-    drawerShadow:  "0 4px 16px #00000066",
-    scrollbarW:    3,
-    focusRing:     2,
-    focusOffset:   1,
-    logoInk:       "#000",
-    /* Thin active-state accent stroke: mobile tab underline, settings nav
-     * item left border, modal top border. Distinct from accentWidth (3). */
-    accentThin:    2,
-    /* review/ */
-    reviewBorder:  "#3a2800",
-    trackRowBg:    "#00000022",
-    rowSelectedBg: "#ffffff08",
-    /* settings/ */
+    accentWidth:      3,
+    ledSizeLg:        8,
+    ledSizeSm:        6,
+    headerHeight:     46,
+    apiBarW:          210,
+    scrollbarW:       3,
+    focusRing:        2,
+    focusOffset:      1,
+    accentThin:       2,
+    closeGlyph:       20,
+    closeGlyphMobile: 24,
+  },
+
+  /* Per-theme surfaces — colours with no home in the palette. Overlays,
+   * scrims, shadows and one-off backgrounds, all of which sit ON something
+   * rather than being a colour in their own right.
+   *
+   * These are the entries a new theme genuinely has to think about, and the
+   * reason they cannot be derived with alpha(): every one of them darkens
+   * what is beneath it, because both current themes are dark. A light theme
+   * has to lighten instead, which is a different colour and not a different
+   * opacity of the same one. */
+  surface: {
+    badgeFallbackBg:  "#111",
+    dryRunBg:         "#1a1400",
+    rowHoverBg:       "#ffffff07",
+    drawerShadow:     "0 4px 16px #00000066",
+    logoInk:          "#000",
+    reviewBorder:     "#3a2800",
+    trackRowBg:       "#00000022",
+    rowSelectedBg:    "#ffffff08",
     logBg:            "#0d0f1a",
     logMeta:          "#3a4060",
     logText:          "#c8cce8",
     zebraBg:          "#ffffff04",
-    /* DetailModal */
-    modalScrimBg:   "#000000bb",
-    closeGlyph:       20,
-    closeGlyphMobile: 24,
-    errorBg:        "#180a0a",
-    /* App */
-    guardScrimBg: "rgba(0,0,0,0.66)",
+    modalScrimBg:     "#000000bb",
+    errorBg:          "#180a0a",
+    guardScrimBg:     "rgba(0,0,0,0.66)",
   },
 };
 
@@ -308,57 +332,73 @@ const soft = {
       wider: "0.04em", widest: "0.05em", ultra: "0.06em", max: "0.08em",
     },
     /* Looser at every step than terminal's. */
-    leading: { none: 1, snug: 1.6, normal: 1.65, relaxed: 1.7, loose: 1.75 },
+    leading: { none: 1, tight: 1.55, snug: 1.6, normal: 1.65, relaxed: 1.7, loose: 1.75 },
   },
   radius: { none: 0, sm: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20,
             xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
-  legacy: {
-    ledSize:   8,  ledGlow:   6,  ledGlowFar: 12,
-    badgeFallbackBg: "#1d2029",
-    barHeight: 4,
-    /* bars/ */
-    segBarHeight:  14,
-    /* layout/ */
+    /* Component geometry — the fixed dimensions of the app's own furniture,
+   * as distinct from the spacing rhythm on the `space` scale above. These
+   * are sizes of things, not gaps between things, which is why they are not
+   * on a scale: an LED is 7px because that reads as a status dot, not
+   * because 7 is a step in a series.
+   *
+   * Mostly leave-alone when defining a new theme. A denser or roomier theme
+   * scales these a little; nothing here needs rethinking the way the
+   * surfaces below do.
+   *
+   * Two are load-bearing and must not be nudged casually: headerHeight
+   * drives both the bar height and the mobile drawer's top offset, and the
+   * ledGlow radii are tuned to the ledSize values. */
+  size: {
+    ledSize:          8,
+    ledGlow:          6,
+    ledGlowFar:       12,
+    barHeight:        4,
+    segBarHeight:     14,
     toastOffset:      24,
     toastAccent:      3,
     toastMinW:        230,
     toastMaxW:        380,
-    toastLine:        1.55,
     toastMobileInset: 32,
-    /* dashboard/ */
-    accentWidth: 3,
-    dryRunBg:    "#241d06",
-    ledSizeLg:   9,
-    ledSizeSm:     7,
-    rowHoverBg:    "#ffffff0a",
-    headerHeight:  52,
-    apiBarW:       230,
-    scrimBg:       "#00000073",
-    drawerShadow:  "0 6px 24px #0000004d",
-    scrollbarW:    5,
-    focusRing:     2,
-    focusOffset:   2,
-    logoInk:       "#000",
-    /* Thin active-state accent stroke: mobile tab underline, settings nav
-     * item left border, modal top border. Distinct from accentWidth (3). */
-    accentThin:    2,
-    /* review/ */
-    reviewBorder:  "#3a2c0c",
-    trackRowBg:    "#00000033",
-    rowSelectedBg: "#ffffff0d",
-    /* settings/ */
+    accentWidth:      3,
+    ledSizeLg:        9,
+    ledSizeSm:        7,
+    headerHeight:     52,
+    apiBarW:          230,
+    scrollbarW:       5,
+    focusRing:        2,
+    focusOffset:      2,
+    accentThin:       2,
+    closeGlyph:       22,
+    closeGlyphMobile: 26,
+  },
+
+  /* Per-theme surfaces — colours with no home in the palette. Overlays,
+   * scrims, shadows and one-off backgrounds, all of which sit ON something
+   * rather than being a colour in their own right.
+   *
+   * These are the entries a new theme genuinely has to think about, and the
+   * reason they cannot be derived with alpha(): every one of them darkens
+   * what is beneath it, because both current themes are dark. A light theme
+   * has to lighten instead, which is a different colour and not a different
+   * opacity of the same one. */
+  surface: {
+    badgeFallbackBg:  "#1d2029",
+    dryRunBg:         "#241d06",
+    rowHoverBg:       "#ffffff0a",
+    drawerShadow:     "0 6px 24px #0000004d",
+    logoInk:          "#000",
+    reviewBorder:     "#3a2c0c",
+    trackRowBg:       "#00000033",
+    rowSelectedBg:    "#ffffff0d",
     logBg:            "#1b1f2b",
     logMeta:          "#575f7d",
     logText:          "#dde0ec",
     zebraBg:          "#ffffff07",
-    /* DetailModal */
-    modalScrimBg:   "#000000cc",
-    closeGlyph:       22,
-    closeGlyphMobile: 26,
-    errorBg:        "#241010",
-    /* App */
-    guardScrimBg: "rgba(0,0,0,0.72)",
+    modalScrimBg:     "#000000cc",
+    errorBg:          "#241010",
+    guardScrimBg:     "rgba(0,0,0,0.72)",
   },
 };
 
@@ -414,7 +454,7 @@ export const ThemeProvider = ({ children }) => {
      * light-on-white against a dark page. */
     :root { color-scheme: ${t.colorScheme}; accent-color: ${t.palette.amber}; }
 
-    ::-webkit-scrollbar       { width: ${t.legacy.scrollbarW}px; }
+    ::-webkit-scrollbar       { width: ${t.size.scrollbarW}px; }
     ::-webkit-scrollbar-thumb { background: ${t.palette.border}; }
 
     /* Placeholders were browser-default grey everywhere. */
@@ -432,8 +472,8 @@ export const ThemeProvider = ({ children }) => {
      * as outline: none stayed on the elements, no ring could have applied. */
     :focus { outline: none; }
     :focus-visible {
-      outline: ${t.legacy.focusRing}px solid ${t.palette.amber};
-      outline-offset: ${t.legacy.focusOffset}px;
+      outline: ${t.size.focusRing}px solid ${t.palette.amber};
+      outline-offset: ${t.size.focusOffset}px;
     }
     `;
     document.head.appendChild(style);

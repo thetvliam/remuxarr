@@ -10,9 +10,9 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
-    const { palette, type, space, radius, legacy, statusColor } = useTheme();
+    const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
     const f = item.file || {};
 
@@ -51,7 +51,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
             width: "100%",
             textAlign: "left",
             padding: `${space.md}px ${space.xl}px`,
-            background: hover ? legacy.rowHoverBg : "transparent",
+            background: hover ? surface.rowHoverBg : "transparent",
             border: "none",
             borderBottom: `1px solid ${palette.border}`,
             cursor: "pointer",
@@ -66,7 +66,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         <LED
         color={statusColor[item.status] || palette.dim}
         pulse={false}
-        size={legacy.ledSizeSm}
+        size={size.ledSizeSm}
         />
         <span style={{
             color: palette.text,
@@ -109,7 +109,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
     const [search,     setSearch]     = useState("");

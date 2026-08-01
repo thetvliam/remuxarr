@@ -7,7 +7,7 @@ import { useTheme } from "../../theme";
  * pure renderer of whatever `items` array it is given.
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const Toasts = ({ items, isMobile = false }) => {
-  const { palette, type, space, radius, legacy, toastTone } = useTheme();
+  const { palette, type, space, radius, size, toastTone } = useTheme();
 
   /* Toasts carry a tone name, not a colour, and it is resolved here — at
    * render, from the theme that is current at render. An unrecognised tone
@@ -19,19 +19,19 @@ export const Toasts = ({ items, isMobile = false }) => {
   return (
     <div style={{
       position: "fixed",
-      bottom: legacy.toastOffset,
+      bottom: size.toastOffset,
       // Desktop: bottom-right corner.
       // Mobile: bottom-centre so toasts don't overflow a narrow screen.
       ...(isMobile
       ? { left: "50%", transform: "translateX(-50%)", right: "auto" }
-      : { right: legacy.toastOffset }
+      : { right: size.toastOffset }
       ),
       display: "flex",
       flexDirection: "column",
       gap: space.xs,
       zIndex: 2000,
       pointerEvents: "none",
-      width: isMobile ? `calc(100vw - ${legacy.toastMobileInset}px)` : "auto",
+      width: isMobile ? `calc(100vw - ${size.toastMobileInset}px)` : "auto",
     }}>
     {items.map(t => (
       <div
@@ -40,13 +40,13 @@ export const Toasts = ({ items, isMobile = false }) => {
         padding: `${space.sm}px ${space.xl}px`,
         background: palette.card,
         border: `1px solid ${colorFor(t.tone)}`,
-        borderLeft: `${legacy.toastAccent}px solid ${colorFor(t.tone)}`,
+        borderLeft: `${size.toastAccent}px solid ${colorFor(t.tone)}`,
         borderRadius: radius.sm,
         color: palette.text,
         fontSize: type.size.md,
-        minWidth: isMobile ? "auto" : legacy.toastMinW,
-        maxWidth: isMobile ? "none" : legacy.toastMaxW,
-        lineHeight: legacy.toastLine,
+        minWidth: isMobile ? "auto" : size.toastMinW,
+        maxWidth: isMobile ? "none" : size.toastMaxW,
+        lineHeight: type.leading.tight,
         animation: "toastIn 0.2s ease",
       }}
       >

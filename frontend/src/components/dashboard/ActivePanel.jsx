@@ -6,9 +6,9 @@ import { SegBar } from "../bars/SegBar";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = false }) => {
-  const { palette, type, space, radius, legacy } = useTheme();
+  const { palette, type, space, radius, size, surface } = useTheme();
 
   if (!job && !transitioning) {
     return (
@@ -20,7 +20,7 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
         alignItems: "center",
         gap: space.lg,
       }}>
-      <LED color={palette.dim} size={legacy.ledSizeLg} />
+      <LED color={palette.dim} size={size.ledSizeLg} />
       <span style={{
         color: palette.dim,
         fontSize: type.size.base,
@@ -47,14 +47,14 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
       padding: `${space.xl}px ${space.huge}px`,
       background: palette.card,
       borderBottom: `1px solid ${palette.border}`,
-      borderLeft: `${legacy.accentWidth}px solid ${transitioning ? palette.dim : palette.amber}`,
+      borderLeft: `${size.accentWidth}px solid ${transitioning ? palette.dim : palette.amber}`,
     }}>
     {/* Row 1 — status labels */}
     <div style={{ display: "flex", alignItems: "center", gap: space.md, marginBottom: space.md }}>
     <LED
     color={transitioning ? palette.dim : palette.amber}
     pulse={!transitioning}
-    size={legacy.ledSizeLg}
+    size={size.ledSizeLg}
     />
     <span style={{
       color: palette.dim,
@@ -67,7 +67,7 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
     {!transitioning && job.is_dry_run && (
       <span style={{
         padding: `${space.hair}px ${space.xs}px`,
-        background: legacy.dryRunBg,
+        background: surface.dryRunBg,
         border: `1px solid ${alpha(palette.yellow, ALPHA.heavy)}`,
                                           borderRadius: radius.none,
                                           color: palette.yellow,

@@ -12,7 +12,7 @@ export const ForgePage = ({
   onAdd, onUndo,
   isMobile = false,
 }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, size } = useTheme();
   const [forgeTab, setForgeTab] = useState("candidates"); // mobile only
 
   return (
@@ -44,7 +44,7 @@ export const ForgePage = ({
           background: "transparent",
           border: "none",
           borderBottom: forgeTab === k
-          ? `${legacy.accentThin}px solid ${palette.amber}` : `${legacy.accentThin}px solid transparent`,
+          ? `${size.accentThin}px solid ${palette.amber}` : `${size.accentThin}px solid transparent`,
           color: forgeTab === k ? palette.amber : palette.dim,
           fontSize: type.size.xs,
           fontFamily: type.family,

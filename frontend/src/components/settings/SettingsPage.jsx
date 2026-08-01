@@ -289,7 +289,7 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 
 /* ── Sidebar / dropdown navigation ──────────────────────────────────────── */
 const NavSidebar = ({ active, onSelect, dirty }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, size } = useTheme();
   return (
   <nav style={{
     flexShrink: 0,
@@ -314,7 +314,7 @@ const NavSidebar = ({ active, onSelect, dirty }) => {
         padding: `${space.md}px ${space.lg}px`,
         background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
         border: "none",
-        borderLeft: `${legacy.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+        borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
         color: on ? palette.amber : palette.muted,
         fontSize: type.size.md,
         fontFamily: type.family,

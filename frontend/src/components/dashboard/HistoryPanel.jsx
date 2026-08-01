@@ -8,9 +8,9 @@ import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * HISTORY ROW
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
-  const { palette, type, space, radius, legacy, statusColor } = useTheme();
+  const { palette, type, space, radius, size, surface, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
   const f      = item.file || {};
   const ok     = item.status === "success";
@@ -27,7 +27,7 @@ const HistoryRow = ({ item, onSelect }) => {
       width: "100%",
       textAlign: "left",
       padding: `${space.md}px ${space.xl}px`,
-      background: hover ? legacy.rowHoverBg : "transparent",
+      background: hover ? surface.rowHoverBg : "transparent",
       border: "none",
       borderBottom: `1px solid ${palette.border}`,
       cursor: "pointer",
@@ -35,7 +35,7 @@ const HistoryRow = ({ item, onSelect }) => {
     }}
     >
     <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: space.xxs }}>
-    <LED color={statusColor[item.status] || palette.dim} size={legacy.ledSizeSm} />
+    <LED color={statusColor[item.status] || palette.dim} size={size.ledSizeSm} />
     <span style={{
       color: palette.text,
       fontSize: type.size.base,
@@ -117,7 +117,7 @@ const HistoryRow = ({ item, onSelect }) => {
  * Self-fetching: receives api + historyRefreshKey instead of a pre-loaded
  * items array.  useHistoryData handles pagination; IntersectionObserver
  * triggers loadMore when the scroll sentinel comes into view.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
   const { palette, type, space, radius } = useTheme();
   const [tab,            setTab]            = useState("success");
@@ -193,22 +193,22 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         style={{
           padding: `${space.hair}px ${space.md}px`,
           background: tab === key ? alpha(color, ALPHA.low) : "transparent",
-              // No borderRadius here, deliberately. These four buttons are a
-              // single segmented control: each drops its right border so the
-              // neighbouring one's left border serves both. Rounding a segment
-              // would round the edges it shares, leaving gaps down the middle of
-              // the strip on any theme with a real radius. Only the outer two
-              // corners of the group should curve, which needs a clipping
-              // wrapper around just the segments — the flex container here also
-              // holds the divider and the RETRY ALL button, so it cannot take
-              // that role without clipping those too.
-              border: `1px solid ${tab === key ? color : palette.border}`,
-              borderRight: "none",
-              color: tab === key ? color : palette.dim,
-              fontSize: type.size.xs,
-              fontFamily: type.family,
-              letterSpacing: type.tracking.wide,
-              cursor: "pointer",
+          // No borderRadius here, deliberately. These four buttons are a
+          // single segmented control: each drops its right border so the
+          // neighbouring one's left border serves both. Rounding a segment
+          // would round the edges it shares, leaving gaps down the middle of
+          // the strip on any theme with a real radius. Only the outer two
+          // corners of the group should curve, which needs a clipping
+          // wrapper around just the segments — the flex container here also
+          // holds the divider and the RETRY ALL button, so it cannot take
+          // that role without clipping those too.
+          border: `1px solid ${tab === key ? color : palette.border}`,
+          borderRight: "none",
+          color: tab === key ? color : palette.dim,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.wide,
+          cursor: "pointer",
         }}
         >
         {label}
@@ -288,7 +288,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       padding: `${space.xxs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
-          borderRadius: radius.sm,
+      borderRadius: radius.sm,
           color: palette.text,
           fontSize: type.size.md,
           fontFamily: type.family,

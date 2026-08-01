@@ -54,7 +54,7 @@ const ThemePreview = ({ t }) => (
         borderBottom: i === 0 ? `1px solid ${t.palette.border}` : "none",
       }}>
         <span style={{
-          width: t.legacy.ledSizeSm, height: t.legacy.ledSizeSm,
+          width: t.size.ledSizeSm, height: t.size.ledSizeSm,
           borderRadius: t.radius.full, background: c, flexShrink: 0,
         }} />
         <span style={{

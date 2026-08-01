@@ -4,9 +4,9 @@ import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * API CONFIGURATOR  (small inline bar in the header)
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ApiBar = ({ current, onSave }) => {
-    const { palette, type, space, radius, legacy } = useTheme();
+    const { palette, type, space, radius, size } = useTheme();
     const [draft, setDraft] = useState(current);
     return (
         <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
@@ -17,7 +17,7 @@ export const ApiBar = ({ current, onSave }) => {
         placeholder="http://localhost:9191"
         autoFocus
         style={{
-            width: legacy.apiBarW,
+            width: size.apiBarW,
             padding: `${space.xxs}px ${space.sm}px`,
             background: palette.bg,
             border: `1px solid ${palette.border}`,

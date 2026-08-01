@@ -5,14 +5,14 @@ import { Stat } from "../atoms/Stat";
 import { SegBar } from "../bars/SegBar";
 
 export const ForgeActivePanel = ({ job }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, size } = useTheme();
     if (!job) return (
         <div style={{
             padding: `${space.xl}px ${space.huge}px`, background: palette.card,
             borderBottom: `1px solid ${palette.border}`,
             display: "flex", alignItems: "center", gap: space.lg,
         }}>
-        <LED color={palette.dim} size={legacy.ledSizeLg} />
+        <LED color={palette.dim} size={size.ledSizeLg} />
         <span style={{ color: palette.dim, fontSize: type.size.base, letterSpacing: type.tracking.snug }}>
         FORGE IDLE — select a file from the candidates list to add an AC3 5.1 track
         </span>
@@ -26,10 +26,10 @@ export const ForgeActivePanel = ({ job }) => {
         <div style={{
             padding: `${space.xl}px ${space.huge}px`, background: palette.card,
             borderBottom: `1px solid ${palette.border}`,
-            borderLeft: `${legacy.accentWidth}px solid ${palette.blue}`,
+            borderLeft: `${size.accentWidth}px solid ${palette.blue}`,
         }}>
         <div style={{ display: "flex", alignItems: "center", gap: space.md, marginBottom: space.md }}>
-        <LED color={palette.blue} pulse size={legacy.ledSizeLg} />
+        <LED color={palette.blue} pulse size={size.ledSizeLg} />
         <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
         {job.is_undo ? "UNDOING" : "FORGING"}
         </span>

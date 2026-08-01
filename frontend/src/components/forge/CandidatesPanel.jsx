@@ -8,9 +8,9 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * CANDIDATE ROW
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 const CandidateRow = ({ candidate: c, onAdd }) => {
-    const { palette, type, space, radius, legacy } = useTheme();
+    const { palette, type, space, radius, size, surface } = useTheme();
     const [hover, setHover] = useState(false);
     const lang = c.aac_track?.language?.toUpperCase() || "UND";
 
@@ -23,12 +23,12 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
             alignItems: "center",
             gap: space.md,
             padding: `${space.md}px ${space.xl}px`,
-            background: hover ? legacy.rowHoverBg : "transparent",
+            background: hover ? surface.rowHoverBg : "transparent",
             borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
         }}
         >
-        <LED color={palette.green} size={legacy.ledSizeSm} />
+        <LED color={palette.green} size={size.ledSizeSm} />
 
         <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
@@ -80,7 +80,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
  * candidates array.  usePaginatedFetch handles pagination; the same
  * IntersectionObserver + generation-counter pattern used in HistoryPanel
  * ensures refreshKey changes always produce a clean, up-to-date list.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
     const { palette, type, space, radius } = useTheme();
     const [search,          setSearch]          = useState("");

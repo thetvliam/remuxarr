@@ -20,7 +20,7 @@ const LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 3 };
 const LEVELS = ["ALL", "INFO", "WARNING", "ERROR"];
 
 export const LogViewer = ({ api }) => {
-  const { palette, type, space, radius, legacy, levelColor } = useTheme();
+  const { palette, type, space, radius, surface, levelColor } = useTheme();
   const [allRecords,  setAllRecords]  = useState([]);
   const [levelFilter, setLevelFilter] = useState("INFO");
   const [autoScroll,  setAutoScroll]  = useState(true);
@@ -184,7 +184,7 @@ export const LogViewer = ({ api }) => {
         style={{
           height: 380,
           overflowY: "auto",
-          background: legacy.logBg,
+          background: surface.logBg,
           border: `1px solid ${palette.border}`,
           borderRadius: radius.sm,
           padding: `${space.md}px 0`,
@@ -210,12 +210,12 @@ export const LogViewer = ({ api }) => {
                   display: "flex",
                   gap: 0,
                   padding: `0 ${space.xl}px`,
-                  background: i % 2 === 0 ? "transparent" : legacy.zebraBg,
+                  background: i % 2 === 0 ? "transparent" : surface.zebraBg,
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-all",
                 }}
               >
-                <span style={{ color: legacy.logMeta, flexShrink: 0, marginRight: space.sm }}>
+                <span style={{ color: surface.logMeta, flexShrink: 0, marginRight: space.sm }}>
                   {r.ts}
                 </span>
                 <span style={{
@@ -228,10 +228,10 @@ export const LogViewer = ({ api }) => {
                 }}>
                   {r.level}
                 </span>
-                <span style={{ color: legacy.logMeta, flexShrink: 0, marginRight: space.sm }}>
+                <span style={{ color: surface.logMeta, flexShrink: 0, marginRight: space.sm }}>
                   {r.module}
                 </span>
-                <span style={{ color: legacy.logText }}>
+                <span style={{ color: surface.logText }}>
                   {r.message}
                 </span>
               </div>
