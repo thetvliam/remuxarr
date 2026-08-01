@@ -5,7 +5,10 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 //
 // `normalize` prop: true (default) lowercases input — correct for language
 // codes (eng, fre…). false preserves case exactly — required for filesystem
-// paths, where SettingInput passes normalize={field.key !== "scan_paths"}.
+// paths, where SettingInput passes
+// normalize={!["scan_paths", "plex_path_mappings"].includes(field.key)}.
+// The list matters: it previously named scan_paths alone, and lowercasing
+// a Plex path mapping breaks it on a case-sensitive filesystem.
 //
 // `placeholder` prop: comes from the field's schema entry. It used to be
 // hardcoded to a language-code example, so every list setting — scan paths,
