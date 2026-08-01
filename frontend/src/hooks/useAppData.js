@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -219,10 +219,23 @@ export function useAppData() {
   }, []);
 
   /* ── Toast helper ─────────────────────────────────────────────────────── */
-  const toast = useCallback((msg, color) => {
+  /* The second argument is a TONE NAME — "error", "success", "notice" — not a
+   * colour. Toasts resolves it against the theme at render.
+   *
+   * The parameter and the stored key have to agree with what Toasts reads.
+   * They did not: callers were updated to pass tone names and the renderer
+   * was updated to read `tone`, but this function kept storing the value
+   * under `color`. `t.tone` was therefore undefined on every toast and every
+   * one fell back to the accent, so a failed job and a successful save
+   * looked identical. Nothing failed loudly — a lookup miss just returns the
+   * fallback, which is a real colour.
+   *
+   * The value is only ever a key into toastTone, so passing a hex here
+   * degrades to the fallback rather than rendering that colour. */
+  const toast = useCallback((msg, tone) => {
     const id = Date.now() + Math.random();
     setToasts(t => {
-      const next = [...t, { id, msg, color }];
+      const next = [...t, { id, msg, tone }];
       return next.slice(-8);
     });
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
@@ -394,12 +407,12 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-        /* No theme value appears in this callback any more — the toasts it
-         * raises name a tone, and the colour is resolved by Toasts at render.
-         * That is the point of the change: a dependency array cannot go stale
-         * on a value it never captures. `api` stays because the body reads it
-         * directly; it was missing before, masked only by `fetchAll` happening
-         * to close over the same value. */
+      /* No theme value appears in this callback any more — the toasts it
+       * raises name a tone, and the colour is resolved by Toasts at render.
+       * That is the point of the change: a dependency array cannot go stale
+       * on a value it never captures. `api` stays because the body reads it
+       * directly; it was missing before, masked only by `fetchAll` happening
+       * to close over the same value. */
       }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
