@@ -138,7 +138,12 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
     return () => {
       if (abortRef.current) abortRef.current.abort();
     };
-  }, [api, endpoint, refreshKey, search, paramsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+      /* pageSize belongs here: doFetch closes over it, so without it a caller
+       * that changed page size would keep requesting the old one indefinitely.
+       * Every caller passes a literal today, so nothing was broken — but the
+       * suppression that hid it also switched the rule off for the whole effect,
+       * in the hook most likely to grow a dynamic page size. */
+  }, [api, endpoint, refreshKey, search, paramsKey, pageSize]);
 
   const loadMore = useCallback(() => {
     if (!loadingRef.current && doFetchRef.current) {

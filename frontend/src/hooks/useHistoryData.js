@@ -3,52 +3,52 @@ import { useState, useEffect, useCallback, useRef } from "react";
 const PAGE_SIZE = 50;
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   useHistoryData
-   Manages server-side paginated fetching for one history tab.
-
-   Parameters:
-     api          — base URL string
-     status       — "all" | "success" | "failed" | "skipped" | "dry_run"
-     refreshKey   — { key: number, status: string | null }. `key` increments
-                    whenever history may have changed; `status` records
-                    WHICH specific status just changed (from a job_completed
-                    event), or null if the change could affect any status
-                    (scan/cleanup, which can create or remove items across
-                    multiple tabs at once).
-     search       — debounced search string
-
-   Returns:
-     items    — array of history items fetched so far
-     total    — total matching count from the server
-     loading  — true while a page request is in flight
-     hasMore  — true when the server has more pages beyond what's loaded
-     loadMore — call to fetch the next page (used by IntersectionObserver)
-
-   Relevance gating:
-   Every job completion used to reset and refetch EVERY tab, regardless of
-   whether that tab had anything to do with the job that just finished — a
-   failed job would still blank and reload the Success and Skipped tabs,
-   producing a visible flash on tabs nothing actually changed on. This hook
-   now only proceeds with a reset+refetch when refreshKey.status matches
-   (or could affect) this hook's own `status`. A genuine tab switch or
-   search change still always refetches — only an irrelevant refreshKey
-   bump is now a no-op, leaving the currently displayed items untouched.
-
-   Distinguishing "refreshKey changed" from "status/search changed" (which
-   must NOT be gated — switching tabs should always show fresh data) is
-   done by tracking the previous api/status/search in refs and comparing
-   them at the top of the effect: if none of those three changed since the
-   last run, whatever triggered this run must have been refreshKey itself.
-
-   Race condition handling:
-   A generationRef tracks which effect invocation is current. When any of
-   the dependencies change (status, refreshKey, search), the effect's
-   generation increments. Any async operation that resolves after the
-   generation has changed is silently dropped — including the finally block
-   that clears loadingRef. Without this, the old finally block would reset
-   loadingRef for the newer fetch, causing stale results or missing updates.
-   This is the fix for the skipped tab not updating after a scan completes.
-═══════════════════════════════════════════════════════════════════════════ */
+ *  useHistoryData
+ *  Manages server-side paginated fetching for one history tab.
+ *
+ *  Parameters:
+ *    api          — base URL string
+ *    status       — "all" | "success" | "failed" | "skipped" | "dry_run"
+ *    refreshKey   — { key: number, status: string | null }. `key` increments
+ *                   whenever history may have changed; `status` records
+ *                   WHICH specific status just changed (from a job_completed
+ *                   event), or null if the change could affect any status
+ *                   (scan/cleanup, which can create or remove items across
+ *                   multiple tabs at once).
+ *    search       — debounced search string
+ *
+ *  Returns:
+ *    items    — array of history items fetched so far
+ *    total    — total matching count from the server
+ *    loading  — true while a page request is in flight
+ *    hasMore  — true when the server has more pages beyond what's loaded
+ *    loadMore — call to fetch the next page (used by IntersectionObserver)
+ *
+ *  Relevance gating:
+ *  Every job completion used to reset and refetch EVERY tab, regardless of
+ *  whether that tab had anything to do with the job that just finished — a
+ *  failed job would still blank and reload the Success and Skipped tabs,
+ *  producing a visible flash on tabs nothing actually changed on. This hook
+ *  now only proceeds with a reset+refetch when refreshKey.status matches
+ *  (or could affect) this hook's own `status`. A genuine tab switch or
+ *  search change still always refetches — only an irrelevant refreshKey
+ *  bump is now a no-op, leaving the currently displayed items untouched.
+ *
+ *  Distinguishing "refreshKey changed" from "status/search changed" (which
+ *  must NOT be gated — switching tabs should always show fresh data) is
+ *  done by tracking the previous api/status/search in refs and comparing
+ *  them at the top of the effect: if none of those three changed since the
+ *  last run, whatever triggered this run must have been refreshKey itself.
+ *
+ *  Race condition handling:
+ *  A generationRef tracks which effect invocation is current. When any of
+ *  the dependencies change (status, refreshKey, search), the effect's
+ *  generation increments. Any async operation that resolves after the
+ *  generation has changed is silently dropped — including the finally block
+ *  that clears loadingRef. Without this, the old finally block would reset
+ *  loadingRef for the newer fetch, causing stale results or missing updates.
+ *  This is the fix for the skipped tab not updating after a scan completes.
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 
 // True if a change tagged with eventStatus should cause a tab showing
 // `tab` to refresh. Mirrors history.py's own status filter — the Failed
@@ -169,7 +169,7 @@ export function useHistoryData(api, status, refreshKey, search) {
     return () => {
       if (abortRef.current) abortRef.current.abort();
     };
-  }, [api, status, refreshKey, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, status, refreshKey, search]);
 
   // Stable callback — reads from refs so it never goes stale
   const loadMore = useCallback(() => {
