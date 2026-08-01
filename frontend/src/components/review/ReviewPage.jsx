@@ -258,8 +258,8 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
                 })
             }
 
-            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} />
-            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} />
+            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} toast={toast} />
             </div>
     );
 };

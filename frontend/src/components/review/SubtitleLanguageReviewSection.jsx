@@ -12,7 +12,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * originates from an undefined ("und") tag, not a defined-but-wrong one —
  * see fix_undefined_language's "always ask" mode.
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey, reviewRefreshKey = 0 }) => {
+export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey, toast, reviewRefreshKey = 0 }) => {
   const { palette, type, space, radius, surface } = useTheme();
 
   // The established subtitle colour in this codebase — the same one the
@@ -91,17 +91,30 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     if (!lang) return;
     setBusy(true);
     try {
-      await fetch(`${api}/api/subtitle-language-review/apply`, {
+      // Both branches matter. Without them a 500, a 422 or a dropped
+      // connection produced exactly the success path: the list refreshed,
+      // the selection cleared, and the user was left believing every
+      // selected file had been re-tagged.
+      const r = await fetch(`${api}/api/subtitle-language-review/apply`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ file_ids: Array.from(selected), target_language: lang }),
       });
+      if (!r.ok) {
+        toast?.(`Failed to set subtitle language on ${selected.size} file${selected.size === 1 ? "" : "s"}`, "error");
+        return;
+      }
       setRefreshKey(k => k + 1);
       // Same reasoning as AudioLanguageReviewSection's own applyLanguage —
       // this section's refreshKey only re-queries its own list; onRefresh
       // and setHistoryRefreshKey cover the queue view and History panel.
       onRefresh?.();
       setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
+    } catch (_) {
+      // A rejected fetch (offline, DNS, connection reset) never reaches the
+      // !r.ok check above, and without this escapes as an unhandled promise
+      // rejection while the UI shows nothing at all.
+      toast?.("Could not reach the server", "error");
     } finally {
       setBusy(false);
     }
@@ -111,12 +124,21 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
     if (selected.size === 0) return;
     setBusy(true);
     try {
-      await fetch(`${api}/api/subtitle-language-review/ignore`, {
+      const r = await fetch(`${api}/api/subtitle-language-review/ignore`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ file_ids: Array.from(selected) }),
       });
+      if (!r.ok) {
+        toast?.("Failed to ignore the selected files", "error");
+        return;
+      }
       setRefreshKey(k => k + 1);
+    } catch (_) {
+      // A rejected fetch (offline, DNS, connection reset) never reaches the
+      // !r.ok check above, and without this escapes as an unhandled promise
+      // rejection while the UI shows nothing at all.
+      toast?.("Could not reach the server", "error");
     } finally {
       setBusy(false);
     }
