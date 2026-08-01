@@ -4,7 +4,7 @@ import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * API CONFIGURATOR  (small inline bar in the header)
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ApiBar = ({ current, onSave }) => {
     const { palette, type, space, radius, legacy } = useTheme();
     const [draft, setDraft] = useState(current);
@@ -25,7 +25,6 @@ export const ApiBar = ({ current, onSave }) => {
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.sm,
-            outline: "none",
         }}
         />
         <Btn label="SET" color={palette.amber} onClick={() => onSave(draft)} />

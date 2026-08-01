@@ -169,7 +169,6 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
-            outline: "none",
         }}
         />
         <input
@@ -186,7 +185,6 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
-            outline: "none",
             textTransform: "lowercase",
         }}
         />

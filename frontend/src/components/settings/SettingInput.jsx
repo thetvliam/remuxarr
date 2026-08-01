@@ -12,13 +12,13 @@ export const SettingInput = ({ field, value, onChange }) => {
       style={{
         padding: `${space.xs}px ${space.xl}px`,
         background: on ? alpha(palette.green, ALPHA.low) : "transparent",
-        border: `1px solid ${on ? palette.green : palette.border}`,
-        borderRadius: radius.sm,
-        color: on ? palette.green : palette.dim,
-        fontSize: type.size.sm,
-        fontFamily: type.family,
-        letterSpacing: type.tracking.wide,
-        cursor: "pointer",
+            border: `1px solid ${on ? palette.green : palette.border}`,
+            borderRadius: radius.sm,
+            color: on ? palette.green : palette.dim,
+            fontSize: type.size.sm,
+            fontFamily: type.family,
+            letterSpacing: type.tracking.wide,
+            cursor: "pointer",
       }}
       >
       {on ? "■ ON" : "□ OFF"}
@@ -55,7 +55,6 @@ export const SettingInput = ({ field, value, onChange }) => {
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.base,
-        outline: "none",
       }}
       />
     );
@@ -77,7 +76,6 @@ export const SettingInput = ({ field, value, onChange }) => {
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,
-        outline: "none",
       }}
       />
     );
@@ -108,7 +106,6 @@ export const SettingInput = ({ field, value, onChange }) => {
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,
-        outline: "none",
         cursor: "pointer",
       }}
       >

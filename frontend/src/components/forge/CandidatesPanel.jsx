@@ -8,7 +8,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * CANDIDATE ROW
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const CandidateRow = ({ candidate: c, onAdd }) => {
     const { palette, type, space, radius, legacy } = useTheme();
     const [hover, setHover] = useState(false);
@@ -80,7 +80,7 @@ const CandidateRow = ({ candidate: c, onAdd }) => {
  * candidates array.  usePaginatedFetch handles pagination; the same
  * IntersectionObserver + generation-counter pattern used in HistoryPanel
  * ensures refreshKey changes always produce a clean, up-to-date list.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
     const { palette, type, space, radius } = useTheme();
     const [search,          setSearch]          = useState("");
@@ -135,7 +135,6 @@ export const CandidatesPanel = ({ api, forgeRefreshKey, onAdd }) => {
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
-            outline: "none",
         }}
         />
         </div>

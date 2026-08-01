@@ -149,7 +149,6 @@ const TimeTagInput = ({ value = [], onChange }) => {
       color: palette.text,
       fontSize: type.size.base,
       fontFamily: type.family,
-      outline: "none",
     }}
     />
     <button

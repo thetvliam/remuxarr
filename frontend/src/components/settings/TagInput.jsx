@@ -40,10 +40,10 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
                 gap: space.xxs,
                 padding: `${space.hair}px ${space.sm}px`,
                 background: alpha(palette.blue, ALPHA.low),
-                border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
-                borderRadius: radius.sm,
-                color: palette.blue,
-                fontSize: type.size.md,
+                          border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
+                          borderRadius: radius.sm,
+                          color: palette.blue,
+                          fontSize: type.size.md,
             }}
             >
             {v}
@@ -82,7 +82,6 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
-            outline: "none",
         }}
         />
         <button

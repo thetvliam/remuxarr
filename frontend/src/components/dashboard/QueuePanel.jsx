@@ -182,7 +182,6 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
                 color: palette.text,
                 fontSize: type.size.md,
                 fontFamily: type.family,
-                outline: "none",
             }}
             />
             </div>

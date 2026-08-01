@@ -161,7 +161,6 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
           color: palette.text,
           fontFamily: type.family,
           fontSize: type.size.md,
-          outline: "none",
     }}
     />
     <input
@@ -178,7 +177,6 @@ export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefres
       color: palette.text,
       fontFamily: type.family,
       fontSize: type.size.md,
-      outline: "none",
       textTransform: "lowercase",
     }}
     />
