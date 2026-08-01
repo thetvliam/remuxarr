@@ -261,6 +261,9 @@ def _migrate_schema() -> None:
         ("audio_language_flags", "ix_audio_language_flags_detected_language",
          "CREATE INDEX IF NOT EXISTS ix_audio_language_flags_detected_language "
          "ON audio_language_flags (detected_language)"),
+        ("subtitle_language_flags", "ix_subtitle_language_flags_detected_language",
+         "CREATE INDEX IF NOT EXISTS ix_subtitle_language_flags_detected_language "
+         "ON subtitle_language_flags (detected_language)"),
     ]
 
     with engine.begin() as conn:

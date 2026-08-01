@@ -24,6 +24,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file, _load_subtitle_language_overrides
@@ -45,23 +46,49 @@ class IgnoreRequest(BaseModel):
 
 @router.get("/")
 def list_flags(
-    search: str = "",
-    limit:  int = 50,
-    offset: int = 0,
+    search:   str = "",
+    language: str = "",
+    limit:    int = 50,
+    offset:   int = 0,
     db: Session = Depends(get_db),
 ):
     """
-    Paginated, searchable list of files with a flagged subtitle language
+    Paginated, filterable list of files with a flagged subtitle language
     needing a decision. Search matches filename, case-insensitive
     substring — e.g. "king of the hill" returns every flagged episode
     across every season, ready to select-all and apply in one action.
+
+    `language` narrows to a single detected tag, combining with `search`
+    via AND. Mirrors the audio review endpoint exactly; see its docstring
+    for why the filtering is server-side and why the facet counts honour
+    `search` but deliberately ignore `language`.
     """
-    query = (
+    base = (
         db.query(SubtitleLanguageFlag)
         .join(SubtitleLanguageFlag.media_file)
     )
     if search.strip():
-        query = query.filter(MediaFile.filename.ilike(f"%{search.strip()}%"))
+        base = base.filter(MediaFile.filename.ilike(f"%{search.strip()}%"))
+
+    language_counts = (
+        base.with_entities(
+            SubtitleLanguageFlag.detected_language,
+            func.count(SubtitleLanguageFlag.id),
+        )
+        .group_by(SubtitleLanguageFlag.detected_language)
+        .order_by(func.count(SubtitleLanguageFlag.id).desc())
+        .all()
+    )
+    languages = [
+        {"language": lang or "und", "count": count}
+        for lang, count in language_counts
+    ]
+
+    query = base
+    if language.strip():
+        query = query.filter(
+            SubtitleLanguageFlag.detected_language == language.strip().lower()
+        )
 
     total = query.count()
     flags = (
@@ -86,7 +113,7 @@ def list_flags(
             "detected_language": flag.detected_language,
         })
 
-    return {"total": total, "items": items}
+    return {"total": total, "items": items, "languages": languages}
 
 
 @router.post("/apply")

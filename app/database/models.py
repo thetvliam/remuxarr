@@ -425,7 +425,7 @@ class SubtitleLanguageFlag(Base):
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
                      nullable=False, unique=True)
     stream_index = Column(Integer, nullable=False)
-    detected_language = Column(String)
+    detected_language = Column(String, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
