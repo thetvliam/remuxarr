@@ -19,6 +19,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file, _load_audio_language_overrides
@@ -40,23 +41,62 @@ class IgnoreRequest(BaseModel):
 
 @router.get("/")
 def list_flags(
-    search: str = "",
-    limit:  int = 50,
-    offset: int = 0,
+    search:   str = "",
+    language: str = "",
+    limit:    int = 50,
+    offset:   int = 0,
     db: Session = Depends(get_db),
 ):
     """
-    Paginated, searchable list of files with a flagged audio language
+    Paginated, filterable list of files with a flagged audio language
     mismatch. Search matches filename, case-insensitive substring — e.g.
     "king of the hill" returns every flagged episode across every season,
     ready to select-all and apply in one action.
+
+    `language` narrows to a single detected tag. The two filters combine
+    with AND, so "king of the hill" + "dut" gives exactly the episodes of
+    that show carrying the wrong Dutch tag, leaving any correctly-tagged
+    ones alone.
+
+    Also returns `languages`: every distinct detected tag with a count,
+    for the filter dropdown. Filtering has to happen on the server because
+    the list is paginated — narrowing only the loaded page would report
+    fewer matches than exist, and "select all" would then act on a subset
+    the user believes is complete.
+
+    The counts honour `search` but deliberately ignore `language`. Faceting
+    on the language filter itself would collapse the dropdown to whichever
+    option was selected, so there would be no way to switch to another
+    without clearing first. With search applied and language not, the
+    dropdown keeps showing the alternatives within the current search.
     """
-    query = (
+    base = (
         db.query(AudioLanguageFlag)
         .join(AudioLanguageFlag.media_file)
     )
     if search.strip():
-        query = query.filter(MediaFile.filename.ilike(f"%{search.strip()}%"))
+        base = base.filter(MediaFile.filename.ilike(f"%{search.strip()}%"))
+
+    # Facet counts: search applied, language not — see the docstring.
+    language_counts = (
+        base.with_entities(
+            AudioLanguageFlag.detected_language,
+            func.count(AudioLanguageFlag.id),
+        )
+        .group_by(AudioLanguageFlag.detected_language)
+        .order_by(func.count(AudioLanguageFlag.id).desc())
+        .all()
+    )
+    languages = [
+        {"language": lang or "und", "count": count}
+        for lang, count in language_counts
+    ]
+
+    query = base
+    if language.strip():
+        query = query.filter(
+            AudioLanguageFlag.detected_language == language.strip().lower()
+        )
 
     total = query.count()
     flags = (
@@ -81,7 +121,7 @@ def list_flags(
             "detected_language": flag.detected_language,
         })
 
-    return {"total": total, "items": items}
+    return {"total": total, "items": items, "languages": languages}
 
 
 @router.post("/apply")

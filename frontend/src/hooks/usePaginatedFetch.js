@@ -1,58 +1,78 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   usePaginatedFetch
-   Shared implementation for server-side paginated fetching, consolidating
-   what were three separate, near-identical hooks — useAudioLanguageReviewData,
-   useSubtitleLanguageReviewData, and useCandidatesData — that differed only
-   in which endpoint they fetched from and their page size.
-
-   NOTE: useHistoryData is a fourth, related hook that was deliberately left
-   OUT of this consolidation — it has real, substantial extra behavior (a
-   "relevance gating" mechanism that skips a redundant reset+refetch when a
-   refreshKey change couldn't possibly affect that specific tab's contents,
-   built specifically to fix a documented real bug: the skipped tab not
-   updating after a scan completes). That's deliberate, bug-fix-driven
-   complexity, not accidental duplication — forcing it into this shared,
-   simpler hook would mean either bloating this hook with a parameter only
-   one caller needs, or risking that carefully-built logic for no real gain.
-
-   Parameters:
-     api          — base URL string
-     endpoint     — path appended to api, e.g. "/api/forge/candidates/"
-                    (must accept ?limit=&offset=&search= query params and
-                    return { items, total })
-     refreshKey   — value that increments/changes when the list may have
-                    changed
-     search       — debounced search string
-     pageSize     — items requested per page (default 50)
-
-   Returns:
-     items    — array of items fetched so far
-     total    — total matching count from the server
-     loading  — true while a page request is in flight
-     hasMore  — true when the server has more pages beyond what's loaded
-     loadMore — call to fetch the next page (used by IntersectionObserver)
-
-   Race condition handling:
-   A generationRef tracks which effect invocation is current. When any of
-   the dependencies change (api, endpoint, refreshKey, search), the effect's
-   generation increments. Any async operation that resolves after the
-   generation has changed is silently dropped — including the finally block
-   that clears loadingRef. Without this, an old finally block could reset
-   loadingRef for a newer fetch, causing stale results or missing updates.
-═══════════════════════════════════════════════════════════════════════════ */
-export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 50) {
+ *  usePaginatedFetch
+ *  Shared implementation for server-side paginated fetching, consolidating
+ *  what were three separate, near-identical hooks — useAudioLanguageReviewData,
+ *  useSubtitleLanguageReviewData, and useCandidatesData — that differed only
+ *  in which endpoint they fetched from and their page size.
+ *
+ *  NOTE: useHistoryData is a fourth, related hook that was deliberately left
+ *  OUT of this consolidation — it has real, substantial extra behavior (a
+ *  "relevance gating" mechanism that skips a redundant reset+refetch when a
+ *  refreshKey change couldn't possibly affect that specific tab's contents,
+ *  built specifically to fix a documented real bug: the skipped tab not
+ *  updating after a scan completes). That's deliberate, bug-fix-driven
+ *  complexity, not accidental duplication — forcing it into this shared,
+ *  simpler hook would mean either bloating this hook with a parameter only
+ *  one caller needs, or risking that carefully-built logic for no real gain.
+ *
+ *  Parameters:
+ *    api          — base URL string
+ *    endpoint     — path appended to api, e.g. "/api/forge/candidates/"
+ *                   (must accept ?limit=&offset=&search= query params and
+ *                   return { items, total })
+ *    refreshKey   — value that increments/changes when the list may have
+ *                   changed
+ *    search       — debounced search string
+ *    pageSize     — items requested per page (default 50)
+ *    extraParams  — optional object of additional query params, e.g.
+ *                   { language: "dut" }. Entries with an empty or nullish
+ *                   value are omitted rather than sent blank, so a cleared
+ *                   filter produces the same request as no filter at all.
+ *
+ *  Returns:
+ *    items    — array of items fetched so far
+ *    total    — total matching count from the server
+ *    loading  — true while a page request is in flight
+ *    hasMore  — true when the server has more pages beyond what's loaded
+ *    loadMore — call to fetch the next page (used by IntersectionObserver)
+ *    raw      — the most recent response body, for endpoints that return
+ *               more than { items, total } (the audio review list also
+ *               returns language facet counts)
+ *
+ *  Race condition handling:
+ *  A generationRef tracks which effect invocation is current. When any of
+ *  the dependencies change (api, endpoint, refreshKey, search), the effect's
+ *  generation increments. Any async operation that resolves after the
+ *  generation has changed is silently dropped — including the finally block
+ *  that clears loadingRef. Without this, an old finally block could reset
+ *  loadingRef for a newer fetch, causing stale results or missing updates.
+ ═ *══════════════════════════════════════════════════════════════════════════ */
+export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 50, extraParams = null) {
   const [items,   setItems]   = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [raw,     setRaw]     = useState(null);
 
   const offsetRef     = useRef(0);
   const loadingRef    = useRef(false);
   const abortRef      = useRef(null);
   const doFetchRef    = useRef(null);
   const generationRef = useRef(0);
+
+  /* Callers pass a fresh object literal on every render, so extraParams can
+   * never be a dependency directly — it would be a new reference each time
+   * and refetch the list continuously. Serialising it gives a value that
+   * changes only when the contents do. Keys are sorted so that two objects
+   * with the same entries in a different order compare equal rather than
+   * triggering a spurious reset. */
+  const paramsKey = JSON.stringify(
+    Object.entries(extraParams || {})
+    .filter(([, v]) => v !== undefined && v !== null && `${v}`.trim() !== "")
+    .sort(([a], [b]) => a.localeCompare(b)),
+  );
 
   useEffect(() => {
     if (abortRef.current) abortRef.current.abort();
@@ -64,6 +84,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
     setItems([]);
     setTotal(0);
     setHasMore(false);
+    setRaw(null);
 
     const doFetch = async (fetchOffset, append) => {
       if (loadingRef.current) return;
@@ -77,6 +98,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
       try {
         const params = new URLSearchParams({ limit: pageSize, offset: fetchOffset });
         if (search.trim()) params.set("search", search.trim());
+        for (const [k, v] of JSON.parse(paramsKey)) params.set(k, `${v}`.trim());
 
         const r = await fetch(`${api}${endpoint}?${params}`, { signal: ctrl.signal });
 
@@ -86,6 +108,8 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
         const data     = await r.json();
 
         if (generationRef.current !== myGeneration) return;
+
+        setRaw(data);
 
         const newItems = data.items || [];
         const newTotal = data.total  ?? 0;
@@ -114,7 +138,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
     return () => {
       if (abortRef.current) abortRef.current.abort();
     };
-  }, [api, endpoint, refreshKey, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [api, endpoint, refreshKey, search, paramsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMore = useCallback(() => {
     if (!loadingRef.current && doFetchRef.current) {
@@ -122,5 +146,5 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
     }
   }, []);
 
-  return { items, total, loading, hasMore, loadMore };
+  return { items, total, loading, hasMore, loadMore, raw };
 }

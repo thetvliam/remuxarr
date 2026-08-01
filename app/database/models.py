@@ -387,7 +387,11 @@ class AudioLanguageFlag(Base):
     # The language code currently on that track at the moment it was
     # flagged (e.g. "dut") — shown to the user so they can tell at a
     # glance what's actually on the file without opening it.
-    detected_language = Column(String)
+    #
+    # Indexed because the review UI both filters and groups by it: the
+    # language dropdown needs a DISTINCT ... GROUP BY over this column on
+    # every page load to build its options.
+    detected_language = Column(String, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
