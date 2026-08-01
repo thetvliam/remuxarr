@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -130,7 +130,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -157,10 +157,6 @@ const terminal = {
    * free — this is not something the palette can express. */
   colorScheme: "dark",
   blurb: "Dense and sharp. Wide letter-spacing, square corners, tight rows.",
-  /* Loaded by ThemeProvider when this theme is active. A theme whose
-   * type.root names a webfont has to bring that font with it, or the stack
-   * silently falls through to whatever the OS supplies. */
-  fontHref: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap",
   palette: terminalPalette,
   statusColor: buildStatusColor(terminalPalette),
   levelColor: buildLevelColor(terminalPalette),
@@ -178,12 +174,15 @@ const terminal = {
     family: "inherit",
     /* The app shell's font stack. Everything else inherits it via `family`,
      * so this one value carries most of the theme's character. */
-    root:   "'JetBrains Mono', 'Courier New', monospace",
+    root:   "'JetBrains Mono Variable', 'JetBrains Mono', 'Courier New', monospace",
     /* Log output is deliberately monospaced — column alignment carries
      * meaning there, so it does not follow `family`. */
     mono:   "'Courier New', 'Lucida Console', monospace",
     size:   { xs: 9, sm: 10, md: 11, base: 12, lg: 13, xl: 14, xxl: 15, h2: 16, h1: 18 },
-    weight: { normal: 400, medium: 500, semibold: 600, bold: 700, black: 900 },
+    /* black is 800, not 900: JetBrains Mono ships no 900 face, so a 900
+     * here could only ever be synthesised. Every weight in this map has
+     * a real file imported in fonts.js. */
+    weight: { normal: 400, medium: 500, semibold: 600, bold: 700, black: 800 },
     tracking: {
       tight: "0.03em", snug: "0.06em", normal: "0.08em", wide: "0.1em",
       wider: "0.12em", widest: "0.14em", ultra: "0.16em", max: "0.18em",
@@ -195,64 +194,64 @@ const terminal = {
   },
   radius: { none: 0, sm: 0, pill: 11, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16,
-    xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
-    /* Everything that is not spacing rhythm. Padding, margin and gap all live
-     * on the `space` scale above; what remains here is component geometry
-     * (element sizes, border widths, shadow radii, position offsets) and the
-     * per-theme colours with no home in the palette — overlays, scrims and
-     * surfaces that must darken on a dark theme and lighten on a light one,
-     * so they cannot be derived by alpha from an existing colour.
-     *
-     * Several are load-bearing and must not be snapped to a scale: headerHeight
-     * drives both the bar height and the mobile drawer's top offset, and the
-     * ledGlow radii are tuned to the ledSize values. */
-    legacy: {
-      ledSize:   7,  ledGlow:   5,  ledGlowFar: 10,
-      badgeFallbackBg: "#111",
-      barHeight: 3,
-      /* bars/ */
-      segBarHeight:  13,
-      /* layout/ */
-      toastOffset:      20,
-      toastAccent:      3,
-      toastMinW:        210,
-      toastMaxW:        360,
-      toastLine:        1.5,
-      toastMobileInset: 32,
-      /* dashboard/ */
-      accentWidth: 3,
-      dryRunBg:    "#1a1400",
-      ledSizeLg:   8,
-      ledSizeSm:     6,
-      rowHoverBg:    "#ffffff07",
-      headerHeight:  46,
-      apiBarW:       210,
-      scrimBg:       "#00000066",
-      drawerShadow:  "0 4px 16px #00000066",
-      scrollbarW:    3,
-      focusRing:     2,
-      focusOffset:   1,
-      logoInk:       "#000",
-      /* Thin active-state accent stroke: mobile tab underline, settings nav
-       * item left border, modal top border. Distinct from accentWidth (3). */
-      accentThin:    2,
-      /* review/ */
-      reviewBorder:  "#3a2800",
-      trackRowBg:    "#00000022",
-      rowSelectedBg: "#ffffff08",
-      /* settings/ */
-      logBg:            "#0d0f1a",
-      logMeta:          "#3a4060",
-      logText:          "#c8cce8",
-      zebraBg:          "#ffffff04",
-      /* DetailModal */
-      modalScrimBg:   "#000000bb",
-      closeGlyph:       20,
-      closeGlyphMobile: 24,
-      errorBg:        "#180a0a",
-      /* App */
-      guardScrimBg: "rgba(0,0,0,0.66)",
-    },
+            xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
+  /* Everything that is not spacing rhythm. Padding, margin and gap all live
+   * on the `space` scale above; what remains here is component geometry
+   * (element sizes, border widths, shadow radii, position offsets) and the
+   * per-theme colours with no home in the palette — overlays, scrims and
+   * surfaces that must darken on a dark theme and lighten on a light one,
+   * so they cannot be derived by alpha from an existing colour.
+   *
+   * Several are load-bearing and must not be snapped to a scale: headerHeight
+   * drives both the bar height and the mobile drawer's top offset, and the
+   * ledGlow radii are tuned to the ledSize values. */
+  legacy: {
+    ledSize:   7,  ledGlow:   5,  ledGlowFar: 10,
+    badgeFallbackBg: "#111",
+    barHeight: 3,
+    /* bars/ */
+    segBarHeight:  13,
+    /* layout/ */
+    toastOffset:      20,
+    toastAccent:      3,
+    toastMinW:        210,
+    toastMaxW:        360,
+    toastLine:        1.5,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    accentWidth: 3,
+    dryRunBg:    "#1a1400",
+    ledSizeLg:   8,
+    ledSizeSm:     6,
+    rowHoverBg:    "#ffffff07",
+    headerHeight:  46,
+    apiBarW:       210,
+    scrimBg:       "#00000066",
+    drawerShadow:  "0 4px 16px #00000066",
+    scrollbarW:    3,
+    focusRing:     2,
+    focusOffset:   1,
+    logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    reviewBorder:  "#3a2800",
+    trackRowBg:    "#00000022",
+    rowSelectedBg: "#ffffff08",
+    /* settings/ */
+    logBg:            "#0d0f1a",
+    logMeta:          "#3a4060",
+    logText:          "#c8cce8",
+    zebraBg:          "#ffffff04",
+    /* DetailModal */
+    modalScrimBg:   "#000000bb",
+    closeGlyph:       20,
+    closeGlyphMobile: 24,
+    errorBg:        "#180a0a",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.66)",
+  },
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -260,7 +259,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
+ ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -282,7 +281,6 @@ const soft = {
   label: "Soft",
   colorScheme: "dark",
   blurb: "Roomier and rounder. Larger type, tight tracking, generous padding.",
-  fontHref: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
   palette: softPalette,
   statusColor: buildStatusColor(softPalette),
   levelColor: buildLevelColor(softPalette),
@@ -298,7 +296,7 @@ const soft = {
   }),
   type: {
     family: "inherit",
-    root:   "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    root:   "'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
     mono:   "ui-monospace, 'SF Mono', Menlo, monospace",
     /* One step larger throughout — same hierarchy, softer density. */
     size:   { xs: 10, sm: 11, md: 12, base: 13, lg: 14, xl: 15, xxl: 16, h2: 17, h1: 20 },
@@ -314,54 +312,54 @@ const soft = {
   },
   radius: { none: 0, sm: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20,
-    xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
-    legacy: {
-      ledSize:   8,  ledGlow:   6,  ledGlowFar: 12,
-      badgeFallbackBg: "#1d2029",
-      barHeight: 4,
-      /* bars/ */
-      segBarHeight:  14,
-      /* layout/ */
-      toastOffset:      24,
-      toastAccent:      3,
-      toastMinW:        230,
-      toastMaxW:        380,
-      toastLine:        1.55,
-      toastMobileInset: 32,
-      /* dashboard/ */
-      accentWidth: 3,
-      dryRunBg:    "#241d06",
-      ledSizeLg:   9,
-      ledSizeSm:     7,
-      rowHoverBg:    "#ffffff0a",
-      headerHeight:  52,
-      apiBarW:       230,
-      scrimBg:       "#00000073",
-      drawerShadow:  "0 6px 24px #0000004d",
-      scrollbarW:    5,
-      focusRing:     2,
-      focusOffset:   2,
-      logoInk:       "#000",
-      /* Thin active-state accent stroke: mobile tab underline, settings nav
-       * item left border, modal top border. Distinct from accentWidth (3). */
-      accentThin:    2,
-      /* review/ */
-      reviewBorder:  "#3a2c0c",
-      trackRowBg:    "#00000033",
-      rowSelectedBg: "#ffffff0d",
-      /* settings/ */
-      logBg:            "#1b1f2b",
-      logMeta:          "#575f7d",
-      logText:          "#dde0ec",
-      zebraBg:          "#ffffff07",
-      /* DetailModal */
-      modalScrimBg:   "#000000cc",
-      closeGlyph:       22,
-      closeGlyphMobile: 26,
-      errorBg:        "#241010",
-      /* App */
-      guardScrimBg: "rgba(0,0,0,0.72)",
-    },
+            xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
+  legacy: {
+    ledSize:   8,  ledGlow:   6,  ledGlowFar: 12,
+    badgeFallbackBg: "#1d2029",
+    barHeight: 4,
+    /* bars/ */
+    segBarHeight:  14,
+    /* layout/ */
+    toastOffset:      24,
+    toastAccent:      3,
+    toastMinW:        230,
+    toastMaxW:        380,
+    toastLine:        1.55,
+    toastMobileInset: 32,
+    /* dashboard/ */
+    accentWidth: 3,
+    dryRunBg:    "#241d06",
+    ledSizeLg:   9,
+    ledSizeSm:     7,
+    rowHoverBg:    "#ffffff0a",
+    headerHeight:  52,
+    apiBarW:       230,
+    scrimBg:       "#00000073",
+    drawerShadow:  "0 6px 24px #0000004d",
+    scrollbarW:    5,
+    focusRing:     2,
+    focusOffset:   2,
+    logoInk:       "#000",
+    /* Thin active-state accent stroke: mobile tab underline, settings nav
+     * item left border, modal top border. Distinct from accentWidth (3). */
+    accentThin:    2,
+    /* review/ */
+    reviewBorder:  "#3a2c0c",
+    trackRowBg:    "#00000033",
+    rowSelectedBg: "#ffffff0d",
+    /* settings/ */
+    logBg:            "#1b1f2b",
+    logMeta:          "#575f7d",
+    logText:          "#dde0ec",
+    zebraBg:          "#ffffff07",
+    /* DetailModal */
+    modalScrimBg:   "#000000cc",
+    closeGlyph:       22,
+    closeGlyphMobile: 26,
+    errorBg:        "#241010",
+    /* App */
+    guardScrimBg: "rgba(0,0,0,0.72)",
+  },
 };
 
 export const themes = { terminal, soft };
@@ -400,20 +398,6 @@ export const ThemeProvider = ({ children }) => {
     document.documentElement.style.background = t.palette.bg;
     document.body.style.background = t.palette.bg;
     document.body.style.color      = t.palette.text;
-  }, [themeId]);
-
-  /* Each theme brings its own webfont. This lives here rather than with the
-   * app's other one-time <head> setup because it changes with the theme:
-   * loading only the default theme's font left any other theme's type.root
-   * falling through to whatever the OS happened to supply. */
-  useEffect(() => {
-    const href = (themes[themeId] || terminal).fontHref;
-    if (!href) return;
-    const link = document.createElement("link");
-    link.rel  = "stylesheet";
-    link.href = href;
-    document.head.appendChild(link);
-    return () => { document.head.removeChild(link); };
   }, [themeId]);
 
   /* Global CSS that follows the theme. Everything here needs a stylesheet
@@ -464,13 +448,13 @@ export const ThemeProvider = ({ children }) => {
     if (meta) meta.setAttribute("content", t.palette.bg);
   }, [themeId]);
 
-    const value = useMemo(() => ({
-      ...(themes[themeId] || terminal),
-                                 themeId,
-                                 setThemeId,
-    }), [themeId]);
+  const value = useMemo(() => ({
+    ...(themes[themeId] || terminal),
+                               themeId,
+                               setThemeId,
+  }), [themeId]);
 
-    return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
 /* There are deliberately no static value exports here. They existed so that
