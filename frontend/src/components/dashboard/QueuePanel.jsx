@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
@@ -10,14 +11,27 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
-const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
     const f = item.file || {};
 
     const stopProp = (fn) => (e) => { e.stopPropagation(); fn(); };
 
+    /* Revealed on hover to keep the row quiet — but only where hovering is
+     * possible. On a touch device there is no hover, so these sat at
+     * opacity 0 permanently and the two per-row actions could not be
+     * reached at all. Worse than invisible: opacity 0 still takes pointer
+     * events, so they remained tappable, two unlabelled hit targets inside
+     * the row's own tap area. A stray tap dismissed a queue item or
+     * reordered the queue with nothing on screen to explain it.
+     *
+     * hasHover is a capability, not a width — a tablet with a trackpad
+     * hovers and a narrow desktop window hovers, so isMobile is the wrong
+     * question. pointerEvents follows visibility so an invisible control
+     * is never clickable either. */
+    const shown = hover || !hasHover;
     const actionBtn = (label, color, fn, title) => (
         <button
         onClick={stopProp(fn)}
@@ -33,7 +47,8 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
                                                     padding: `${space.hair}px ${space.xs}px`,
                                                     cursor: "pointer",
                                                     flexShrink: 0,
-                                                    opacity: hover ? 1 : 0,
+                                                    opacity: shown ? 1 : 0,
+                                                    pointerEvents: shown ? "auto" : "none",
                                                     transition: "opacity 0.1s",
         }}
         >
@@ -127,9 +142,12 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
+    // Resolved once here rather than per row: a long queue would otherwise
+    // register a media-query listener for every visible item.
+    const { hasHover } = useBreakpoint();
     const [search,     setSearch]     = useState("");
     const [clearArmed, setClearArmed] = useState(false);
 
@@ -218,6 +236,7 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
                 onSelect={onSelect}
                 onDismiss={onDismiss}
                 onPrioritize={onPrioritize}
+                hasHover={hasHover}
                 />
             ))
         )}
