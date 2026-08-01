@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -71,6 +71,21 @@ export function useAppData() {
   // `status: null` means "could affect anything" (used for scan/cleanup,
   // which can touch multiple statuses at once) — every tab refreshes then.
   const [historyRefreshKey, setHistoryRefreshKey] = useState({ key: 0, status: null });
+
+  // Incremented whenever the audio/subtitle language flag tables may have
+  // changed — the Review page's two language sections fetch their own
+  // paginated lists and had no way to learn that.
+  //
+  // Those flags are written inside _process_file, so they change on a scan,
+  // on a webhook-queued file, and on a job finishing. None of those bumped
+  // anything the sections were watching: each owned a private refreshKey it
+  // incremented only after its OWN actions. A scan could therefore surface
+  // twenty new mismatches and the section would keep showing the list it
+  // fetched on mount until the page was navigated away from and back.
+  //
+  // Deliberately not bumped on job_progress or scan_progress — those fire
+  // continuously and would refetch the list on every tick.
+  const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
 
   // ── Forge tab state ──────────────────────────────────────────────────────
   const [forgeActive,    setForgeActive]    = useState(null);
@@ -307,11 +322,15 @@ export function useAppData() {
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "file_queued":
             toast(`Queued: ${basename(msg.file_path)}`, "info");
             fetchAll();
+            // A webhook-queued file goes through _process_file like any
+            // scanned one, so it can raise a language flag too.
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "scan_started":
@@ -337,6 +356,7 @@ export function useAppData() {
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "cleanup_completed":
@@ -348,6 +368,7 @@ export function useAppData() {
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "forge_job_started":
@@ -373,12 +394,12 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-      /* No theme value appears in this callback any more — the toasts it
-       * raises name a tone, and the colour is resolved by Toasts at render.
-       * That is the point of the change: a dependency array cannot go stale
-       * on a value it never captures. `api` stays because the body reads it
-       * directly; it was missing before, masked only by `fetchAll` happening
-       * to close over the same value. */
+        /* No theme value appears in this callback any more — the toasts it
+         * raises name a tone, and the colour is resolved by Toasts at render.
+         * That is the point of the change: a dependency array cannot go stale
+         * on a value it never captures. `api` stays because the body reads it
+         * directly; it was missing before, masked only by `fetchAll` happening
+         * to close over the same value. */
       }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
@@ -398,6 +419,7 @@ export function useAppData() {
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
         historyRefreshKey, setHistoryRefreshKey,
+        reviewRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,

@@ -10,7 +10,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * from the manual-review list above it — files here are already fully
  * processed and playable; this is purely an optional correction workflow.
  ═ * ═*═════════════════════════════════════════════════════════════════════════ */
-export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
+export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, legacy } = useTheme();
     const [search,          setSearch]          = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -39,8 +39,17 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
     // does: the list is paginated, so filtering the loaded page would report
     // fewer matches than exist and the bulk actions below would then act on
     // a subset the user believes is the whole set.
+    // Two independent refresh signals, combined into one value because the
+    // shared hook takes a single key. `refreshKey` is local, bumped after
+    // this section's own Apply/Ignore. `reviewRefreshKey` comes from the
+    // WebSocket layer and fires when a scan, a webhook-queued file or a
+    // finished job may have written new flag rows — without it, a scan could
+    // surface twenty new mismatches while this list kept showing whatever it
+    // fetched on mount, until the page was navigated away from and back.
+    const combinedKey = `${reviewRefreshKey}:${refreshKey}`;
+
     const { items, total, loading, hasMore, loadMore, raw } = usePaginatedFetch(
-        api, "/api/audio-language-review/", refreshKey, debouncedSearch, 100,
+        api, "/api/audio-language-review/", combinedKey, debouncedSearch, 100,
         { language },
     );
 
@@ -71,7 +80,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         // on screen.
         useEffect(() => {
             setSelected(new Set());
-        }, [debouncedSearch, language, refreshKey]);
+        }, [debouncedSearch, language, combinedKey]);
 
         useEffect(() => {
             const sentinel = sentinelRef.current;
