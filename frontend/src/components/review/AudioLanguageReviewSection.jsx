@@ -9,7 +9,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * Self-contained: search, multi-select, and two bulk actions. Distinct
  * from the manual-review list above it — files here are already fully
  * processed and playable; this is purely an optional correction workflow.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey }) => {
     const { palette, type, space, radius, legacy } = useTheme();
     const [search,          setSearch]          = useState("");
@@ -213,8 +213,7 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
                 : "No audio language mismatches found ✓"
             } />
         ) : (
-            <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}` }}>
-            borderRadius: radius.sm,
+            <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
             {/* Select-all header row */}
             {items.length > 0 && (
                 <div style={{
@@ -269,11 +268,11 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
                     flexShrink: 0,
                     padding: `${space.hair}px ${space.xs}px`,
                     background: alpha(palette.yellow, ALPHA.low),
-                    border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                    borderRadius: radius.sm,
-                    color: palette.yellow,
-                    fontSize: type.size.xs,
-                    letterSpacing: type.tracking.wide,
+                                border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                borderRadius: radius.sm,
+                                color: palette.yellow,
+                                fontSize: type.size.xs,
+                                letterSpacing: type.tracking.wide,
                 }}>
                 {(item.detected_language || "?").toUpperCase()}
                 </span>

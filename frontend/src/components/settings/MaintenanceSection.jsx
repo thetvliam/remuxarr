@@ -13,55 +13,55 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *
  * Each toggle/tag saves immediately via PATCH /api/settings/{key} so
  * there's no separate Save button needed (mirrors how DangerZone works).
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-  <div style={{
-    display: "flex",
-    alignItems: "flex-start",
-    gap: space.xxl,
-    padding: `${space.xl}px 0`,
-    borderBottom: `1px solid ${palette.border}`,
-  }}>
-  <div style={{ flex: 1 }}>
-  <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
-  {label}
-  </div>
-  <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-  {description}
-  </div>
-  </div>
-  <button
-  onClick={() => !disabled && onChange(!checked)}
-  disabled={disabled}
-  style={{
-    flexShrink: 0,
-    marginTop: space.hair,
-    width: 40,
-    height: 22,
-    borderRadius: radius.pill,
-    border: `1px solid ${checked ? palette.amber : palette.border}`,
-    background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
-    cursor: disabled ? "not-allowed" : "pointer",
-    position: "relative",
-    transition: "border-color 0.15s, background 0.15s",
-  }}
-  >
-  <span style={{
-    position: "absolute",
-    top: 2,
-    left: checked ? 20 : 2,
-    width: 16,
-    height: 16,
-    borderRadius: radius.full,
-    background: checked ? palette.amber : palette.dim,
-    transition: "left 0.15s, background 0.15s",
-  }} />
-  </button>
-  </div>
+    <div style={{
+      display: "flex",
+      alignItems: "flex-start",
+      gap: space.xxl,
+      padding: `${space.xl}px 0`,
+      borderBottom: `1px solid ${palette.border}`,
+    }}>
+    <div style={{ flex: 1 }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
+    {label}
+    </div>
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
+    {description}
+    </div>
+    </div>
+    <button
+    onClick={() => !disabled && onChange(!checked)}
+    disabled={disabled}
+    style={{
+      flexShrink: 0,
+      marginTop: space.hair,
+      width: 40,
+      height: 22,
+      borderRadius: radius.pill,
+      border: `1px solid ${checked ? palette.amber : palette.border}`,
+      background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
+          cursor: disabled ? "not-allowed" : "pointer",
+          position: "relative",
+          transition: "border-color 0.15s, background 0.15s",
+    }}
+    >
+    <span style={{
+      position: "absolute",
+      top: 2,
+      left: checked ? 20 : 2,
+      width: 16,
+      height: 16,
+      borderRadius: radius.full,
+      background: checked ? palette.amber : palette.dim,
+      transition: "left 0.15s, background 0.15s",
+    }} />
+    </button>
+    </div>
   );
 };
 
@@ -110,11 +110,11 @@ const TimeTagInput = ({ value = [], onChange }) => {
           gap: space.xs,
           padding: `${space.hair}px ${space.sm}px`,
           background: alpha(palette.amber, ALPHA.low),
-          border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
-          borderRadius: radius.sm,
-          color: palette.amber,
-          fontSize: type.size.md,
-          fontFamily: type.family,
+                       border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
+                       borderRadius: radius.sm,
+                       color: palette.amber,
+                       fontSize: type.size.md,
+                       fontFamily: type.family,
         }}
         >
         {t}
@@ -494,15 +494,15 @@ export const MaintenanceSection = ({ api, toast }) => {
       flexShrink: 0,
       padding: `${space.xs}px ${space.xl}px`,
       background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
-      border: `1px solid ${palette.amber}`,
-      borderRadius: radius.sm,
-      color: palette.amber,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
+          border: `1px solid ${palette.amber}`,
+          borderRadius: radius.sm,
+          color: palette.amber,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: "pointer",
+          whiteSpace: "nowrap",
     }}
     >
     {forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
@@ -582,8 +582,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       </span>
       </div>
 
-      <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${palette.border}` }}>
-      borderRadius: radius.sm,
+      <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
       {orphanedItems.map(item => (
         <div
         key={item.id}
@@ -641,14 +640,14 @@ export const MaintenanceSection = ({ api, toast }) => {
       style={{
         padding: `${space.xs}px ${space.xl}px`,
         background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
-        border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
-        borderRadius: radius.sm,
-        color: orphanedSelected.size === 0 ? palette.muted : palette.red,
-        fontSize: type.size.sm,
-        fontFamily: type.family,
-        fontWeight: type.weight.bold,
-        letterSpacing: type.tracking.wide,
-        cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
+                                                     border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
+                                                     borderRadius: radius.sm,
+                                                     color: orphanedSelected.size === 0 ? palette.muted : palette.red,
+                                                     fontSize: type.size.sm,
+                                                     fontFamily: type.family,
+                                                     fontWeight: type.weight.bold,
+                                                     letterSpacing: type.tracking.wide,
+                                                     cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
       }}
       >
       {orphanedRemoving
