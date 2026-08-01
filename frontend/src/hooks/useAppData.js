@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -107,7 +107,7 @@ export function useAppData() {
       "",
       `#${initial}`,
     );
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ── Routing: popstate (browser/Android back button) ─────────────────────
    *    Handles two cases:
@@ -188,34 +188,6 @@ export function useAppData() {
         `#${pageRef.current}`,
       );
     }
-  }, []);
-
-  /* ── Global CSS injection ─────────────────────────────────────────────── */
-  /* Everything injected here is theme-independent and mounts once. Anything
-   * that follows the theme — background, webfont, scrollbar colours — lives
-   * in ThemeProvider, which re-applies it on every switch. This hook is the
-   * data layer and no longer reads the theme at all. */
-  useEffect(() => {
-    // Theme-independent resets + keyframes. Two things are deliberately
-    // absent: the webfont, which varies per theme, and the page background.
-    // Both belong to ThemeProvider, which already re-applies them on every
-    // theme change.
-    const style       = document.createElement("style");
-    style.textContent = `
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; }
-    ::-webkit-scrollbar-track  { background: transparent; }
-    @keyframes ledPulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
-    @keyframes toastIn  { from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:none} }
-    @keyframes modalIn  { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
-    `;
-    document.head.appendChild(style);
-    document.title = "Remuxarr";
-    // Every other appendChild in this file has a matching removal; this one
-    // did not. StrictMode runs effects twice in development, so it left a
-    // duplicate <style> in <head> on every dev load, and it would leak again
-    // on any future remount of this hook.
-    return () => { document.head.removeChild(style); };
   }, []);
 
   /* ── Toast helper ─────────────────────────────────────────────────────── */
@@ -407,12 +379,12 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-      /* No theme value appears in this callback any more — the toasts it
-       * raises name a tone, and the colour is resolved by Toasts at render.
-       * That is the point of the change: a dependency array cannot go stale
-       * on a value it never captures. `api` stays because the body reads it
-       * directly; it was missing before, masked only by `fetchAll` happening
-       * to close over the same value. */
+        /* No theme value appears in this callback any more — the toasts it
+         * raises name a tone, and the colour is resolved by Toasts at render.
+         * That is the point of the change: a dependency array cannot go stale
+         * on a value it never captures. `api` stays because the body reads it
+         * directly; it was missing before, masked only by `fetchAll` happening
+         * to close over the same value. */
       }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";

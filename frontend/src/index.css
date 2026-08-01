@@ -1,0 +1,42 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+ * GLOBAL CSS
+ *
+ * Everything here is theme-independent and never changes at runtime, which
+ * is why it is a plain stylesheet rather than a rule injected from a hook.
+ * Anything that DOES follow the theme — background, scrollbar colours,
+ * focus ring, webfont, colour-scheme — lives in ThemeProvider, which
+ * re-applies it on every switch.
+ *
+ * These rules previously lived in an effect inside useAppData, which is the
+ * data layer and says so in its own header. Four components depend on the
+ * keyframes below (LED, Toasts, DetailModal, AppHeader) and none of them
+ * has any relationship to that hook, so rendering any of them outside a
+ * tree that happened to mount useAppData silently lost the animation — no
+ * error, the element just sat still. As a stylesheet imported at startup
+ * the rules are simply always present, and they apply before React mounts
+ * rather than after the first effect flush.
+ ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* The thumb is coloured per-theme in ThemeProvider; the track never is. */
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Animations ────────────────────────────────────────────────────────── */
+/* Referenced by name from inline styles, so renaming any of these means
+ * grepping for the string: ledPulse in LED, toastIn in Toasts, modalIn in
+ * DetailModal and AppHeader's mobile drawer. */
+@keyframes ledPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
