@@ -1,345 +1,39 @@
-import { useState, useEffect, useRef } from "react";
-import { useTheme, alpha, ALPHA } from "../../theme";
-import { Btn } from "../atoms/Btn";
-import { EmptyState } from "../atoms/EmptyState";
-import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
+import { useTheme } from "../../theme";
+import { LanguageReviewSection } from "./LanguageReviewSection";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SUBTITLE LANGUAGE REVIEW SECTION
- * Subtitle counterpart to AudioLanguageReviewSection — identical mechanics
- * (search, multi-select, two bulk actions), mirrored deliberately rather
- * than shared, since the two flag independent things. Every row here
- * originates from an undefined ("und") tag, not a defined-but-wrong one —
- * see fix_undefined_language's "always ask" mode.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
-export const SubtitleLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey, toast, reviewRefreshKey = 0 }) => {
-  const { palette, type, space, radius, surface } = useTheme();
-
-  // The established subtitle colour in this codebase — the same one the
-  // extract_subtitle action badge uses. Read from the palette rather than
-  // hardcoded, so it follows the theme like every other colour.
-  const SUB_COLOR = palette.cyan;
-  const [search,          setSearch]          = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [language,        setLanguage]        = useState("");
-  const [selected,        setSelected]        = useState(new Set());
-  const [targetLang,      setTargetLang]      = useState("eng");
-  const [refreshKey,      setRefreshKey]      = useState(0);
-  const [busy,            setBusy]            = useState(false);
-
-  const scrollRef   = useRef(null);
-  const sentinelRef = useRef(null);
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(t);
-  }, [search]);
-
-  // Same PAGE_SIZE choice as AudioLanguageReviewSection, for the same
-  // reason — see that component for the full rationale. The language filter
-  // and the two refresh signals mirror it too; the reasoning for each is
-  // written out there rather than duplicated here.
-  const combinedKey = `${reviewRefreshKey}:${refreshKey}`;
-
-  const { items, total, loading, hasMore, loadMore, raw } = usePaginatedFetch(
-    api, "/api/subtitle-language-review/", combinedKey, debouncedSearch, 100,
-    { language },
+ *
+ * Every row here originates from an undefined ("und") tag rather than a
+ * defined-but-wrong one — see fix_undefined_language's "always ask" mode.
+ * That is the substantive difference from the audio list; the mechanics are
+ * identical and live in LanguageReviewSection.
+ ═══════════════════════════════════════════════════════════════════════════ */
+export const SubtitleLanguageReviewSection = (props) => {
+  const { palette } = useTheme();
+  return (
+    <LanguageReviewSection
+      {...props}
+      endpoint="/api/subtitle-language-review/"
+      /* The established subtitle colour in this codebase — the same one the
+       * extract_subtitle action badge uses. Read from the palette rather than
+       * hardcoded, so it follows the theme like every other colour. */
+      accent={palette.cyan}
+      glyph="▭"
+      heading="SUBTITLE LANGUAGE REVIEW"
+      trackNoun="subtitle language"
+      filterTitle="Filter by the language tag currently on the subtitle track"
+      emptyMessage="No undefined subtitle languages found ✓"
+      blurb={
+        <>
+          Files whose kept subtitle track has an undefined language tag,
+          flagged because Fix Undefined Language Tags is set to Always Ask.
+          These files are already fully processed and playable; this is
+          optional. Search a show name to select every flagged episode at
+          once, then either set the correct language and reprocess, or
+          confirm it&apos;s fine to leave the tag undefined.
+        </>
+      }
+    />
   );
-
-  const [facets, setFacets] = useState([]);
-  useEffect(() => {
-    if (raw?.languages) setFacets(raw.languages);
-  }, [raw]);
-
-    const languageOptions = language && !facets.some(f => f.language === language)
-    ? [...facets, { language, count: 0 }]
-    : facets;
-
-    useEffect(() => {
-      setSelected(new Set());
-    }, [debouncedSearch, language, combinedKey]);
-
-    useEffect(() => {
-      const sentinel = sentinelRef.current;
-      const scroll   = scrollRef.current;
-      if (!sentinel || !scroll || !hasMore) return;
-      const observer = new IntersectionObserver(
-        ([entry]) => { if (entry.isIntersecting) loadMore(); },
-                                                { root: scroll, threshold: 0 },
-      );
-      observer.observe(sentinel);
-      return () => observer.disconnect();
-    }, [hasMore, loading, loadMore]);
-
-    const toggleOne = (fileId) => {
-      setSelected(prev => {
-        const next = new Set(prev);
-        if (next.has(fileId)) next.delete(fileId);
-        else next.add(fileId);
-        return next;
-      });
-    };
-
-    const allLoadedSelected = items.length > 0 && items.every(i => selected.has(i.file_id));
-    const toggleAll = () => {
-      setSelected(allLoadedSelected ? new Set() : new Set(items.map(i => i.file_id)));
-    };
-
-    const applyLanguage = async () => {
-      if (selected.size === 0) return;
-      const lang = targetLang.trim().toLowerCase();
-      if (!lang) return;
-      setBusy(true);
-      try {
-        // Both branches matter. Without them a 500, a 422 or a dropped
-        // connection produced exactly the success path: the list refreshed,
-        // the selection cleared, and the user was left believing every
-        // selected file had been re-tagged.
-        const r = await fetch(`${api}/api/subtitle-language-review/apply`, {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ file_ids: Array.from(selected), target_language: lang }),
-        });
-        if (!r.ok) {
-          toast?.(`Failed to set subtitle language on ${selected.size} file${selected.size === 1 ? "" : "s"}`, "error");
-          return;
-        }
-        setRefreshKey(k => k + 1);
-        // Same reasoning as AudioLanguageReviewSection's own applyLanguage —
-        // this section's refreshKey only re-queries its own list; onRefresh
-        // and setHistoryRefreshKey cover the queue view and History panel.
-        onRefresh?.();
-        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
-      } catch (_) {
-        // A rejected fetch (offline, DNS, connection reset) never reaches the
-        // !r.ok check above, and without this escapes as an unhandled promise
-        // rejection while the UI shows nothing at all.
-        toast?.("Could not reach the server", "error");
-      } finally {
-        setBusy(false);
-      }
-    };
-
-    const ignoreSelected = async () => {
-      if (selected.size === 0) return;
-      setBusy(true);
-      try {
-        const r = await fetch(`${api}/api/subtitle-language-review/ignore`, {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ file_ids: Array.from(selected) }),
-        });
-        if (!r.ok) {
-          toast?.("Failed to ignore the selected files", "error");
-          return;
-        }
-        setRefreshKey(k => k + 1);
-      } catch (_) {
-        // A rejected fetch (offline, DNS, connection reset) never reaches the
-        // !r.ok check above, and without this escapes as an unhandled promise
-        // rejection while the UI shows nothing at all.
-        toast?.("Could not reach the server", "error");
-      } finally {
-        setBusy(false);
-      }
-    };
-
-    return (
-      <div style={{ marginTop: space.xxxl }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: space.md,
-        marginBottom: space.sm,
-        paddingTop: space.huge,
-        borderTop: `1px solid ${palette.border}`,
-      }}>
-      <span style={{ color: SUB_COLOR, fontSize: type.size.xxl }}>▭</span>
-      <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-      SUBTITLE LANGUAGE REVIEW
-      </span>
-      <span style={{
-        padding: `0 ${space.xs}px`,
-        background: alpha(SUB_COLOR, ALPHA.mild),
-            border: `1px solid ${alpha(SUB_COLOR, ALPHA.strong)}`,
-            borderRadius: radius.sm,
-            color: SUB_COLOR,
-            fontSize: type.size.xs,
-      }}>
-      {total}
-      </span>
-      </div>
-      <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
-      Files whose kept subtitle track has an undefined language tag,
-      flagged because Fix Undefined Language Tags is set to Always Ask.
-      These files are already fully processed and playable; this is
-      optional. Search a show name to select every flagged episode at
-      once, then either set the correct language and reprocess, or
-      confirm it's fine to leave the tag undefined.
-      </p>
-
-      <div style={{
-        display: "flex",
-        gap: space.sm,
-        alignItems: "center",
-        flexWrap: "wrap",
-        marginBottom: space.md,
-      }}>
-      <input
-      value={search}
-      onChange={e => setSearch(e.target.value)}
-      placeholder="Search by filename…"
-      style={{
-        flex: "1 1 200px",
-        padding: `${space.xs}px ${space.md}px`,
-        background: palette.bg,
-        border: `1px solid ${search ? alpha(SUB_COLOR, ALPHA.half) : palette.border}`,
-            borderRadius: radius.sm,
-            color: palette.text,
-            fontFamily: type.family,
-            fontSize: type.size.md,
-      }}
-      />
-      <select
-      value={language}
-      onChange={e => setLanguage(e.target.value)}
-      title="Filter by the language tag currently on the subtitle track"
-      style={{
-        padding: `${space.xs}px ${space.sm}px`,
-        background: palette.bg,
-        border: `1px solid ${language ? alpha(SUB_COLOR, ALPHA.half) : palette.border}`,
-            borderRadius: radius.sm,
-            color: language ? SUB_COLOR : palette.text,
-            fontFamily: type.family,
-            fontSize: type.size.md,
-            cursor: "pointer",
-      }}
-      >
-      <option value="">All languages</option>
-      {languageOptions.map(f => (
-        <option key={f.language} value={f.language}>
-        {f.language} ({f.count})
-        </option>
-      ))}
-      </select>
-      <input
-      value={targetLang}
-      onChange={e => setTargetLang(e.target.value)}
-      placeholder="eng"
-      title="ISO 639-2/B language code to apply to selected files"
-      style={{
-        width: 70,
-        padding: `${space.xs}px ${space.sm}px`,
-        background: palette.bg,
-        border: `1px solid ${palette.border}`,
-        borderRadius: radius.sm,
-        color: palette.text,
-        fontFamily: type.family,
-        fontSize: type.size.md,
-        textTransform: "lowercase",
-      }}
-      />
-      <Btn
-      label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
-      color={palette.green}
-      bg={alpha(palette.green, ALPHA.low)}
-      onClick={applyLanguage}
-      disabled={busy || selected.size === 0 || !targetLang.trim()}
-      />
-      <Btn
-      label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
-      color={palette.dim}
-      bg="transparent"
-      onClick={ignoreSelected}
-      disabled={busy || selected.size === 0}
-      />
-      </div>
-
-      {items.length === 0 && !loading ? (
-        <EmptyState msg={
-          debouncedSearch && language
-          ? `No files tagged "${language}" match "${debouncedSearch}"`
-          : language
-          ? `No files tagged "${language}"`
-          : debouncedSearch
-          ? `No flagged files match "${debouncedSearch}"`
-          : "No undefined subtitle languages found ✓"
-        } />
-      ) : (
-        <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
-        {items.length > 0 && (
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: space.md,
-            padding: `${space.xs}px ${space.lg}px`,
-            background: palette.card,
-            borderBottom: `1px solid ${palette.border}`,
-            position: "sticky",
-            top: 0,
-          }}>
-          <input type="checkbox" checked={allLoadedSelected} onChange={toggleAll} />
-          <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
-          SELECT ALL LOADED ({items.length}{total > items.length ? ` of ${total}` : ""})
-          </span>
-          </div>
-        )}
-
-        {items.map(item => (
-          /* A <label>, for the reasons written out in
-           * AudioLanguageReviewSection — the row exists to toggle the checkbox
-           * inside it, and a label does that natively with one tab stop and an
-           * accessible name taken from the row text. */
-          <label
-          key={item.id}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: space.md,
-            padding: `${space.sm}px ${space.lg}px`,
-            borderBottom: `1px solid ${palette.border}`,
-            cursor: "pointer",
-            background: selected.has(item.file_id) ? surface.rowSelectedBg : "transparent",
-          }}
-          >
-          <input
-          type="checkbox"
-          checked={selected.has(item.file_id)}
-          onChange={() => toggleOne(item.file_id)}
-          />
-          <span style={{
-            flex: 1,
-            minWidth: 0,
-            color: palette.text,
-            fontSize: type.size.md,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}>
-          {item.filename}
-          </span>
-          <span style={{
-            flexShrink: 0,
-            padding: `${space.hair}px ${space.xs}px`,
-            background: alpha(palette.yellow, ALPHA.low),
-                            border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                            borderRadius: radius.sm,
-                            color: palette.yellow,
-                            fontSize: type.size.xs,
-                            letterSpacing: type.tracking.wide,
-          }}>
-          {(item.detected_language || "?").toUpperCase()}
-          </span>
-          </label>
-        ))}
-
-        {hasMore && (
-          <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.lg}px` }}>
-          {loading && <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>}
-          </div>
-        )}
-        </div>
-      )}
-      </div>
-    );
 };
