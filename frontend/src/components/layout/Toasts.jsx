@@ -1,11 +1,11 @@
-import { useTheme } from "../../theme";
+import { useTheme, LAYER } from "../../theme";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * TOAST NOTIFICATIONS
  * NOTE: the cap-at-8 logic and 5s auto-dismiss timer live in the parent's
  * `toast()` function (App.jsx / useAppData), not here — this component is a
  * pure renderer of whatever `items` array it is given.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const Toasts = ({ items, isMobile = false }) => {
   const { palette, type, space, radius, size, toastTone } = useTheme();
 
@@ -29,7 +29,7 @@ export const Toasts = ({ items, isMobile = false }) => {
       display: "flex",
       flexDirection: "column",
       gap: space.xs,
-      zIndex: 2000,
+      zIndex: LAYER.toast,
       pointerEvents: "none",
       width: isMobile ? `calc(100vw - ${size.toastMobileInset}px)` : "auto",
     }}>
@@ -40,14 +40,14 @@ export const Toasts = ({ items, isMobile = false }) => {
         padding: `${space.sm}px ${space.xl}px`,
         background: palette.card,
         border: `1px solid ${colorFor(t.tone)}`,
-        borderLeft: `${size.toastAccent}px solid ${colorFor(t.tone)}`,
-        borderRadius: radius.sm,
-        color: palette.text,
-        fontSize: type.size.md,
-        minWidth: isMobile ? "auto" : size.toastMinW,
-        maxWidth: isMobile ? "none" : size.toastMaxW,
-        lineHeight: type.leading.tight,
-        animation: "toastIn 0.2s ease",
+                     borderLeft: `${size.toastAccent}px solid ${colorFor(t.tone)}`,
+                     borderRadius: radius.sm,
+                     color: palette.text,
+                     fontSize: type.size.md,
+                     minWidth: isMobile ? "auto" : size.toastMinW,
+                     maxWidth: isMobile ? "none" : size.toastMaxW,
+                     lineHeight: type.leading.tight,
+                     animation: "toastIn 0.2s ease",
       }}
       >
       {t.msg}

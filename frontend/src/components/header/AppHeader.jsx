@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useTheme, alpha, ALPHA } from "../../theme";
+import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { LED } from "../atoms/LED";
 import { ApiBar } from "./ApiBar";
 
@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -251,7 +251,7 @@ export const AppHeader = ({
       background: palette.card,
       borderBottom: `1px solid ${palette.border}`,
       gap: space.sm,
-      zIndex: 600,
+      zIndex: LAYER.header,
       position: "relative",
     }}>
     {/* Logo mark only — no wordmark, saves space */}
@@ -337,7 +337,7 @@ export const AppHeader = ({
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
                 position: "relative",
-                zIndex: 550,
+                zIndex: LAYER.headerRow,
               }}>
               <ApiBar
               current={api}
@@ -356,7 +356,7 @@ export const AppHeader = ({
                 position: "fixed",
                 inset: 0,
                 top: size.headerHeight,
-                zIndex: 490,
+                zIndex: LAYER.drawerScrim,
                 background: "transparent",
               }}
               />
@@ -369,7 +369,7 @@ export const AppHeader = ({
                 right: 0,
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
-                zIndex: 500,
+                zIndex: LAYER.drawer,
                 boxShadow: surface.drawerShadow,
               }}>
               {/* Nav links */}

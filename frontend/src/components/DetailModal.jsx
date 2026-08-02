@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useTheme, alpha, ALPHA } from "../theme";
+import { useTheme, alpha, ALPHA, LAYER } from "../theme";
 import { fmtSize, fmtDur, formatBytesSaved } from "../utils";
 import { StatusBadge } from "./atoms/StatusBadge";
 import { ActionBadge } from "./atoms/ActionBadge";
@@ -17,7 +17,7 @@ import { Btn } from "./atoms/Btn";
  * a second fetch that includes planned_actions. An unoptimised component
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
   const { palette, type, space, radius, size, surface, actionCfg } = useTheme();
   useEffect(() => {
@@ -52,7 +52,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       display: "flex",
       alignItems: isMobile ? "flex-start" : "center",
       justifyContent: "center",
-      zIndex: 1000,
+      zIndex: LAYER.modal,
       backdropFilter: isMobile ? "none" : "blur(3px)",
     }}
     >
