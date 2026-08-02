@@ -26,8 +26,12 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
-    const sizeDiff = job.output_size && job.original_size
-    ? job.output_size - job.original_size : null;
+    // `!= null` rather than truthiness: a zero size is a value, not a
+    // missing field, and the truthy check treated it as absent.
+    const sizeDiff =
+        job.output_size != null && job.original_size != null
+            ? job.output_size - job.original_size
+            : null;
 
     const isUndoPending = job.status === "undo_pending";
     const isFailed      = job.status === "failed";
@@ -76,11 +80,19 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             {fmtSize(job.original_size)}
             <span style={{ color: palette.dim }}> → </span>
             {fmtSize(job.output_size)}
+            {/* Signed. This read (+…) over an absolute value regardless of
+              * direction, so a file that came out smaller was reported as
+              * having grown. Adding AC3 almost always grows a file, which is
+              * why nobody hit it — but the variable is called sizeDiff and
+              * the label said growth. Green when the file shrank, amber when
+              * it grew, muted when it landed exactly the same. */}
             <span style={{
-                color: palette.amber,
+                color: sizeDiff < 0 ? palette.green
+                     : sizeDiff > 0 ? palette.amber
+                     : palette.muted,
                 marginLeft: space.xxs,
             }}>
-            (+{fmtSize(Math.abs(sizeDiff))})
+            ({sizeDiff > 0 ? "+" : sizeDiff < 0 ? "−" : "±"}{fmtSize(Math.abs(sizeDiff))})
             </span>
             </span>
         )}
@@ -95,7 +107,11 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             </span>
         )}
 
-        {!sizeDiff && !isFailed && !isUndoFailed && (
+        {/* Mirrors the `!== null` test above. `!sizeDiff` was also true for a
+          * zero delta, so a file that came out exactly the same size showed
+          * neither the delta nor a timestamp in one branch and both in the
+          * other. */}
+        {sizeDiff === null && !isFailed && !isUndoFailed && (
             <span style={{ color: palette.dim, fontSize: type.size.sm }}>{fmtRel(job.completed_at)}</span>
         )}
         </div>
