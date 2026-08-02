@@ -89,6 +89,34 @@ export const ALPHA = {
   half:   0.533,  // was "88"
 };
 
+/* Stacking order, in one place. Shared across themes for the same reason
+ * ALPHA is: a theme changes how things look, not what sits in front of what.
+ *
+ * These were nine bare numbers spread across five files — 5, 6, 490, 500,
+ * 550, 600, 1000, 1100, 2000 — with no way to see the order without
+ * grepping all five. The gaps between them are not arbitrary but nothing
+ * recorded why, so the safe move when adding anything was to pick a bigger
+ * number, which is how a codebase ends up with a 99999.
+ *
+ * Values are unchanged from what they replace, so the rendered order is
+ * identical. Read top to bottom, this IS the stacking order.
+ *
+ * The two sticky rungs never coexist — one is the desktop settings save
+ * bar, the other the mobile settings nav — but they are named separately
+ * because they answer to different layouts. */
+export const LAYER = {
+  stickySaveBar:  5,     // settings save bar, sticks under the page header
+  stickyNav:      6,     // mobile settings nav
+  drawerScrim:    490,   // mobile drawer backdrop
+  drawer:         500,   // mobile drawer panel, above its own scrim
+  headerRow:      550,   // mobile header row, so the drawer slides beneath it
+  header:         600,   // the header bar
+  modal:          1000,  // DetailModal
+  guardModal:     1100,  // unsaved-changes prompt, above any modal it guards
+  toast:          2000,  // always on top: a toast may report a failure in
+  // whatever is underneath, so it can never be hidden
+};
+
 /* Build the status/action colour maps from a palette. These are colour
  * lookups, so they must be rebuilt per theme rather than frozen at import. */
 const buildStatusColor = (p) => ({
@@ -334,7 +362,12 @@ const soft = {
     mono:   "ui-monospace, 'SF Mono', Menlo, monospace",
     /* One step larger throughout — same hierarchy, softer density. */
     size:   { xs: 10, sm: 11, md: 12, base: 13, lg: 14, xl: 15, xxl: 16, h2: 17, h1: 20 },
-    weight: { normal: 400, medium: 500, semibold: 600, bold: 600, black: 800 },
+    /* bold is 700, giving the same even 100 step as terminal. It was 600,
+     * identical to semibold, which collapsed the emphasis distinction on
+     * the app's most-used weight — 49 call sites asking for bold rendered
+     * no heavier than the 21 asking for semibold. Inter's axis spans
+     * 100-900, so 700 is a real face. */
+    weight: { normal: 400, medium: 500, semibold: 600, bold: 700, black: 800 },
     /* Much tighter tracking — the single biggest driver of the
      * "terminal vs. modern app" feel. */
     tracking: {
