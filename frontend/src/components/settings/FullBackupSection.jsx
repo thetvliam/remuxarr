@@ -162,6 +162,12 @@ export const FullBackupSection = ({ api, toast }) => {
       marginBottom: space.md,
       color: palette.muted,
       fontSize: type.size.md,
+      // The browser draws the "Choose file" button and the filename
+      // beside it, and neither inherits from an ancestor — without
+      // this they render in the OS default face next to themed text.
+      // The only visible file input in the app; the one in
+      // BackupRestoreSection is display:none behind a styled button.
+      fontFamily: type.family,
     }}
     />
 

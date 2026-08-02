@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -57,21 +57,36 @@ export const alpha = (color, amount) => {
 };
 
 /* Named opacities, matching the hex suffixes previously hardcoded.
- * Shared across themes — a theme changes colours, not what "subtle" means. */
+ * Shared across themes — a theme changes colours, not what "subtle" means.
+ *
+ * Listed strictly ascending, which is the only way the names carry any
+ * information. They were not: mild (0.125) sat above low (0.094) and half
+ * (0.533) above strong (0.267) and heavy (0.333), so reading down the list
+ * gave no sense of which name means "more" and picking a neighbour of an
+ * existing value could move the opacity the wrong way.
+ *
+ * The `was` comments are the migration audit trail: each value is chosen so
+ * alpha() reproduces that exact hex suffix, and they are how that stays
+ * checkable.
+ *
+ * The four faintest rungs have no call sites today. They are kept because
+ * this is a scale rather than a set of tokens — a theme wanting a barely
+ * visible overlay should find a rung already named rather than invent one
+ * and a naming convention with it. */
 export const ALPHA = {
-  faint:  0.016,  // was "04"
-  ghost:  0.027,  // was "07"
-  hint:   0.031,  // was "08"
-  subtle: 0.047,  // was "0c"
+  faint:  0.016,  // was "04"  — unused
+  ghost:  0.027,  // was "07"  — unused
+  hint:   0.031,  // was "08"  — unused
+  subtle: 0.047,  // was "0c"  — unused
   trace:  0.071,  // was "12"
   soft:   0.078,  // was "14"
-  mild:   0.125,  // was "20"
   low:    0.094,  // was "18"
+  mild:   0.125,  // was "20"
   medium: 0.133,  // was "22"
   firm:   0.2,    // was "33"
-  half:   0.533,  // was "88"
   strong: 0.267,  // was "44"
   heavy:  0.333,  // was "55"
+  half:   0.533,  // was "88"
 };
 
 /* Build the status/action colour maps from a palette. These are colour
@@ -138,7 +153,7 @@ const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -200,82 +215,77 @@ const terminal = {
      * looser leading at every step. */
     leading: { none: 1, tight: 1.5, snug: 1.55, normal: 1.6, relaxed: 1.65, loose: 1.7 },
   },
-  radius: { none: 0, sm: 0, pill: 11, full: "50%" },
+  /* pill is 999, not a real radius: a value larger than half the box makes
+   * CSS clamp to exactly half, so any height gives a true pill. It was 11
+   * here — half the toggle switch's 22px height, hardcoded in
+   * MaintenanceSection. Changing that height would have squared the corners
+   * with nothing in either file to connect the two. */
+  radius: { none: 0, sm: 0, pill: 999, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16,
-            xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
-  /* Everything that is not spacing rhythm. Padding, margin and gap all live
-   * on the `space` scale above; what remains here is component geometry
-   * (element sizes, border widths, shadow radii, position offsets) and the
-   * per-theme colours with no home in the palette — overlays, scrims and
-   * surfaces that must darken on a dark theme and lighten on a light one,
-   * so they cannot be derived by alpha from an existing colour.
-   *
-   * Several are load-bearing and must not be snapped to a scale: headerHeight
-   * drives both the bar height and the mobile drawer's top offset, and the
-   * ledGlow radii are tuned to the ledSize values. */
+    xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
     /* Component geometry — the fixed dimensions of the app's own furniture,
-   * as distinct from the spacing rhythm on the `space` scale above. These
-   * are sizes of things, not gaps between things, which is why they are not
-   * on a scale: an LED is 7px because that reads as a status dot, not
-   * because 7 is a step in a series.
-   *
-   * Mostly leave-alone when defining a new theme. A denser or roomier theme
-   * scales these a little; nothing here needs rethinking the way the
-   * surfaces below do.
-   *
-   * Two are load-bearing and must not be nudged casually: headerHeight
-   * drives both the bar height and the mobile drawer's top offset, and the
-   * ledGlow radii are tuned to the ledSize values. */
-  size: {
-    ledSize:          7,
-    ledGlow:          5,
-    ledGlowFar:       10,
-    barHeight:        3,
-    segBarHeight:     13,
-    toastOffset:      20,
-    toastAccent:      3,
-    toastMinW:        210,
-    toastMaxW:        360,
-    toastMobileInset: 32,
-    accentWidth:      3,
-    ledSizeLg:        8,
-    ledSizeSm:        6,
-    headerHeight:     46,
-    apiBarW:          210,
-    scrollbarW:       3,
-    focusRing:        2,
-    focusOffset:      1,
-    accentThin:       2,
-    closeGlyph:       20,
-    closeGlyphMobile: 24,
-  },
+     * as distinct from the spacing rhythm on the `space` scale above. These
+     * are sizes of things, not gaps between things, which is why they are not
+     * on a scale: an LED is 7px because that reads as a status dot, not
+     * because 7 is a step in a series.
+     *
+     * Mostly leave-alone when defining a new theme. A denser or roomier theme
+     * scales these a little; nothing here needs rethinking the way the
+     * surfaces below do.
+     *
+     * Two are load-bearing and must not be nudged casually: headerHeight
+     * drives both the bar height and the mobile drawer's top offset, and the
+     * ledGlow radii are tuned to the ledSize values. */
+    size: {
+      ledSize:          7,
+      ledGlow:          5,
+      ledGlowFar:       10,
+      barHeight:        3,
+      segBarHeight:     13,
+      toastOffset:      20,
+      toastAccent:      3,
+      toastMinW:        210,
+      toastMaxW:        360,
+      toastMobileInset: 32,
+      accentWidth:      3,
+      ledSizeLg:        8,
+      ledSizeSm:        6,
+      headerHeight:     46,
+      apiBarW:          210,
+      scrollbarW:       3,
+      focusRing:        2,
+      focusOffset:      1,
+      accentThin:       2,
+      closeGlyph:       20,
+      closeGlyphMobile: 24,
+    },
 
-  /* Per-theme surfaces — colours with no home in the palette. Overlays,
-   * scrims, shadows and one-off backgrounds, all of which sit ON something
-   * rather than being a colour in their own right.
-   *
-   * These are the entries a new theme genuinely has to think about, and the
-   * reason they cannot be derived with alpha(): every one of them darkens
-   * what is beneath it, because both current themes are dark. A light theme
-   * has to lighten instead, which is a different colour and not a different
-   * opacity of the same one. */
-  surface: {
-    badgeFallbackBg:  "#111",
-    dryRunBg:         "#1a1400",
-    rowHoverBg:       "#ffffff07",
-    drawerShadow:     "0 4px 16px #00000066",
-    logoInk:          "#000",
-    reviewBorder:     "#3a2800",
-    trackRowBg:       "#00000022",
-    rowSelectedBg:    "#ffffff08",
-    logBg:            "#0d0f1a",
-    logMeta:          "#3a4060",
-    logText:          "#c8cce8",
-    zebraBg:          "#ffffff04",
-    modalScrimBg:     "#000000bb",
-    errorBg:          "#180a0a",
-    guardScrimBg:     "rgba(0,0,0,0.66)",
-  },
+    /* Per-theme surfaces — colours with no home in the palette. Overlays,
+     * scrims, shadows and one-off backgrounds, all of which sit ON something
+     * rather than being a colour in their own right.
+     *
+     * These are the entries a new theme genuinely has to think about, and the
+     * reason they cannot be derived with alpha(): every one of them darkens
+     * what is beneath it, because both current themes are dark. A light theme
+     * has to lighten instead, which is a different colour and not a different
+     * opacity of the same one. */
+    surface: {
+      badgeFallbackBg:  "#111",
+      dryRunBg:         "#1a1400",
+      rowHoverBg:       "#ffffff07",
+      drawerShadow:     "0 4px 16px #00000066",
+      logoInk:          "#000",
+      reviewBorder:     "#3a2800",
+      trackRowBg:       "#00000022",
+      rowSelectedBg:    "#ffffff08",
+      logBg:            "#0d0f1a",
+      logMeta:          "#3a4060",
+      logText:          "#c8cce8",
+      zebraBg:          "#ffffff04",
+      modalScrimBg:     "#000000bb",
+      errorBg:          "#180a0a",
+      guardScrimBg:     "rgba(0,0,0,0.66)",
+    },
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +293,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*═══════════════════════════════════════ */
+ ═ ═*══════════════════════════════════*════════════════════════════*═══════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -336,70 +346,70 @@ const soft = {
   },
   radius: { none: 0, sm: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20,
-            xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
+    xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
     /* Component geometry — the fixed dimensions of the app's own furniture,
-   * as distinct from the spacing rhythm on the `space` scale above. These
-   * are sizes of things, not gaps between things, which is why they are not
-   * on a scale: an LED is 7px because that reads as a status dot, not
-   * because 7 is a step in a series.
-   *
-   * Mostly leave-alone when defining a new theme. A denser or roomier theme
-   * scales these a little; nothing here needs rethinking the way the
-   * surfaces below do.
-   *
-   * Two are load-bearing and must not be nudged casually: headerHeight
-   * drives both the bar height and the mobile drawer's top offset, and the
-   * ledGlow radii are tuned to the ledSize values. */
-  size: {
-    ledSize:          8,
-    ledGlow:          6,
-    ledGlowFar:       12,
-    barHeight:        4,
-    segBarHeight:     14,
-    toastOffset:      24,
-    toastAccent:      3,
-    toastMinW:        230,
-    toastMaxW:        380,
-    toastMobileInset: 32,
-    accentWidth:      3,
-    ledSizeLg:        9,
-    ledSizeSm:        7,
-    headerHeight:     52,
-    apiBarW:          230,
-    scrollbarW:       5,
-    focusRing:        2,
-    focusOffset:      2,
-    accentThin:       2,
-    closeGlyph:       22,
-    closeGlyphMobile: 26,
-  },
+     * as distinct from the spacing rhythm on the `space` scale above. These
+     * are sizes of things, not gaps between things, which is why they are not
+     * on a scale: an LED is 7px because that reads as a status dot, not
+     * because 7 is a step in a series.
+     *
+     * Mostly leave-alone when defining a new theme. A denser or roomier theme
+     * scales these a little; nothing here needs rethinking the way the
+     * surfaces below do.
+     *
+     * Two are load-bearing and must not be nudged casually: headerHeight
+     * drives both the bar height and the mobile drawer's top offset, and the
+     * ledGlow radii are tuned to the ledSize values. */
+    size: {
+      ledSize:          8,
+      ledGlow:          6,
+      ledGlowFar:       12,
+      barHeight:        4,
+      segBarHeight:     14,
+      toastOffset:      24,
+      toastAccent:      3,
+      toastMinW:        230,
+      toastMaxW:        380,
+      toastMobileInset: 32,
+      accentWidth:      3,
+      ledSizeLg:        9,
+      ledSizeSm:        7,
+      headerHeight:     52,
+      apiBarW:          230,
+      scrollbarW:       5,
+      focusRing:        2,
+      focusOffset:      2,
+      accentThin:       2,
+      closeGlyph:       22,
+      closeGlyphMobile: 26,
+    },
 
-  /* Per-theme surfaces — colours with no home in the palette. Overlays,
-   * scrims, shadows and one-off backgrounds, all of which sit ON something
-   * rather than being a colour in their own right.
-   *
-   * These are the entries a new theme genuinely has to think about, and the
-   * reason they cannot be derived with alpha(): every one of them darkens
-   * what is beneath it, because both current themes are dark. A light theme
-   * has to lighten instead, which is a different colour and not a different
-   * opacity of the same one. */
-  surface: {
-    badgeFallbackBg:  "#1d2029",
-    dryRunBg:         "#241d06",
-    rowHoverBg:       "#ffffff0a",
-    drawerShadow:     "0 6px 24px #0000004d",
-    logoInk:          "#000",
-    reviewBorder:     "#3a2c0c",
-    trackRowBg:       "#00000033",
-    rowSelectedBg:    "#ffffff0d",
-    logBg:            "#1b1f2b",
-    logMeta:          "#575f7d",
-    logText:          "#dde0ec",
-    zebraBg:          "#ffffff07",
-    modalScrimBg:     "#000000cc",
-    errorBg:          "#241010",
-    guardScrimBg:     "rgba(0,0,0,0.72)",
-  },
+    /* Per-theme surfaces — colours with no home in the palette. Overlays,
+     * scrims, shadows and one-off backgrounds, all of which sit ON something
+     * rather than being a colour in their own right.
+     *
+     * These are the entries a new theme genuinely has to think about, and the
+     * reason they cannot be derived with alpha(): every one of them darkens
+     * what is beneath it, because both current themes are dark. A light theme
+     * has to lighten instead, which is a different colour and not a different
+     * opacity of the same one. */
+    surface: {
+      badgeFallbackBg:  "#1d2029",
+      dryRunBg:         "#241d06",
+      rowHoverBg:       "#ffffff0a",
+      drawerShadow:     "0 6px 24px #0000004d",
+      logoInk:          "#000",
+      reviewBorder:     "#3a2c0c",
+      trackRowBg:       "#00000033",
+      rowSelectedBg:    "#ffffff0d",
+      logBg:            "#1b1f2b",
+      logMeta:          "#575f7d",
+      logText:          "#dde0ec",
+      zebraBg:          "#ffffff07",
+      modalScrimBg:     "#000000cc",
+      errorBg:          "#241010",
+      guardScrimBg:     "rgba(0,0,0,0.72)",
+    },
 };
 
 export const themes = { terminal, soft };
@@ -488,13 +498,13 @@ export const ThemeProvider = ({ children }) => {
     if (meta) meta.setAttribute("content", t.palette.bg);
   }, [themeId]);
 
-  const value = useMemo(() => ({
-    ...(themes[themeId] || terminal),
-                               themeId,
-                               setThemeId,
-  }), [themeId]);
+    const value = useMemo(() => ({
+      ...(themes[themeId] || terminal),
+                                 themeId,
+                                 setThemeId,
+    }), [themeId]);
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+    return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
 /* There are deliberately no static value exports here. They existed so that
