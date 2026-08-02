@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
@@ -11,7 +11,7 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
@@ -39,17 +39,17 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
         style={{
             background: "none",
             border: `1px solid ${alpha(color, ALPHA.heavy)}`,
-                                                    borderRadius: radius.sm,
-                                                    color,
-                                                    fontSize: type.size.xs,
-                                                    fontFamily: type.family,
-                                                    letterSpacing: type.tracking.normal,
-                                                    padding: `${space.hair}px ${space.xs}px`,
-                                                    cursor: "pointer",
-                                                    flexShrink: 0,
-                                                    opacity: shown ? 1 : 0,
-                                                    pointerEvents: shown ? "auto" : "none",
-                                                    transition: "opacity 0.1s",
+            borderRadius: radius.sm,
+            color,
+            fontSize: type.size.xs,
+            fontFamily: type.family,
+            letterSpacing: type.tracking.normal,
+            padding: `${space.hair}px ${space.xs}px`,
+            cursor: "pointer",
+            flexShrink: 0,
+            opacity: shown ? 1 : 0,
+            pointerEvents: shown ? "auto" : "none",
+            transition: "opacity 0.1s",
         }}
         >
         {label}
@@ -142,7 +142,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
     // Resolved once here rather than per row: a long queue would otherwise
@@ -158,11 +158,20 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     )
     : items;
 
+    // Auto-disarm after 3 seconds if the user doesn't confirm. Keyed on the
+    // armed flag with cleanup, matching DangerZone and MaintenanceSection —
+    // a bare setTimeout in the handler stacked one timer per click and each
+    // survived unmount, so a timer from a previous mount could disarm a
+    // freshly armed button. Same pattern DangerZone's comment calls critical.
+    useEffect(() => {
+        if (!clearArmed) return;
+        const t = setTimeout(() => setClearArmed(false), 3000);
+        return () => clearTimeout(t);
+    }, [clearArmed]);
+
     const handleClear = () => {
         if (!clearArmed) {
             setClearArmed(true);
-            // Auto-disarm after 3 seconds if user doesn't confirm
-            setTimeout(() => setClearArmed(false), 3000);
         } else {
             setClearArmed(false);
             onClear();

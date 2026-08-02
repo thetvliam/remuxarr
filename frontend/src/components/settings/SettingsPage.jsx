@@ -30,18 +30,18 @@ const STORAGE_KEY = "remuxarr.settingsCategory";
 const SectionHeader = ({ label, first }) => {
   const { palette, type, space } = useTheme();
   return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: space.md,
-      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
-      paddingBottom: space.sm,
-      borderBottom: `1px solid ${palette.border}`,
-    }}>
-    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-    {label.toUpperCase()}
-    </span>
-    </div>
+  <div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: space.md,
+    margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
+    paddingBottom: space.sm,
+    borderBottom: `1px solid ${palette.border}`,
+  }}>
+  <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+  {label.toUpperCase()}
+  </span>
+  </div>
   );
 };
 
@@ -50,6 +50,16 @@ const TestConnectionButton = ({ api, service }) => {
   const { palette, type, space, radius } = useTheme();
   const [state,  setState]  = useState("idle");   // idle | loading | ok | err
   const [result, setResult] = useState("");
+
+  // Clear the result after 8s, in an effect with cleanup rather than a bare
+  // setTimeout in the handler. Two tests in quick succession previously left
+  // two timers running, so the first could wipe the second's result early —
+  // and either could fire after unmount, setting state on a dead component.
+  useEffect(() => {
+    if (state !== "ok" && state !== "err") return;
+    const t = setTimeout(() => { setState("idle"); setResult(""); }, 8000);
+    return () => clearTimeout(t);
+  }, [state]);
 
   const run = async () => {
     setState("loading");
@@ -68,7 +78,6 @@ const TestConnectionButton = ({ api, service }) => {
       setState("err");
       setResult("Request failed");
     }
-    setTimeout(() => { setState("idle"); setResult(""); }, 8000);
   };
 
   const color = { idle: palette.dim, loading: palette.muted, ok: palette.green, err: palette.red }[state];
@@ -87,19 +96,19 @@ const TestConnectionButton = ({ api, service }) => {
     style={{
       padding: `${space.xs}px ${space.xl}px`,
       background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
-          border: `1px solid ${color}`,
-          borderRadius: radius.sm,
-          color,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.normal,
-          cursor: state === "loading" ? "not-allowed" : "pointer",
-          transition: "all 0.15s",
-          maxWidth: 320,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+      border: `1px solid ${color}`,
+      borderRadius: radius.sm,
+      color,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.normal,
+      cursor: state === "loading" ? "not-allowed" : "pointer",
+      transition: "all 0.15s",
+      maxWidth: 320,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
     }}
     >
     {label}
@@ -135,10 +144,10 @@ const PlexBacklogStatus = ({ api }) => {
     <span style={{
       padding: `${space.hair}px ${space.sm}px`,
       background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
-          border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
-          borderRadius: radius.sm,
-          color: count > 0 ? palette.amber : palette.dim,
-          fontSize: type.size.sm, fontWeight: type.weight.bold,
+      border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
+      borderRadius: radius.sm,
+      color: count > 0 ? palette.amber : palette.dim,
+      fontSize: type.size.sm, fontWeight: type.weight.bold,
     }}
     title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
     >
@@ -178,8 +187,8 @@ const EmailBreakerStatus = ({ api }) => {
       display: "flex", alignItems: "flex-start", gap: space.sm,
       padding: `${space.md}px ${space.lg}px`, marginTop: space.sm,
       background: alpha(palette.red, ALPHA.trace), border: `1px solid ${alpha(palette.red, ALPHA.heavy)}`,
-          borderRadius: radius.sm,
-          color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
+      borderRadius: radius.sm,
+      color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
     }}>
     <span style={{ flexShrink: 0 }}>⚠</span>
     <span>
@@ -291,78 +300,78 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 const NavSidebar = ({ active, onSelect, dirty }) => {
   const { palette, type, space, size } = useTheme();
   return (
-    <nav style={{
-      flexShrink: 0,
-      width: 190,
-      position: "sticky",
-      top: 0,
-      alignSelf: "flex-start",
-      display: "flex",
-      flexDirection: "column",
-      gap: space.hair,
-      paddingRight: space.xxl,
-      borderRight: `1px solid ${palette.border}`,
-    }}>
-    {CATEGORIES.map(c => {
-      const on = c.id === active;
-      return (
-        <button
-        key={c.id}
-        onClick={() => onSelect(c.id)}
-        style={{
-          textAlign: "left",
-          padding: `${space.md}px ${space.lg}px`,
-          background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
-              border: "none",
-              borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
-              color: on ? palette.amber : palette.muted,
-              fontSize: type.size.md,
-              fontFamily: type.family,
-              fontWeight: on ? type.weight.bold : type.weight.medium,
-              letterSpacing: type.tracking.tight,
-              cursor: "pointer",
-              transition: "all 0.12s",
-        }}
-        >
-        {c.label}
-        </button>
-      );
-    })}
-    {dirty && (
-      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
-      ● UNSAVED
-      </div>
-    )}
-    </nav>
+  <nav style={{
+    flexShrink: 0,
+    width: 190,
+    position: "sticky",
+    top: 0,
+    alignSelf: "flex-start",
+    display: "flex",
+    flexDirection: "column",
+    gap: space.hair,
+    paddingRight: space.xxl,
+    borderRight: `1px solid ${palette.border}`,
+  }}>
+  {CATEGORIES.map(c => {
+    const on = c.id === active;
+    return (
+      <button
+      key={c.id}
+      onClick={() => onSelect(c.id)}
+      style={{
+        textAlign: "left",
+        padding: `${space.md}px ${space.lg}px`,
+        background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
+        border: "none",
+        borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+        color: on ? palette.amber : palette.muted,
+        fontSize: type.size.md,
+        fontFamily: type.family,
+        fontWeight: on ? type.weight.bold : type.weight.medium,
+        letterSpacing: type.tracking.tight,
+        cursor: "pointer",
+        transition: "all 0.12s",
+      }}
+      >
+      {c.label}
+      </button>
+    );
+  })}
+  {dirty && (
+    <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+    ● UNSAVED
+    </div>
+  )}
+  </nav>
   );
 };
 
 const NavDropdown = ({ active, onSelect }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-    <select
-    value={active}
-    onChange={e => onSelect(e.target.value)}
-    style={{
-      flex: 1,
-      minWidth: 0,
-      padding: `${space.md}px ${space.md}px`,
-      background: palette.card,
-      border: `1px solid ${palette.border}`,
-      borderRadius: radius.sm,
-      color: palette.text,
-      fontSize: type.size.base,
-      fontFamily: type.family,
-      fontWeight: type.weight.semibold,
-      cursor: "pointer",
-    }}
-    >
-    {CATEGORIES.map(c => (
-      <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
-      {c.label}
-      </option>
-    ))}
-    </select>
+  <select
+  value={active}
+  onChange={e => onSelect(e.target.value)}
+  style={{
+    flex: 1,
+    minWidth: 0,
+    padding: `${space.md}px ${space.md}px`,
+    background: palette.card,
+    border: `1px solid ${palette.border}`,
+    borderRadius: radius.sm,
+    color: palette.text,
+    fontSize: type.size.base,
+    fontFamily: type.family,
+    fontWeight: type.weight.semibold,
+    cursor: "pointer",
+  }}
+  >
+  {CATEGORIES.map(c => (
+    <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
+    {c.label}
+    </option>
+  ))}
+  </select>
   );
 };
 
@@ -400,14 +409,14 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       marginLeft: "auto",
       padding: `${space.xs}px ${space.xxl}px`,
       background: alpha(btnColor, ALPHA.medium),
-          border: `1px solid ${btnColor}`,
-          borderRadius: radius.sm,
-          color: btnColor,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+      border: `1px solid ${btnColor}`,
+      borderRadius: radius.sm,
+      color: btnColor,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.wide,
+      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
     }}
     >
@@ -419,13 +428,22 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
   const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
   const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
   const [status,   setStatus]   = useState("idle");
+
+  // Drop the "saved" confirmation back to idle after 2.5s. Same reason as
+  // above: the bare setTimeout it replaces could fire into a remounted
+  // Settings page and clear a confirmation the user had just triggered.
+  useEffect(() => {
+    if (status !== "saved") return;
+    const t = setTimeout(() => setStatus("idle"), 2500);
+    return () => clearTimeout(t);
+  }, [status]);
   const [active,   setActive]   = useState(() => {
     try {
       const s = localStorage.getItem(STORAGE_KEY);
@@ -480,7 +498,6 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
       if (r.ok) {
         setBaseline(snapshot);          // saved values become the new clean baseline
         setStatus("saved");
-        setTimeout(() => setStatus("idle"), 2500);
       } else {
         setStatus("error");
       }
