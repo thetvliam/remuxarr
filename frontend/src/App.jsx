@@ -83,7 +83,10 @@ export default function App() {
   const [queueTab, setQueueTab] = useState("queue"); // mobile only
   const {
     api, setApi, page, setPage,
-    activeJobs, queue, review,
+    // `queue` is deliberately not taken: QueuePanel renders pendingQueue,
+    // the same list with in-progress items filtered out. Destructuring the
+    // raw one alongside it invited picking the wrong variable.
+    activeJobs, review,
     modal, setModal,
     toasts,
     dryRun,
