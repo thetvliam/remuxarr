@@ -11,7 +11,7 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
@@ -35,21 +35,26 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const actionBtn = (label, color, fn, title) => (
         <button
         onClick={stopProp(fn)}
+        // title is a tooltip and never surfaces on touch; the visible label
+        // is "×" on one of these, which reads as nothing useful aloud. The
+        // title text is already a full description, so it doubles as the
+        // accessible name.
+        aria-label={title}
         title={title}
         style={{
             background: "none",
             border: `1px solid ${alpha(color, ALPHA.heavy)}`,
-            borderRadius: radius.sm,
-            color,
-            fontSize: type.size.xs,
-            fontFamily: type.family,
-            letterSpacing: type.tracking.normal,
-            padding: `${space.hair}px ${space.xs}px`,
-            cursor: "pointer",
-            flexShrink: 0,
-            opacity: shown ? 1 : 0,
-            pointerEvents: shown ? "auto" : "none",
-            transition: "opacity 0.1s",
+                                                    borderRadius: radius.sm,
+                                                    color,
+                                                    fontSize: type.size.xs,
+                                                    fontFamily: type.family,
+                                                    letterSpacing: type.tracking.normal,
+                                                    padding: `${space.hair}px ${space.xs}px`,
+                                                    cursor: "pointer",
+                                                    flexShrink: 0,
+                                                    opacity: shown ? 1 : 0,
+                                                    pointerEvents: shown ? "auto" : "none",
+                                                    transition: "opacity 0.1s",
         }}
         >
         {label}
@@ -142,7 +147,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
     // Resolved once here rather than per row: a long queue would otherwise

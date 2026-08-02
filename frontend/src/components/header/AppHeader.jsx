@@ -121,6 +121,10 @@ export const AppHeader = ({
         <button
         key={n.k}
         onClick={() => setPage(n.k)}
+        // Which page is current was communicated only by colour and an
+        // underline. aria-current="page" is how that reaches anyone not
+        // seeing either, and it costs one attribute.
+        aria-current={page === n.k ? "page" : undefined}
         style={{
           height: size.headerHeight,
           padding: `0 ${space.xl}px`,
@@ -155,6 +159,11 @@ export const AppHeader = ({
       {/* ⚙ API URL */}
       <button
       onClick={() => setShowApiBar(v => !v)}
+      // title is a tooltip, not an accessible name: it is announced
+      // inconsistently and never appears on touch. aria-label is what a
+      // screen reader reads, and aria-expanded says whether the bar is open.
+      aria-label={`API URL: ${api}`}
+      aria-expanded={showApiBar}
       title={`API: ${api}`}
       style={{
         background: "none", border: "none",
@@ -302,6 +311,8 @@ export const AppHeader = ({
           {/* ⚙ API */}
           <button
           onClick={() => setShowApiBar(v => !v)}
+          aria-label={`API URL: ${api}`}
+          aria-expanded={showApiBar}
           style={{
             background: "none", border: "none",
             color: showApiBar ? palette.amber : palette.dim,
@@ -313,6 +324,8 @@ export const AppHeader = ({
           {/* ☰ Hamburger */}
           <button
           onClick={() => setDrawerOpen(v => !v)}
+          aria-label={drawerOpen ? "Close menu" : "Open menu"}
+          aria-expanded={drawerOpen}
           style={{
             background: "none", border: "none",
             color: drawerOpen ? palette.amber : palette.dim,

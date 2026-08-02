@@ -111,6 +111,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       since there's no backdrop to tap. */}
       <button
       onClick={onClose}
+      aria-label="Close details"
       style={{
         background: "none",
         border: "none",
