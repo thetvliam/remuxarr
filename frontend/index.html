@@ -6,10 +6,27 @@
     <!-- Favicon reuses the same icon-only mark the mobile header does; no
          separate copy needed. Vite copies public/ to the dist root at build. -->
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <!-- Bootstrap value only. ThemeProvider rewrites this on mount and on
+         every theme change; without that, mobile browser chrome stayed the
+         default theme's colour whatever the user selected. -->
     <meta name="theme-color" content="#07080b" />
     <title>Remuxarr</title>
     <style>
-      html, body, #root { margin: 0; height: 100%; background: #07080b; }
+      /* Layout only. The background is deliberately NOT set on #root: an ID
+         selector outranks anything ThemeProvider can apply to html or body,
+         and nothing else in the app ever targets #root, so a colour here
+         would outlive every theme change for the life of the page. It was
+         only invisible because App's root div paints over it at 100vh —
+         overscroll areas showed it through, and on a light theme it would
+         frame the whole app in dark.
+
+         html and body do carry one, as a first-paint colour for the moment
+         before React mounts. It is the default theme's background; another
+         theme shows it briefly on load. Resolving that properly means either
+         an inline script duplicating each theme's bg here, or the colour
+         living in two places — both worse than a brief flash. */
+      html, body, #root { margin: 0; height: 100%; }
+      html, body { background: #07080b; }
     </style>
   </head>
   <body>

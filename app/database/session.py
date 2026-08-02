@@ -251,6 +251,30 @@ def _migrate_schema() -> None:
                 logger.info("Migrating database: adding %s.%s", table, column)
                 conn.execute(text(ddl))
 
+    # Indexes added to columns that already existed. create_all() builds
+    # indexes only for tables it creates, so adding index=True to a column on
+    # an existing install has no effect without this — the column stays
+    # unindexed and the query that motivated the index quietly table-scans.
+    # CREATE INDEX IF NOT EXISTS is idempotent, so this is safe every startup
+    # and needs no existence check of its own.
+    index_migrations = [
+        ("audio_language_flags", "ix_audio_language_flags_detected_language",
+         "CREATE INDEX IF NOT EXISTS ix_audio_language_flags_detected_language "
+         "ON audio_language_flags (detected_language)"),
+        ("subtitle_language_flags", "ix_subtitle_language_flags_detected_language",
+         "CREATE INDEX IF NOT EXISTS ix_subtitle_language_flags_detected_language "
+         "ON subtitle_language_flags (detected_language)"),
+    ]
+
+    with engine.begin() as conn:
+        for table, index_name, ddl in index_migrations:
+            if table not in existing_tables:
+                continue
+            existing_indexes = {i["name"] for i in inspector.get_indexes(table)}
+            if index_name not in existing_indexes:
+                logger.info("Migrating database: adding index %s", index_name)
+            conn.execute(text(ddl))
+
 
 def _seed_defaults(db: Session) -> None:
     for key, value in DEFAULT_APP_SETTINGS.items():

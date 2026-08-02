@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useTheme, alpha, ALPHA } from "../theme";
+import { useTheme, alpha, ALPHA, LAYER } from "../theme";
 import { fmtSize, fmtDur, formatBytesSaved } from "../utils";
 import { StatusBadge } from "./atoms/StatusBadge";
 import { ActionBadge } from "./atoms/ActionBadge";
@@ -19,7 +19,7 @@ import { Btn } from "./atoms/Btn";
  * shallow comparison risks the enriched data silently failing to render.
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
-  const { palette, type, space, radius, legacy, actionCfg } = useTheme();
+  const { palette, type, space, radius, size, surface, actionCfg } = useTheme();
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
@@ -48,11 +48,11 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       // Desktop: dimmed backdrop centred over content.
       // Mobile: solid background — the sheet fills the full screen so
       // there's nothing to blur behind it.
-      background: isMobile ? palette.card : legacy.modalScrimBg,
+      background: isMobile ? palette.card : surface.modalScrimBg,
       display: "flex",
       alignItems: isMobile ? "flex-start" : "center",
       justifyContent: "center",
-      zIndex: 1000,
+      zIndex: LAYER.modal,
       backdropFilter: isMobile ? "none" : "blur(3px)",
     }}
     >
@@ -61,7 +61,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     style={{
       background: palette.card,
       border: `1px solid ${palette.border}`,
-      borderTop: `${legacy.accentThin}px solid ${topColor}`,
+      borderTop: `${size.accentThin}px solid ${topColor}`,
       // Desktop: centred card with max dimensions.
       // Mobile: full-screen — use 100dvh so the browser address bar
       // doesn't cause overflow (dvh accounts for the visible viewport
@@ -111,11 +111,12 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       since there's no backdrop to tap. */}
       <button
       onClick={onClose}
+      aria-label="Close details"
       style={{
         background: "none",
         border: "none",
         color: palette.muted,
-        fontSize: isMobile ? legacy.closeGlyphMobile : legacy.closeGlyph,
+        fontSize: isMobile ? size.closeGlyphMobile : size.closeGlyph,
         cursor: "pointer",
         lineHeight: type.leading.none,
         padding: isMobile ? `0 ${space.xxs}px` : `0 ${space.hair}px`,
@@ -174,7 +175,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
         <span style={{ color: palette.muted, fontSize: type.size.md }}>No actions recorded</span>
       ) : (
         actions.map((a, i) => {
-          const cfg = actionCfg[a.action_type] || { bg: legacy.badgeFallbackBg, border: palette.border };
+          const cfg = actionCfg[a.action_type] || { bg: surface.badgeFallbackBg, border: palette.border };
           return (
             <div
             key={i}
@@ -186,6 +187,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
               padding: `${space.sm}px ${space.md}px`,
               background: cfg.bg,
               border: `1px solid ${cfg.border}`,
+              borderRadius: radius.sm,
             }}
             >
             <ActionBadge type={a.action_type} />
@@ -203,7 +205,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
         <div style={{
           padding: `${space.md}px ${space.xxl}px`,
           borderTop: `1px solid ${palette.border}`,
-          background: legacy.errorBg,
+          background: surface.errorBg,
         }}>
         <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.wider, marginBottom: space.xs }}>
         ERROR

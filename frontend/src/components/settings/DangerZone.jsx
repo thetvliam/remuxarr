@@ -7,7 +7,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * the backend endpoint only deletes from the scan-state tables.
  * Requires a second click within 4 seconds to confirm. ──────────────────── */
 export const DangerZone = ({ api, toast }) => {
-    const { palette, type, space } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     const [confirming, setConfirming] = useState(false);
     const [clearing,   setClearing]   = useState(false);
 
@@ -31,12 +31,12 @@ export const DangerZone = ({ api, toast }) => {
         try {
             const r = await fetch(`${api}/api/settings/clear-database`, { method: "POST" });
             if (r.ok) {
-                toast?.("Database cleared — next scan will treat all files as new", palette.green);
+                toast?.("Database cleared — next scan will treat all files as new", "success");
             } else {
-                toast?.("Failed to clear database", palette.red);
+                toast?.("Failed to clear database", "error");
             }
         } catch (_) {
-            toast?.("Failed to clear database", palette.red);
+            toast?.("Failed to clear database", "error");
         } finally {
             setClearing(false);
             setConfirming(false);
@@ -74,6 +74,7 @@ export const DangerZone = ({ api, toast }) => {
             padding: `${space.xs}px ${space.xl}px`,
             background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
             border: `1px solid ${palette.red}`,
+            borderRadius: radius.sm,
             color: palette.red,
             fontSize: type.size.sm,
             fontFamily: type.family,

@@ -3,7 +3,7 @@ import { TagInput } from "./TagInput";
 
 // Renders the appropriate control for each setting type
 export const SettingInput = ({ field, value, onChange }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   if (field.type === "boolean") {
     const on = !!value;
     return (
@@ -13,6 +13,7 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.xl}px`,
         background: on ? alpha(palette.green, ALPHA.low) : "transparent",
             border: `1px solid ${on ? palette.green : palette.border}`,
+            borderRadius: radius.sm,
             color: on ? palette.green : palette.dim,
             fontSize: type.size.sm,
             fontFamily: type.family,
@@ -50,10 +51,10 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.base,
-        outline: "none",
       }}
       />
     );
@@ -71,10 +72,10 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,
-        outline: "none",
       }}
       />
     );
@@ -101,10 +102,10 @@ export const SettingInput = ({ field, value, onChange }) => {
         padding: `${space.xs}px ${space.sm}px`,
         background: palette.bg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.text,
         fontFamily: type.family,
         fontSize: type.size.md,
-        outline: "none",
         cursor: "pointer",
       }}
       >

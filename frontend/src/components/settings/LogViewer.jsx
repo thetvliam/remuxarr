@@ -20,7 +20,7 @@ const LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 3 };
 const LEVELS = ["ALL", "INFO", "WARNING", "ERROR"];
 
 export const LogViewer = ({ api }) => {
-  const { palette, type, space, legacy, levelColor } = useTheme();
+  const { palette, type, space, radius, surface, levelColor } = useTheme();
   const [allRecords,  setAllRecords]  = useState([]);
   const [levelFilter, setLevelFilter] = useState("INFO");
   const [autoScroll,  setAutoScroll]  = useState(true);
@@ -101,7 +101,14 @@ export const LogViewer = ({ api }) => {
       <div style={{ display: "flex" }}>
       {LEVELS.map((l, i) => {
         const active = levelFilter === l;
-        const color  = l === "ALL" ? palette.muted : l === "INFO" ? palette.muted : l === "WARNING" ? palette.amber : palette.red;
+        /* The same map the log rows below use, rather than a second copy
+         * of it. The inline ternary this replaces listed INFO, WARNING
+         * and ERROR and sent everything else to red — so it agreed with
+         * theme.levelColor only by coincidence, and adding DEBUG or
+         * CRITICAL to LEVELS would have coloured the new filter red
+         * while its rows rendered correctly. "ALL" is not a level, so it
+         * falls through to muted. */
+        const color = levelColor[l] || palette.muted;
         return (
           <button
           key={l}
@@ -109,6 +116,13 @@ export const LogViewer = ({ api }) => {
           style={{
             padding: `${space.xxs}px ${space.md}px`,
             background: active ? `${alpha(color, ALPHA.medium)}` : "transparent",
+                // No borderRadius: these are a segmented control. Every
+                // button but the last drops its right border so its
+                // neighbour's left border serves both, and rounding a
+                // segment would round the edges it shares, breaking the
+                // strip into pieces on any theme with a real radius.
+                // Only the group's two outer corners should curve, which
+                // needs a clipping wrapper rather than per-segment corners.
                 border: `1px solid ${active ? color : palette.border}`,
                 borderRight: i < LEVELS.length - 1 ? "none" : undefined,
                 color: active ? color : palette.dim,
@@ -132,6 +146,7 @@ export const LogViewer = ({ api }) => {
         padding: `${space.xxs}px ${space.md}px`,
         background: autoScroll ? `${alpha(palette.blue, ALPHA.medium)}` : "transparent",
             border: `1px solid ${autoScroll ? palette.blue : palette.border}`,
+            borderRadius: radius.sm,
             color: autoScroll ? palette.blue : palette.dim,
             fontSize: type.size.xs,
             fontFamily: type.family,
@@ -156,6 +171,7 @@ export const LogViewer = ({ api }) => {
         padding: `${space.xxs}px ${space.md}px`,
         background: "transparent",
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         color: palette.dim,
         fontSize: type.size.xs,
         fontFamily: type.family,
@@ -175,8 +191,9 @@ export const LogViewer = ({ api }) => {
       style={{
         height: 380,
         overflowY: "auto",
-        background: legacy.logBg,
+        background: surface.logBg,
         border: `1px solid ${palette.border}`,
+        borderRadius: radius.sm,
         padding: `${space.md}px 0`,
         fontFamily: type.mono,
         fontSize: type.size.md,
@@ -200,12 +217,12 @@ export const LogViewer = ({ api }) => {
               display: "flex",
               gap: 0,
               padding: `0 ${space.xl}px`,
-              background: i % 2 === 0 ? "transparent" : legacy.zebraBg,
+              background: i % 2 === 0 ? "transparent" : surface.zebraBg,
               whiteSpace: "pre-wrap",
               wordBreak: "break-all",
             }}
             >
-            <span style={{ color: legacy.logMeta, flexShrink: 0, marginRight: space.sm }}>
+            <span style={{ color: surface.logMeta, flexShrink: 0, marginRight: space.sm }}>
             {r.ts}
             </span>
             <span style={{
@@ -218,10 +235,10 @@ export const LogViewer = ({ api }) => {
             }}>
             {r.level}
             </span>
-            <span style={{ color: legacy.logMeta, flexShrink: 0, marginRight: space.sm }}>
+            <span style={{ color: surface.logMeta, flexShrink: 0, marginRight: space.sm }}>
             {r.module}
             </span>
-            <span style={{ color: legacy.logText }}>
+            <span style={{ color: surface.logText }}>
             {r.message}
             </span>
             </div>

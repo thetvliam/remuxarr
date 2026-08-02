@@ -5,7 +5,10 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 //
 // `normalize` prop: true (default) lowercases input — correct for language
 // codes (eng, fre…). false preserves case exactly — required for filesystem
-// paths, where SettingInput passes normalize={field.key !== "scan_paths"}.
+// paths, where SettingInput passes
+// normalize={!["scan_paths", "plex_path_mappings"].includes(field.key)}.
+// The list matters: it previously named scan_paths alone, and lowercasing
+// a Plex path mapping breaks it on a case-sensitive filesystem.
 //
 // `placeholder` prop: comes from the field's schema entry. It used to be
 // hardcoded to a language-code example, so every list setting — scan paths,
@@ -14,7 +17,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 // format nothing else hinted at). Fields with no schema placeholder fall
 // back to a neutral prompt rather than an example from an unrelated setting.
 export const TagInput = ({ values, onChange, normalize = true, placeholder = "" }) => {
-    const { palette, type, space } = useTheme();
+    const { palette, type, space, radius } = useTheme();
     const [draft, setDraft] = useState("");
 
     const add = () => {
@@ -41,6 +44,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
                 padding: `${space.hair}px ${space.sm}px`,
                 background: alpha(palette.blue, ALPHA.low),
                           border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
+                          borderRadius: radius.sm,
                           color: palette.blue,
                           fontSize: type.size.md,
             }}
@@ -77,10 +81,10 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
             padding: `${space.xxs}px ${space.sm}px`,
             background: palette.bg,
             border: `1px solid ${palette.border}`,
+            borderRadius: radius.sm,
             color: palette.text,
             fontFamily: type.family,
             fontSize: type.size.md,
-            outline: "none",
         }}
         />
         <button

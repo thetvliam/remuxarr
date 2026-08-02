@@ -10,7 +10,7 @@ import { useHistoryData } from "../../hooks/useHistoryData";
  * HISTORY ROW
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
-  const { palette, type, space, legacy, statusColor } = useTheme();
+  const { palette, type, space, radius, size, surface, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
   const f      = item.file || {};
   const ok     = item.status === "success";
@@ -27,7 +27,7 @@ const HistoryRow = ({ item, onSelect }) => {
       width: "100%",
       textAlign: "left",
       padding: `${space.md}px ${space.xl}px`,
-      background: hover ? legacy.rowHoverBg : "transparent",
+      background: hover ? surface.rowHoverBg : "transparent",
       border: "none",
       borderBottom: `1px solid ${palette.border}`,
       cursor: "pointer",
@@ -35,7 +35,7 @@ const HistoryRow = ({ item, onSelect }) => {
     }}
     >
     <div style={{ display: "flex", alignItems: "center", gap: space.sm, marginBottom: space.xxs }}>
-    <LED color={statusColor[item.status] || palette.dim} size={legacy.ledSizeSm} />
+    <LED color={statusColor[item.status] || palette.dim} size={size.ledSizeSm} />
     <span style={{
       color: palette.text,
       fontSize: type.size.base,
@@ -52,6 +52,7 @@ const HistoryRow = ({ item, onSelect }) => {
         padding: `${space.hair}px ${space.xs}px`,
         background: alpha(palette.violet, ALPHA.low),
                 border: `1px solid ${alpha(palette.violet, ALPHA.strong)}`,
+                borderRadius: radius.sm,
                 color: palette.violet,
                 fontSize: type.size.xs,
                 letterSpacing: type.tracking.wide,
@@ -118,7 +119,7 @@ const HistoryRow = ({ item, onSelect }) => {
  * triggers loadMore when the scroll sentinel comes into view.
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -192,6 +193,15 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         style={{
           padding: `${space.hair}px ${space.md}px`,
           background: tab === key ? alpha(color, ALPHA.low) : "transparent",
+              // No borderRadius here, deliberately. These four buttons are a
+              // single segmented control: each drops its right border so the
+              // neighbouring one's left border serves both. Rounding a segment
+              // would round the edges it shares, leaving gaps down the middle of
+              // the strip on any theme with a real radius. Only the outer two
+              // corners of the group should curve, which needs a clipping
+              // wrapper around just the segments — the flex container here also
+              // holds the divider and the RETRY ALL button, so it cannot take
+              // that role without clipping those too.
               border: `1px solid ${tab === key ? color : palette.border}`,
               borderRight: "none",
               color: tab === key ? color : palette.dim,
@@ -203,53 +213,59 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         >
         {label}
         {n > 0 && (
-          <span style={{ marginLeft: 5, color }}>{fmtCount(n)}</span>
+          <span style={{ marginLeft: space.xs, color }}>{fmtCount(n)}</span>
         )}
         </button>
       );
     })}
-    <div style={{ width: 1, background: palette.border }} />
+    {/* Vertical rule between the tab strip and RETRY ALL. alignSelf is
+      * required: the flex parent sets alignItems:"center", which overrides
+      * the default stretch, so with only a width this element had zero
+      * height and never painted at all. */}
+      <div style={{ width: 1, alignSelf: "stretch", background: palette.border }} />
 
-    {tab === "failed" && counts.failed > 0 && !debouncedSearch && (
-      <button
-      onClick={onRetryAll}
-      title="Re-probe and re-queue every failed and cancelled item"
-      style={{
-        marginLeft: 8,
-        padding: `${space.hair}px ${space.md}px`,
-        background: "transparent",
-        border: `1px solid ${palette.amber}`,
-        color: palette.amber,
-        fontSize: type.size.xs,
-        fontFamily: type.family,
-        letterSpacing: type.tracking.wide,
-        cursor: "pointer",
-      }}
-      >
-      ↺ RETRY ALL
-      </button>
-    )}
+      {tab === "failed" && counts.failed > 0 && !debouncedSearch && (
+        <button
+        onClick={onRetryAll}
+        title="Re-probe and re-queue every failed and cancelled item"
+        style={{
+          marginLeft: space.sm,
+          padding: `${space.hair}px ${space.md}px`,
+          background: "transparent",
+          border: `1px solid ${palette.amber}`,
+          borderRadius: radius.sm,
+          color: palette.amber,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.wide,
+          cursor: "pointer",
+        }}
+        >
+        ↺ RETRY ALL
+        </button>
+      )}
 
-    {tab === "dry_run" && counts.dry_run > 0 && !debouncedSearch && (
-      <button
-      onClick={onClearDryRun}
-      title="Discard every dry-run preview — none of these files will be processed"
-      style={{
-        marginLeft: 8,
-        padding: `${space.hair}px ${space.md}px`,
-        background: "transparent",
-        border: `1px solid ${palette.violet}`,
-        color: palette.violet,
-        fontSize: type.size.xs,
-        fontFamily: type.family,
-        letterSpacing: type.tracking.wide,
-        cursor: "pointer",
-      }}
-      >
-      × CLEAR ALL
-      </button>
-    )}
-    </div>
+      {tab === "dry_run" && counts.dry_run > 0 && !debouncedSearch && (
+        <button
+        onClick={onClearDryRun}
+        title="Discard every dry-run preview — none of these files will be processed"
+        style={{
+          marginLeft: space.sm,
+          padding: `${space.hair}px ${space.md}px`,
+          background: "transparent",
+          border: `1px solid ${palette.violet}`,
+          borderRadius: radius.sm,
+          color: palette.violet,
+          fontSize: type.size.xs,
+          fontFamily: type.family,
+          letterSpacing: type.tracking.wide,
+          cursor: "pointer",
+        }}
+        >
+        × CLEAR ALL
+        </button>
+      )}
+      </div>
   );
 
   // ── Panel count badge — unfiltered total, or search result count ──────────
@@ -276,10 +292,10 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       padding: `${space.xxs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${search ? alpha(palette.amber, ALPHA.half) : palette.border}`,
+          borderRadius: radius.sm,
           color: palette.text,
           fontSize: type.size.md,
           fontFamily: type.family,
-          outline: "none",
     }}
     />
     </div>

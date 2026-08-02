@@ -51,11 +51,21 @@ export function useWebSocket(url, onMessage, onReconnect) {
                     try { cbRef.current(JSON.parse(e.data)); } catch (_) {}
                 };
                 ws.onclose = () => {
+                    // The `active` guard matters on teardown. Cleanup clears
+                    // the pending timer and THEN closes the socket, and the
+                    // close fires this handler — so without the guard every
+                    // unmount left a fresh 3-second timer running past the
+                    // clear that was meant to stop it, and called
+                    // setConnected on a component that no longer exists.
+                    // connect() early-returns on !active so nothing ever
+                    // reconnected, which is why this stayed quiet.
+                    if (!active) return;
                     setConnected(false);
                     timerRef.current = setTimeout(connect, 3000);
                 };
                 ws.onerror = () => ws.close();
             } catch (_) {
+                if (!active) return;
                 timerRef.current = setTimeout(connect, 3000);
             }
         }
@@ -67,12 +77,12 @@ export function useWebSocket(url, onMessage, onReconnect) {
             if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send("ping");
         }, 25000);
 
-            return () => {
-                active = false;
-                clearTimeout(timerRef.current);
-                clearInterval(ping);
-                wsRef.current?.close();
-            };
+        return () => {
+            active = false;
+            clearTimeout(timerRef.current);
+            clearInterval(ping);
+            wsRef.current?.close();
+        };
     }, [url]);
 
     return connected;

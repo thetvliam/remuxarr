@@ -67,7 +67,7 @@ const ToggleRow = ({ label, description, checked, onChange, disabled = false }) 
 
 /* ── Tag input for HH:MM times ──────────────────────────────────────────── */
 const TimeTagInput = ({ value = [], onChange }) => {
-  const { palette, type, space } = useTheme();
+  const { palette, type, space, radius } = useTheme();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
 
@@ -111,13 +111,14 @@ const TimeTagInput = ({ value = [], onChange }) => {
           padding: `${space.hair}px ${space.sm}px`,
           background: alpha(palette.amber, ALPHA.low),
                        border: `1px solid ${alpha(palette.amber, ALPHA.heavy)}`,
+                       borderRadius: radius.sm,
                        color: palette.amber,
                        fontSize: type.size.md,
                        fontFamily: type.family,
         }}
         >
         {t}
-        <button
+        <button aria-label="Remove"
         onClick={() => remove(t)}
         style={{
           background: "none", border: "none",
@@ -144,10 +145,10 @@ const TimeTagInput = ({ value = [], onChange }) => {
       padding: `${space.xxs}px ${space.sm}px`,
       background: palette.bg,
       border: `1px solid ${error ? palette.red : palette.border}`,
+      borderRadius: radius.sm,
       color: palette.text,
       fontSize: type.size.base,
       fontFamily: type.family,
-      outline: "none",
     }}
     />
     <button
@@ -156,6 +157,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
       padding: `${space.xxs}px ${space.md}px`,
       background: "transparent",
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       color: palette.dim,
       fontSize: type.size.sm,
       fontFamily: type.family,
@@ -173,7 +175,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 
 /* ── Main component ─────────────────────────────────────────────────────── */
 export const MaintenanceSection = ({ api, toast }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
     scheduled_scan_times:   [],
@@ -230,9 +232,9 @@ export const MaintenanceSection = ({ api, toast }) => {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ value }),
       });
-      if (!r.ok) toast?.("Failed to save setting", palette.red);
+      if (!r.ok) toast?.("Failed to save setting", "error");
     } catch (_) {
-      toast?.("Failed to save setting", palette.red);
+      toast?.("Failed to save setting", "error");
     }
   };
 
@@ -248,13 +250,13 @@ export const MaintenanceSection = ({ api, toast }) => {
           data.removed === 0
           ? "Cleanup complete — no stale entries found"
           : `Cleanup complete — removed ${data.removed} stale ${data.removed === 1 ? "entry" : "entries"}`,
-          palette.blue,
+          "info",
         );
       } else {
-        toast?.("Cleanup failed", palette.red);
+        toast?.("Cleanup failed", "error");
       }
     } catch (_) {
-      toast?.("Cleanup failed", palette.red);
+      toast?.("Cleanup failed", "error");
     } finally {
       setCleanupRunning(false);
     }
@@ -273,14 +275,14 @@ export const MaintenanceSection = ({ api, toast }) => {
         body:    JSON.stringify({ force_probe: true }),
       });
       if (r.ok) {
-        toast?.("Force full rescan started — progress shown in the header", palette.amber);
+        toast?.("Force full rescan started — progress shown in the header", "notice");
       } else if (r.status === 409) {
-        toast?.("A scan is already in progress", palette.red);
+        toast?.("A scan is already in progress", "error");
       } else {
-        toast?.("Failed to start rescan", palette.red);
+        toast?.("Failed to start rescan", "error");
       }
     } catch (_) {
-      toast?.("Failed to start rescan", palette.red);
+      toast?.("Failed to start rescan", "error");
     }
   };
 
@@ -295,10 +297,10 @@ export const MaintenanceSection = ({ api, toast }) => {
         setOrphanedItems(data.items || []);
         setOrphanedChecked(true);
       } else {
-        toast?.("Failed to check for orphaned files", palette.red);
+        toast?.("Failed to check for orphaned files", "error");
       }
     } catch (_) {
-      toast?.("Failed to check for orphaned files", palette.red);
+      toast?.("Failed to check for orphaned files", "error");
     } finally {
       setOrphanedLoading(false);
     }
@@ -337,15 +339,15 @@ export const MaintenanceSection = ({ api, toast }) => {
         const data = await r.json();
         toast?.(
           `Removed ${data.removed} orphaned ${data.removed === 1 ? "entry" : "entries"}`,
-          palette.blue,
+          "info",
         );
         // Re-check rather than assume — reflects the real current state
         await checkOrphaned();
       } else {
-        toast?.("Failed to remove orphaned files", palette.red);
+        toast?.("Failed to remove orphaned files", "error");
       }
     } catch (_) {
-      toast?.("Failed to remove orphaned files", palette.red);
+      toast?.("Failed to remove orphaned files", "error");
     } finally {
       setOrphanedRemoving(false);
     }
@@ -371,6 +373,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       marginBottom: space.xl,
     }}>
     <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
@@ -414,6 +417,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
     }}>
     <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
     Manual Cleanup
@@ -443,6 +447,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${cleanupRunning ? palette.muted : palette.blue}`,
+      borderRadius: radius.sm,
       color: cleanupRunning ? palette.muted : palette.blue,
       fontSize: type.size.sm,
       fontFamily: type.family,
@@ -461,6 +466,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       marginTop: space.xl,
     }}>
     <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
@@ -488,6 +494,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       padding: `${space.xs}px ${space.xl}px`,
       background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
           border: `1px solid ${palette.amber}`,
+          borderRadius: radius.sm,
           color: palette.amber,
           fontSize: type.size.sm,
           fontFamily: type.family,
@@ -506,6 +513,7 @@ export const MaintenanceSection = ({ api, toast }) => {
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       marginTop: space.xl,
     }}>
     <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
@@ -535,6 +543,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       padding: `${space.xs}px ${space.xl}px`,
       background: "transparent",
       border: `1px solid ${orphanedLoading ? palette.muted : palette.blue}`,
+      borderRadius: radius.sm,
       color: orphanedLoading ? palette.muted : palette.blue,
       fontSize: type.size.sm,
       fontFamily: type.family,
@@ -563,6 +572,7 @@ export const MaintenanceSection = ({ api, toast }) => {
         padding: `${space.xs}px ${space.lg}px`,
         background: palette.card,
         border: `1px solid ${palette.border}`,
+        borderRadius: `${radius.sm}px ${radius.sm}px 0 0`,
         borderBottom: "none",
       }}>
       <input type="checkbox" checked={allOrphanedSelected} onChange={toggleAllOrphaned} />
@@ -571,7 +581,7 @@ export const MaintenanceSection = ({ api, toast }) => {
       </span>
       </div>
 
-      <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${palette.border}` }}>
+      <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
       {orphanedItems.map(item => (
         <div
         key={item.id}
@@ -583,7 +593,7 @@ export const MaintenanceSection = ({ api, toast }) => {
           padding: `${space.sm}px ${space.lg}px`,
           borderBottom: `1px solid ${palette.border}`,
           cursor: "pointer",
-          background: orphanedSelected.has(item.id) ? legacy.rowSelectedBg : "transparent",
+          background: orphanedSelected.has(item.id) ? surface.rowSelectedBg : "transparent",
         }}
         >
         <input
@@ -611,6 +621,7 @@ export const MaintenanceSection = ({ api, toast }) => {
           padding: `${space.hair}px ${space.xs}px`,
           background: item.on_disk ? (alpha(palette.blue, ALPHA.low)) : (alpha(palette.dim, ALPHA.low)),
                                   border: `1px solid ${alpha(item.on_disk ? palette.blue : palette.dim, ALPHA.strong)}`,
+                                  borderRadius: radius.sm,
                                   color: item.on_disk ? palette.blue : palette.dim,
                                   fontSize: type.size.xs,
                                   letterSpacing: type.tracking.normal,
@@ -629,6 +640,7 @@ export const MaintenanceSection = ({ api, toast }) => {
         padding: `${space.xs}px ${space.xl}px`,
         background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
                                                      border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
+                                                     borderRadius: radius.sm,
                                                      color: orphanedSelected.size === 0 ? palette.muted : palette.red,
                                                      fontSize: type.size.sm,
                                                      fontFamily: type.family,

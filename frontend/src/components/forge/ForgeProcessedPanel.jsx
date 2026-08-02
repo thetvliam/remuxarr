@@ -22,12 +22,16 @@ export const ForgeProcessedPanel = ({ jobs, onUndo }) => (
 );
 
 const ForgeProcessedRow = ({ job, onUndo }) => {
-    const { palette, type, space, legacy } = useTheme();
+    const { palette, type, space, radius, size, surface } = useTheme();
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
-    const sizeDiff = job.output_size && job.original_size
-    ? job.output_size - job.original_size : null;
+    // `!= null` rather than truthiness: a zero size is a value, not a
+    // missing field, and the truthy check treated it as absent.
+    const sizeDiff =
+        job.output_size != null && job.original_size != null
+            ? job.output_size - job.original_size
+            : null;
 
     const isUndoPending = job.status === "undo_pending";
     const isFailed      = job.status === "failed";
@@ -42,7 +46,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             alignItems: "center",
             gap: space.md,
             padding: `${space.md}px ${space.xl}px`,
-            background: hover ? legacy.rowHoverBg : "transparent",
+            background: hover ? surface.rowHoverBg : "transparent",
             borderBottom: `1px solid ${palette.border}`,
             transition: "background 0.1s",
         }}
@@ -54,7 +58,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             : palette.green
         }
         pulse={isUndoPending}
-        size={legacy.ledSizeSm}
+        size={size.ledSizeSm}
         />
 
         {/* File info */}
@@ -76,11 +80,19 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             {fmtSize(job.original_size)}
             <span style={{ color: palette.dim }}> → </span>
             {fmtSize(job.output_size)}
+            {/* Signed. This read (+…) over an absolute value regardless of
+              * direction, so a file that came out smaller was reported as
+              * having grown. Adding AC3 almost always grows a file, which is
+              * why nobody hit it — but the variable is called sizeDiff and
+              * the label said growth. Green when the file shrank, amber when
+              * it grew, muted when it landed exactly the same. */}
             <span style={{
-                color: palette.amber,
+                color: sizeDiff < 0 ? palette.green
+                     : sizeDiff > 0 ? palette.amber
+                     : palette.muted,
                 marginLeft: space.xxs,
             }}>
-            (+{fmtSize(Math.abs(sizeDiff))})
+            ({sizeDiff > 0 ? "+" : sizeDiff < 0 ? "−" : "±"}{fmtSize(Math.abs(sizeDiff))})
             </span>
             </span>
         )}
@@ -95,7 +107,11 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
             </span>
         )}
 
-        {!sizeDiff && !isFailed && !isUndoFailed && (
+        {/* Mirrors the `!== null` test above. `!sizeDiff` was also true for a
+          * zero delta, so a file that came out exactly the same size showed
+          * neither the delta nor a timestamp in one branch and both in the
+          * other. */}
+        {sizeDiff === null && !isFailed && !isUndoFailed && (
             <span style={{ color: palette.dim, fontSize: type.size.sm }}>{fmtRel(job.completed_at)}</span>
         )}
         </div>
@@ -109,15 +125,16 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
                 padding: `${space.xxs}px ${space.lg}px`,
                 flexShrink: 0,
                 background: hover ? alpha(palette.red, ALPHA.low) : "transparent",
-                                                                        border: `1px solid ${hover ? palette.red : palette.border}`,
-                                                                        color: hover ? palette.red : palette.dim,
-                                                                        fontSize: type.size.xs,
-                                                                        fontFamily: type.family,
-                                                                        fontWeight: type.weight.bold,
-                                                                        letterSpacing: type.tracking.wide,
-                                                                        cursor: "pointer",
-                                                                        transition: "all 0.15s",
-                                                                        whiteSpace: "nowrap",
+                border: `1px solid ${hover ? palette.red : palette.border}`,
+                borderRadius: radius.sm,
+                color: hover ? palette.red : palette.dim,
+                fontSize: type.size.xs,
+                fontFamily: type.family,
+                fontWeight: type.weight.bold,
+                letterSpacing: type.tracking.wide,
+                cursor: "pointer",
+                transition: "all 0.15s",
+                whiteSpace: "nowrap",
             }}
             >
             {job.status === "undo_failed" ? "↺ RETRY UNDO" : "↺ UNDO AC3"}

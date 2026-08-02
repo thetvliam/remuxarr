@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useTheme, alpha, ALPHA } from "../../theme";
+import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { LED } from "../atoms/LED";
 import { ApiBar } from "./ApiBar";
 
@@ -36,7 +36,7 @@ const NAV_ITEMS = [
 const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
 
 const Logo = ({ variant = "mark", height = 24 }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, surface } = useTheme();
   const [failed, setFailed] = useState(false);
 
   if (failed) {
@@ -47,7 +47,7 @@ const Logo = ({ variant = "mark", height = 24 }) => {
         background: palette.amber,
         display: "flex", alignItems: "center", justifyContent: "center",
       }}>
-      <span style={{ color: legacy.logoInk, fontSize: type.size.base, fontWeight: type.weight.black }}>R</span>
+      <span style={{ color: surface.logoInk, fontSize: type.size.base, fontWeight: type.weight.black }}>R</span>
       </div>
       {variant === "full" && (
         <span style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.bold, letterSpacing: type.tracking.max }}>
@@ -86,7 +86,7 @@ export const AppHeader = ({
   wsConnected,
   isMobile,
 }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, radius, size, surface } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -102,7 +102,7 @@ export const AppHeader = ({
   if (!isMobile) {
     return (
       <header style={{
-        height: legacy.headerHeight,
+        height: size.headerHeight,
         display: "flex",
         alignItems: "center",
         padding: `0 ${space.xxl}px`,
@@ -121,14 +121,18 @@ export const AppHeader = ({
         <button
         key={n.k}
         onClick={() => setPage(n.k)}
+        // Which page is current was communicated only by colour and an
+        // underline. aria-current="page" is how that reaches anyone not
+        // seeing either, and it costs one attribute.
+        aria-current={page === n.k ? "page" : undefined}
         style={{
-          height: legacy.headerHeight,
+          height: size.headerHeight,
           padding: `0 ${space.xl}px`,
           background: "transparent",
           border: "none",
           borderBottom: page === n.k
-          ? `${legacy.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
-          : `${legacy.accentThin}px solid transparent`,
+          ? `${size.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
+          : `${size.accentThin}px solid transparent`,
           color: page === n.k
           ? (n.alertable && reviewCount > 0 ? palette.yellow : palette.amber)
           : palette.dim,
@@ -155,6 +159,11 @@ export const AppHeader = ({
       {/* ⚙ API URL */}
       <button
       onClick={() => setShowApiBar(v => !v)}
+      // title is a tooltip, not an accessible name: it is announced
+      // inconsistently and never appears on touch. aria-label is what a
+      // screen reader reads, and aria-expanded says whether the bar is open.
+      aria-label={`API URL: ${api}`}
+      aria-expanded={showApiBar}
       title={`API: ${api}`}
       style={{
         background: "none", border: "none",
@@ -169,6 +178,7 @@ export const AppHeader = ({
         padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
         background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+            borderRadius: radius.sm,
             color: dryRun ? palette.yellow : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
       }}>
@@ -185,6 +195,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+            borderRadius: radius.sm,
             color: autoStart ? palette.dim : palette.blue,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
         }}
@@ -200,6 +211,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+            borderRadius: radius.sm,
             color: workerPaused ? palette.yellow : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
             animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
@@ -215,6 +227,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
           background: "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
+          borderRadius: radius.sm,
           color: scanning ? palette.red : palette.dim,
           fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
           cursor: "pointer",
@@ -226,7 +239,7 @@ export const AppHeader = ({
 
         {/* WS status */}
         <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
-        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
+        <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={size.ledSize} />
         <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
         {wsConnected ? "LIVE" : "OFFLINE"}
         </span>
@@ -240,14 +253,14 @@ export const AppHeader = ({
     <div style={{ position: "relative", flexShrink: 0 }}>
     {/* Row 1 — always visible */}
     <header style={{
-      height: legacy.headerHeight,
+      height: size.headerHeight,
       display: "flex",
       alignItems: "center",
       padding: `0 ${space.xl}px`,
       background: palette.card,
       borderBottom: `1px solid ${palette.border}`,
       gap: space.sm,
-      zIndex: 600,
+      zIndex: LAYER.header,
       position: "relative",
     }}>
     {/* Logo mark only — no wordmark, saves space */}
@@ -279,6 +292,7 @@ export const AppHeader = ({
           padding: `${space.xxs}px ${space.sm}px`,
           background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
           border: `1px solid ${scanning ? palette.red : palette.border}`,
+          borderRadius: radius.sm,
           color: scanning ? palette.red : palette.dim,
           fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
           letterSpacing: type.tracking.normal, cursor: "pointer",
@@ -292,11 +306,13 @@ export const AppHeader = ({
           </button>
 
           {/* WS status — compact */}
-          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={legacy.ledSize} />
+          <LED color={wsConnected ? palette.green : palette.red} pulse={wsConnected} size={size.ledSize} />
 
           {/* ⚙ API */}
           <button
           onClick={() => setShowApiBar(v => !v)}
+          aria-label={`API URL: ${api}`}
+          aria-expanded={showApiBar}
           style={{
             background: "none", border: "none",
             color: showApiBar ? palette.amber : palette.dim,
@@ -308,6 +324,8 @@ export const AppHeader = ({
           {/* ☰ Hamburger */}
           <button
           onClick={() => setDrawerOpen(v => !v)}
+          aria-label={drawerOpen ? "Close menu" : "Open menu"}
+          aria-expanded={drawerOpen}
           style={{
             background: "none", border: "none",
             color: drawerOpen ? palette.amber : palette.dim,
@@ -332,7 +350,7 @@ export const AppHeader = ({
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
                 position: "relative",
-                zIndex: 550,
+                zIndex: LAYER.headerRow,
               }}>
               <ApiBar
               current={api}
@@ -350,8 +368,8 @@ export const AppHeader = ({
               style={{
                 position: "fixed",
                 inset: 0,
-                top: legacy.headerHeight,
-                zIndex: 490,
+                top: size.headerHeight,
+                zIndex: LAYER.drawerScrim,
                 background: "transparent",
               }}
               />
@@ -364,8 +382,8 @@ export const AppHeader = ({
                 right: 0,
                 background: palette.card,
                 borderBottom: `1px solid ${palette.border}`,
-                zIndex: 500,
-                boxShadow: legacy.drawerShadow,
+                zIndex: LAYER.drawer,
+                boxShadow: surface.drawerShadow,
               }}>
               {/* Nav links */}
               {NAV_ITEMS.map(n => {
@@ -382,7 +400,7 @@ export const AppHeader = ({
                     padding: `${space.lg}px ${space.xxl}px`,
                     background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
                         border: "none",
-                        borderLeft: `${legacy.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
+                        borderLeft: `${size.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
                         borderBottom: `1px solid ${palette.border}`,
                         color: active ? (alert ? palette.yellow : palette.amber) : palette.dim,
                         fontSize: type.size.md,
@@ -406,6 +424,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
+                            borderRadius: radius.sm,
                             color: dryRun ? palette.yellow : palette.dim,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",
@@ -421,6 +440,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
                             border: `1px solid ${autoStart ? palette.border : palette.blue}`,
+                            borderRadius: radius.sm,
                             color: autoStart ? palette.dim : palette.blue,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",
@@ -436,6 +456,7 @@ export const AppHeader = ({
                 padding: `${space.md}px ${space.xl}px`, textAlign: "left",
                 background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
                             border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
+                            borderRadius: radius.sm,
                             color: workerPaused ? palette.yellow : palette.dim,
                             fontSize: type.size.sm, fontFamily: type.family,
                             letterSpacing: type.tracking.wide, cursor: "pointer",

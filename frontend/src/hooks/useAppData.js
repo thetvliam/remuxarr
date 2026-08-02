@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { DEFAULT_API } from "../constants";
-import { useTheme } from "../theme";
 import { basename } from "../utils";
 import { useWebSocket } from "./useWebSocket";
 import { useBreakpoint } from "./useBreakpoint";
@@ -35,7 +34,6 @@ const _pageFromHash = () => {
  *  nothing else in the codebase needs to change.
  * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
-  const { palette, legacy } = useTheme();
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
   // read the current page without a stale closure.
@@ -74,6 +72,21 @@ export function useAppData() {
   // which can touch multiple statuses at once) — every tab refreshes then.
   const [historyRefreshKey, setHistoryRefreshKey] = useState({ key: 0, status: null });
 
+  // Incremented whenever the audio/subtitle language flag tables may have
+  // changed — the Review page's two language sections fetch their own
+  // paginated lists and had no way to learn that.
+  //
+  // Those flags are written inside _process_file, so they change on a scan,
+  // on a webhook-queued file, and on a job finishing. None of those bumped
+  // anything the sections were watching: each owned a private refreshKey it
+  // incremented only after its OWN actions. A scan could therefore surface
+  // twenty new mismatches and the section would keep showing the list it
+  // fetched on mount until the page was navigated away from and back.
+  //
+  // Deliberately not bumped on job_progress or scan_progress — those fire
+  // continuously and would refetch the list on every tick.
+  const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+
   // ── Forge tab state ──────────────────────────────────────────────────────
   const [forgeActive,    setForgeActive]    = useState(null);
   const [forgeProcessed, setForgeProcessed] = useState([]);
@@ -94,7 +107,7 @@ export function useAppData() {
       "",
       `#${initial}`,
     );
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ── Routing: popstate (browser/Android back button) ─────────────────────
    *    Handles two cases:
@@ -177,55 +190,24 @@ export function useAppData() {
     }
   }, []);
 
-  /* ── Global CSS injection ─────────────────────────────────────────────── */
-  /* Split in two on purpose. The resets and keyframes never change, so they
-   * mount once. The scrollbar colours come from the palette, so they have to
-   * be re-applied when the theme switches — as one mount-only effect they
-   * stayed on whichever theme was active at load. */
-  useEffect(() => {
-    // Theme-independent resets + keyframes. Two things are deliberately
-    // absent: the webfont, which varies per theme, and the page background.
-    // Both belong to ThemeProvider, which already re-applies them on every
-    // theme change.
-    const style       = document.createElement("style");
-    style.textContent = `
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; }
-    ::-webkit-scrollbar-track  { background: transparent; }
-    @keyframes ledPulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
-    @keyframes toastIn  { from{opacity:0;transform:translateX(6px)} to{opacity:1;transform:none} }
-    @keyframes modalIn  { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
-    `;
-    document.head.appendChild(style);
-    document.title = "Remuxarr";
-    // Every other appendChild in this file has a matching removal; this one
-    // did not. StrictMode runs effects twice in development, so it left a
-    // duplicate <style> in <head> on every dev load, and it would leak again
-    // on any future remount of this hook.
-    return () => { document.head.removeChild(style); };
-  }, []);
-
-  /* ── Theme-dependent global CSS ───────────────────────────────────────── */
-  /* Scrollbars only. The page background used to be set here as well as by
-   * ThemeProvider, which sets it inline on <body>. Inline always wins, so
-   * this rule never actually did anything — but two owners for one value is
-   * how they drift, and the dead one is the one someone edits when the
-   * background looks wrong. */
-  useEffect(() => {
-    const style       = document.createElement("style");
-    style.textContent = `
-    ::-webkit-scrollbar        { width: ${legacy.scrollbarW}px; }
-    ::-webkit-scrollbar-thumb  { background: ${palette.border}; }
-    `;
-    document.head.appendChild(style);
-    return () => { document.head.removeChild(style); };
-  }, [palette.border, legacy.scrollbarW]);
-
   /* ── Toast helper ─────────────────────────────────────────────────────── */
-  const toast = useCallback((msg, color) => {
+  /* The second argument is a TONE NAME — "error", "success", "notice" — not a
+   * colour. Toasts resolves it against the theme at render.
+   *
+   * The parameter and the stored key have to agree with what Toasts reads.
+   * They did not: callers were updated to pass tone names and the renderer
+   * was updated to read `tone`, but this function kept storing the value
+   * under `color`. `t.tone` was therefore undefined on every toast and every
+   * one fell back to the accent, so a failed job and a successful save
+   * looked identical. Nothing failed loudly — a lookup miss just returns the
+   * fallback, which is a real colour.
+   *
+   * The value is only ever a key into toastTone, so passing a hex here
+   * degrades to the fallback rather than rendering that colour. */
+  const toast = useCallback((msg, tone) => {
     const id = Date.now() + Math.random();
     setToasts(t => {
-      const next = [...t, { id, msg, color }];
+      const next = [...t, { id, msg, tone }];
       return next.slice(-8);
     });
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
@@ -319,17 +301,21 @@ export function useAppData() {
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
               : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
-                  msg.status === "success" ? palette.green
-                  : msg.status === "dry_run" ? palette.violet
-                  : palette.red,
+                  msg.status === "success" ? "success"
+                  : msg.status === "dry_run" ? "preview"
+                  : "error",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "file_queued":
-            toast(`Queued: ${basename(msg.file_path)}`, palette.blue);
+            toast(`Queued: ${basename(msg.file_path)}`, "info");
             fetchAll();
+            // A webhook-queued file goes through _process_file like any
+            // scanned one, so it can raise a language flag too.
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "scan_started":
@@ -351,10 +337,11 @@ export function useAppData() {
               (msg.cancelled ? "Scan stopped — " : "Scan complete — ") +
               `${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
               (msg.removed ? `, ${msg.removed} removed` : ""),
-                  palette.amber,
+                  "notice",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "cleanup_completed":
@@ -362,10 +349,11 @@ export function useAppData() {
               msg.removed === 0
               ? "Cleanup complete — no stale entries found"
               : `Cleanup complete — ${msg.removed} stale ${msg.removed === 1 ? "entry" : "entries"} removed`,
-              palette.blue,
+              "info",
             );
             fetchAll();
             setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            setReviewRefreshKey(k => k + 1);
             break;
 
           case "forge_job_started":
@@ -383,30 +371,21 @@ export function useAppData() {
             toast(
               `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
-                  msg.status === "success" ? palette.green
-                  : msg.status === "undone" ? palette.blue
-                  : palette.red,
+                  msg.status === "success" ? "success"
+                  : msg.status === "undone" ? "info"
+                  : "error",
             );
             fetchForge();
             setForgeRefreshKey(k => k + 1);
             break;
         }
-        /* `palette` and `api` are read in the body above and so belong here.
-         * They were missing, and the omission was silent: `fetchAll` and
-         * `fetchForge` only change when `api` changes and `toast` never
-         * changes, so this callback was rebuilt on an api change and at no
-         * other time. In particular it was never rebuilt on a theme switch,
-         * leaving every toast raised from a WebSocket event coloured from
-         * whichever palette was active when the socket handler was last
-         * built. Between the two current themes that is a near-identical
-         * green; against a light palette it would be an unreadable toast.
-         *
-         * The bug arrived with the theme migration, which replaced a static
-         * `C.green` — a module constant, correctly absent from this array —
-         * with a context value that does change. Nothing flagged the
-         * difference, which is why the lint rule that would have is now
-         * installed. */
-      }, [fetchAll, fetchForge, toast, palette, api]);
+        /* No theme value appears in this callback any more — the toasts it
+         * raises name a tone, and the colour is resolved by Toasts at render.
+         * That is the point of the change: a dependency array cannot go stale
+         * on a value it never captures. `api` stays because the body reads it
+         * directly; it was missing before, masked only by `fetchAll` happening
+         * to close over the same value. */
+      }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
@@ -425,6 +404,7 @@ export function useAppData() {
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
         historyRefreshKey, setHistoryRefreshKey,
+        reviewRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,

@@ -3,8 +3,14 @@
  ═ ═*═════════════════════════════════════════════════════════════════════════ */
 
 export const fmtSize = (bytes) => {
-  if (!bytes) return "—";
+  // `== null` rather than a falsy check: 0 is a real size and should read
+  // as "0 B", not as the em dash this file uses to mean "unknown". A remux
+  // that saved nothing is an ordinary outcome, and rendering it the same as
+  // missing data hid the difference between "saved nothing" and "no idea".
+  if (bytes == null) return "—";
   const b = parseInt(bytes);
+  // parseInt of a non-numeric string is NaN, which formats as "NaN B".
+  if (Number.isNaN(b)) return "—";
   if (b < 1024)      return `${b} B`;
   if (b < 1024**2)   return `${(b / 1024).toFixed(1)} KB`;
   if (b < 1024**3)   return `${(b / 1024**2).toFixed(2)} MB`;
@@ -12,7 +18,8 @@ export const fmtSize = (bytes) => {
 };
 
 export const fmtDur = (secs) => {
-  if (!secs) return "—";
+  // Same reasoning as fmtSize: a zero-length track is a fact, not a gap.
+  if (secs == null || Number.isNaN(Number(secs))) return "—";
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   const s = Math.floor(secs % 60);
@@ -91,6 +98,9 @@ export const formatBytesSaved = (bytesSaved, bytesSavedPct) => {
     // 5 KB on 300 MB ≈ 0.002%) reaches here as exactly 0. A previous
     // check of `bytesSavedPct > 0` therefore let those through as "0%",
     // which read as "saved nothing" when bytes were in fact saved.
-    pctDisplay: (isPositive && bytesSavedPct < 1) ? "<1" : bytesSavedPct,
+    // `?? 0` because both call sites interpolate this straight into a
+    // template with a % sign after it — HistoryPanel and DetailModal — so a
+    // null from the backend rendered literally as "null%".
+    pctDisplay: (isPositive && bytesSavedPct < 1) ? "<1" : (bytesSavedPct ?? 0),
   };
 };

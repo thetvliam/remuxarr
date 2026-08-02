@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useTheme, alpha, ALPHA } from "./theme";
+import { useState, useEffect, useRef } from "react";
+import { useTheme, alpha, ALPHA, LAYER } from "./theme";
 import { useAppData } from "./hooks/useAppData";
 import { useActions } from "./hooks/useActions";
 import { Toasts } from "./components/layout/Toasts";
@@ -14,7 +14,42 @@ import { DetailModal } from "./components/DetailModal";
 
 /* ── Unsaved-changes navigation guard modal ─────────────────────────────── */
 const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, radius, surface } = useTheme();
+  const panelRef = useRef(null);
+
+  /* This is the app's only blocking dialog and had none of the semantics
+   * of one — no role, no Escape, and no focus handling. Assistive
+   * technology announced it as an anonymous div, and a keyboard user was
+   * left with focus still on whatever they were editing behind it, able to
+   * tab straight back into a form the dialog exists to stop them leaving.
+   * DetailModal already had the Escape handler; this one did not.
+   *
+   * Escape maps to Keep Editing, not Discard: dismissing a dialog should
+   * never be the destructive branch. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); onKeep(); return; }
+      if (e.key !== "Tab") return;
+      // Focus trap. Without it Tab walks out of the dialog and into the page
+      // behind, which for a modal is the one thing it must not do.
+      const focusable = panelRef.current?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (!focusable?.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    // Move focus in, and put it back where it came from on close, so
+    // dismissing the dialog returns the user to what they were doing.
+    const previouslyFocused = document.activeElement;
+    panelRef.current?.querySelector("button")?.focus();
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previouslyFocused?.focus?.();
+    };
+  }, [onKeep]);
+
   return (
     <div
     onClick={onKeep}
@@ -24,20 +59,25 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
       // block navigation, so anything rendering over it would defeat it —
       // at z-index 100 the mobile header stayed tappable on top of the
       // backdrop, letting nav buttons be used while the guard was open.
-      position: "fixed", inset: 0, zIndex: 1100,
-      background: legacy.guardScrimBg,
+      position: "fixed", inset: 0, zIndex: LAYER.guardModal,
+      background: surface.guardScrimBg,
       display: "flex", alignItems: "center", justifyContent: "center", padding: space.xxl,
     }}
     >
     <div
+    ref={panelRef}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="unsaved-changes-title"
     onClick={e => e.stopPropagation()}
     style={{
       width: "100%", maxWidth: 400,
       background: palette.card, border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
       padding: `${space.huge}px ${space.huge}px ${space.xxl}px`,
     }}
     >
-    <div style={{ color: palette.amber, fontSize: type.size.sm, letterSpacing: type.tracking.ultra, fontWeight: type.weight.bold, marginBottom: space.md }}>
+    <div id="unsaved-changes-title" style={{ color: palette.amber, fontSize: type.size.sm, letterSpacing: type.tracking.ultra, fontWeight: type.weight.bold, marginBottom: space.md }}>
     UNSAVED CHANGES
     </div>
     <div style={{ color: palette.text, fontSize: type.size.lg, lineHeight: type.leading.normal, marginBottom: space.xxl }}>
@@ -49,6 +89,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     style={{
       padding: `${space.sm}px ${space.xl}px`, background: "transparent",
       border: `1px solid ${palette.muted}`, color: palette.text,
+      borderRadius: radius.sm,
       fontSize: type.size.sm, fontFamily: type.family, fontWeight: type.weight.bold, letterSpacing: type.tracking.normal, cursor: "pointer",
     }}
     >
@@ -59,6 +100,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     style={{
       padding: `${space.sm}px ${space.xl}px`, background: alpha(palette.red, ALPHA.medium),
           border: `1px solid ${palette.red}`, color: palette.red,
+          borderRadius: radius.sm,
           fontSize: type.size.sm, fontFamily: type.family, fontWeight: type.weight.bold, letterSpacing: type.tracking.normal, cursor: "pointer",
     }}
     >
@@ -74,13 +116,16 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
  *  ROOT APP
  * ═ *══════════════════════════════════════════════════════════════════════════ */
 export default function App() {
-  const { palette, type, space, legacy } = useTheme();
+  const { palette, type, space, size } = useTheme();
   const data = useAppData();
   const { isMobile } = data;
   const [queueTab, setQueueTab] = useState("queue"); // mobile only
   const {
     api, setApi, page, setPage,
-    activeJobs, queue, review,
+    // `queue` is deliberately not taken: QueuePanel renders pendingQueue,
+    // the same list with in-progress items filtered out. Destructuring the
+    // raw one alongside it invited picking the wrong variable.
+    activeJobs, review,
     modal, setModal,
     toasts,
     dryRun,
@@ -91,6 +136,7 @@ export default function App() {
     forgeActive, forgeProcessed, forgeRefreshKey,
       toast, fetchAll,
       pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey,
+      reviewRefreshKey,
   } = data;
 
   const {
@@ -197,7 +243,7 @@ export default function App() {
                     background: "transparent",
                     border: "none",
                     borderBottom: queueTab === k
-                    ? `${legacy.accentThin}px solid ${palette.amber}` : `${legacy.accentThin}px solid transparent`,
+                    ? `${size.accentThin}px solid ${palette.amber}` : `${size.accentThin}px solid transparent`,
                     color: queueTab === k ? palette.amber : palette.dim,
                     fontSize: type.size.xs,
                     fontFamily: type.family,
@@ -267,7 +313,7 @@ export default function App() {
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} />
+            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} />
             </div>
           )}
 

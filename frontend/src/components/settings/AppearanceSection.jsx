@@ -54,7 +54,7 @@ const ThemePreview = ({ t }) => (
         borderBottom: i === 0 ? `1px solid ${t.palette.border}` : "none",
       }}>
         <span style={{
-          width: t.legacy.ledSizeSm, height: t.legacy.ledSizeSm,
+          width: t.size.ledSizeSm, height: t.size.ledSizeSm,
           borderRadius: t.radius.full, background: c, flexShrink: 0,
         }} />
         <span style={{
@@ -68,6 +68,7 @@ const ThemePreview = ({ t }) => (
           padding: `${t.space.hair}px ${t.space.xs}px`,
           background: alpha(t.palette.amber, ALPHA.low),
           border: `1px solid ${alpha(t.palette.amber, ALPHA.strong)}`,
+          borderRadius: t.radius.sm,
           color: t.palette.amber,
           fontSize: t.type.size.xs,
           letterSpacing: t.type.tracking.wide,

@@ -6,9 +6,9 @@ import { useTheme } from "../../theme";
 // about, since several components take a `type` prop. The external API is
 // unchanged: callers still write <ActionBadge type={...} />.
 export const ActionBadge = ({ type: actionType }) => {
-    const { palette, type, space, radius, legacy, actionCfg } = useTheme();
+    const { palette, type, space, radius, surface, actionCfg } = useTheme();
     const cfg = actionCfg[actionType] || {
-        bg: legacy.badgeFallbackBg,
+        bg: surface.badgeFallbackBg,
         border: palette.border,
         text: palette.dim,
         label: (actionType || "?").toUpperCase(),

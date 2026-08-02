@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
@@ -11,16 +12,34 @@ import { PanelHeader } from "../layout/PanelHeader";
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
  ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
-const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
-    const { palette, type, space, radius, legacy, statusColor } = useTheme();
+const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
+    const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
     const f = item.file || {};
 
     const stopProp = (fn) => (e) => { e.stopPropagation(); fn(); };
 
+    /* Revealed on hover to keep the row quiet — but only where hovering is
+     * possible. On a touch device there is no hover, so these sat at
+     * opacity 0 permanently and the two per-row actions could not be
+     * reached at all. Worse than invisible: opacity 0 still takes pointer
+     * events, so they remained tappable, two unlabelled hit targets inside
+     * the row's own tap area. A stray tap dismissed a queue item or
+     * reordered the queue with nothing on screen to explain it.
+     *
+     * hasHover is a capability, not a width — a tablet with a trackpad
+     * hovers and a narrow desktop window hovers, so isMobile is the wrong
+     * question. pointerEvents follows visibility so an invisible control
+     * is never clickable either. */
+    const shown = hover || !hasHover;
     const actionBtn = (label, color, fn, title) => (
         <button
         onClick={stopProp(fn)}
+        // title is a tooltip and never surfaces on touch; the visible label
+        // is "×" on one of these, which reads as nothing useful aloud. The
+        // title text is already a full description, so it doubles as the
+        // accessible name.
+        aria-label={title}
         title={title}
         style={{
             background: "none",
@@ -33,7 +52,8 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
                                                     padding: `${space.hair}px ${space.xs}px`,
                                                     cursor: "pointer",
                                                     flexShrink: 0,
-                                                    opacity: hover ? 1 : 0,
+                                                    opacity: shown ? 1 : 0,
+                                                    pointerEvents: shown ? "auto" : "none",
                                                     transition: "opacity 0.1s",
         }}
         >
@@ -42,8 +62,26 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
     );
 
     return (
-        <button
+        /* A div with button semantics rather than a real <button>, because
+         * this row contains its own ↑ TOP and × buttons. A <button> may not
+         * contain interactive content: the parser is entitled to hoist the
+         * inner buttons out, and the outer button swallows their focus
+         * semantics, so keyboard users could not reach them at all.
+         * stopPropagation fixes the click bubbling but not the structure.
+         *
+         * role + tabIndex + the Enter/Space handler restore what the real
+         * element gave for free. Space is preventDefault'ed because its
+         * default action on a focused element is to scroll the page. */
+        <div
+        role="button"
+        tabIndex={0}
         onClick={() => onSelect(item)}
+        onKeyDown={e => {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(item);
+            }
+        }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
@@ -51,7 +89,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
             width: "100%",
             textAlign: "left",
             padding: `${space.md}px ${space.xl}px`,
-            background: hover ? legacy.rowHoverBg : "transparent",
+            background: hover ? surface.rowHoverBg : "transparent",
             border: "none",
             borderBottom: `1px solid ${palette.border}`,
             cursor: "pointer",
@@ -66,7 +104,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         <LED
         color={statusColor[item.status] || palette.dim}
         pulse={false}
-        size={legacy.ledSizeSm}
+        size={size.ledSizeSm}
         />
         <span style={{
             color: palette.text,
@@ -103,7 +141,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
         }}>
         {item.reason || "—"}
         </div>
-        </button>
+        </div>
     );
 };
 
@@ -112,6 +150,9 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize }) => {
  ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
+    // Resolved once here rather than per row: a long queue would otherwise
+    // register a media-query listener for every visible item.
+    const { hasHover } = useBreakpoint();
     const [search,     setSearch]     = useState("");
     const [clearArmed, setClearArmed] = useState(false);
 
@@ -122,11 +163,20 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     )
     : items;
 
+    // Auto-disarm after 3 seconds if the user doesn't confirm. Keyed on the
+    // armed flag with cleanup, matching DangerZone and MaintenanceSection —
+    // a bare setTimeout in the handler stacked one timer per click and each
+    // survived unmount, so a timer from a previous mount could disarm a
+    // freshly armed button. Same pattern DangerZone's comment calls critical.
+    useEffect(() => {
+        if (!clearArmed) return;
+        const t = setTimeout(() => setClearArmed(false), 3000);
+        return () => clearTimeout(t);
+    }, [clearArmed]);
+
     const handleClear = () => {
         if (!clearArmed) {
             setClearArmed(true);
-            // Auto-disarm after 3 seconds if user doesn't confirm
-            setTimeout(() => setClearArmed(false), 3000);
         } else {
             setClearArmed(false);
             onClear();
@@ -182,7 +232,6 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
                 color: palette.text,
                 fontSize: type.size.md,
                 fontFamily: type.family,
-                outline: "none",
             }}
             />
             </div>
@@ -201,6 +250,7 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
                 onSelect={onSelect}
                 onDismiss={onDismiss}
                 onPrioritize={onPrioritize}
+                hasHover={hasHover}
                 />
             ))
         )}
