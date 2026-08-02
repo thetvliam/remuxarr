@@ -9,7 +9,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * Self-contained: search, multi-select, and two bulk actions. Distinct
  * from the manual-review list above it — files here are already fully
  * processed and playable; this is purely an optional correction workflow.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKey, toast, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, surface } = useTheme();
     const [search,          setSearch]          = useState("");
@@ -64,317 +64,323 @@ export const AudioLanguageReviewSection = ({ api, onRefresh, setHistoryRefreshKe
         if (raw?.languages) setFacets(raw.languages);
     }, [raw]);
 
-    // A selected language that the current search has no files for would
-    // otherwise vanish from the options, and a <select> whose value is not
-    // among its options renders blank — leaving the filter applied with the
-    // control showing no sign of it. Keep it listed at zero so the state is
-    // always visible and always clearable.
-    const languageOptions = language && !facets.some(f => f.language === language)
+        // A selected language that the current search has no files for would
+        // otherwise vanish from the options, and a <select> whose value is not
+        // among its options renders blank — leaving the filter applied with the
+        // control showing no sign of it. Keep it listed at zero so the state is
+        // always visible and always clearable.
+        const languageOptions = language && !facets.some(f => f.language === language)
         ? [...facets, { language, count: 0 }]
         : facets;
 
-    // Clear selection whenever the underlying list changes shape (new
-    // search, new language filter, or a refresh after an action) — stale
-    // selected IDs pointing at items no longer shown would be confusing to
-    // act on, and the bulk actions would apply to files that are no longer
-    // on screen.
-    useEffect(() => {
-        setSelected(new Set());
-    }, [debouncedSearch, language, combinedKey]);
+        // Clear selection whenever the underlying list changes shape (new
+        // search, new language filter, or a refresh after an action) — stale
+        // selected IDs pointing at items no longer shown would be confusing to
+        // act on, and the bulk actions would apply to files that are no longer
+        // on screen.
+        useEffect(() => {
+            setSelected(new Set());
+        }, [debouncedSearch, language, combinedKey]);
 
-    useEffect(() => {
-        const sentinel = sentinelRef.current;
-        const scroll   = scrollRef.current;
-        if (!sentinel || !scroll || !hasMore) return;
-        const observer = new IntersectionObserver(
-            ([entry]) => { if (entry.isIntersecting) loadMore(); },
-                                                  { root: scroll, threshold: 0 },
-        );
-        observer.observe(sentinel);
-        return () => observer.disconnect();
-    }, [hasMore, loading, loadMore]);
+        useEffect(() => {
+            const sentinel = sentinelRef.current;
+            const scroll   = scrollRef.current;
+            if (!sentinel || !scroll || !hasMore) return;
+            const observer = new IntersectionObserver(
+                ([entry]) => { if (entry.isIntersecting) loadMore(); },
+                                                      { root: scroll, threshold: 0 },
+            );
+            observer.observe(sentinel);
+            return () => observer.disconnect();
+        }, [hasMore, loading, loadMore]);
 
-    const toggleOne = (fileId) => {
-        setSelected(prev => {
-            const next = new Set(prev);
-            if (next.has(fileId)) next.delete(fileId);
-            else next.add(fileId);
-            return next;
-        });
-    };
-
-    const allLoadedSelected = items.length > 0 && items.every(i => selected.has(i.file_id));
-    const toggleAll = () => {
-        setSelected(allLoadedSelected ? new Set() : new Set(items.map(i => i.file_id)));
-    };
-
-    const applyLanguage = async () => {
-        if (selected.size === 0) return;
-        const lang = targetLang.trim().toLowerCase();
-        if (!lang) return;
-        setBusy(true);
-        try {
-            // Both branches matter. Without them a 500, a 422 or a dropped
-            // connection produced exactly the success path: the list refreshed,
-            // the selection cleared, and the user was left believing every
-            // selected file had been re-tagged.
-            const r = await fetch(`${api}/api/audio-language-review/apply`, {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ file_ids: Array.from(selected), target_language: lang }),
+        const toggleOne = (fileId) => {
+            setSelected(prev => {
+                const next = new Set(prev);
+                if (next.has(fileId)) next.delete(fileId);
+                else next.add(fileId);
+                return next;
             });
-            if (!r.ok) {
-                toast?.(`Failed to set audio language on ${selected.size} file${selected.size === 1 ? "" : "s"}`, "error");
-                return;
+        };
+
+        const allLoadedSelected = items.length > 0 && items.every(i => selected.has(i.file_id));
+        const toggleAll = () => {
+            setSelected(allLoadedSelected ? new Set() : new Set(items.map(i => i.file_id)));
+        };
+
+        const applyLanguage = async () => {
+            if (selected.size === 0) return;
+            const lang = targetLang.trim().toLowerCase();
+            if (!lang) return;
+            setBusy(true);
+            try {
+                // Both branches matter. Without them a 500, a 422 or a dropped
+                // connection produced exactly the success path: the list refreshed,
+                // the selection cleared, and the user was left believing every
+                // selected file had been re-tagged.
+                const r = await fetch(`${api}/api/audio-language-review/apply`, {
+                    method:  "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body:    JSON.stringify({ file_ids: Array.from(selected), target_language: lang }),
+                });
+                if (!r.ok) {
+                    toast?.(`Failed to set audio language on ${selected.size} file${selected.size === 1 ? "" : "s"}`, "error");
+                    return;
+                }
+                setRefreshKey(k => k + 1);
+                // This section's own refreshKey above only re-queries ITS OWN
+                // flagged-items list — it has no way to tell the main dashboard's
+                // queue view, or the History panel's tabs, that anything changed.
+                // Applying a correction deletes the file's existing QueueItem and
+                // creates a fresh pending one — onRefresh (fetchAll) picks that up
+                // for the queue; setHistoryRefreshKey covers History, since the
+                // file was most likely sitting in the Success tab already (having
+                // been processed once before, just with the wrong language tag).
+                onRefresh?.();
+                setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
+            } catch (_) {
+                // A rejected fetch (offline, DNS, connection reset) never reaches the
+                // !r.ok check above, and without this escapes as an unhandled promise
+                // rejection while the UI shows nothing at all.
+                toast?.("Could not reach the server", "error");
+            } finally {
+                setBusy(false);
             }
-            setRefreshKey(k => k + 1);
-            // This section's own refreshKey above only re-queries ITS OWN
-            // flagged-items list — it has no way to tell the main dashboard's
-            // queue view, or the History panel's tabs, that anything changed.
-            // Applying a correction deletes the file's existing QueueItem and
-            // creates a fresh pending one — onRefresh (fetchAll) picks that up
-            // for the queue; setHistoryRefreshKey covers History, since the
-            // file was most likely sitting in the Success tab already (having
-            // been processed once before, just with the wrong language tag).
-            onRefresh?.();
-            setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
-        } catch (_) {
-            // A rejected fetch (offline, DNS, connection reset) never reaches the
-            // !r.ok check above, and without this escapes as an unhandled promise
-            // rejection while the UI shows nothing at all.
-            toast?.("Could not reach the server", "error");
-        } finally {
-            setBusy(false);
-        }
-    };
+        };
 
-    const ignoreSelected = async () => {
-        if (selected.size === 0) return;
-        setBusy(true);
-        try {
-            const r = await fetch(`${api}/api/audio-language-review/ignore`, {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ file_ids: Array.from(selected) }),
-            });
-            if (!r.ok) {
-                toast?.("Failed to ignore the selected files", "error");
-                return;
+        const ignoreSelected = async () => {
+            if (selected.size === 0) return;
+            setBusy(true);
+            try {
+                const r = await fetch(`${api}/api/audio-language-review/ignore`, {
+                    method:  "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body:    JSON.stringify({ file_ids: Array.from(selected) }),
+                });
+                if (!r.ok) {
+                    toast?.("Failed to ignore the selected files", "error");
+                    return;
+                }
+                setRefreshKey(k => k + 1);
+            } catch (_) {
+                // A rejected fetch (offline, DNS, connection reset) never reaches the
+                // !r.ok check above, and without this escapes as an unhandled promise
+                // rejection while the UI shows nothing at all.
+                toast?.("Could not reach the server", "error");
+            } finally {
+                setBusy(false);
             }
-            setRefreshKey(k => k + 1);
-        } catch (_) {
-            // A rejected fetch (offline, DNS, connection reset) never reaches the
-            // !r.ok check above, and without this escapes as an unhandled promise
-            // rejection while the UI shows nothing at all.
-            toast?.("Could not reach the server", "error");
-        } finally {
-            setBusy(false);
-        }
-    };
+        };
 
-    return (
-        <div style={{ marginTop: space.xxxl }}>
-        {/* Section header — visually distinct from the manual-review list above */}
-        <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: space.md,
-            marginBottom: space.sm,
-            paddingTop: space.huge,
-            borderTop: `1px solid ${palette.border}`,
-        }}>
-        <span style={{ color: palette.blue, fontSize: type.size.xxl }}>♪</span>
-        <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-        AUDIO LANGUAGE REVIEW
-        </span>
-        <span style={{
-            padding: `0 ${space.xs}px`,
-            background: alpha(palette.blue, ALPHA.mild),
-            border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
-            borderRadius: radius.sm,
-            color: palette.blue,
-            fontSize: type.size.xs,
-        }}>
-        {total}
-        </span>
-        </div>
-        <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
-        Files whose kept audio track has a language tag that doesn't match
-        your preferred languages — e.g. an English show mistagged with a
-        different language. These files are already fully processed and
-        playable; this is optional. Search a show name to select every
-        flagged episode at once, then either set the correct language and
-        reprocess, or confirm the current tag is already correct (e.g.
-        genuinely foreign-language content) to stop it being flagged again.
-        </p>
+        return (
+            <div style={{ marginTop: space.xxxl }}>
+            {/* Section header — visually distinct from the manual-review list above */}
+            <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: space.md,
+                marginBottom: space.sm,
+                paddingTop: space.huge,
+                borderTop: `1px solid ${palette.border}`,
+            }}>
+            <span style={{ color: palette.blue, fontSize: type.size.xxl }}>♪</span>
+            <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+            AUDIO LANGUAGE REVIEW
+            </span>
+            <span style={{
+                padding: `0 ${space.xs}px`,
+                background: alpha(palette.blue, ALPHA.mild),
+                border: `1px solid ${alpha(palette.blue, ALPHA.strong)}`,
+                borderRadius: radius.sm,
+                color: palette.blue,
+                fontSize: type.size.xs,
+            }}>
+            {total}
+            </span>
+            </div>
+            <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
+            Files whose kept audio track has a language tag that doesn't match
+            your preferred languages — e.g. an English show mistagged with a
+            different language. These files are already fully processed and
+            playable; this is optional. Search a show name to select every
+            flagged episode at once, then either set the correct language and
+            reprocess, or confirm the current tag is already correct (e.g.
+            genuinely foreign-language content) to stop it being flagged again.
+            </p>
 
-        {/* Search + bulk action bar */}
-        <div style={{
-            display: "flex",
-            gap: space.sm,
-            alignItems: "center",
-            flexWrap: "wrap",
-            marginBottom: space.md,
-        }}>
-        <input
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-        placeholder="Search by filename…"
-        style={{
-            flex: "1 1 200px",
-            padding: `${space.xs}px ${space.md}px`,
-            background: palette.bg,
-            border: `1px solid ${search ? alpha(palette.blue, ALPHA.half) : palette.border}`,
-            borderRadius: radius.sm,
-            color: palette.text,
-            fontFamily: type.family,
-            fontSize: type.size.md,
-        }}
-        />
-        {/* Language filter. A dropdown rather than a text box because the
-          * useful question here is "which wrong tags do I actually have?" —
-          * the user usually cannot guess that, and a free-text field would
-          * mostly return nothing. The counts make the bulk-fixable ones
-          * obvious at a glance. */}
-        <select
-        value={language}
-        onChange={e => setLanguage(e.target.value)}
-        title="Filter by the language tag currently on the file"
-        style={{
-            padding: `${space.xs}px ${space.sm}px`,
-            background: palette.bg,
-            border: `1px solid ${language ? alpha(palette.blue, ALPHA.half) : palette.border}`,
-            borderRadius: radius.sm,
-            color: language ? palette.blue : palette.text,
-            fontFamily: type.family,
-            fontSize: type.size.md,
-            cursor: "pointer",
-        }}
-        >
-        <option value="">All languages</option>
-        {languageOptions.map(f => (
-            <option key={f.language} value={f.language}>
-            {f.language} ({f.count})
-            </option>
-        ))}
-        </select>
-        <input
-        value={targetLang}
-        onChange={e => setTargetLang(e.target.value)}
-        placeholder="eng"
-        title="ISO 639-2/B language code to apply to selected files"
-        style={{
-            width: 70,
-            padding: `${space.xs}px ${space.sm}px`,
-            background: palette.bg,
-            border: `1px solid ${palette.border}`,
-            borderRadius: radius.sm,
-            color: palette.text,
-            fontFamily: type.family,
-            fontSize: type.size.md,
-            textTransform: "lowercase",
-        }}
-        />
-        <Btn
-        label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
-        color={palette.green}
-        bg={alpha(palette.green, ALPHA.low)}
-        onClick={applyLanguage}
-        disabled={busy || selected.size === 0 || !targetLang.trim()}
-        />
-        <Btn
-        label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
-        color={palette.dim}
-        bg="transparent"
-        onClick={ignoreSelected}
-        disabled={busy || selected.size === 0}
-        />
-        </div>
-
-        {items.length === 0 && !loading ? (
-            <EmptyState msg={
-                debouncedSearch && language
-                ? `No files tagged "${language}" match "${debouncedSearch}"`
-                : language
-                ? `No files tagged "${language}"`
-                : debouncedSearch
-                ? `No flagged files match "${debouncedSearch}"`
-                : "No audio language mismatches found ✓"
-            } />
-        ) : (
-            <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
-            {/* Select-all header row */}
-            {items.length > 0 && (
-                <div style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: space.md,
-                    padding: `${space.xs}px ${space.lg}px`,
-                    background: palette.card,
-                    borderBottom: `1px solid ${palette.border}`,
-                    position: "sticky",
-                    top: 0,
-                }}>
-                <input type="checkbox" checked={allLoadedSelected} onChange={toggleAll} />
-                <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
-                SELECT ALL LOADED ({items.length}{total > items.length ? ` of ${total}` : ""})
-                </span>
-                </div>
-            )}
-
-            {items.map(item => (
-                <div
-                key={item.id}
-                onClick={() => toggleOne(item.file_id)}
+            {/* Search + bulk action bar */}
+            <div style={{
+                display: "flex",
+                gap: space.sm,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginBottom: space.md,
+            }}>
+            <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by filename…"
+            style={{
+                flex: "1 1 200px",
+                padding: `${space.xs}px ${space.md}px`,
+                background: palette.bg,
+                border: `1px solid ${search ? alpha(palette.blue, ALPHA.half) : palette.border}`,
+                borderRadius: radius.sm,
+                color: palette.text,
+                fontFamily: type.family,
+                fontSize: type.size.md,
+            }}
+            />
+            {/* Language filter. A dropdown rather than a text box because the
+                * useful question here is "which wrong tags do I actually have?" —
+                * the user usually cannot guess that, and a free-text field would
+                * mostly return nothing. The counts make the bulk-fixable ones
+                * obvious at a glance. */}
+                <select
+                value={language}
+                onChange={e => setLanguage(e.target.value)}
+                title="Filter by the language tag currently on the file"
                 style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: space.md,
-                    padding: `${space.sm}px ${space.lg}px`,
-                    borderBottom: `1px solid ${palette.border}`,
-                    cursor: "pointer",
-                    background: selected.has(item.file_id) ? surface.rowSelectedBg : "transparent",
+                    padding: `${space.xs}px ${space.sm}px`,
+                    background: palette.bg,
+                    border: `1px solid ${language ? alpha(palette.blue, ALPHA.half) : palette.border}`,
+                borderRadius: radius.sm,
+                color: language ? palette.blue : palette.text,
+                fontFamily: type.family,
+                fontSize: type.size.md,
+                cursor: "pointer",
                 }}
                 >
+                <option value="">All languages</option>
+                {languageOptions.map(f => (
+                    <option key={f.language} value={f.language}>
+                    {f.language} ({f.count})
+                    </option>
+                ))}
+                </select>
                 <input
-                type="checkbox"
-                checked={selected.has(item.file_id)}
-                onChange={() => toggleOne(item.file_id)}
-                onClick={e => e.stopPropagation()}
-                />
-                <span style={{
-                    flex: 1,
-                    minWidth: 0,
-                    color: palette.text,
-                    fontSize: type.size.md,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                }}>
-                {item.filename}
-                </span>
-                <span style={{
-                    flexShrink: 0,
-                    padding: `${space.hair}px ${space.xs}px`,
-                    background: alpha(palette.yellow, ALPHA.low),
-                    border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                value={targetLang}
+                onChange={e => setTargetLang(e.target.value)}
+                placeholder="eng"
+                title="ISO 639-2/B language code to apply to selected files"
+                style={{
+                    width: 70,
+                    padding: `${space.xs}px ${space.sm}px`,
+                    background: palette.bg,
+                    border: `1px solid ${palette.border}`,
                     borderRadius: radius.sm,
-                    color: palette.yellow,
-                    fontSize: type.size.xs,
-                    letterSpacing: type.tracking.wide,
-                }}>
-                {(item.detected_language || "?").toUpperCase()}
-                </span>
+                    color: palette.text,
+                    fontFamily: type.family,
+                    fontSize: type.size.md,
+                    textTransform: "lowercase",
+                }}
+                />
+                <Btn
+                label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
+                color={palette.green}
+                bg={alpha(palette.green, ALPHA.low)}
+                onClick={applyLanguage}
+                disabled={busy || selected.size === 0 || !targetLang.trim()}
+                />
+                <Btn
+                label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
+                color={palette.dim}
+                bg="transparent"
+                onClick={ignoreSelected}
+                disabled={busy || selected.size === 0}
+                />
                 </div>
-            ))}
 
-            {hasMore && (
-                <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.lg}px` }}>
-                {loading && <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>}
+                {items.length === 0 && !loading ? (
+                    <EmptyState msg={
+                        debouncedSearch && language
+                        ? `No files tagged "${language}" match "${debouncedSearch}"`
+                        : language
+                        ? `No files tagged "${language}"`
+                        : debouncedSearch
+                        ? `No flagged files match "${debouncedSearch}"`
+                        : "No audio language mismatches found ✓"
+                    } />
+                ) : (
+                    <div ref={scrollRef} style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${palette.border}`, borderRadius: radius.sm }}>
+                    {/* Select-all header row */}
+                    {items.length > 0 && (
+                        <div style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: space.md,
+                            padding: `${space.xs}px ${space.lg}px`,
+                            background: palette.card,
+                            borderBottom: `1px solid ${palette.border}`,
+                            position: "sticky",
+                            top: 0,
+                        }}>
+                        <input type="checkbox" checked={allLoadedSelected} onChange={toggleAll} />
+                        <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
+                        SELECT ALL LOADED ({items.length}{total > items.length ? ` of ${total}` : ""})
+                        </span>
+                        </div>
+                    )}
+
+                    {items.map(item => (
+                        /* A <label> rather than a div with onClick. The row's only job is to
+                         * toggle the checkbox inside it, and a label does that natively: the
+                         * whole row becomes the click target, the row text becomes the
+                         * checkbox's accessible name, and there is exactly one tab stop.
+                         *
+                         * role="button" plus tabIndex would have been worse — a second tab stop
+                         * per row doing the same thing as the checkbox beside it, and a name
+                         * that has to be written by hand and kept in step with the text. */
+                        <label
+                        key={item.id}
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: space.md,
+                            padding: `${space.sm}px ${space.lg}px`,
+                            borderBottom: `1px solid ${palette.border}`,
+                            cursor: "pointer",
+                            background: selected.has(item.file_id) ? surface.rowSelectedBg : "transparent",
+                        }}
+                        >
+                        <input
+                        type="checkbox"
+                        checked={selected.has(item.file_id)}
+                        onChange={() => toggleOne(item.file_id)}
+                        />
+                        <span style={{
+                            flex: 1,
+                            minWidth: 0,
+                            color: palette.text,
+                            fontSize: type.size.md,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                        }}>
+                        {item.filename}
+                        </span>
+                        <span style={{
+                            flexShrink: 0,
+                            padding: `${space.hair}px ${space.xs}px`,
+                            background: alpha(palette.yellow, ALPHA.low),
+                                        border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                        borderRadius: radius.sm,
+                                        color: palette.yellow,
+                                        fontSize: type.size.xs,
+                                        letterSpacing: type.tracking.wide,
+                        }}>
+                        {(item.detected_language || "?").toUpperCase()}
+                        </span>
+                        </label>
+                    ))}
+
+                    {hasMore && (
+                        <div ref={sentinelRef} style={{ padding: `${space.sm}px ${space.lg}px` }}>
+                        {loading && <span style={{ color: palette.dim, fontSize: type.size.sm }}>Loading…</span>}
+                        </div>
+                    )}
+                    </div>
+                )}
                 </div>
-            )}
-            </div>
-        )}
-        </div>
-    );
+        );
 };
