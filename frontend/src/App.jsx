@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "./theme";
 import { useAppData } from "./hooks/useAppData";
 import { useActions } from "./hooks/useActions";
@@ -15,6 +15,41 @@ import { DetailModal } from "./components/DetailModal";
 /* ── Unsaved-changes navigation guard modal ─────────────────────────────── */
 const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
   const { palette, type, space, radius, surface } = useTheme();
+  const panelRef = useRef(null);
+
+  /* This is the app's only blocking dialog and had none of the semantics
+   * of one — no role, no Escape, and no focus handling. Assistive
+   * technology announced it as an anonymous div, and a keyboard user was
+   * left with focus still on whatever they were editing behind it, able to
+   * tab straight back into a form the dialog exists to stop them leaving.
+   * DetailModal already had the Escape handler; this one did not.
+   *
+   * Escape maps to Keep Editing, not Discard: dismissing a dialog should
+   * never be the destructive branch. */
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); onKeep(); return; }
+      if (e.key !== "Tab") return;
+      // Focus trap. Without it Tab walks out of the dialog and into the page
+      // behind, which for a modal is the one thing it must not do.
+      const focusable = panelRef.current?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (!focusable?.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    // Move focus in, and put it back where it came from on close, so
+    // dismissing the dialog returns the user to what they were doing.
+    const previouslyFocused = document.activeElement;
+    panelRef.current?.querySelector("button")?.focus();
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previouslyFocused?.focus?.();
+    };
+  }, [onKeep]);
+
   return (
     <div
     onClick={onKeep}
@@ -30,6 +65,10 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
     }}
     >
     <div
+    ref={panelRef}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="unsaved-changes-title"
     onClick={e => e.stopPropagation()}
     style={{
       width: "100%", maxWidth: 400,
@@ -38,7 +77,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
       padding: `${space.huge}px ${space.huge}px ${space.xxl}px`,
     }}
     >
-    <div style={{ color: palette.amber, fontSize: type.size.sm, letterSpacing: type.tracking.ultra, fontWeight: type.weight.bold, marginBottom: space.md }}>
+    <div id="unsaved-changes-title" style={{ color: palette.amber, fontSize: type.size.sm, letterSpacing: type.tracking.ultra, fontWeight: type.weight.bold, marginBottom: space.md }}>
     UNSAVED CHANGES
     </div>
     <div style={{ color: palette.text, fontSize: type.size.lg, lineHeight: type.leading.normal, marginBottom: space.xxl }}>
