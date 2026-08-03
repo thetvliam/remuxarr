@@ -22,13 +22,28 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
    * technology announced it as an anonymous div, and a keyboard user was
    * left with focus still on whatever they were editing behind it, able to
    * tab straight back into a form the dialog exists to stop them leaving.
-   * DetailModal already had the Escape handler; this one did not.
    *
    * Escape maps to Keep Editing, not Discard: dismissing a dialog should
-   * never be the destructive branch. */
+   * never be the destructive branch.
+   *
+   * onKeep is read through a ref and the effect runs ONCE. It used to
+   * depend on [onKeep], which App passes as an inline arrow — a new
+   * identity on every render, and App re-renders on every job_progress
+   * message, which arrives several times a second while a job runs. The
+   * effect therefore tore down and re-ran continuously, and since setup
+   * focuses the first button while teardown restores focus to wherever it
+   * was, a keyboard user who tabbed to DISCARD CHANGES was dragged back to
+   * KEEP EDITING before they could press it. The focus handling added to
+   * make this dialog keyboard-accessible was making it keyboard-unusable.
+   *
+   * A ref rather than asking App to useCallback, so the dialog stays
+   * correct however a caller chooses to pass its handlers. */
+  const onKeepRef = useRef(onKeep);
+  useEffect(() => { onKeepRef.current = onKeep; });
+
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); onKeep(); return; }
+      if (e.key === "Escape") { e.preventDefault(); onKeepRef.current(); return; }
       if (e.key !== "Tab") return;
       // Focus trap. Without it Tab walks out of the dialog and into the page
       // behind, which for a modal is the one thing it must not do.
@@ -48,7 +63,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
       window.removeEventListener("keydown", onKey);
       previouslyFocused?.focus?.();
     };
-  }, [onKeep]);
+  }, []);
 
   return (
     <div
