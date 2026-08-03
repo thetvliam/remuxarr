@@ -48,7 +48,12 @@ export function useWebSocket(url, onMessage, onReconnect) {
                 };
                 ws.onmessage = (e) => {
                     if (e.data === "pong") return;
-                    try { cbRef.current(JSON.parse(e.data)); } catch (_) {}
+                    // Logged rather than swallowed. A throw in the handler
+                    // means a whole event was dropped — the UI silently
+                    // stops reflecting whatever that message was about, and
+                    // with a bare catch there is nothing anywhere to say so.
+                    try { cbRef.current(JSON.parse(e.data)); }
+                    catch (err) { console.warn("WebSocket message handler failed:", err, e.data); }
                 };
                 ws.onclose = () => {
                     // The `active` guard matters on teardown. Cleanup clears
