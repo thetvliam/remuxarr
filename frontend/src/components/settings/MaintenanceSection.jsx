@@ -223,17 +223,29 @@ export const MaintenanceSection = ({ api, toast }) => {
     .catch(() => {});
   }, [api]);
 
-  // Save a single setting immediately on change
+  /* Applied optimistically so the toggle responds instantly, and rolled
+   * back if the write fails. Previously the toast reported the failure but
+   * the switch stayed in its new position, so "Scheduled Scans: on" could
+   * be displayed indefinitely while the server had it off — and the toast
+   * is gone after five seconds, leaving no trace that the two disagree
+   * until the next mount refetches. Reverting is what makes the toggle
+   * mean what it shows. */
   const saveSetting = async (key, value) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    const previous = settings[key];
+    setSettings((prev) => ({ ...prev, [key]: value }));
+    const revert = () => setSettings((prev) => ({ ...prev, [key]: previous }));
     try {
       const r = await fetch(`${api}/api/settings/${key}`, {
         method:  "PUT",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ value }),
       });
-      if (!r.ok) toast?.("Failed to save setting", "error");
+      if (!r.ok) {
+        revert();
+        toast?.("Failed to save setting", "error");
+      }
     } catch (_) {
+      revert();
       toast?.("Failed to save setting", "error");
     }
   };
