@@ -16,9 +16,26 @@ export const BackupRestoreSection = ({ api, toast }) => {
   const fileInputRef = useRef(null);
   const pendingFileRef = useRef(null);
 
+  /* When the confirmation window lapses, the staged file and the input's
+   * value are cleared too.
+   *
+   * Previously only `confirming` was reset. The file stayed in the ref and,
+   * more importantly, fileInputRef.current.value stayed set — and a file
+   * input fires no change event when you re-pick the file already in it. So
+   * after letting the window lapse, clicking IMPORT… reopened the picker,
+   * choosing the same file did nothing at all, and the button looked broken
+   * until the user happened to pick a different one.
+   *
+   * The window is 10s rather than 4s: this asks the user to read a filename
+   * and decide whether to overwrite every setting they have, which is not a
+   * four-second decision. */
   useEffect(() => {
     if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), 4000);
+    const t = setTimeout(() => {
+      setConfirming(false);
+      pendingFileRef.current = null;
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }, 10000);
     return () => clearTimeout(t);
   }, [confirming]);
 

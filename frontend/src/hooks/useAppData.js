@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -296,18 +296,31 @@ export function useAppData() {
             break;
 
           case "job_completed":
+            /* The refreshes run before the toast, and msg.status is guarded
+             * the way forge_job_completed already guards it.
+             *
+             * msg.status.toUpperCase() was unguarded and was the first thing
+             * this case evaluated. useWebSocket invokes this callback inside
+             * a bare catch, so a message arriving without a status threw,
+             * was swallowed, and took the whole branch with it — no toast,
+             * no fetchAll, no history or review refresh. The dashboard
+             * simply stopped tracking that job, with nothing logged.
+             *
+             * Ordering matters as much as the guard: the state updates are
+             * what keep the UI correct, so they must not sit behind a
+             * cosmetic string operation that can throw. */
+            fetchAll();
+            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            setReviewRefreshKey(k => k + 1);
             toast(
               msg.status === "dry_run"
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
-              : `${msg.filename || "File"} — ${msg.status.toUpperCase()}` +
+              : `${msg.filename || "File"} — ${(msg.status || "unknown").toUpperCase()}` +
               (msg.error ? `: ${msg.error.slice(0, 55)}` : ""),
                   msg.status === "success" ? "success"
                   : msg.status === "dry_run" ? "preview"
                   : "error",
             );
-            fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
-            setReviewRefreshKey(k => k + 1);
             break;
 
           case "file_queued":
@@ -379,12 +392,12 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-        /* No theme value appears in this callback any more — the toasts it
-         * raises name a tone, and the colour is resolved by Toasts at render.
-         * That is the point of the change: a dependency array cannot go stale
-         * on a value it never captures. `api` stays because the body reads it
-         * directly; it was missing before, masked only by `fetchAll` happening
-         * to close over the same value. */
+      /* No theme value appears in this callback any more — the toasts it
+       * raises name a tone, and the colour is resolved by Toasts at render.
+       * That is the point of the change: a dependency array cannot go stale
+       * on a value it never captures. `api` stays because the body reads it
+       * directly; it was missing before, masked only by `fetchAll` happening
+       * to close over the same value. */
       }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";

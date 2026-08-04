@@ -1,11 +1,10 @@
-
 /* ═══════════════════════════════════════════════════════════════════════════
  *  useActions
  *  Collection of functions that call the backend API and update state via
  *  the setters passed in from useAppData. Has no state of its own — accepts
  *  the full data bundle returned by useAppData() and destructures what it
  *  needs, so the call site can simply do `useActions(data)`.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useActions({
   api,
   dryRun, setDryRun,
@@ -18,14 +17,25 @@ export function useActions({
   fetchForge,
   setHistoryRefreshKey,
 }) {
+  /* The optimistic update is rolled back on failure, and the failure is
+   * reported loudly. This is the app's safety interlock: if the PUT failed
+   * and the toggle stayed on, the header showed ◆ DRY RUN and a toast
+   * confirmed it while the backend went on actually remuxing files. Silent
+   * failure is unacceptable anywhere, but here it is the difference between
+   * a preview and an irreversible write. */
   const toggleDryRun = async () => {
     const next = !dryRun;
     setDryRun(next);
-    await fetch(`${api}/api/settings/dry_run_mode`, {
+    const r = await fetch(`${api}/api/settings/dry_run_mode`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value: next }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!r?.ok) {
+      setDryRun(!next);
+      toast(`Could not change dry run — still ${next ? "OFF" : "ON"}`, "error");
+      return;
+    }
     toast(`Dry run ${next ? "enabled" : "disabled"}`, "warning");
   };
 
@@ -84,11 +94,16 @@ export function useActions({
   const toggleAutoStart = async () => {
     const next = !autoStart;
     setAutoStart(next);
-    await fetch(`${api}/api/settings/auto_start_jobs`, {
+    const r = await fetch(`${api}/api/settings/auto_start_jobs`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value: next }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!r?.ok) {
+      setAutoStart(!next);
+      toast(`Could not change auto-start — still ${next ? "OFF" : "ON"}`, "error");
+      return;
+    }
     toast(`Auto-start ${next ? "enabled" : "disabled"}`, "quiet");
   };
 
@@ -135,7 +150,11 @@ export function useActions({
 
   // Re-queue a failed/cancelled item and close the modal
   const retryItem = async (item) => {
-    await fetch(`${api}/api/history/${item.id}/retry`, { method: "POST" }).catch(() => {});
+    const r = await fetch(`${api}/api/history/${item.id}/retry`, { method: "POST" }).catch(() => null);
+    if (!r?.ok) {
+      toast(`Could not re-queue: ${item.file?.filename || "file"}`, "error");
+      return;
+    }
     setModal(null);
     fetchAll();
     // Same reasoning as clearDryRun above: retrying deletes the old failed
@@ -151,32 +170,55 @@ export function useActions({
 
   // Remove a completed/failed item from history, resetting it for re-scan
   const dismissItem = async (item) => {
-    await fetch(`${api}/api/history/${item.id}/`, { method: "DELETE" }).catch(() => {});
+    const r = await fetch(`${api}/api/history/${item.id}/`, { method: "DELETE" }).catch(() => null);
+    if (!r?.ok) {
+      toast(`Could not dismiss: ${item.file?.filename || "file"}`, "error");
+      return;
+    }
     setModal(null);
     fetchAll();
     toast(`Dismissed: ${item.file?.filename || "file"}`, "neutral");
   };
 
   // ── Forge actions ─────────────────────────────────────────────────────
+  // Reports both outcomes. It previously reported neither: a click on
+  // + ADD AC3 that 500'd looked exactly like one that worked, because the
+  // only visible consequence either way was a list refresh.
   const forgeAdd = async (fileId) => {
-    await fetch(`${api}/api/forge/queue/`, {
+    const r = await fetch(`${api}/api/forge/queue/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file_id: fileId }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!r?.ok) {
+      toast("Could not add to the forge queue", "error");
+      return;
+    }
+    toast("Added to forge queue", "info");
     fetchForge();
   };
 
   const forgeUndo = async (jobId) => {
-    await fetch(`${api}/api/forge/${jobId}/undo/`, { method: "POST" }).catch(() => {});
+    const r = await fetch(`${api}/api/forge/${jobId}/undo/`, { method: "POST" }).catch(() => null);
+    if (!r?.ok) {
+      toast("Could not undo — the original may no longer be on disk", "error");
+      return;
+    }
+    toast("Undo queued", "info");
     fetchForge();
   };
 
   // Remove a single pending item from the queue inline (no modal needed).
   // The item is cancelled — it will re-appear on the next library scan.
   const dismissQueueItem = async (item) => {
+    // fetch only rejects on a network failure, so the catch alone let a 500
+    // through to the success toast.
     try {
-      await fetch(`${api}/api/queue/${item.id}`, { method: "DELETE" });
+      const r = await fetch(`${api}/api/queue/${item.id}`, { method: "DELETE" });
+      if (!r.ok) {
+        toast("Failed to remove item", "error");
+        return;
+      }
       toast(`Removed from queue: ${item.file?.filename || "file"}`, "neutral");
       fetchAll();
     } catch (_) {

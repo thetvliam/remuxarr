@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../theme";
 import { fmtSize, fmtDur, formatBytesSaved } from "../utils";
 import { StatusBadge } from "./atoms/StatusBadge";
@@ -20,11 +20,20 @@ import { Btn } from "./atoms/Btn";
  ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
   const { palette, type, space, radius, size, surface, actionCfg } = useTheme();
+  /* Read through a ref so the listener is registered once. App passes
+   * onClose as an inline arrow, so [onClose] re-ran this on every App
+   * render — several times a second while a job is running — removing and
+   * re-adding the listener each time. Harmless as written, but it is the
+   * same shape that made the unsaved-changes dialog steal focus, and this
+   * one is about to grow focus handling of its own. */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; });
+
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    const handler = (e) => { if (e.key === "Escape") onCloseRef.current(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, []);
 
   if (!item) return null;
 

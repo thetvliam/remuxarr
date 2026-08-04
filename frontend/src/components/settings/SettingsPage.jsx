@@ -381,14 +381,21 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
   const btnColor = dirty
   ? { idle: palette.amber, saving: palette.muted, saved: palette.green, error: palette.red }[status]
   : palette.dim;
+  /* `dirty` outranks the "saved" confirmation. save() captures the values it
+   * is going to send before awaiting, and anything typed while the PUT is in
+   * flight is correctly left dirty afterwards — it was not part of the
+   * request. But the confirmation fired regardless, so for the 2.5s it
+   * lasted the bar read CHANGES SAVED in green with an unsaved edit sitting
+   * on screen and the Save button still enabled beside it. The edit is not
+   * lost; the label just contradicted it. */
   const statusText = status === "saving" ? "Saving…"
   : status === "error" ? "Save failed — check the connection"
-  : status === "saved" ? "Changes saved"
   : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
+  : status === "saved" ? "Changes saved"
   : "All changes saved";
   const statusColor = status === "error" ? palette.red
-  : status === "saved" ? palette.green
-  : dirty ? palette.amber : palette.muted;
+  : dirty ? palette.amber
+  : status === "saved" ? palette.green : palette.muted;
 
   return (
     <div style={{
@@ -400,7 +407,7 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       borderBottom: `1px solid ${palette.border}`,
     }}>
     <span style={{ color: statusColor, fontSize: type.size.sm, letterSpacing: type.tracking.wider, fontWeight: type.weight.bold }}>
-    {dirty && status === "idle" ? "● " : ""}{statusText.toUpperCase()}
+    {dirty && status !== "saving" ? "● " : ""}{statusText.toUpperCase()}
     </span>
     <button
     onClick={onSave}
@@ -546,7 +553,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
       return (
         <>
         <MaintenanceSection api={api} toast={toast} />
-        <LogViewer api={api} />
+        <LogViewer api={api} toast={toast} />
         </>
       );
     }
