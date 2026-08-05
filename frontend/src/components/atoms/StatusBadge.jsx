@@ -9,7 +9,7 @@ export const StatusBadge = ({ status }) => {
             display: "inline-block",
             padding: `${space.hair}px ${space.xs}px`,
             border: `1px solid ${alpha(color, ALPHA.strong)}`,
-            borderRadius: radius.none,
+            borderRadius: radius.badge,
             color,
             fontSize: type.size.xs,
             fontFamily: type.family,

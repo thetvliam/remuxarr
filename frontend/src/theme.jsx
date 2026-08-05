@@ -130,9 +130,6 @@ const buildStatusColor = (p) => ({
   dry_run:       p.violet,
 });
 
-/* Log severity colours. Was a module-level const in LogViewer.jsx built from
- * the static palette, which froze the log output to the default theme even
- * once the surrounding page followed the switch. */
 /* Toast tones. Callers name the MEANING of a message — "error", "success" —
  * and the theme decides the colour. Previously every toast() call passed a
  * palette value directly, which meant the data hooks had to read the theme
@@ -159,6 +156,9 @@ const buildToastTone = (p) => ({
   quiet:   p.dim,     // quietest: a background preference was toggled
 });
 
+/* Log severity colours. Was a module-level const in LogViewer.jsx built from
+ * the static palette, which froze the log output to the default theme even
+ * once the surrounding page followed the switch. */
 const buildLevelColor = (p) => ({
   DEBUG:    p.dim,
   INFO:     p.muted,
@@ -248,7 +248,12 @@ const terminal = {
    * here — half the toggle switch's 22px height, hardcoded in
    * MaintenanceSection. Changing that height would have squared the corners
    * with nothing in either file to connect the two. */
-  radius: { none: 0, sm: 0, pill: 999, full: "50%" },
+  /* badge is its own rung so each theme decides whether the small status
+   * pills follow the rest of its rounding. Three atoms hardcoded
+   * radius.none, which is 0 in every theme by definition — invisible here
+   * where sm is also 0, but on a rounded theme every other pill curved and
+   * those three stayed square with nothing saying why. */
+  radius: { none: 0, sm: 0, badge: 0, pill: 999, full: "50%" },
   space:  { none: 0, hair: 2, xxs: 4, xs: 6, sm: 8, md: 10, lg: 12, xl: 16,
     xxl: 20, huge: 24, max: 28, xxxl: 32, giant: 40, mega: 48 },
     /* Component geometry — the fixed dimensions of the app's own furniture,
@@ -377,7 +382,7 @@ const soft = {
     /* Looser at every step than terminal's. */
     leading: { none: 1, tight: 1.55, snug: 1.6, normal: 1.65, relaxed: 1.7, loose: 1.75 },
   },
-  radius: { none: 0, sm: 6, pill: 999, full: "50%" },
+  radius: { none: 0, sm: 6, badge: 6, pill: 999, full: "50%" },
   space:  { none: 0, hair: 3, xxs: 5, xs: 8, sm: 10, md: 13, lg: 16, xl: 20,
     xxl: 26, huge: 30, max: 34, xxxl: 38, giant: 48, mega: 58 },
     /* Component geometry — the fixed dimensions of the app's own furniture,
