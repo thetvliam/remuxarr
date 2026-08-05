@@ -17,7 +17,22 @@ export const Toasts = ({ items, isMobile = false }) => {
   const colorFor = (tone) => toastTone[tone] || palette.amber;
 
   return (
-    <div style={{
+    /* A live region, so toasts are announced rather than only drawn. This is
+     * the app's only channel for reporting that something failed — a bulk
+     * apply that 500'd, a setting that would not save, a job that errored —
+     * and without it a screen reader user got no indication any of that had
+     * happened at all.
+     *
+     * polite rather than assertive: these report on background work and
+     * should wait for a pause rather than cut across whatever the user is
+     * reading. The container is always mounted, not conditional on there
+     * being toasts, because a live region has to exist before content is
+     * put into it for the insertion to be announced. */
+    <div
+    role="status"
+    aria-live="polite"
+    aria-atomic="false"
+    style={{
       position: "fixed",
       bottom: size.toastOffset,
       // Desktop: bottom-right corner.

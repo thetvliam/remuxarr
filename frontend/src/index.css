@@ -15,7 +15,7 @@
  * error, the element just sat still. As a stylesheet imported at startup
  * the rules are simply always present, and they apply before React mounts
  * rather than after the first effect flush.
- ═══════════════════════════════════════════════════════════════════════════ */
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -39,4 +39,22 @@
 @keyframes modalIn {
   from { opacity: 0; transform: translateY(-6px); }
   to   { opacity: 1; transform: none; }
+}
+
+/* ── Reduced motion ────────────────────────────────────────────────────── */
+/* ledPulse runs indefinitely — on the WebSocket indicator whenever the app
+ * is connected, and on the pause and scan buttons while either is active.
+ * An animation that never stops is exactly what this preference exists to
+ * suppress, and for someone with a vestibular disorder a permanently
+ * throbbing dot in the corner of the screen is not a small thing.
+ *
+ * The one-shot entry animations are dropped to near-zero rather than
+ * removed, so anything relying on an animation event still fires. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
