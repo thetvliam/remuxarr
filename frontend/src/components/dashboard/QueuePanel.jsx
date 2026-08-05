@@ -62,26 +62,21 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     );
 
     return (
-        /* A div with button semantics rather than a real <button>, because
-         * this row contains its own ↑ TOP and × buttons. A <button> may not
-         * contain interactive content: the parser is entitled to hoist the
-         * inner buttons out, and the outer button swallows their focus
-         * semantics, so keyboard users could not reach them at all.
-         * stopPropagation fixes the click bubbling but not the structure.
+        /* A plain div. It was <button>, then a div with role="button" —
+         * both wrong for the same reason, which the second attempt missed:
+         * a <button> may not contain interactive content, and ARIA gives
+         * role="button" the identical restriction (it is "children
+         * presentational", so descendant semantics are discarded). Either
+         * way the ↑ TOP and × buttons inside were flattened and unreachable.
+         * Removing the nested <button> tags fixed the HTML validity and left
+         * the accessibility problem exactly where it was.
          *
-         * role + tabIndex + the Enter/Space handler restore what the real
-         * element gave for free. Space is preventDefault'ed because its
-         * default action on a focused element is to scroll the page. */
+         * The row keeps its onClick purely as a mouse convenience — a large
+         * hit target. The keyboard-reachable control is the filename button
+         * below, which sits alongside the two action buttons rather than
+         * wrapping them, so all three are real, focusable and named. */
         <div
-        role="button"
-        tabIndex={0}
         onClick={() => onSelect(item)}
-        onKeyDown={e => {
-            if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSelect(item);
-            }
-        }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
@@ -106,8 +101,13 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
         pulse={false}
         size={size.ledSizeSm}
         />
-        <span style={{
-            color: palette.text,
+        {/* The row's keyboard entry point. stopProp so it does not also
+            * trigger the row's own mouse handler and open the modal twice. */}
+            <button
+            onClick={stopProp(() => onSelect(item))}
+            title="Show details"
+            style={{
+                color: palette.text,
             fontSize: type.size.base,
             fontWeight: type.weight.medium,
             flex: 1,
@@ -115,33 +115,39 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             minWidth: 0,
-        }}>
-        {f.filename || "—"}
-        </span>
+            textAlign: "left",
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            fontFamily: type.family,
+            }}>
+            {f.filename || "—"}
+            </button>
 
-        {/* Per-row actions (this row is always a pending item) */}
-        <div style={{ display: "flex", gap: space.xxs, alignItems: "center" }}>
-        {actionBtn("↑ TOP", palette.amber, () => onPrioritize(item), "Move to top of queue")}
-        {actionBtn("×", palette.red, () => onDismiss(item), "Remove from queue")}
-        </div>
+            {/* Per-row actions (this row is always a pending item) */}
+            <div style={{ display: "flex", gap: space.xxs, alignItems: "center" }}>
+            {actionBtn("↑ TOP", palette.amber, () => onPrioritize(item), "Move to top of queue")}
+            {actionBtn("×", palette.red, () => onDismiss(item), "Remove from queue")}
+            </div>
 
-        <span style={{ color: palette.dim, fontSize: type.size.xs, flexShrink: 0 }}>
-        {fmtTime(item.created_at)}
-        </span>
-        </div>
+            <span style={{ color: palette.dim, fontSize: type.size.xs, flexShrink: 0 }}>
+            {fmtTime(item.created_at)}
+            </span>
+            </div>
 
-        {/* Reason */}
-        <div style={{
-            color: palette.muted,
+            {/* Reason */}
+            <div style={{
+                color: palette.muted,
             fontSize: type.size.sm,
             paddingLeft: space.xl,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
-        }}>
-        {item.reason || "—"}
-        </div>
-        </div>
+            }}>
+            {item.reason || "—"}
+            </div>
+            </div>
     );
 };
 
