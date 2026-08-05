@@ -29,10 +29,41 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; });
 
+  const panelRef = useRef(null);
+
+  /* The same treatment the unsaved-changes dialog got. That one is rarely
+   * seen; this is the modal users open constantly, and it had none of it —
+   * no role, so it was announced as an anonymous div; no focus handling, so
+   * focus stayed on the row behind it and Tab walked straight out into a
+   * list the modal is covering; and no scroll lock, so scrolling inside it
+   * chained to the page underneath once it hit the end. */
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onCloseRef.current(); };
+    const handler = (e) => {
+      if (e.key === "Escape") { onCloseRef.current(); return; }
+      if (e.key !== "Tab") return;
+      const focusable = panelRef.current?.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (!focusable?.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+
+    const previouslyFocused = document.activeElement;
+    panelRef.current?.querySelector("button")?.focus();
+
+    // Body scroll lock. Without it the page behind scrolls once the modal's
+    // own content reaches its end, which on mobile leaves the user somewhere
+    // else entirely when they close it.
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("keydown", handler);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus?.();
+    };
   }, []);
 
   if (!item) return null;
@@ -66,6 +97,10 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     }}
     >
     <div
+    ref={panelRef}
+    role="dialog"
+    aria-modal="true"
+    aria-label={`Details: ${f.filename || "file"}`}
     onClick={e => e.stopPropagation()}
     style={{
       background: palette.card,
