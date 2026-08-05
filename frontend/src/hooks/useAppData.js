@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -125,12 +125,22 @@ export function useAppData() {
 
       const state = event.state ?? {};
 
+      /* event.state is the state of the entry being navigated TO, not the
+       * one being left. Going back from an open modal therefore lands on
+       * the { modal: false } page entry and is handled by the else branch —
+       * this if only fires going FORWARD into a modal entry, where it
+       * closes the modal rather than reopening it.
+       *
+       * Behaviour is fine either way, since forward-into-a-modal is not a
+       * flow the app produces. The comments said the opposite, which
+       * matters because closedByUserRef below is reasoned about in terms of
+       * this model. */
       if (state.modal) {
-        // Navigating back from the "modal open" history entry → close it
+        // Forward navigation INTO a modal entry.
         modalRef.current = null;
         setModalState(null);
       } else {
-        // Navigating back from a page history entry → restore that page
+        // Back to a page entry, including back out of an open modal.
         const target = VALID_PAGES.has(state.page) ? state.page : "dashboard";
         pageRef.current = target;
         setPageState(target);
@@ -148,6 +158,10 @@ export function useAppData() {
    *    Called by AppHeader nav tabs. Pushes a new history entry so the back
    *    button can return to the previous tab. */
   const setPage = useCallback((newPage) => {
+    // Clicking the tab you are already on pushed another identical entry,
+    // so Back then needed one press per click before it did anything
+    // visible — the button looked broken rather than slow.
+    if (pageRef.current === newPage) return;
     pageRef.current = newPage;
     setPageState(newPage);
     window.history.pushState(
@@ -392,12 +406,12 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-      /* No theme value appears in this callback any more — the toasts it
-       * raises name a tone, and the colour is resolved by Toasts at render.
-       * That is the point of the change: a dependency array cannot go stale
-       * on a value it never captures. `api` stays because the body reads it
-       * directly; it was missing before, masked only by `fetchAll` happening
-       * to close over the same value. */
+        /* No theme value appears in this callback any more — the toasts it
+         * raises name a tone, and the colour is resolved by Toasts at render.
+         * That is the point of the change: a dependency array cannot go stale
+         * on a value it never captures. `api` stays because the body reads it
+         * directly; it was missing before, masked only by `fetchAll` happening
+         * to close over the same value. */
       }, [fetchAll, fetchForge, toast, api]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
