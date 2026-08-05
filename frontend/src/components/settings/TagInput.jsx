@@ -16,7 +16,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 // actively misleading (the mappings field wants "/media/tv=/data/tv", a
 // format nothing else hinted at). Fields with no schema placeholder fall
 // back to a neutral prompt rather than an example from an unrelated setting.
-export const TagInput = ({ values, onChange, normalize = true, placeholder = "" }) => {
+export const TagInput = ({ values, onChange, normalize = true, placeholder = "", label }) => {
     const { palette, type, space, radius } = useTheme();
     const [draft, setDraft] = useState("");
 
@@ -51,6 +51,9 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
             >
             {v}
             <button
+            // TimeTagInput's × is labelled; these were not. Same control,
+            // same glyph, so it should read the same way.
+            aria-label={`Remove ${v}`}
             onClick={() => onChange(values.filter(x => x !== v))}
             style={{
                 background: "none",
@@ -72,6 +75,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
         {/* Add new tag */}
         <div style={{ display: "flex", gap: space.xxs }}>
         <input
+        aria-label={label ? `Add to ${label}` : "Add"}
         value={draft}
         onChange={e => setDraft(e.target.value)}
         onKeyDown={e => e.key === "Enter" && add()}
@@ -88,6 +92,7 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "" 
         }}
         />
         <button
+        aria-label="Add"
         onClick={add}
         style={{
             padding: `${space.xxs}px ${space.md}px`,

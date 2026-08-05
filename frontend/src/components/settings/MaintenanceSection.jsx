@@ -35,6 +35,13 @@ const ToggleRow = ({ label, description, checked, onChange, disabled = false }) 
     </div>
     </div>
     <button
+    // role + aria-checked is what conveys on/off here. The switch is drawn
+    // entirely with a positioned knob, so without them it announced as an
+    // unlabelled button with no state at all — the label sits in a sibling
+    // div, so aria-label carries it across.
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
     onClick={() => !disabled && onChange(!checked)}
     disabled={disabled}
     style={{

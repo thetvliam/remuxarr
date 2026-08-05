@@ -28,6 +28,7 @@ const IntegerInput = ({ field, value, onChange }) => {
   return (
     <input
     type="number"
+    aria-label={field.label || field.key}
     min={field.min}
     max={field.max}
     value={draft ?? value ?? ""}
@@ -61,23 +62,34 @@ const IntegerInput = ({ field, value, onChange }) => {
 };
 
 // Renders the appropriate control for each setting type
+/* `field.label` is used as the accessible name on every control. FieldRow
+ * renders the visible label as a separate <button> that toggles the
+ * description, so there is no <label for> relationship to inherit and each
+ * control was anonymous — a screen reader announced "edit text, blank"
+ * for every setting on the page. */
 export const SettingInput = ({ field, value, onChange }) => {
   const { palette, type, space, radius } = useTheme();
   if (field.type === "boolean") {
     const on = !!value;
     return (
       <button
+      // A switch, not a button: role plus aria-checked is what conveys
+      // on/off. It was announced as an unlabelled button whose only state
+      // cue was the ■/□ glyph in its text.
+      role="switch"
+      aria-checked={on}
+      aria-label={field.label || field.key}
       onClick={() => onChange(!on)}
       style={{
         padding: `${space.xs}px ${space.xl}px`,
         background: on ? alpha(palette.green, ALPHA.low) : "transparent",
-        border: `1px solid ${on ? palette.green : palette.border}`,
-        borderRadius: radius.sm,
-        color: on ? palette.green : palette.dim,
-        fontSize: type.size.sm,
-        fontFamily: type.family,
-        letterSpacing: type.tracking.wide,
-        cursor: "pointer",
+            border: `1px solid ${on ? palette.green : palette.border}`,
+            borderRadius: radius.sm,
+            color: on ? palette.green : palette.dim,
+            fontSize: type.size.sm,
+            fontFamily: type.family,
+            letterSpacing: type.tracking.wide,
+            cursor: "pointer",
       }}
       >
       {on ? "■ ON" : "□ OFF"}
@@ -93,6 +105,7 @@ export const SettingInput = ({ field, value, onChange }) => {
     return (
       <input
       type={field.sensitive ? "password" : "text"}
+      aria-label={field.label || field.key}
       value={value ?? ""}
       onChange={e => onChange(e.target.value)}
       placeholder={field.placeholder || ""}
@@ -113,6 +126,7 @@ export const SettingInput = ({ field, value, onChange }) => {
   if (field.type === "string_list") {
     return (
       <TagInput
+      label={field.label || field.key}
       values={Array.isArray(value) ? value : []}
       onChange={onChange}
       placeholder={field.placeholder || ""}
@@ -124,6 +138,7 @@ export const SettingInput = ({ field, value, onChange }) => {
   if (field.type === "select") {
     return (
       <select
+      aria-label={field.label || field.key}
       value={value ?? ""}
       onChange={e => onChange(e.target.value)}
       style={{
