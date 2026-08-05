@@ -143,9 +143,14 @@ export function useActions({
   const openDetail = (item, endpoint) => {
     setModal(item); // show immediately with basic data
     fetch(`${api}${endpoint}/${item.id}`)
-    .then(r => r.json())
+    // Without the r.ok check, a 404's JSON error body was passed straight
+    // to setModal — so the modal's contents became { detail: "…" }, the
+    // filename and planned actions vanished, and planned_actions being
+    // undefined left it on "Loading…" forever with no error shown.
+    // Falling back to the row data keeps the modal useful.
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then(full => setModal(full))
-    .catch(() => {}); // keep basic modal if fetch fails
+    .catch(() => {}); // keep the basic modal if the detail fetch fails
   };
 
   // Re-queue a failed/cancelled item and close the modal
