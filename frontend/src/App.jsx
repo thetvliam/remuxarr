@@ -190,7 +190,18 @@ export default function App() {
     /* ── Render ───────────────────────────────────────────────────────────── */
     return (
       <div style={{
-        height: "100vh",
+        /* dvh, not vh. vh is the viewport INCLUDING the mobile address bar,
+         * so the bottom of the layout — and the toast stack anchored to it —
+         * sat underneath the bar. DetailModal already used dvh for exactly
+         * this reason and said so; the shell it sits in did not.
+         *
+         * Feature-detected rather than written as two declarations: this is a
+         * JS object, not a CSS rule, so a duplicate key would just replace the
+         * first and leave no fallback at all on a browser without dvh. */
+        height:
+        typeof CSS !== "undefined" && CSS.supports?.("height", "100dvh")
+        ? "100dvh"
+        : "100vh",
         display: "flex",
         flexDirection: "column",
         background: palette.bg,
