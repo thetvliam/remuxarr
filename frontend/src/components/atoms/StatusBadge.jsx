@@ -16,7 +16,7 @@ export const StatusBadge = ({ status }) => {
             letterSpacing: type.tracking.wide,
             fontWeight: type.weight.bold,
         }}>
-        {(status || "").replace(/_/g, " ").toUpperCase()}
+        {(status || "").replaceAll("_", " ").toUpperCase()}
         </span>
     );
 };

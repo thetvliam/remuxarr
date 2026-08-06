@@ -17,7 +17,7 @@ import { Btn } from "./atoms/Btn";
  * a second fetch that includes planned_actions. An unoptimised component
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
   const { palette, type, space, radius, size, surface, actionCfg } = useTheme();
   /* Read through a ref so the listener is registered once. App passes
@@ -222,7 +222,7 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
           const cfg = actionCfg[a.action_type] || { bg: surface.badgeFallbackBg, border: palette.border };
           return (
             <div
-            key={i}
+            key={a.order ?? i}
             style={{
               display: "flex",
               alignItems: "flex-start",

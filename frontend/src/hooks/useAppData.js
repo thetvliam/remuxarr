@@ -220,11 +220,9 @@ export function useAppData() {
    * degrades to the fallback rather than rendering that colour. */
   const toast = useCallback((msg, tone) => {
     const id = Date.now() + Math.random();
-    setToasts(t => {
-      const next = [...t, { id, msg, tone }];
-      return next.slice(-8);
-    });
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
+    setToasts(t => [...t, { id, msg, tone }].slice(-8));
+    const dismiss = () => setToasts(t => t.filter(x => x.id !== id));
+    setTimeout(dismiss, 5000);
   }, []);
 
   /* ── Data fetching ────────────────────────────────────────────────────── */

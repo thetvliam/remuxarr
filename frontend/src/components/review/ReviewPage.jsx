@@ -32,10 +32,10 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
             const r = await fetch(`${api}/api/queue/resolve-subtitles-bulk`, { method: "POST" });
             if (r.ok) {
                 const data = await r.json();
-                toast?.(
-                    `Resolved ${data.resolved}${data.still_unresolved ? `, ${data.still_unresolved} still needed review` : ""}`,
-                    "info",
-                );
+                const stillNeeded = data.still_unresolved
+                ? `, ${data.still_unresolved} still needed review`
+                : "";
+                toast?.(`Resolved ${data.resolved}${stillNeeded}`, "info");
                 onRefresh();
             } else {
                 toast?.("Bulk resolve failed", "error");

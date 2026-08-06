@@ -181,7 +181,7 @@ const EmailBreakerStatus = ({ api }) => {
     return () => clearInterval(id);
   }, [api]);
 
-  if (!state || !state.tripped) return null;
+  if (!state?.tripped) return null;
 
   return (
     <div style={{
@@ -529,7 +529,8 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   // schema grouped by declared group name
   const groupsMap = schema.reduce((acc, field) => {
     const g = field.group || "General";
-    (acc[g] = acc[g] || []).push(field);
+    acc[g] ??= [];
+    acc[g].push(field);
     return acc;
   }, {});
 
