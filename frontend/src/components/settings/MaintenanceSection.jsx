@@ -272,12 +272,20 @@ export const MaintenanceSection = ({ api, toast }) => {
       if (r.ok) {
         const data = await r.json();
         setCleanupResult(data.removed);
-        toast?.(
-          data.removed === 0
-          ? "Cleanup complete — no stale entries found"
-          : `Cleanup complete — removed ${data.removed} stale ${data.removed === 1 ? "entry" : "entries"}`,
-          "info",
-        );
+        // No success toast here. The backend broadcasts "cleanup_completed"
+        // over the WebSocket and useAppData raises the toast from that, so
+        // toasting the HTTP response too produced two near-identical messages
+        // for every click ("removed N stale entries" here vs "N stale entries
+        // removed" there — and character-for-character identical when the
+        // count was zero).
+        //
+        // The WebSocket is the right one to keep: it also refreshes the
+        // history and review panels, and it fires for a cleanup triggered
+        // anywhere, not just from this button. The inline cleanupResult below
+        // still gives immediate local feedback.
+        //
+        // The failure paths keep their toasts — a request that never reached
+        // the backend produces no broadcast, so nothing else would report it.
       } else {
         toast?.("Cleanup failed", "error");
       }

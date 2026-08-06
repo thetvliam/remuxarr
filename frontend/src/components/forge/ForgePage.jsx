@@ -10,6 +10,7 @@ export const ForgePage = ({
   api, forgeRefreshKey,
   active, processed,
   onAdd, onUndo,
+  workerPaused = false,
   isMobile = false,
 }) => {
   const { palette, type, space, size } = useTheme();
@@ -17,7 +18,7 @@ export const ForgePage = ({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-    <ForgeActivePanel job={active} />
+    <ForgeActivePanel job={active} workerPaused={workerPaused} />
 
     <div style={{
       flex: 1,

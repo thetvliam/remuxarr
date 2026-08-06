@@ -1,0 +1,33 @@
+# Coverage settings for SonarQube import.
+#
+# relative_files is the important one. By default coverage.py writes an
+# absolute <source> path and filenames relative to it ("config.py"), which
+# SonarQube can only resolve if the scanner runs from the same directory the
+# tests ran in. That silently breaks the moment coverage is generated in a
+# container, in CI, or from a different working directory — the report parses
+# fine and every file reports as uncovered.
+#
+# With relative_files, paths are written as "app/config.py", matching how
+# SonarQube identifies files regardless of where either step ran.
+
+[run]
+# source = . rather than = app, so filenames are written as "app/core/forge.py"
+# outright instead of "core/forge.py" relative to a <source> element. Both are
+# resolvable in principle, but the explicit form removes any dependence on how
+# the importer joins <source> to each filename.
+source = .
+relative_files = True
+branch = False
+
+omit =
+    tests/*
+    frontend/*
+    */__pycache__/*
+    */.venv/*
+    */venv/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError

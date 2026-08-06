@@ -352,6 +352,7 @@ export default function App() {
             processed={forgeProcessed}
             onAdd={forgeAdd}
             onUndo={forgeUndo}
+            workerPaused={workerPaused}
             isMobile={isMobile}
             />
             </div>
