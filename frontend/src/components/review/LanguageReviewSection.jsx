@@ -24,7 +24,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * unexplained in the other.
  *
  * Everything that genuinely differs between the two is a prop.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═ * *══════════════════════════════════════════════════════════════════════════ */
 export const LanguageReviewSection = ({
     api,
     onRefresh,
@@ -175,7 +175,8 @@ export const LanguageReviewSection = ({
                 // been processed once before, just with the wrong language tag).
                 onRefresh?.();
                 setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
-            } catch (_) {
+            } catch (err) {
+                console.error("Language review: resolve request failed", err);
                 // A rejected fetch (offline, DNS, connection reset) never reaches the
                 // !r.ok check above, and without this escapes as an unhandled promise
                 // rejection while the UI shows nothing at all.
@@ -208,7 +209,8 @@ export const LanguageReviewSection = ({
                  * row — no queue item changes hands, so there is nothing for
                  * those views to re-read. */
                 setRefreshKey(k => k + 1);
-            } catch (_) {
+            } catch (err) {
+                console.error("Language review: ignore request failed", err);
                 // A rejected fetch (offline, DNS, connection reset) never reaches the
                 // !r.ok check above, and without this escapes as an unhandled promise
                 // rejection while the UI shows nothing at all.

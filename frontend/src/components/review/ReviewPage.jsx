@@ -11,7 +11,7 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * MANUAL REVIEW PAGE
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
@@ -40,7 +40,8 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
             } else {
                 toast?.("Bulk resolve failed", "error");
             }
-        } catch (_) {
+        } catch (err) {
+            console.error("Bulk resolve failed", err);
             toast?.("Bulk resolve failed", "error");
         } finally {
             setBulkResolving(false);

@@ -86,7 +86,8 @@ export function useActions({
       // Tagged with status: "dry_run" so only that tab refreshes — clearing
       // dry-run previews has no effect on success/failed/skipped items.
       setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "dry_run" }));
-    } catch (_) {
+    } catch (err) {
+      console.error("Clear dry-run previews failed", err);
       toast("Failed to clear dry-run previews", "error");
     }
   };
@@ -226,7 +227,8 @@ export function useActions({
       }
       toast(`Removed from queue: ${item.file?.filename || "file"}`, "neutral");
       fetchAll();
-    } catch (_) {
+    } catch (err) {
+      console.error("Remove queue item failed", err);
       toast("Failed to remove item", "error");
     }
   };
@@ -244,7 +246,8 @@ export function useActions({
         "neutral",
       );
       fetchAll();
-    } catch (_) {
+    } catch (err) {
+      console.error("Clear queue failed", err);
       toast("Failed to clear queue", "error");
     }
   };
@@ -256,7 +259,8 @@ export function useActions({
       if (!r.ok) { toast("Failed to prioritize item", "error"); return; }
       toast(`Moved to top: ${item.file?.filename || "file"}`, "notice");
       fetchAll();
-    } catch (_) {
+    } catch (err) {
+      console.error("Prioritize queue item failed", err);
       toast("Failed to prioritize item", "error");
     }
   };
@@ -282,7 +286,8 @@ export function useActions({
       if (retried > 0) {
         setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Retry-all failed", err);
       toast("Retry all failed", "error");
     }
   };

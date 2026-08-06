@@ -13,7 +13,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *
  * Each toggle/tag saves immediately via PATCH /api/settings/{key} so
  * there's no separate Save button needed (mirrors how DangerZone works).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
@@ -251,7 +251,8 @@ export const MaintenanceSection = ({ api, toast }) => {
         revert();
         toast?.("Failed to save setting", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Save maintenance setting failed", err);
       revert();
       toast?.("Failed to save setting", "error");
     }
@@ -274,7 +275,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Cleanup failed", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Cleanup failed", err);
       toast?.("Cleanup failed", "error");
     } finally {
       setCleanupRunning(false);
@@ -300,7 +302,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to start rescan", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Rescan request failed", err);
       toast?.("Failed to start rescan", "error");
     }
   };
@@ -318,7 +321,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to check for orphaned files", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Orphaned-file check failed", err);
       toast?.("Failed to check for orphaned files", "error");
     } finally {
       setOrphanedLoading(false);
@@ -365,7 +369,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to remove orphaned files", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Remove orphaned files failed", err);
       toast?.("Failed to remove orphaned files", "error");
     } finally {
       setOrphanedRemoving(false);

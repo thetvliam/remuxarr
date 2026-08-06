@@ -49,7 +49,8 @@ export const FullBackupSection = ({ api, toast }) => {
       } else {
         toast?.(data.detail || "Import failed", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Full backup import failed", err);
       toast?.("Import failed", "error");
     } finally {
       setImporting(false);

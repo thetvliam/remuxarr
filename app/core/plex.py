@@ -144,8 +144,8 @@ def _find_section_for_path(base_url: str, token: str, plex_path: str) -> int | N
     """
     try:
         data = _plex_request(base_url, token, "/library/sections")
-    except Exception as exc:
-        logger.error("Plex: failed to list library sections: %s", exc)
+    except Exception:
+        logger.exception("Plex: failed to list library sections")
         return None
 
     directories = data.get("MediaContainer", {}).get("Directory", [])
@@ -197,8 +197,8 @@ def _get_section_items(
         data = _plex_request(
             base_url, token, f"/library/sections/{section_id}/all",
         )
-    except Exception as exc:
-        logger.error("Plex: failed to list items in section %d: %s", section_id, exc)
+    except Exception:
+        logger.exception("Plex: failed to list items in section %d", section_id)
         return {}
 
     items: dict[str, dict] = {}
@@ -390,8 +390,8 @@ def notify_plex_new_file(
         )
     except urllib.error.HTTPError as exc:
         logger.error("Plex: refresh HTTP %d for %s: %s", exc.code, folder, exc.reason)
-    except Exception as exc:
-        logger.error("Plex: refresh failed for %s: %s", folder, exc)
+    except Exception:
+        logger.exception("Plex: refresh failed for %s", folder)
 
 
 def notify_plex_reprocessed_file(
@@ -476,8 +476,8 @@ def notify_plex_reprocessed_file(
             "Plex: analyze HTTP %d for ratingKey %d: %s",
             exc.code, rating_key, exc.reason,
         )
-    except Exception as exc:
-        logger.error("Plex: analyze failed for ratingKey %d: %s", rating_key, exc)
+    except Exception:
+        logger.exception("Plex: analyze failed for ratingKey %d", rating_key)
 
     # Reached here regardless of whether the PUT succeeded or raised a
     # caught exception above — either way, the analyze was attempted, so

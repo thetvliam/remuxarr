@@ -14,7 +14,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * Auto-scroll keeps the list pinned to the newest entry.  It disengages
  * automatically when the user scrolls up, and re-engages when they scroll
  * back to the bottom.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 
 // CRITICAL ranks above ERROR. It was equal, so the two were
 // indistinguishable to the filter: selecting ERROR included CRITICAL with
@@ -82,7 +82,8 @@ export const LogViewer = ({ api, toast }) => {
           return;
         }
         setAllRecords([]);
-      } catch (_) {
+      } catch (err) {
+        console.error("Clear logs failed", err);
         toast?.("Could not reach the server", "error");
       } finally {
         setClearing(false);
