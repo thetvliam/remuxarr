@@ -16,6 +16,7 @@ import os
 import shutil
 from dataclasses import replace as dc_replace
 from datetime import datetime
+from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision, analyze_file
@@ -110,7 +111,7 @@ def abort_job(job_id: int) -> bool:
         if job and job.status == "processing":
             job.status         = "cancelled"
             job.error_message  = "Aborted by user"
-            job.completed_at   = datetime.utcnow()
+            job.completed_at   = utcnow()
             if job.media_file:
                 # Reset the delta-scan sentinels alongside the status, the
                 # same as cancel_item / clear_pending / clear_dry_run and
@@ -154,7 +155,7 @@ async def start_worker() -> None:
             for job in stuck:
                 job.status        = "failed"
                 job.error_message = "Interrupted by container restart or crash"
-                job.completed_at  = datetime.utcnow()
+                job.completed_at  = utcnow()
                 if job.media_file:
                     job.media_file.status = "error"
             db.commit()
@@ -961,7 +962,7 @@ def _claim_next() -> int | None:
             return None
 
         job.status     = "processing"
-        job.started_at = datetime.utcnow()
+        job.started_at = utcnow()
         db.commit()
         return job.id
     except Exception:
@@ -1073,7 +1074,7 @@ def _load_job_data(job_id: int):
             job.status = "skipped"
             job.reason = decision.reason
             job.review_subtitles = None
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utcnow()
             media.status = "skipped"
             db.commit()
             return None
@@ -1143,7 +1144,7 @@ def _finish_job(
         else:
             job.status = "success" if success else "failed"
 
-        job.completed_at  = datetime.utcnow()
+        job.completed_at  = utcnow()
         if success:
             job.progress = 100.0   # leave progress untouched on failure
         job.output_path   = output_path
@@ -1159,7 +1160,7 @@ def _finish_job(
                     media.status = "queued"
                 else:
                     media.status         = "processed"
-                    media.last_processed = datetime.utcnow()
+                    media.last_processed = utcnow()
                     # Track new path if container changed (e.g. MKV → MP4)
                     if output_path and output_path != media.path:
                         # A stale MediaFile row from a previous processing
@@ -1326,7 +1327,7 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
             if job and job.status == "processing":
                 job.status        = "failed"
                 job.error_message = reason[:500]
-                job.completed_at  = datetime.utcnow()
+                job.completed_at  = utcnow()
                 if job.media_file:
                     job.media_file.status = "error"
                 db.commit()

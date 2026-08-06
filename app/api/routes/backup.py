@@ -26,6 +26,7 @@ import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime
+from app.core.timeutil import utcnow, utcnow_iso_z
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 
@@ -109,7 +110,7 @@ def export_backup(include_secrets: bool = True):
 
         manifest = {
             "remuxarr_export": "full_backup",
-            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "exported_at": utcnow_iso_z(),
             "includes_secrets": include_secrets,
             "note": (
                 "Restoring this on a different system assumes the same "
@@ -132,7 +133,7 @@ def export_backup(include_secrets: bool = True):
         with open(zip_path, "rb") as f:
             content = f.read()
 
-    filename = f"remuxarr-backup-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
+    filename = f"remuxarr-backup-{utcnow().strftime('%Y%m%d-%H%M%S')}.zip"
     return Response(
         content=content,
         media_type="application/zip",
@@ -210,7 +211,7 @@ async def import_backup(file: UploadFile = File(...)):
         live_path = app_settings.DATABASE_PATH
         pre_import_backup = os.path.join(
             os.path.dirname(live_path),
-            f"remuxarr.db.before-import-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+            f"remuxarr.db.before-import-{utcnow().strftime('%Y%m%d-%H%M%S')}",
         )
         try:
             _wal_safe_backup(live_path, pre_import_backup)

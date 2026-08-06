@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from app.core.timeutil import utcnow
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -232,7 +233,7 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.status = "skipped"
         item.reason = decision.reason
         item.review_subtitles = None
-        item.completed_at = datetime.utcnow()
+        item.completed_at = utcnow()
         media.status = "skipped"
         return
 
@@ -348,7 +349,7 @@ def clear_pending(db: Session = Depends(get_db)):
         .filter(QueueItem.status == "pending")
         # completed_at stamped for the same reason as cancel_item — see
         # its comment (NULLs sort last in the completed_at-DESC history).
-        .update({"status": "cancelled", "completed_at": datetime.utcnow()})
+        .update({"status": "cancelled", "completed_at": utcnow()})
     )
     if file_ids:
         db.query(MediaFile).filter(
@@ -439,7 +440,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     # without it would sink to the bottom of the Failed tab regardless of
     # recency and render a "—" timestamp. cancel_item and clear_pending
     # were the two "cancelled"-producing paths that missed this.
-    item.completed_at = datetime.utcnow()
+    item.completed_at = utcnow()
     if item.media_file:
         item.media_file.size   = -1
         item.media_file.mtime  = -1.0

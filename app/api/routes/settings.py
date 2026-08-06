@@ -12,6 +12,7 @@ import json
 import urllib.error
 import urllib.request
 from datetime import datetime
+from app.core.timeutil import utcnow_iso_z
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, UploadFile
@@ -118,7 +119,7 @@ def export_settings(include_secrets: bool = True, db: Session = Depends(get_db))
 
     payload = {
         "remuxarr_export": "settings",
-        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "exported_at": utcnow_iso_z(),
         "includes_secrets": include_secrets,
         "settings": settings_out,
     }

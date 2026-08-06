@@ -18,6 +18,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -632,7 +633,7 @@ def _process_file(
         existing.container     = fmt_info.get("container")
         existing.duration      = fmt_info.get("duration")
         existing.video_codec   = primary_video_codec
-        existing.last_scanned  = datetime.utcnow()
+        existing.last_scanned  = utcnow()
         media_file = existing
     else:
         media_file = MediaFile(
@@ -644,7 +645,7 @@ def _process_file(
             container   = fmt_info.get("container"),
             duration    = fmt_info.get("duration"),
             video_codec = primary_video_codec,
-            last_scanned = datetime.utcnow(),
+            last_scanned = utcnow(),
         )
         db.add(media_file)
 
@@ -789,7 +790,7 @@ def _process_file(
         )
         if existing_skip:
             existing_skip.reason       = decision.reason
-            existing_skip.completed_at = datetime.utcnow()
+            existing_skip.completed_at = utcnow()
         else:
             db.add(QueueItem(
                 file_id       = media_file.id,
@@ -797,7 +798,7 @@ def _process_file(
                 is_dry_run    = False,
                 reason        = decision.reason,
                 original_size = current_size,
-                completed_at  = datetime.utcnow(),
+                completed_at  = utcnow(),
             ))
 
         db.commit()
@@ -981,5 +982,3 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
-
-

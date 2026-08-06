@@ -10,6 +10,7 @@ planned_actions— individual steps that will/did happen for a job
 app_settings   — key/value config store (editable via UI)
 """
 from datetime import datetime
+from app.core.timeutil import utcnow
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Float,
     ForeignKey, Integer, String, Text,
@@ -45,9 +46,9 @@ class MediaFile(Base):
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)
 
-    last_scanned   = Column(DateTime, default=datetime.utcnow)
+    last_scanned   = Column(DateTime, default=utcnow)
     last_processed = Column(DateTime)
-    created_at     = Column(DateTime, default=datetime.utcnow)
+    created_at     = Column(DateTime, default=utcnow)
 
     # JSON dict mapping stream_index (as string) -> "keep" | "remove",
     # set when the user resolves a manual-review flag for a non-convertible
@@ -177,7 +178,7 @@ class QueueItem(Base):
     original_size = Column(BigInteger)
     output_size   = Column(BigInteger)
 
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    created_at   = Column(DateTime, default=utcnow)
     started_at   = Column(DateTime)
     completed_at = Column(DateTime)
 
@@ -245,7 +246,7 @@ class AppSetting(Base):
 
     key        = Column(String, primary_key=True)
     value      = Column(Text,   nullable=False)   # JSON-encoded
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +281,7 @@ class Ac3ForgeJob(Base):
     original_size = Column(BigInteger)
     output_size   = Column(BigInteger)
 
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    created_at   = Column(DateTime, default=utcnow)
     started_at   = Column(DateTime)
     completed_at = Column(DateTime)
 
@@ -324,7 +325,7 @@ class PlexAnalyzeBacklog(Base):
     # skipped entirely as unnecessary.
     expected_language = Column(String, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     media_file = relationship("MediaFile", backref="plex_backlog_entries")
 
@@ -393,7 +394,7 @@ class AudioLanguageFlag(Base):
     # every page load to build its options.
     detected_language = Column(String, index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     media_file = relationship("MediaFile", backref="audio_language_flag")
 
@@ -427,6 +428,6 @@ class SubtitleLanguageFlag(Base):
     stream_index = Column(Integer, nullable=False)
     detected_language = Column(String, index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     media_file = relationship("MediaFile", backref="subtitle_language_flag")

@@ -27,6 +27,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -450,7 +451,7 @@ def claim_next_forge_job() -> int | None:
             return None
 
         job.status     = "processing"
-        job.started_at = datetime.utcnow()
+        job.started_at = utcnow()
         db.commit()
         return job.id
     except Exception:
@@ -676,7 +677,7 @@ def finish_forge_job(
         if not job:
             return
 
-        job.completed_at  = datetime.utcnow()
+        job.completed_at  = utcnow()
         job.progress      = 100.0 if success else job.progress
         job.output_size   = output_size
         job.error_message = error
