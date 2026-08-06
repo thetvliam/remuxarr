@@ -47,6 +47,58 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 FRONTEND_DEV  = Path(__file__).parent.parent / "frontend"
 
 
+# ── Background task registry ──────────────────────────────────────────────────
+# asyncio holds only a WEAK reference to a running task. A task with no other
+# referent can therefore be garbage-collected mid-await — silently, with no
+# exception raised and nothing written to the log. Both long-lived services
+# below (the scan scheduler and the Plex backlog drain) were previously
+# created with a bare asyncio.create_task() whose return value was discarded,
+# which is exactly that situation: the failure mode is "scheduled scans just
+# stopped happening at some point and nothing says why".
+#
+# Holding a strong reference for the task's lifetime removes the possibility.
+# The done-callback discards it again so this set tracks only live tasks
+# rather than growing for the life of the process.
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro, name: str) -> asyncio.Task:
+    """Start a long-lived background task and keep it referenced."""
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+async def _cancel_background_tasks() -> None:
+    """
+    Cancel every registered background task and wait for it to unwind.
+
+    Mirrors stop_worker()'s existing shutdown pattern: cancel, then await and
+    swallow the resulting CancelledError, which is the expected outcome rather
+    than an error. Iterates over a copy because the done-callback mutates the
+    set as each task finishes.
+
+    Previously these tasks were never cancelled at all — the lifespan stopped
+    the worker and returned, leaving both services to be torn down with the
+    loop. Cancelling explicitly means their own cleanup paths (the `finally`
+    blocks in scheduler.py) actually run.
+    """
+    for task in list(_background_tasks):
+        if not task.done():
+            task.cancel()
+    for task in list(_background_tasks):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Background task %s raised during shutdown", task.get_name()
+            )
+
+
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -56,10 +108,11 @@ async def lifespan(app: FastAPI):
     _cleanup_orphaned_temp_files()
     await start_worker()
     from app.api.ws_manager import ws_manager
-    asyncio.create_task(run_scheduler(ws_manager))
-    asyncio.create_task(run_plex_backlog_drain())
+    _spawn(run_scheduler(ws_manager), name="remuxarr-scheduler")
+    _spawn(run_plex_backlog_drain(), name="remuxarr-plex-backlog-drain")
     yield
     await stop_worker()
+    await _cancel_background_tasks()
     logger.info("━━━ %s stopped ━━━", settings.APP_NAME)
 
 
