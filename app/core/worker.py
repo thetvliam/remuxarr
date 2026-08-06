@@ -733,7 +733,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             subtitle_pairs = [
                 (a.stream_index, a.external_path) for a in extract_actions
             ]
-            result, srt_results = await execute_ffmpeg_combined(
+            result, _ = await execute_ffmpeg_combined(
                 input_path          = input_path,
                 output_path         = output_path,
                 decision            = decision,
@@ -785,7 +785,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
-                result, srt_results = await execute_ffmpeg_combined(
+                result, _ = await execute_ffmpeg_combined(
                     input_path           = input_path,
                     output_path          = output_path,
                     decision             = retry_decision,
@@ -803,9 +803,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # untouched — the previous partial-success contract here could
             # record job SUCCESS while a subtitle had silently vanished
             # (removed from the mux, never written as a sidecar, only a
-            # log warning to show for it). srt_results is retained in the
-            # return shape for per-track detail, but no partial-failure
-            # branch exists anymore.
+            # log warning to show for it). The per-track ExtractionResults
+            # are therefore discarded above rather than inspected: under
+            # all-or-nothing every one of them mirrors result.success, so
+            # checking them would only re-test result.success under another
+            # name. They remain in the function's return shape for callers
+            # that want the per-track paths.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
             #
@@ -1915,12 +1918,12 @@ async def _process_next_forge(ws_manager) -> bool:
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)
         await loop.run_in_executor(
-            None, finish_forge_job, job_id, False, None, None, str(exc)
+            None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
         await loop.run_in_executor(
             None, finish_forge_job,
-            job_id, result.success, result.output_path, result.output_size, result.error
+            job_id, result.success, result.output_size, result.error
         )
 
     final = await loop.run_in_executor(None, load_forge_final_state, job_id)

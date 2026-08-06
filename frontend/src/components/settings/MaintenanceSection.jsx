@@ -91,7 +91,13 @@ const TimeTagInput = ({ value = [], onChange }) => {
       setError("That time is already in the list");
       return;
     }
-    onChange([...value, t].sort());
+    // Explicit comparator: the intent is chronological order, and a bare
+    // .sort() only happens to produce it because isValidTime above enforces
+    // zero-padded 24-hour HH:MM, where lexicographic and chronological
+    // coincide. That is an invisible coupling between two functions — relax
+    // the regex to allow "9:00", or move to 12-hour times, and the schedule
+    // list silently misorders with nothing pointing back here.
+    onChange([...value, t].sort((a, b) => a.localeCompare(b)));
     setDraft("");
     setError("");
   };
