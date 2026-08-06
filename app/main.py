@@ -63,11 +63,37 @@ FRONTEND_DEV  = Path(__file__).parent.parent / "frontend"
 _background_tasks: set[asyncio.Task] = set()
 
 
+def _on_task_done(task: asyncio.Task) -> None:
+    """
+    Drop a finished task from the registry, and report it if it died.
+
+    The discard alone was not enough. These are perpetual services: if
+    run_scheduler() raises, the task completes, the callback removes it, and
+    nothing ever retrieves the exception — asyncio then emits "Task exception
+    was never retrieved" at some arbitrary later garbage-collection, detached
+    from the moment of failure and easy to dismiss as noise.
+
+    That is the same class of bug the strong reference above fixes. Holding a
+    reference stops a service vanishing silently; retrieving the exception here
+    stops it *dying* silently. A crashed scheduler now logs, with a traceback,
+    at the instant it crashes.
+    """
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return                      # expected during shutdown
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background task %s died and will not restart", task.get_name(),
+            exc_info=exc,
+        )
+
+
 def _spawn(coro, name: str) -> asyncio.Task:
     """Start a long-lived background task and keep it referenced."""
     task = asyncio.create_task(coro, name=name)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_on_task_done)
     return task
 
 
@@ -75,27 +101,40 @@ async def _cancel_background_tasks() -> None:
     """
     Cancel every registered background task and wait for it to unwind.
 
-    Mirrors stop_worker()'s existing shutdown pattern: cancel, then await and
-    swallow the resulting CancelledError, which is the expected outcome rather
-    than an error. Iterates over a copy because the done-callback mutates the
-    set as each task finishes.
+    Uses gather(return_exceptions=True) rather than awaiting each task in a
+    try/except. The distinction matters: awaiting individually and catching
+    CancelledError cannot tell "the task I just cancelled has unwound" from
+    "this shutdown coroutine is itself being cancelled", and swallows both.
+    gather returns a child's cancellation as a result object while still
+    letting a cancellation aimed at *us* propagate, so shutdown stays
+    interruptible.
+
+    The list() snapshot is load-bearing twice over — the done-callback discards
+    from _background_tasks as each task finishes, so the set mutates across the
+    await, and the snapshot is what lets results be paired back to task names
+    for logging.
 
     Previously these tasks were never cancelled at all — the lifespan stopped
     the worker and returned, leaving both services to be torn down with the
     loop. Cancelling explicitly means their own cleanup paths (the `finally`
     blocks in scheduler.py) actually run.
     """
-    for task in list(_background_tasks):
+    tasks = list(_background_tasks)
+    for task in tasks:
         if not task.done():
             task.cancel()
-    for task in list(_background_tasks):
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception(
-                "Background task %s raised during shutdown", task.get_name()
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for task, result in zip(tasks, results):
+        # CancelledError is the expected outcome here, not a failure.
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            # exc_info=result, not logger.exception(): there is no active
+            # exception outside an except block, so exception() would log
+            # "NoneType: None" where the traceback should be.
+            logger.error(
+                "Background task %s raised during shutdown", task.get_name(),
+                exc_info=result,
             )
 
 

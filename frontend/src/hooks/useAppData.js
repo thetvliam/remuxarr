@@ -221,7 +221,8 @@ export function useAppData() {
   const toast = useCallback((msg, tone) => {
     const id = Date.now() + Math.random();
     setToasts(t => [...t, { id, msg, tone }].slice(-8));
-    const dismiss = () => setToasts(t => t.filter(x => x.id !== id));
+    const isOtherToast = (x) => x.id !== id;
+    const dismiss = () => setToasts(t => t.filter(isOtherToast));
     setTimeout(dismiss, 5000);
   }, []);
 
