@@ -36,7 +36,7 @@ MP4_COMPATIBLE_AUDIO = frozenset({
 # blocked entirely — the file stays in its current container.
 MP4_INCOMPATIBLE_SUBS = frozenset({
     "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
-    "ass", "ssa", "dvb_subtitle",
+    "ass", "ssa", "dvb_subtitle", "vobsub",
     # Text codecs FFmpeg cannot STREAM-COPY into MP4 either — confirmed
     # empirically with a real subrip-in-MKV source: `-c:s copy -f mp4`
     # fails at header-write with "Could not find tag for codec subrip in
@@ -63,6 +63,21 @@ IMAGE_BASED_SUBS = frozenset({
     "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
     "dvb_subtitle", "vobsub",
 })
+
+# INVARIANT: IMAGE_BASED_SUBS must be a SUBSET of MP4_INCOMPATIBLE_SUBS.
+# A bitmap subtitle cannot be stream-copied into MP4 under any circumstances,
+# so anything the codebase calls image-based must also be something it refuses
+# to carry into MP4. The two lists disagreed about "vobsub": it was image-based
+# but not MP4-incompatible, so a kept vobsub track passed the subs_block_mp4
+# check and the conversion proceeded to `-c:s copy -f mp4`, which FFmpeg
+# rejects at header write — the job failed outright, which is exactly what the
+# subrip/webvtt entries above were added to prevent. Reachable via
+# image_subtitle_handling="always_keep" or a "Keep" choice in manual review.
+# (ffprobe usually reports VobSub as "dvd_subtitle", which was in both sets,
+# which is why this never surfaced in practice — but the codebase asserted
+# "vobsub" was possible in one place and not the other.)
+# tests/test_decision.py pins the subset relationship so the two cannot drift
+# apart again.
 
 # Text-based subtitle codecs that FFmpeg can losslessly convert to an
 # external SubRip (.srt) file via the "srt" subtitle encoder. mov_text

@@ -692,6 +692,19 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     the image-subtitle one — confirmed via resolve_subtitles_bulk's own
     docstring, which notes the threshold gate never populates that
     field.
+
+    INVARIANT this depends on: every code path that raises a manual review
+    for a SUBTITLE reason must write a non-null review_subtitles. There is
+    exactly one place that could previously violate it —
+    worker._flag_subtitle_encoding_review, which wrote NULL when no stored
+    Track matched the failing stream indices (stale track rows). That made a
+    subtitle-encoding review indistinguishable from a threshold review, so
+    approving it set und_audio_threshold_acknowledged on a file that never
+    tripped the threshold gate, permanently exempting it from a real check.
+    That path now fails the job instead, since an empty flagged list gives
+    the user nothing to review either way. If a new subtitle-review trigger
+    is ever added, it must populate this field or this inference breaks
+    again — see tests/test_manual_review_refresh.py.
     """
     item = db.get(QueueItem, item_id)
     if not item:

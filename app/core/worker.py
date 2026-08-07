@@ -645,15 +645,57 @@ def _flag_subtitle_encoding_review(
         job = db.get(QueueItem, job_id)
         if job:
             file = db.get(MediaFile, job.file_id)
-            job.status           = "manual_review"
-            job.reason           = reason
-            job.review_subtitles = json.dumps(flagged) if flagged else None
-            job.error_message    = None
-            job.progress         = 0.0
-            job.current_action   = None
-            job.started_at       = None
-            if file:
-                file.status = "manual_review"
+
+            if not flagged:
+                # No Track row matched any failing stream index — reachable
+                # when the stored tracks are stale relative to the file on
+                # disk. Two reasons not to raise a manual review here:
+                #
+                # 1. There is nothing to review. The Review page renders one
+                #    Keep/Remove row per flagged track, so the user would get
+                #    an empty decision, and `reason` above degrades to the
+                #    nonsense "Contains 0 subtitle track () with non-UTF-8
+                #    encoded characters".
+                #
+                # 2. It corrupts an unrelated signal. review_subtitles IS NULL
+                #    is the established discriminator for "this review came
+                #    from the undefined-audio-count gate" — resolve_subtitles_
+                #    bulk and approve_manual_review both rely on it. Writing a
+                #    NULL here made a subtitle-encoding review indistinguishable
+                #    from a threshold review, so approving it set
+                #    und_audio_threshold_acknowledged on a file that never
+                #    tripped that gate, permanently exempting it.
+                #
+                # Failing is both honest and actionable: a rescan refreshes the
+                # Track rows, after which a retry flags the real tracks.
+                logger.warning(
+                    "Job %d failed on subtitle encoding but no stored track "
+                    "matched stream indices %s — the track records are stale. "
+                    "Failing the job rather than raising an empty review.",
+                    job_id, sorted(failed_stream_indices),
+                )
+                job.status        = "failed"
+                job.error_message = (
+                    "Subtitle extraction failed on non-UTF-8 encoded text, but "
+                    "the affected tracks could not be identified from this "
+                    "file's stored track list. Re-scan the file to refresh its "
+                    "track data, then retry."
+                )
+                job.completed_at   = utcnow()
+                job.progress       = 0.0
+                job.current_action = None
+                if file:
+                    file.status = "error"
+            else:
+                job.status           = "manual_review"
+                job.reason           = reason
+                job.review_subtitles = json.dumps(flagged)
+                job.error_message    = None
+                job.progress         = 0.0
+                job.current_action   = None
+                job.started_at       = None
+                if file:
+                    file.status = "manual_review"
         try:
             db.commit()
         except Exception:

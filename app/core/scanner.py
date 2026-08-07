@@ -741,17 +741,49 @@ def _process_file(
             QueueItem.status  == "manual_review",
         ).first()
 
-        if not already:
+        review_subs = (
+            json.dumps(decision.flagged_subtitles)
+            if decision.flagged_subtitles else None
+        )
+
+        if already:
+            # Refresh in place, mirroring the skip branch below. A fresh
+            # analyze_file() has just run, so both of these can legitimately
+            # differ from what the row was created with — a settings change
+            # alters WHY the file needs review, and a file replaced on disk
+            # alters WHICH subtitle tracks are flagged.
+            #
+            # review_subtitles is the one that matters. resolve_subtitles acts
+            # on the STREAM INDICES stored here, so leaving them stale means a
+            # user's Keep/Remove choice is applied against indices that no
+            # longer describe the file — silently operating on the wrong track.
+            # The stale reason text is merely confusing; this is incorrect.
+            already.reason           = decision.reason
+            already.review_subtitles = review_subs
+            already.original_size    = current_size
+            # Arr IDs can appear after the row was created (e.g. the file was
+            # scanned before Sonarr had imported it), and are never unset.
+            if sonarr_series_id is not None:
+                already.sonarr_series_id = sonarr_series_id
+            if radarr_movie_id is not None:
+                already.radarr_movie_id = radarr_movie_id
+        else:
             db.add(QueueItem(
                 file_id    = media_file.id,
                 status     = "manual_review",
                 is_dry_run = dry_run,
                 reason     = decision.reason,
                 original_size = current_size,
-                review_subtitles = (
-                    json.dumps(decision.flagged_subtitles)
-                    if decision.flagged_subtitles else None
-                ),
+                review_subtitles = review_subs,
+                # Previously omitted, so the column default (True) applied to
+                # every manual-review row. queue._apply_decision_to_item then
+                # moves that same row to "pending" without correcting it, so a
+                # PRE-EXISTING file that went through review reported
+                # is_new_file=True to _load_plex_notify_data — which returns
+                # early with a refresh only and never queues the
+                # PlexAnalyzeBacklog entry. Plex kept stale stream metadata for
+                # exactly the files a human had to intervene on.
+                is_new_file = is_new_file,
                 sonarr_series_id = sonarr_series_id,
                 radarr_movie_id  = radarr_movie_id,
             ))
