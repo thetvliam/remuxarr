@@ -157,35 +157,103 @@ async def lifespan(app: FastAPI):
 
 def _cleanup_orphaned_temp_files() -> None:
     """
-    Remove any .remuxarr_tmp or .forge_tmp files left behind in TEMP_DIR by
-    jobs that were interrupted mid-stream (container restart, SIGKILL,
-    'No space left on device' failures, thread-pool starvation kills, etc.).
+    Remove work-in-progress files left behind by jobs that were interrupted
+    mid-stream (container restart, SIGKILL, 'No space left on device'
+    failures, thread-pool starvation kills, etc.).
 
-    These files live in RAM on Unraid (tmpfs) and silently accumulate until
-    the RAM filesystem fills up, causing 'No space left on device' for
-    subsequent jobs even when the array has plenty of space.
+    Two locations, both necessary:
+
+    1. TEMP_DIR — *.remuxarr_tmp and *.forge_tmp. On Unraid this is tmpfs, so
+       orphans consume RAM and eventually cause 'No space left on device' for
+       later jobs even when the array has plenty of space.
+
+    2. The configured scan_paths — *.part plus the same two temp suffixes.
+       This sweep was missing entirely, and it covers the cases most likely to
+       accumulate large files:
+
+         • _stage_parts() writes "<final_path>.part" NEXT TO THE TARGET, i.e.
+           inside the media library. A crash during the copy leaves a
+           multi-gigabyte "Movie.mkv.part" there permanently. Nothing surfaces
+           it: ".part" is not in MEDIA_EXTENSIONS, so the scanner skips it.
+
+         • _pick_temp_dir() falls back to os.path.dirname(reference_path) when
+           TEMP_DIR is short on space — again the media directory. That
+           fallback fires precisely when disk is already tight, which is
+           exactly when leaked temps hurt most.
+
+    Deleting a .part is safe: it is a staged copy that has not yet been
+    os.replace()'d into position, so the original file is still intact and
+    nothing is lost by removing it.
+
+    Called from lifespan BEFORE start_worker(), so none of this can race a job
+    of our own. The mtime guard below covers the one case ordering does not:
+    a second instance pointed at the same library, mid-copy right now.
     """
+    import time
+
     temp_dir = settings.TEMP_DIR
-    try:
-        orphans = (
-            glob.glob(os.path.join(temp_dir, "*.remuxarr_tmp"))
-            + glob.glob(os.path.join(temp_dir, "*.forge_tmp"))
-        )
-        if not orphans:
-            return
-        total_bytes = 0
-        for f in orphans:
+    # A .part being actively written by another process would be recently
+    # modified. Anything older than this is not in flight.
+    MIN_AGE_SECONDS = 300
+    now = time.time()
+
+    def _remove(paths: list[str], label: str) -> tuple[int, int]:
+        removed = total = 0
+        for f in paths:
             try:
-                size = os.path.getsize(f)
+                st = os.stat(f)
+                if now - st.st_mtime < MIN_AGE_SECONDS:
+                    logger.info(
+                        "Skipping recently-modified orphan %s (%.0fs old) — it may "
+                        "belong to another running instance", f, now - st.st_mtime,
+                    )
+                    continue
                 os.remove(f)
-                total_bytes += size
-                logger.debug("Removed orphaned temp file: %s", f)
+                removed += 1
+                total += st.st_size
+                logger.debug("Removed orphaned %s file: %s", label, f)
             except OSError as exc:
-                logger.warning("Could not remove orphaned temp file %s: %s", f, exc)
-        logger.info(
-            "Startup cleanup: removed %d orphaned temp file(s) (%.1f MB freed from %s)",
-            len(orphans), total_bytes / 1024 / 1024, temp_dir,
-        )
+                logger.warning("Could not remove orphaned file %s: %s", f, exc)
+        return removed, total
+
+    try:
+        found: set[str] = set()
+
+        # 1. The temp directory (flat — nothing nests there).
+        for pattern in ("*.remuxarr_tmp", "*.forge_tmp"):
+            found.update(glob.glob(os.path.join(temp_dir, pattern)))
+
+        # 2. The media library. Walked rather than globbed because libraries
+        #    nest arbitrarily. followlinks stays at its default of False: a
+        #    symlink cycle inside a library would otherwise loop forever, and
+        #    a symlinked directory is not somewhere this should be deleting.
+        try:
+            from app.database.session import SessionLocal, get_app_settings
+
+            with SessionLocal() as db:
+                scan_paths = get_app_settings(db).get("scan_paths") or []
+        except Exception as exc:
+            scan_paths = []
+            logger.warning("Could not read scan_paths for orphan cleanup: %s", exc)
+
+        suffixes = (".part", ".remuxarr_tmp", ".forge_tmp")
+        for root_path in scan_paths:
+            if not root_path or not os.path.isdir(root_path):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(root_path):
+                for name in filenames:
+                    if name.endswith(suffixes):
+                        found.add(os.path.join(dirpath, name))
+
+        if not found:
+            return
+
+        removed, total_bytes = _remove(sorted(found), "temp/part")
+        if removed:
+            logger.info(
+                "Startup cleanup: removed %d orphaned file(s), %.1f MB freed",
+                removed, total_bytes / 1024 / 1024,
+            )
     except Exception as exc:
         logger.warning("Orphaned temp file cleanup failed: %s", exc)
 

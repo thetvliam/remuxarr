@@ -164,6 +164,51 @@ async def start_worker() -> None:
                 len(stuck),
             )
 
+        # Same treatment for forge jobs, which previously had none. A forge
+        # row left at "processing" was permanently wedged: _has_pending_forge()
+        # matches only pending/undo_pending so it is never reclaimed;
+        # get_candidates() and add_to_queue exclude "processing" so the file
+        # cannot be re-added; GET /api/forge/active matches "processing" so the
+        # UI shows it running forever; DELETE /api/forge/{id}/ requires
+        # "pending" so it cannot be cancelled; and abort_job() only knows
+        # _active_task_registry, which forge tasks are never added to. Every
+        # exit was closed — the only recovery was editing the database.
+        #
+        # The mapping is deliberate. A forward job goes to "failed", which is
+        # NOT in the candidate-exclusion list, so the file becomes re-addable.
+        # An undo goes to "undo_failed", which IS excluded from candidates but
+        # is explicitly accepted by the undo route as a retryable state.
+        # Imported locally, matching the other Ac3ForgeJob references in this
+        # module (see _has_pending_forge and _process_next_forge).
+        from app.database.models import Ac3ForgeJob
+
+        stuck_forge = (
+            db.query(Ac3ForgeJob)
+            .filter(Ac3ForgeJob.status == "processing")
+            .all()
+        )
+        if stuck_forge:
+            for job in stuck_forge:
+                job.status       = "undo_failed" if job.is_undo else "failed"
+                # Deliberately hedged rather than asserting the work was lost.
+                # run_staged_subprocess swaps outputs into place atomically, so
+                # an interruption leaves the file either untouched OR fully
+                # rewritten — and from the job row alone there is no way to
+                # tell which. Claiming "failed, nothing happened" would be a
+                # lie half the time, and forge is in-place, so a user who
+                # re-runs it on an already-forged file would add a second AC3
+                # track.
+                job.error_message = (
+                    "Interrupted by container restart or crash. The file may or "
+                    "may not have been modified — check its audio tracks before "
+                    "running this again."
+                )
+                job.completed_at = utcnow()
+            db.commit()
+            logger.info(
+                "Reset %d interrupted forge job(s) on startup", len(stuck_forge)
+            )
+
     _worker_task = asyncio.create_task(_loop(), name="remuxarr-worker")
     logger.info("Background worker started (paused=%s)", _paused)
 
