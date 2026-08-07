@@ -266,6 +266,49 @@ if _static_dir:
     from fastapi.responses import JSONResponse
     from starlette.exceptions import HTTPException as StarletteHTTPException
 
+    # Resolved once at import: the containment check below compares against it
+    # on every 404, and re-resolving per request costs syscalls for a value
+    # that cannot change. resolve() also collapses any symlink in the
+    # configured path itself, so the comparison is symlink-stable.
+    _static_root = _static_dir.resolve()
+
+    def _safe_static_path(url_path: str):
+        """
+        Map a URL path to a file inside the static root, or None.
+
+        This exists because the obvious form — `_static_dir / path.lstrip("/")` —
+        was an unauthenticated arbitrary-file-read. pathlib's `/` operator does
+        not sanitise anything: it happily builds `<root>/../../etc/hostname`,
+        and `.is_file()` then confirms it, and `FileResponse` serves it.
+
+        The important detail, and the one that makes this worse than it looks:
+        the attack does NOT need the literal `../` form. Starlette
+        percent-decodes before populating `request.url.path`, so a plain
+        `GET /%2e%2e/%2e%2e/config/remuxarr.db` arrives here already decoded to
+        `/../../config/remuxarr.db`. The literal form is actually the one that
+        fails, because browsers and curl collapse `..` client-side before
+        sending — which means an ordinary HTTP client, or any scanner probing
+        for traversal, reaches this with the encoded form as a matter of course.
+        No raw socket required.
+
+        The target that matters is the config volume: remuxarr.db stores
+        app_settings in plaintext, including plex_token, sonarr_api_key,
+        radarr_api_key and email_password. The app has no authentication of its
+        own, so reachability of the port is the only precondition.
+
+        resolve() collapses `..` and symlinks, and relative_to() then asserts
+        the result is still inside the root. Note this deliberately rejects a
+        symlink inside the static directory pointing outside it — a Vite build
+        contains no such thing, and "the link target is outside the root" is
+        exactly the case being defended against.
+        """
+        candidate = (_static_root / url_path.lstrip("/")).resolve()
+        try:
+            candidate.relative_to(_static_root)
+        except ValueError:
+            return None
+        return candidate
+
     @app.exception_handler(StarletteHTTPException)
     async def spa_fallback(request: Request, exc: StarletteHTTPException):
         """
@@ -289,12 +332,16 @@ if _static_dir:
             and not path.startswith("/assets")
             and path != "/ws"
         ):
-            # Serve real static files at the dist root (favicon.ico, etc.)
-            candidate = _static_dir / path.lstrip("/")
-            if candidate.is_file():
+            # Serve real static files at the dist root (favicon.ico, etc.),
+            # but only ones that actually resolve inside the static root.
+            candidate = _safe_static_path(path)
+            if candidate and candidate.is_file():
                 return FileResponse(str(candidate))
 
-            # Fall back to the SPA entry point for client-side routes
+            # Fall back to the SPA entry point for client-side routes.
+            # A traversal attempt lands here too, so it is answered with the
+            # ordinary SPA response rather than anything that confirms whether
+            # the requested file exists.
             index = _static_dir / "index.html"
             if index.is_file():
                 return FileResponse(str(index))
