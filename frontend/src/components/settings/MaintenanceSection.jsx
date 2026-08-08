@@ -187,7 +187,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 };
 
 /* ── Main component ─────────────────────────────────────────────────────── */
-export const MaintenanceSection = ({ api, toast }) => {
+export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
@@ -234,7 +234,10 @@ export const MaintenanceSection = ({ api, toast }) => {
       });
     })
     .catch(() => {});
-  }, [api]);
+    // reloadKey: bumped by SettingsPage after a settings import, which changes
+    // these three keys server-side without this component knowing. Without it
+    // the toggles kept rendering pre-import values indefinitely.
+  }, [api, reloadKey]);
 
   /* Applied optimistically so the toggle responds instantly, and rolled
    * back if the write fails. Previously the toast reported the failure but

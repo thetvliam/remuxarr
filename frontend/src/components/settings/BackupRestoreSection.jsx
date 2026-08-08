@@ -8,7 +8,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * actions. Merge semantics, not replace: keys absent from the imported
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
-export const BackupRestoreSection = ({ api, toast }) => {
+export const BackupRestoreSection = ({ api, toast, onImported }) => {
   const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [confirming, setConfirming] = useState(false);
@@ -71,6 +71,17 @@ export const BackupRestoreSection = ({ api, toast }) => {
           (data.skipped ? ` — ${data.skipped} unrecognized key${data.skipped === 1 ? "" : "s"} skipped` : ""),
                 "success",
         );
+        // Not optional. SettingsPage loads schema and values once on mount, so
+        // after an import it keeps rendering PRE-IMPORT values — and because
+        // `baseline` is equally stale, isDirty stays false and nothing on
+        // screen suggests the display is wrong.
+        //
+        // The serious part is save(): it PUTs every schema key from that stale
+        // snapshot, so flipping any single unrelated toggle and pressing Save
+        // silently overwrites the entire import with the pre-import values.
+        // The toast said the import succeeded; the database then says
+        // otherwise. Refetching here is what closes that window.
+        await onImported?.();
       } else {
         toast?.(data.detail || "Import failed", "error");
       }

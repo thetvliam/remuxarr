@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
@@ -460,12 +460,24 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     } catch (_) { return CATEGORIES[0].id; }
   });
 
-  useEffect(() => {
-    Promise.all([
+  // Extracted from the mount effect so it can be re-run on demand. Anything
+  // that changes settings server-side WITHOUT going through this page's own
+  // save() has to call this, or the page keeps rendering pre-change values —
+  // see the reload prop passed to BackupRestoreSection below.
+  const loadSettings = useCallback(() => {
+    return Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                fetch(`${api}/api/settings`).then(r => r.json()),
+                       fetch(`${api}/api/settings`).then(r => r.json()),
     ])
-    .then(([s, v]) => { setSchema(s); setValues(v); setBaseline(v); })
+    .then(([s, v]) => {
+      setSchema(s);
+      setValues(v);
+      // baseline must move with values. It is what isDirty compares against,
+      // so leaving it stale would leave the page looking clean while showing
+      // different data than it holds.
+      setBaseline(v);
+      setLoadError(false);
+    })
     .catch((err) => {
       // Not silent: this is a one-shot load, and on failure `schema` stays []
       // so the entire settings page renders as an empty shell with no field,
@@ -476,6 +488,19 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
       setLoadError(true);
     });
   }, [api]);
+
+  useEffect(() => { loadSettings(); }, [loadSettings]);
+
+  // Bumped alongside loadSettings so sibling sections that fetch their own
+  // settings independently (MaintenanceSection reads three keys directly) also
+  // refetch. Without it the main fields would update after an import while
+  // those three toggles kept showing pre-import state.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reloadAllSettings = useCallback(() => {
+    setReloadKey(k => k + 1);
+    return loadSettings();
+  }, [loadSettings]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, active); } catch (_) { /* ignore */ }
@@ -564,7 +589,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (cat.custom === "maintenance") {
       return (
         <>
-        <MaintenanceSection api={api} toast={toast} />
+        <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
         <LogViewer api={api} toast={toast} />
         </>
       );
@@ -572,7 +597,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (cat.custom === "backup") {
       return (
         <>
-        <BackupRestoreSection api={api} toast={toast} />
+        <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
         <FullBackupSection api={api} toast={toast} />
         <DangerZone api={api} toast={toast} />
         </>

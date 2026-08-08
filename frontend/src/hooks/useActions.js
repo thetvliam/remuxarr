@@ -16,6 +16,7 @@ export function useActions({
   fetchAll,
   fetchForge,
   setHistoryRefreshKey,
+  invalidateHistory,
 }) {
   /* The optimistic update is rolled back on failure, and the failure is
    * reported loudly. This is the app's safety interlock: if the PUT failed
@@ -85,7 +86,7 @@ export function useActions({
       // tab's self-fetching hook re-queries and actually reflects the clear.
       // Tagged with status: "dry_run" so only that tab refreshes — clearing
       // dry-run previews has no effect on success/failed/skipped items.
-      setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "dry_run" }));
+      invalidateHistory?.("dry_run");
     } catch (err) {
       console.error("Clear dry-run previews failed", err);
       toast("Failed to clear dry-run previews", "error");
@@ -170,7 +171,14 @@ export function useActions({
     // wouldn't fire at all if the retry lands on success rather than
     // failure. Bump directly so the Failed tab reflects the removal now,
     // regardless of what the retry eventually resolves to.
-    setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
+    //
+    // Tagged from the ITEM, not hardcoded to "failed". This same handler backs
+    // the modal's ▶ PROCESS NOW button for dry_run items, and _retry_with_reprobe
+    // deletes the dry-run row outright (preserve_completed_record is only true
+    // for success/skipped). eventAffectsTab("failed", "dry_run") is false, so a
+    // hardcoded "failed" left the Dry Run tab showing a row that no longer
+    // existed.
+    invalidateHistory?.(item.status || null);
     toast(`Re-queued: ${item.file?.filename || "file"}`, "notice");
   };
 
@@ -183,6 +191,11 @@ export function useActions({
     }
     setModal(null);
     fetchAll();
+    // fetchAll refetches queue/active/manual-review/worker/scan — never
+    // history. Without this the row the user just dismissed stayed visible in
+    // the History panel until something unrelated triggered a refresh.
+    // Tagged from the item since it could have been in any tab.
+    invalidateHistory?.(item.status || null);
     toast(`Dismissed: ${item.file?.filename || "file"}`, "neutral");
   };
 
@@ -227,6 +240,11 @@ export function useActions({
       }
       toast(`Removed from queue: ${item.file?.filename || "file"}`, "neutral");
       fetchAll();
+      // The DELETE sets QueueItem.status = "cancelled", and history.py folds
+      // "cancelled" into the Failed tab (useHistoryData.eventAffectsTab is
+      // written to handle exactly that mapping). Without this the newly
+      // cancelled item never appeared there and the tab badge stayed stale.
+      invalidateHistory?.("failed");
     } catch (err) {
       console.error("Remove queue item failed", err);
       toast("Failed to remove item", "error");
@@ -246,6 +264,9 @@ export function useActions({
         "neutral",
       );
       fetchAll();
+      // Same as dismissQueueItem: these become "cancelled", which the Failed
+      // tab shows.
+      invalidateHistory?.("failed");
     } catch (err) {
       console.error("Clear queue failed", err);
       toast("Failed to clear queue", "error");
@@ -284,7 +305,7 @@ export function useActions({
       // response comes back, and nothing else will tell the Failed tab
       // that until (and unless) each one individually completes later.
       if (retried > 0) {
-        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
+        invalidateHistory?.("failed");
       }
     } catch (err) {
       console.error("Retry-all failed", err);

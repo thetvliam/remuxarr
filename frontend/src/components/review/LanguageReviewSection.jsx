@@ -29,6 +29,7 @@ export const LanguageReviewSection = ({
     api,
     onRefresh,
     setHistoryRefreshKey,
+    invalidateHistory,
     reviewRefreshKey = 0,
     toast,
     // ── per-flavour configuration ──────────────────────────────────────────
@@ -160,21 +161,47 @@ export const LanguageReviewSection = ({
                 }
                 // Confirmed, not just refreshed. Failure was reported and success
                 // was not, so the only signal either way was the list emptying —
-                // which is also what a no-op looks like. Count captured before
-                // the refresh clears the selection.
-                const applied = selected.size;
-                toast?.(`Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`, "success");
+                // which is also what a no-op looks like.
+                //
+                // The count comes from the RESPONSE, not from selected.size.
+                // The endpoint applies per file and returns {applied, errors[]}
+                // — a file can be missing from disk, have no flag row, or be
+                // mid-job. Reporting the number SENT meant selecting 50
+                // episodes with 12 rejected still said all 50 were re-tagged,
+                // and the rejections surfaced nowhere at all.
+                const data     = await r.json().catch(() => ({}));
+                const applied  = typeof data.applied === "number" ? data.applied : selected.size;
+                const problems = Array.isArray(data.errors) ? data.errors : [];
+
+                if (applied > 0) {
+                    toast?.(`Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`, "success");
+                }
+                if (problems.length) {
+                    // Deliberately not called "failed". One of the outcomes the
+                    // backend returns here is "currently being processed", where
+                    // the choice IS saved and applies automatically after the
+                    // running job finishes — reporting that as a failure would
+                    // be wrong in the opposite direction. The details go to the
+                    // console; the toast just makes sure the count is not
+                    // silently absorbed.
+                    console.warn("Language apply — files not updated now:", problems);
+                    toast?.(
+                        `${problems.length} file${problems.length === 1 ? " was" : "s were"} not updated — ` +
+                        `see the browser console for details`,
+                        applied > 0 ? "neutral" : "error",
+                    );
+                }
                 setRefreshKey(k => k + 1);
                 // This section's own refreshKey above only re-queries ITS OWN
                 // flagged-items list — it has no way to tell the main dashboard's
                 // queue view, or the History panel's tabs, that anything changed.
                 // Applying a correction deletes the file's existing QueueItem and
                 // creates a fresh pending one — onRefresh (fetchAll) picks that up
-                // for the queue; setHistoryRefreshKey covers History, since the
+                // for the queue; invalidateHistory covers History, since the
                 // file was most likely sitting in the Success tab already (having
                 // been processed once before, just with the wrong language tag).
                 onRefresh?.();
-                setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
+                invalidateHistory?.(null);
             } catch (err) {
                 console.error("Language review: resolve request failed", err);
                 // A rejected fetch (offline, DNS, connection reset) never reaches the
@@ -199,7 +226,16 @@ export const LanguageReviewSection = ({
                     toast?.("Failed to ignore the selected files", "error");
                     return;
                 }
-                const ignored = selected.size;
+                // Same reasoning as applyLanguage: the endpoint skips files it
+                // cannot find and returns the number it actually acted on, so
+                // reporting selected.size overstated it.
+                const data    = await r.json().catch(() => ({}));
+                const ignored = typeof data.ignored === "number" ? data.ignored : selected.size;
+                if (ignored < selected.size) {
+                    console.warn(
+                        `Language ignore: sent ${selected.size} file(s), backend ignored ${ignored}`,
+                    );
+                }
                 toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
                 /* Only the local refreshKey, unlike applyLanguage which also calls
                  * onRefresh() and bumps the History key. That asymmetry is

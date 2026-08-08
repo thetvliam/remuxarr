@@ -72,6 +72,30 @@ export function useAppData() {
   // which can touch multiple statuses at once) — every tab refreshes then.
   const [historyRefreshKey, setHistoryRefreshKey] = useState({ key: 0, status: null });
 
+  /**
+   * Mark History as stale.
+   *
+   * Exists because the raw
+   *   setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: X }))
+   * incantation was written out by hand at every call site that might have
+   * invalidated the panel — and four sites that needed it did not have it
+   * (dismissItem, clearQueue, dismissQueueItem, ReviewPage.approve), so a row
+   * the user had just dismissed or cancelled stayed on screen until something
+   * unrelated triggered a refresh.
+   *
+   * fetchAll() does NOT cover this: it refetches active jobs, queue,
+   * manual-review, worker and scan status, and deliberately never touches
+   * history, which paginates separately via useHistoryData.
+   *
+   * @param status  Which status just changed, so a tab unrelated to it can skip
+   *                the refetch. Pass null (the default) when the change could
+   *                affect more than one tab, or when the item's status is not
+   *                known at the call site — null always refreshes.
+   */
+  const invalidateHistory = useCallback((status = null) => {
+    setHistoryRefreshKey(prev => ({ key: prev.key + 1, status }));
+  }, []);
+
   // Incremented whenever the audio/subtitle language flag tables may have
   // changed — the Review page's two language sections fetch their own
   // paginated lists and had no way to learn that.
@@ -323,7 +347,7 @@ export function useAppData() {
              * what keep the UI correct, so they must not sit behind a
              * cosmetic string operation that can throw. */
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            invalidateHistory(msg.status ?? null);
             setReviewRefreshKey(k => k + 1);
             toast(
               msg.status === "dry_run"
@@ -366,7 +390,7 @@ export function useAppData() {
                   "notice",
             );
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            invalidateHistory(null);
             setReviewRefreshKey(k => k + 1);
             break;
 
@@ -378,7 +402,7 @@ export function useAppData() {
               "info",
             );
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            invalidateHistory(null);
             setReviewRefreshKey(k => k + 1);
             break;
 
@@ -410,8 +434,14 @@ export function useAppData() {
          * That is the point of the change: a dependency array cannot go stale
          * on a value it never captures. `api` stays because the body reads it
          * directly; it was missing before, masked only by `fetchAll` happening
-         * to close over the same value. */
-      }, [fetchAll, fetchForge, toast, api]);
+         * to close over the same value.
+         *
+         * invalidateHistory is a useCallback with an empty dep array, so it is
+         * referentially stable and adding it here does not cause this callback
+         * to be rebuilt on every render — it is listed because the rule is set
+         * to error and it caught this omission when the raw
+         * setHistoryRefreshKey calls were routed through the helper. */
+      }, [fetchAll, fetchForge, toast, api, invalidateHistory]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
@@ -429,7 +459,7 @@ export function useAppData() {
         showApiBar, setShowApiBar,
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
-        historyRefreshKey, setHistoryRefreshKey,
+        historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
         reviewRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey,
           toast, fetchAll, fetchForge,
