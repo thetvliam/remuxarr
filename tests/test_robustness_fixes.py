@@ -135,13 +135,25 @@ def test_mutating_returned_settings_cannot_corrupt_the_defaults(db):
 
 # ── B-12: log timestamps ─────────────────────────────────────────────────────
 
-def test_log_timestamps_are_utc(monkeypatch):
+def test_log_timestamps_are_iso_utc(monkeypatch):
     """
-    Every other timestamp the app produces is UTC — DB columns, API payloads,
-    backup manifests. A local-clock log line cannot be lined up against a job's
-    started_at when diagnosing a failure. The container sets no TZ so the two
-    coincide by default, which is why a drift here would go unnoticed.
+    The log record must carry a full ISO-8601 UTC timestamp, not a
+    pre-formatted clock string.
+
+    This field was the one place that bypassed the app's store-UTC /
+    display-local convention: the backend formatted "%H:%M:%S" and LogViewer
+    rendered it raw, so the clock shown was the SERVER's local time. That
+    happened to look right only because the container has no TZ set and runs
+    UTC — it agreed with a UTC user by accident and was wrong for everyone
+    else.
+
+    Formatting it as UTC while still rendering raw made the disagreement
+    visible instead of fixing it: log lines showed UTC while queue and history
+    showed local, an hour apart on BST. Sending ISO lets the frontend apply the
+    same toUtcDate() + toLocaleTimeString() path as every other timestamp, so
+    the viewer agrees with the rest of the UI in every timezone.
     """
+    import datetime as dt
     import logging
     import time
 
@@ -149,7 +161,6 @@ def test_log_timestamps_are_utc(monkeypatch):
         pytest.skip("time.tzset() unavailable on this platform")
 
     from app.core.log_handler import MemoryLogHandler
-    from app.core.timeutil import utcnow
 
     original = os.environ.get("TZ")
     os.environ["TZ"] = "Asia/Tokyo"          # +9, never UTC
@@ -161,9 +172,27 @@ def test_log_timestamps_are_utc(monkeypatch):
             "t", logging.INFO, __file__, 1, "hello", None, None,
         ))
         stamped = handler.get_records()[0]["ts"]
-        assert stamped.startswith(utcnow().strftime("%H:%M")), (
-            f"log stamped {stamped!r} but UTC is "
-            f"{utcnow().strftime('%H:%M:%S')!r} — the handler is using local time"
+
+        # Parseable, and carrying an explicit offset so the frontend does not
+        # have to guess. toUtcDate() keys off exactly this.
+        parsed = dt.datetime.fromisoformat(stamped)
+        assert parsed.tzinfo is not None, (
+            f"{stamped!r} has no timezone information — toUtcDate() would have "
+            "to assume one, which is how this bug started"
+        )
+        assert parsed.utcoffset() == dt.timedelta(0), (
+            f"{stamped!r} is not UTC — the record is being stamped with the "
+            "server's local clock"
+        )
+
+        # And it is genuinely now, not a fixed or shifted value.
+        delta = abs((parsed - dt.datetime.now(dt.timezone.utc)).total_seconds())
+        assert delta < 120, f"timestamp is {delta:.0f}s from now"
+
+        # Explicitly NOT the old bare clock string.
+        assert len(stamped) > 8, (
+            f"{stamped!r} looks like a pre-formatted clock string; the frontend "
+            "cannot convert that to the viewer's local time"
         )
     finally:
         if original is None:

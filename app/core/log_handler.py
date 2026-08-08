@@ -35,14 +35,24 @@ class MemoryLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             entry = {
-                # utcnow(), not datetime.now(). Every other timestamp the app
-                # produces is UTC — DB columns, API payloads, backup manifests
-                # — so a local-clock log line could not be lined up against a
-                # job's started_at when diagnosing a failure. The shipped
-                # container sets no TZ so the two coincide there, which is
-                # exactly why this would have gone unnoticed until someone set
-                # TZ and their logs silently drifted from their data.
-                "ts":      utcnow().strftime("%H:%M:%S"),
+                # Full ISO-8601 UTC, not a pre-formatted "%H:%M:%S" string.
+                #
+                # This field is the one place in the app that bypassed the
+                # store-UTC / display-local convention: it was formatted
+                # server-side and rendered raw by LogViewer, so the displayed
+                # clock was whatever the server's local time happened to be.
+                # It looked right only because the container has no TZ set and
+                # therefore runs UTC — matching a UTC-offset user by accident,
+                # and being silently wrong for everyone else.
+                #
+                # Switching the format to UTC while still rendering it raw made
+                # that visible: log lines showed UTC while the queue and history
+                # panels showed local, so on BST they disagreed by an hour.
+                #
+                # Sending ISO lets the frontend apply the same toUtcDate() +
+                # toLocaleTimeString() path everything else uses, so the log
+                # viewer agrees with the rest of the UI in every timezone.
+                "ts":      utcnow().isoformat(),
                 "level":   record.levelname,
                 "module":  record.name,
                 "message": msg,
