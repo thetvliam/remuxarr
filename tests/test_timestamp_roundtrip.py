@@ -34,11 +34,10 @@ shifting every timestamp by the server's offset with nothing failing loudly.
 """
 import datetime as dt
 import os
-import sys
+import time
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _db():
@@ -157,31 +156,68 @@ def test_non_utc_aware_value_is_silently_misstored():
     )
 
 
-def test_naive_local_now_would_shift_timestamps():
+@pytest.fixture
+def non_utc_host():
+    """
+    Force a non-UTC local timezone for the duration of a test.
+
+    Necessary, not cosmetic. These tests detect "a naive local clock was used
+    where UTC was required", and on a UTC host the two are identical — so the
+    bug is undetectable there. The Dockerfile sets no TZ, so the shipped
+    container IS UTC, and so is the CI runner: without this the checks were
+    inert in exactly the two environments that matter.
+
+    Verified by injecting `return datetime.now()` into timeutil.utcnow():
+    TZ=UTC gave 7 passed / 1 skipped, TZ=America/New_York gave 1 failed. The
+    original guard skipped rather than forced, so the skip line was the only
+    hint anything had gone quiet.
+    """
+    if not hasattr(time, "tzset"):          # Windows
+        pytest.skip("time.tzset() unavailable on this platform")
+
+    original = os.environ.get("TZ")
+    os.environ["TZ"] = "America/New_York"   # DST-observing, never UTC
+    time.tzset()
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
+
+
+def test_naive_local_now_would_shift_timestamps(non_utc_host):
     """
     The concrete regression the migration must avoid: datetime.now() and
     datetime.now(timezone.utc) differ by the host offset, and NEITHER raises.
 
-    Skipped when the host runs UTC, where the two coincide and there is
-    nothing to detect.
+    No longer skipped on a UTC host — the fixture forces an offset so this
+    runs everywhere, which is the whole point.
     """
     local = dt.datetime.now().replace(microsecond=0)
     utc = dt.datetime.now(dt.timezone.utc).replace(microsecond=0, tzinfo=None)
     offset = abs((local - utc).total_seconds())
 
-    if offset < 60:
-        pytest.skip("host is on UTC — no offset to detect")
-
     assert offset > 60, (
-        "datetime.now() and datetime.now(timezone.utc) differ by the host "
-        "offset; only the latter is correct for these columns"
+        f"expected a non-zero host offset under the forced timezone, got "
+        f"{offset}s — the fixture is not taking effect and the checks below "
+        "would be inert"
     )
 
 
 # ── Defaults and ordering ────────────────────────────────────────────────────
 
-def test_column_defaults_populate_and_are_naive():
-    """created_at/last_scanned defaults must produce naive UTC, like explicit writes."""
+def test_column_defaults_populate_and_are_naive(non_utc_host):
+    """
+    created_at/last_scanned defaults must produce naive UTC, like explicit
+    writes.
+
+    Runs under a forced non-UTC timezone: this is THE test that catches
+    `default=lambda: datetime.now()` slipping into models.py, and on a UTC host
+    local and UTC coincide so it would pass against that exact bug.
+    """
     from app.database.models import MediaFile
 
     db = _db()
@@ -193,12 +229,14 @@ def test_column_defaults_populate_and_are_naive():
     assert row.created_at.tzinfo is None
     assert row.last_scanned.tzinfo is None
 
-    # Default must be UTC, not local: compare against a UTC reference.
-    delta = abs((row.created_at - dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
-                .total_seconds())
+    # Default must be UTC, not local. Under the forced timezone the two differ
+    # by hours, so a local-clock default fails loudly instead of coinciding.
+    utc_now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    delta = abs((row.created_at - utc_now).total_seconds())
     assert delta < 120, (
-        f"created_at is {delta:.0f}s from UTC now — the default looks like "
-        "local time rather than UTC"
+        f"created_at is {delta:.0f}s from UTC now — the column default is "
+        f"writing local time. Host offset is "
+        f"{abs((dt.datetime.now() - utc_now).total_seconds()):.0f}s."
     )
 
 

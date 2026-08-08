@@ -13,12 +13,9 @@ runs in seconds.
 """
 import asyncio
 import logging
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import app.main as m
 

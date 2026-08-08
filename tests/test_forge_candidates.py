@@ -19,10 +19,7 @@ non-change.
 Run from the project root:
     pytest tests/test_forge_candidates.py -v
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.forge import get_candidates
 

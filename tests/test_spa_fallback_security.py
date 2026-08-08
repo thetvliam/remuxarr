@@ -34,12 +34,9 @@ these are ever rewritten with literal `../`, they stop testing anything.
 These are also the suite's first tests that exercise FastAPI itself rather than
 calling route handlers as plain functions.
 """
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse

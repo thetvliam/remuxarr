@@ -29,13 +29,10 @@ pass test one while breaking container conversions, leaving both the old and
 new file on disk.
 """
 import asyncio
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import app.core.worker as worker
 

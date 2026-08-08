@@ -15,15 +15,12 @@ Covers two pieces of behaviour that had no suite coverage:
 Grown from the ad-hoc scripts used to verify those changes.
 """
 import asyncio
-import datetime as dt
 import os
-import sys
 import threading
 import time
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.forge import finish_forge_job
 from app.core.subprocess_runner import StagedOutput, _stage_parts

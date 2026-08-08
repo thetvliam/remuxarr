@@ -13,10 +13,7 @@ Run from the project root:
     pytest tests/ -v
 """
 import logging
-import sys
-import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 from app.core.decision import analyze_file, MP4_COMPATIBLE_VIDEO

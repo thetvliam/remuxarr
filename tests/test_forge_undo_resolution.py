@@ -33,10 +33,7 @@ _get_forged_ac3_audio_index couldn't see an undo mid-flight:
 Run from the project root:
     pytest tests/ -v
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.decision import analyze_file
 from app.core.forge import build_undo_command, resolve_forge_ac3_for_undo

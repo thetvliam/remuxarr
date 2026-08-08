@@ -28,12 +28,10 @@ B-2  IMAGE_BASED_SUBS and MP4_INCOMPATIBLE_SUBS disagreed about "vobsub".
 """
 import json
 import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ── B-2: the two subtitle sets must agree ────────────────────────────────────

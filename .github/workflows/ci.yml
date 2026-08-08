@@ -17,7 +17,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r tests/requirements-test.txt
 
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app
@@ -29,6 +31,30 @@ jobs:
           REMUXARR_DATABASE_PATH: /tmp/remuxarr-ci/remuxarr.db
           REMUXARR_TEMP_DIR: /tmp/remuxarr-ci/tmp
         run: python -c "import app.main"
+
+      # The suite was previously not run by CI at all: this job byte-compiled
+      # and imported the app, which catches a syntax error and nothing else.
+      # Every regression the tests exist to prevent — each one mapped to a real
+      # production incident per tests/README.md — could be merged freely.
+      #
+      # No env vars needed: tests/conftest.py does os.environ.setdefault on
+      # REMUXARR_DATABASE_PATH, and an already-configured environment still
+      # wins, so this deliberately does NOT set them and exercises the default
+      # path the same way a contributor running pytest locally would.
+      - name: Run tests
+        run: pytest tests/ -q --cov --cov-report=xml:coverage.xml --cov-report=term
+
+      # Uploaded rather than gated on a threshold. Coverage sits around 45%,
+      # concentrated in the decision engine, so a minimum would either be set
+      # so low it means nothing or would block unrelated work. The artifact
+      # makes the trend visible without turning it into a merge blocker.
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
 
   frontend:
     runs-on: ubuntu-latest
@@ -46,6 +72,16 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      # package.json has had a lint script all along and CI never ran it.
+      # .eslintrc.cjs sets react-hooks/exhaustive-deps to "error" rather than
+      # the default "warn", which is the highest-value rule in this codebase —
+      # it catches stale closures in the WebSocket and polling callbacks, where
+      # a missing dependency shows up as data that silently stops updating
+      # rather than as a crash. `vite build` does not type-check or lint, so
+      # without this step none of that was enforced anywhere.
+      - name: Lint
+        run: npm run lint
 
       - name: Build
         run: npm run build

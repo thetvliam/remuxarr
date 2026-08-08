@@ -20,12 +20,10 @@ ORPHANED FILE SWEEP
   accumulate were both unswept.
 """
 import os
-import sys
 import time
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ── Forge job reset (B-3) ────────────────────────────────────────────────────
