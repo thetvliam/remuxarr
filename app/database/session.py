@@ -2,6 +2,7 @@
 Database session management and settings helpers.
 """
 import json
+from copy import deepcopy
 import logging
 from pathlib import Path
 from typing import Any, Generator
@@ -295,9 +296,26 @@ def get_db() -> Generator[Session, None, None]:
 
 # ── Settings helpers ──────────────────────────────────────────────────────────
 def get_app_settings(db: Session) -> dict[str, Any]:
-    """Load all app settings from DB into a plain dict."""
+    """
+    Load all app settings from DB into a plain dict.
+
+    deepcopy, not dict(). Six of the defaults are mutable — keep_audio_languages
+    and keep_subtitle_languages default to ["eng"], and scan_paths,
+    plex_path_mappings, email_recipients and scheduled_scan_times to [] — so a
+    shallow copy hands every caller the SAME list object that lives in the
+    module-level DEFAULT_APP_SETTINGS.
+
+    Any caller doing cfg["keep_audio_languages"].append(...) would therefore
+    mutate the default itself, for the lifetime of the process, for every
+    subsequent request and every worker job. Nothing does that today, which is
+    the only reason this has not caused a support ticket; a deep copy makes it
+    impossible rather than merely unexercised.
+
+    Only the row that is missing from the DB falls back to a default, so this
+    copies at most a handful of short lists per call.
+    """
     rows = db.query(AppSetting).all()
-    result = dict(DEFAULT_APP_SETTINGS)          # fall back to defaults
+    result = deepcopy(DEFAULT_APP_SETTINGS)      # fall back to defaults
     for row in rows:
         try:
             result[row.key] = json.loads(row.value)

@@ -26,7 +26,6 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
 from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session

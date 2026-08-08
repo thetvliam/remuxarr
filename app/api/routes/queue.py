@@ -472,7 +472,15 @@ def retry_all_failed(db: Session = Depends(get_db)):
 
     app_cfg = get_app_settings(db)
     dry_run = _current_dry_run_mode(db)
-    retried = 0
+    # One shared ScanStats across the loop instead of a throwaway per item.
+    # "retried" previously counted every item _process_file did not raise on,
+    # which is not the same thing as re-queued: the decision engine re-runs
+    # with force_probe=True and may legitimately decide the file now needs no
+    # work (skipped) or needs a human (manual_review). A settings change that
+    # made 40 of 50 failures a no-op still reported "50 requeued", and the
+    # Queue then showed 10. The stats object already distinguishes these — it
+    # was just being discarded.
+    stats = ScanStats()
     skipped = 0
     errors: list[dict] = []
 
@@ -500,11 +508,10 @@ def retry_all_failed(db: Session = Depends(get_db)):
                 db, file_path, app_cfg,
                 force_probe      = True,
                 dry_run          = dry_run,
-                stats            = ScanStats(),
+                stats            = stats,
                 sonarr_series_id = sonarr_series_id,
                 radarr_movie_id  = radarr_movie_id,
             )
-            retried += 1
         except Exception as exc:
             # Mirrors scan_library()'s own per-file protection — without
             # this, one bad file (e.g. the ValueError decision.py raises
@@ -521,7 +528,20 @@ def retry_all_failed(db: Session = Depends(get_db)):
             # results are unaffected.
             db.rollback()
 
-    return {"retried": retried, "skipped": skipped, "errors": errors}
+    return {
+        # Only items that actually became pending work.
+        "retried":       stats.queued,
+        # Source file gone at the top of the loop, plus files the re-run
+        # decided need no work — both are "not re-queued", and the caller
+        # renders them as one "skipped" figure.
+        "skipped":       skipped + stats.skipped,
+        # Reported separately because these are not finished: they are waiting
+        # on the user, and folding them into either count above would hide
+        # that. Absent before, so a retry that moved items to Review looked
+        # like it had done nothing to them.
+        "manual_review": stats.manual_review,
+        "errors":        errors,
+    }
 
 
 class SubtitleOverridesRequest(BaseModel):

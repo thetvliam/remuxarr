@@ -11,7 +11,6 @@ Values are arbitrary JSON (string, list, bool, int).
 import json
 import urllib.error
 import urllib.request
-from datetime import datetime
 from app.core.timeutil import utcnow_iso_z
 from typing import Any
 

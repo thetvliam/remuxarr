@@ -9,7 +9,6 @@ queue_items    — pending / active / completed processing jobs
 planned_actions— individual steps that will/did happen for a job
 app_settings   — key/value config store (editable via UI)
 """
-from datetime import datetime
 from app.core.timeutil import utcnow
 from sqlalchemy import (
     BigInteger, Boolean, Column, DateTime, Float,

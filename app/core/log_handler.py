@@ -18,7 +18,7 @@ Design notes:
 import logging
 import threading
 from collections import deque
-from datetime import datetime
+from app.core.timeutil import utcnow
 
 MAX_RECORDS = 500
 
@@ -35,7 +35,14 @@ class MemoryLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             entry = {
-                "ts":      datetime.now().strftime("%H:%M:%S"),
+                # utcnow(), not datetime.now(). Every other timestamp the app
+                # produces is UTC — DB columns, API payloads, backup manifests
+                # — so a local-clock log line could not be lined up against a
+                # job's started_at when diagnosing a failure. The shipped
+                # container sets no TZ so the two coincide there, which is
+                # exactly why this would have gone unnoticed until someone set
+                # TZ and their logs silently drifted from their data.
+                "ts":      utcnow().strftime("%H:%M:%S"),
                 "level":   record.levelname,
                 "module":  record.name,
                 "message": msg,

@@ -291,10 +291,21 @@ export function useActions({
     try {
       const r = await fetch(`${api}/api/queue/retry-all`, { method: "POST" });
       if (!r.ok) { toast("Retry all failed", "error"); return; }
-      const { retried, skipped } = await r.json();
+      const { retried, skipped, manual_review: needsReview, errors } = await r.json();
       const parts = [];
       if (retried > 0) parts.push(`${retried} requeued`);
-      if (skipped > 0) parts.push(`${skipped} skipped (file missing)`);
+      // No longer "(file missing)". skipped now also covers items the re-run
+      // decided need no work — a settings change can make a previously-failed
+      // file a legitimate no-op, and calling that a missing file was wrong.
+      if (skipped > 0) parts.push(`${skipped} skipped`);
+      // Surfaced separately because these are not done: they are waiting on
+      // the user in the Review tab, and folding them into either count above
+      // hid that entirely.
+      if (needsReview > 0) parts.push(`${needsReview} need review`);
+      if (errors?.length) {
+        console.warn("Retry all — items that errored:", errors);
+        parts.push(`${errors.length} errored`);
+      }
       toast(
         parts.length ? `Retry all: ${parts.join(", ")}` : "No failed items to retry",
             retried > 0 ? "notice" : "neutral",

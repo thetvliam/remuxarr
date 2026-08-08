@@ -24,6 +24,20 @@ jobs:
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app
 
+      # compileall only proves the file parses. pyflakes catches the class of
+      # defect that survives that: unused imports, undefined names, shadowed
+      # bindings, f-strings missing their placeholders.
+      #
+      # Added because six dead `from datetime import datetime` imports were
+      # left behind by the utcnow() migration and sat there through several
+      # rounds of review without anything noticing — a one-second check that
+      # nobody was running. Kept separate from the test step so a lint failure
+      # reads as a lint failure.
+      - name: Lint (pyflakes)
+        run: |
+          pip install pyflakes
+          pyflakes app tests
+
       - name: Import check
         # DATABASE_PATH/TEMP_DIR default to /config and /tmp/remuxarr, which
         # aren't writable by the CI runner — point them at a temp dir instead.

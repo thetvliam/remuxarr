@@ -15,7 +15,6 @@ import logging
 import os
 import shutil
 from dataclasses import replace as dc_replace
-from datetime import datetime
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
