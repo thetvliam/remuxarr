@@ -252,19 +252,32 @@ export function useAppData() {
 
   /* ── Data fetching ────────────────────────────────────────────────────── */
   const fetchAll = useCallback(async () => {
-    const [a, q, r, w, s, sc] = await Promise.allSettled([
+    // dry_run_mode is fetched here, alongside auto_start_jobs, rather than
+    // only once on mount. Both are written from outside this hook — the
+    // header toggles either, Settings writes both, and abort_job clears
+    // auto_start_jobs server-side — but only auto_start_jobs was refreshed,
+    // so the dry-run badge could disagree with the backend for an entire
+    // session. Worse, the next header click computes `!dryRun` from the
+    // stale value, so it can write back the state that is already set and
+    // then toast whichever the client believed. toggleDryRun's own comment
+    // calls that out as "the difference between a preview and an
+    // irreversible write" for the failure path; staleness produced the same
+    // visible outcome by another route.
+    const [a, q, r, w, s, sc, dr] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
-                                                         fetch(`${api}/api/queue`).then(r => r.json()),
+                                                         fetch(`${api}/api/queue/`).then(r => r.json()),
                                                          fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
                                                          fetch(`${api}/api/worker/status`).then(r => r.json()),
                                                          fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
                                                          fetch(`${api}/api/scan/status`).then(r => r.json()),
+                                                         fetch(`${api}/api/settings/dry_run_mode`).then(r => r.json()),
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);
     if (r.status  === "fulfilled") setReview(Array.isArray(r.value) ? r.value : []);
     if (w.status  === "fulfilled") setWorkerPaused(w.value?.paused ?? false);
     if (s.status  === "fulfilled") setAutoStart(s.value?.value ?? true);
+    if (dr.status === "fulfilled") setDryRun(!!dr.value?.value);
     if (sc.status === "fulfilled") {
       setScanning(sc.value?.running ?? false);
       if (sc.value?.running && sc.value?.total > 0) {
@@ -300,13 +313,6 @@ export function useAppData() {
         }, 3000);
         return () => clearInterval(id);
       }, [scanning, api]);
-
-      useEffect(() => {
-        fetch(`${api}/api/settings/dry_run_mode`)
-        .then(r => r.json())
-        .then(d => setDryRun(!!d.value))
-        .catch(() => {});
-      }, [api]);
 
       /* ── WebSocket event handler ──────────────────────────────────────────── */
       const onWsMsg = useCallback((msg) => {
@@ -375,7 +381,7 @@ export function useAppData() {
 
           case "scan_progress":
             setScanProgress({ scanned: msg.scanned, total: msg.total });
-            fetch(`${api}/api/queue`).then(r => r.json())
+            fetch(`${api}/api/queue/`).then(r => r.json())
             .then(d => { if (Array.isArray(d)) setQueue(d); })
             .catch(() => {});
             break;

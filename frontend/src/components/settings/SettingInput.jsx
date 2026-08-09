@@ -38,11 +38,33 @@ const IntegerInput = ({ field, value, onChange }) => {
       if (!Number.isNaN(parsed)) onChange(parsed);
     }}
     onBlur={() => {
-      const parsed = parseInt(draft ?? "", 10);
+      // Nothing was typed, so there is nothing to commit. draft stays null
+      // until the first keystroke, and parseInt(null ?? "") is NaN — which
+      // fell through to the fallback below and REPLACED a perfectly good
+      // stored value on an interaction as innocuous as tabbing past the
+      // field. Every integer setting in the schema was affected:
+      //
+      //   und_audio_threshold      2   -> 1   (min)
+      //   max_concurrent_jobs      1   -> 0
+      //   job_timeout_minutes    120   -> 0
+      //   email_smtp_port        587   -> 0
+      //   email_failure_threshold  5   -> 0
+      //
+      // job_timeout_minutes is the worst of them: the worker reads
+      // `float(timeout_minutes) * 60 if timeout_minutes else None`, and 0 is
+      // falsy, so a hung FFmpeg job loses its timeout entirely. The field is
+      // left dirty so the SaveBar does show a pending change, but nobody
+      // associates that with a field they only tabbed through, and it rides
+      // along with the next deliberate edit.
+      if (draft === null) return;
+
+      const parsed = parseInt(draft, 10);
       // Clearing the field, or leaving something non-numeric in it, used to
       // resolve to 0 regardless of what the setting means — for a field like
       // und_audio_threshold, 0 makes a ">=" comparison true for every file,
       // including ones with nothing wrong. Fall back to the declared floor.
+      // This branch is now reachable only when the user actually emptied or
+      // mistyped the field, which is what it was written for.
       const fallback = field.min ?? 0;
       onChange(clamp(Number.isNaN(parsed) ? fallback : parsed));
       setDraft(null);

@@ -30,18 +30,18 @@ const STORAGE_KEY = "remuxarr.settingsCategory";
 const SectionHeader = ({ label, first }) => {
   const { palette, type, space } = useTheme();
   return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: space.md,
-      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
-      paddingBottom: space.sm,
-      borderBottom: `1px solid ${palette.border}`,
-    }}>
-    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-    {label.toUpperCase()}
-    </span>
-    </div>
+  <div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: space.md,
+    margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
+    paddingBottom: space.sm,
+    borderBottom: `1px solid ${palette.border}`,
+  }}>
+  <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+  {label.toUpperCase()}
+  </span>
+  </div>
   );
 };
 
@@ -75,7 +75,7 @@ const TestConnectionButton = ({ api, service }) => {
         setResult(d.error || "Unknown error");
       }
     } catch (err) {
-      console.error("Connection test request failed", err);
+        console.error("Connection test request failed", err);
       setState("err");
       setResult("Request failed");
     }
@@ -97,19 +97,19 @@ const TestConnectionButton = ({ api, service }) => {
     style={{
       padding: `${space.xs}px ${space.xl}px`,
       background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
-          border: `1px solid ${color}`,
-          borderRadius: radius.sm,
-          color,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.normal,
-          cursor: state === "loading" ? "not-allowed" : "pointer",
-          transition: "all 0.15s",
-          maxWidth: 320,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+      border: `1px solid ${color}`,
+      borderRadius: radius.sm,
+      color,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.normal,
+      cursor: state === "loading" ? "not-allowed" : "pointer",
+      transition: "all 0.15s",
+      maxWidth: 320,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
     }}
     >
     {label}
@@ -145,10 +145,10 @@ const PlexBacklogStatus = ({ api }) => {
     <span style={{
       padding: `${space.hair}px ${space.sm}px`,
       background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
-          border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
-          borderRadius: radius.sm,
-          color: count > 0 ? palette.amber : palette.dim,
-          fontSize: type.size.sm, fontWeight: type.weight.bold,
+      border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
+      borderRadius: radius.sm,
+      color: count > 0 ? palette.amber : palette.dim,
+      fontSize: type.size.sm, fontWeight: type.weight.bold,
     }}
     title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
     >
@@ -188,8 +188,8 @@ const EmailBreakerStatus = ({ api }) => {
       display: "flex", alignItems: "flex-start", gap: space.sm,
       padding: `${space.md}px ${space.lg}px`, marginTop: space.sm,
       background: alpha(palette.red, ALPHA.trace), border: `1px solid ${alpha(palette.red, ALPHA.heavy)}`,
-          borderRadius: radius.sm,
-          color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
+      borderRadius: radius.sm,
+      color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
     }}>
     <span style={{ flexShrink: 0 }}>⚠</span>
     <span>
@@ -301,78 +301,78 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 const NavSidebar = ({ active, onSelect, dirty }) => {
   const { palette, type, space, size } = useTheme();
   return (
-    <nav style={{
-      flexShrink: 0,
-      width: 190,
-      position: "sticky",
-      top: 0,
-      alignSelf: "flex-start",
-      display: "flex",
-      flexDirection: "column",
-      gap: space.hair,
-      paddingRight: space.xxl,
-      borderRight: `1px solid ${palette.border}`,
-    }}>
-    {CATEGORIES.map(c => {
-      const on = c.id === active;
-      return (
-        <button
-        key={c.id}
-        onClick={() => onSelect(c.id)}
-        style={{
-          textAlign: "left",
-          padding: `${space.md}px ${space.lg}px`,
-          background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
-              border: "none",
-              borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
-              color: on ? palette.amber : palette.muted,
-              fontSize: type.size.md,
-              fontFamily: type.family,
-              fontWeight: on ? type.weight.bold : type.weight.medium,
-              letterSpacing: type.tracking.tight,
-              cursor: "pointer",
-              transition: "all 0.12s",
-        }}
-        >
-        {c.label}
-        </button>
-      );
-    })}
-    {dirty && (
-      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
-      ● UNSAVED
-      </div>
-    )}
-    </nav>
+  <nav style={{
+    flexShrink: 0,
+    width: 190,
+    position: "sticky",
+    top: 0,
+    alignSelf: "flex-start",
+    display: "flex",
+    flexDirection: "column",
+    gap: space.hair,
+    paddingRight: space.xxl,
+    borderRight: `1px solid ${palette.border}`,
+  }}>
+  {CATEGORIES.map(c => {
+    const on = c.id === active;
+    return (
+      <button
+      key={c.id}
+      onClick={() => onSelect(c.id)}
+      style={{
+        textAlign: "left",
+        padding: `${space.md}px ${space.lg}px`,
+        background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
+        border: "none",
+        borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+        color: on ? palette.amber : palette.muted,
+        fontSize: type.size.md,
+        fontFamily: type.family,
+        fontWeight: on ? type.weight.bold : type.weight.medium,
+        letterSpacing: type.tracking.tight,
+        cursor: "pointer",
+        transition: "all 0.12s",
+      }}
+      >
+      {c.label}
+      </button>
+    );
+  })}
+  {dirty && (
+    <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+    ● UNSAVED
+    </div>
+  )}
+  </nav>
   );
 };
 
 const NavDropdown = ({ active, onSelect }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-    <select
-    value={active}
-    onChange={e => onSelect(e.target.value)}
-    style={{
-      flex: 1,
-      minWidth: 0,
-      padding: `${space.md}px ${space.md}px`,
-      background: palette.card,
-      border: `1px solid ${palette.border}`,
-      borderRadius: radius.sm,
-      color: palette.text,
-      fontSize: type.size.base,
-      fontFamily: type.family,
-      fontWeight: type.weight.semibold,
-      cursor: "pointer",
-    }}
-    >
-    {CATEGORIES.map(c => (
-      <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
-      {c.label}
-      </option>
-    ))}
-    </select>
+  <select
+  value={active}
+  onChange={e => onSelect(e.target.value)}
+  style={{
+    flex: 1,
+    minWidth: 0,
+    padding: `${space.md}px ${space.md}px`,
+    background: palette.card,
+    border: `1px solid ${palette.border}`,
+    borderRadius: radius.sm,
+    color: palette.text,
+    fontSize: type.size.base,
+    fontFamily: type.family,
+    fontWeight: type.weight.semibold,
+    cursor: "pointer",
+  }}
+  >
+  {CATEGORIES.map(c => (
+    <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
+    {c.label}
+    </option>
+  ))}
+  </select>
   );
 };
 
@@ -417,14 +417,14 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       marginLeft: "auto",
       padding: `${space.xs}px ${space.xxl}px`,
       background: alpha(btnColor, ALPHA.medium),
-          border: `1px solid ${btnColor}`,
-          borderRadius: radius.sm,
-          color: btnColor,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+      border: `1px solid ${btnColor}`,
+      borderRadius: radius.sm,
+      color: btnColor,
+      fontSize: type.size.sm,
+      fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.wide,
+      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
     }}
     >
@@ -436,7 +436,7 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
   const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
@@ -467,7 +467,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   const loadSettings = useCallback(() => {
     return Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                       fetch(`${api}/api/settings`).then(r => r.json()),
+      fetch(`${api}/api/settings/`).then(r => r.json()),
     ])
     .then(([s, v]) => {
       setSchema(s);
@@ -528,23 +528,52 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     const snapshot = values;
     setStatus("saving");
     try {
-      const schemaKeys   = new Set(schema.map(f => f.key));
-      const schemaValues = Object.fromEntries(
-        Object.entries(snapshot).filter(([k]) => schemaKeys.has(k))
-      );
-      const r = await fetch(`${api}/api/settings`, {
+      // Only the keys the user actually changed on this page.
+      //
+      // This previously sent EVERY schema key from `values`, which is a
+      // snapshot taken at page load. Two schema fields — dry_run_mode and
+      // auto_start_jobs, both group "Worker" — are also written from outside
+      // this page: the header toggles both, and abort_job sets
+      // auto_start_jobs=False server-side as a safety stop. So:
+      //
+      //   1. open Settings
+      //   2. toggle DRY RUN in the header (backend now true, toast confirms)
+      //   3. change anything unrelated, press SAVE
+      //   4. the PUT carries dry_run_mode:false from step 1's snapshot
+      //
+      // Dry run silently switches off, and the same shape re-enables
+      // auto_start_jobs after an abort — undoing the stop the abort button
+      // exists to apply. BackupRestoreSection's comment already diagnosed
+      // this exact mechanism for the import trigger and fixed that one path
+      // with reloadAllSettings(); the header-toggle trigger has the same
+      // shape and was not covered. Sending dirtyKeys closes both, and is
+      // less code than the filter it replaces.
+      const payload = Object.fromEntries(dirtyKeys.map(k => [k, snapshot[k]]));
+
+      // Nothing to do — the SaveBar is disabled when clean, but a double
+      // click or an Enter keypress can still land here.
+      if (dirtyKeys.length === 0) {
+        setStatus("saved");
+        return;
+      }
+
+      const r = await fetch(`${api}/api/settings/`, {
         method:  "PUT",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(schemaValues),
+        body:    JSON.stringify(payload),
       });
       if (r.ok) {
-        setBaseline(snapshot);          // saved values become the new clean baseline
         setStatus("saved");
+        // Re-read rather than trusting the local snapshot. The unsent keys
+        // are exactly the ones that may have been changed elsewhere, so this
+        // is what makes the page agree with the backend again instead of
+        // continuing to render step 1's stale values.
+        await loadSettings();
       } else {
         setStatus("error");
       }
     } catch (err) {
-      console.error("Saving settings failed", err);
+        console.error("Saving settings failed", err);
       setStatus("error");
     }
   };
@@ -616,7 +645,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
         {loadError
           ? "Couldn't load settings from the backend. Reload the page to try again."
           : "Connect to the backend to load settings…"}
-          </div>
+        </div>
       );
     }
     return cat.groups.map((g, i) => renderGroup(g, i === 0));

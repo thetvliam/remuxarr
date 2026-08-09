@@ -88,7 +88,7 @@ export function useActions({
       // dry-run previews has no effect on success/failed/skipped items.
       invalidateHistory?.("dry_run");
     } catch (err) {
-      console.error("Clear dry-run previews failed", err);
+        console.error("Clear dry-run previews failed", err);
       toast("Failed to clear dry-run previews", "error");
     }
   };
@@ -184,7 +184,7 @@ export function useActions({
 
   // Remove a completed/failed item from history, resetting it for re-scan
   const dismissItem = async (item) => {
-    const r = await fetch(`${api}/api/history/${item.id}/`, { method: "DELETE" }).catch(() => null);
+    const r = await fetch(`${api}/api/history/${item.id}`, { method: "DELETE" }).catch(() => null);
     if (!r?.ok) {
       toast(`Could not dismiss: ${item.file?.filename || "file"}`, "error");
       return;
@@ -246,7 +246,7 @@ export function useActions({
       // cancelled item never appeared there and the tab badge stayed stale.
       invalidateHistory?.("failed");
     } catch (err) {
-      console.error("Remove queue item failed", err);
+        console.error("Remove queue item failed", err);
       toast("Failed to remove item", "error");
     }
   };
@@ -268,7 +268,7 @@ export function useActions({
       // tab shows.
       invalidateHistory?.("failed");
     } catch (err) {
-      console.error("Clear queue failed", err);
+        console.error("Clear queue failed", err);
       toast("Failed to clear queue", "error");
     }
   };
@@ -281,7 +281,7 @@ export function useActions({
       toast(`Moved to top: ${item.file?.filename || "file"}`, "notice");
       fetchAll();
     } catch (err) {
-      console.error("Prioritize queue item failed", err);
+        console.error("Prioritize queue item failed", err);
       toast("Failed to prioritize item", "error");
     }
   };
@@ -319,7 +319,7 @@ export function useActions({
         invalidateHistory?.("failed");
       }
     } catch (err) {
-      console.error("Retry-all failed", err);
+        console.error("Retry-all failed", err);
       toast("Retry all failed", "error");
     }
   };
