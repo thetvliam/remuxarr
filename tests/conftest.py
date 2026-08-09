@@ -25,17 +25,40 @@ import pytest
 # against app/core/decision.py rather than assumed — see the grep this was
 # built from if these ever need re-verifying:
 #   grep -oP 'settings\.get\("[^"]+"' app/core/decision.py
+#
+# THESE MUST MATCH app/database/session.py's DEFAULT_APP_SETTINGS.
+#
+# Two of them did not, and it mattered. extract_text_subtitles_to_srt was
+# False here while production ships True — so the suite's largest and most
+# trusted module ran every test with subtitle extraction OFF, i.e. against a
+# configuration almost no install uses. That flag is what routes a kept text
+# subtitle down the extract_subtitle path instead of copy_track, and the
+# language-override pass only ever rewrote copy/transcode actions. The result
+# was a whole data path that no default-configured test could reach.
+#
+# Flipping it changed no test outcome, because every subtitle-sensitive test
+# in test_decision.py already sets the flag explicitly. That is precisely why
+# the gap survived: the default never mattered to the tests that cared, and no
+# test combined extraction with always_ask at all.
+#
+# fix_undefined_language was False (the boolean back-compat spelling) where
+# production writes one of three strings. The back-compat branch is worth
+# covering — but from a test that opts into it, not from the default every
+# other test inherits.
+#
+# A test needing a non-production value should set it explicitly on the
+# `settings` fixture, as the extraction tests already do.
 BASE_SETTINGS = {
     "keep_audio_languages":         ["eng"],
     "keep_default_audio":           True,
     "keep_subtitle_languages":      ["eng"],
     "keep_forced_subtitles":        True,
     "und_audio_threshold":          2,
-    "fix_undefined_language":       False,
+    "fix_undefined_language":       "always_leave",
     "undefined_language_value":     "eng",
     "undefined_language_mode":      "all_undefined_per_type",
     "prefer_mp4_container":         True,
-    "extract_text_subtitles_to_srt": False,
+    "extract_text_subtitles_to_srt": True,
     "add_faststart_to_mp4":         True,
 }
 

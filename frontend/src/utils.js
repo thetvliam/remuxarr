@@ -50,6 +50,22 @@ export const fmtTime = (iso) => {
   });
 };
 
+// Same conversion as fmtTime but with seconds, for the log viewer — ordering
+// events within a minute is the whole point of a log timestamp, so minute
+// precision is not enough there.
+//
+// The log viewer previously rendered a server-formatted string directly,
+// which is why it was the one view that ignored the user's timezone. Anything
+// displaying a timestamp should go through toUtcDate rather than printing
+// what the backend sent.
+export const fmtClock = (iso) => {
+  const d = toUtcDate(iso);
+  if (!d) return "—";
+  return d.toLocaleTimeString("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
+};
+
 export const fmtRel = (iso) => {
   const d = toUtcDate(iso);
   if (!d) return "—";

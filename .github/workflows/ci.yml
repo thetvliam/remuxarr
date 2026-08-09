@@ -17,10 +17,26 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r tests/requirements-test.txt
 
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app
+
+      # compileall only proves the file parses. pyflakes catches the class of
+      # defect that survives that: unused imports, undefined names, shadowed
+      # bindings, f-strings missing their placeholders.
+      #
+      # Added because six dead `from datetime import datetime` imports were
+      # left behind by the utcnow() migration and sat there through several
+      # rounds of review without anything noticing — a one-second check that
+      # nobody was running. Kept separate from the test step so a lint failure
+      # reads as a lint failure.
+      - name: Lint (pyflakes)
+        run: |
+          pip install pyflakes
+          pyflakes app tests
 
       - name: Import check
         # DATABASE_PATH/TEMP_DIR default to /config and /tmp/remuxarr, which
@@ -29,6 +45,30 @@ jobs:
           REMUXARR_DATABASE_PATH: /tmp/remuxarr-ci/remuxarr.db
           REMUXARR_TEMP_DIR: /tmp/remuxarr-ci/tmp
         run: python -c "import app.main"
+
+      # The suite was previously not run by CI at all: this job byte-compiled
+      # and imported the app, which catches a syntax error and nothing else.
+      # Every regression the tests exist to prevent — each one mapped to a real
+      # production incident per tests/README.md — could be merged freely.
+      #
+      # No env vars needed: tests/conftest.py does os.environ.setdefault on
+      # REMUXARR_DATABASE_PATH, and an already-configured environment still
+      # wins, so this deliberately does NOT set them and exercises the default
+      # path the same way a contributor running pytest locally would.
+      - name: Run tests
+        run: pytest tests/ -q --cov --cov-report=xml:coverage.xml --cov-report=term
+
+      # Uploaded rather than gated on a threshold. Coverage sits around 45%,
+      # concentrated in the decision engine, so a minimum would either be set
+      # so low it means nothing or would block unrelated work. The artifact
+      # makes the trend visible without turning it into a merge blocker.
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
 
   frontend:
     runs-on: ubuntu-latest
@@ -46,6 +86,26 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      # package.json has had a lint script all along and CI never ran it.
+      # .eslintrc.cjs sets react-hooks/exhaustive-deps to "error" rather than
+      # the default "warn", which is the highest-value rule in this codebase —
+      # it catches stale closures in the WebSocket and polling callbacks, where
+      # a missing dependency shows up as data that silently stops updating
+      # rather than as a crash. `vite build` does not type-check or lint, so
+      # without this step none of that was enforced anywhere.
+      - name: Lint
+        run: npm run lint
+
+      # The frontend had no tests at all until this was added, on a codebase
+      # of comparable size to the backend that now holds real state-machine
+      # logic — paginated fetch generation counters, history relevance gating,
+      # settings dirty-tracking. `vite build` cannot see any of it: the two
+      # defects these first tests pin (every integer setting reset by focus +
+      # blur, and a settings save PUTting stale values over live ones) both
+      # built and linted perfectly cleanly.
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build

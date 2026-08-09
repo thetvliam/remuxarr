@@ -17,7 +17,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -54,6 +54,57 @@ class ScanStats:
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
+
+def _walk_media_dirs(scan_path: str):
+    """
+    os.walk with followlinks=True, plus a cycle guard.
+
+    followlinks stays on deliberately: Unraid and similar setups routinely
+    point a library path at a symlinked share, and turning it off would make
+    those libraries scan as empty. But os.walk offers no protection with it
+    enabled — a symlink pointing at any ancestor produces an infinite descent
+    and the scan never terminates. Nothing else catches that: the per-job
+    timeout does not apply (a scan is not a job), and the cancel flag is only
+    read once per directory yielded, so the loop keeps yielding forever while
+    re-processing the same files.
+
+    Tracking (st_dev, st_ino) also fixes a quieter problem that existed with no
+    cycle at all: two symlinks resolving to the same directory made every file
+    beneath it counted twice in the progress total and processed twice.
+
+    Hidden-directory pruning lives here too, so both walk sites share one
+    definition instead of repeating the filter.
+    """
+    seen: set[tuple[int, int]] = set()
+    try:
+        st = os.stat(scan_path)
+        seen.add((st.st_dev, st.st_ino))
+    except OSError:
+        return
+
+    for root, dirs, files in os.walk(scan_path, followlinks=True):
+        keep = []
+        for d in dirs:
+            if d.startswith("."):
+                continue
+            child = os.path.join(root, d)
+            try:
+                st = os.stat(child)
+            except OSError:
+                continue                      # broken symlink, or vanished mid-scan
+            key = (st.st_dev, st.st_ino)
+            if key in seen:
+                logger.warning(
+                    "Skipping already-visited directory %s — a symlink loops back "
+                    "to it. Following it would make this scan never finish.",
+                    child,
+                )
+                continue
+            seen.add(key)
+            keep.append(d)
+        dirs[:] = keep
+        yield root, dirs, files
+
 
 def scan_library(
     db:          Session,
@@ -95,8 +146,7 @@ def scan_library(
     for scan_path in paths:
         if not os.path.isdir(scan_path):
             continue
-        for root, dirs, files in os.walk(scan_path, followlinks=True):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for _root, _dirs, files in _walk_media_dirs(scan_path):
             total_files += sum(1 for f in files if is_media_file(f))
 
     scanned   = 0
@@ -108,10 +158,9 @@ def scan_library(
             logger.warning("Scan path not found or not a directory: %s", scan_path)
             continue
 
-        for root, dirs, files in os.walk(scan_path, followlinks=True):
+        for root, _dirs, files in _walk_media_dirs(scan_path):
             if cancelled:
                 break
-            dirs[:] = [d for d in dirs if not d.startswith(".")]   # skip hidden
 
             for filename in files:
                 if cancelled:
@@ -632,7 +681,7 @@ def _process_file(
         existing.container     = fmt_info.get("container")
         existing.duration      = fmt_info.get("duration")
         existing.video_codec   = primary_video_codec
-        existing.last_scanned  = datetime.utcnow()
+        existing.last_scanned  = utcnow()
         media_file = existing
     else:
         media_file = MediaFile(
@@ -644,7 +693,7 @@ def _process_file(
             container   = fmt_info.get("container"),
             duration    = fmt_info.get("duration"),
             video_codec = primary_video_codec,
-            last_scanned = datetime.utcnow(),
+            last_scanned = utcnow(),
         )
         db.add(media_file)
 
@@ -740,17 +789,49 @@ def _process_file(
             QueueItem.status  == "manual_review",
         ).first()
 
-        if not already:
+        review_subs = (
+            json.dumps(decision.flagged_subtitles)
+            if decision.flagged_subtitles else None
+        )
+
+        if already:
+            # Refresh in place, mirroring the skip branch below. A fresh
+            # analyze_file() has just run, so both of these can legitimately
+            # differ from what the row was created with — a settings change
+            # alters WHY the file needs review, and a file replaced on disk
+            # alters WHICH subtitle tracks are flagged.
+            #
+            # review_subtitles is the one that matters. resolve_subtitles acts
+            # on the STREAM INDICES stored here, so leaving them stale means a
+            # user's Keep/Remove choice is applied against indices that no
+            # longer describe the file — silently operating on the wrong track.
+            # The stale reason text is merely confusing; this is incorrect.
+            already.reason           = decision.reason
+            already.review_subtitles = review_subs
+            already.original_size    = current_size
+            # Arr IDs can appear after the row was created (e.g. the file was
+            # scanned before Sonarr had imported it), and are never unset.
+            if sonarr_series_id is not None:
+                already.sonarr_series_id = sonarr_series_id
+            if radarr_movie_id is not None:
+                already.radarr_movie_id = radarr_movie_id
+        else:
             db.add(QueueItem(
                 file_id    = media_file.id,
                 status     = "manual_review",
                 is_dry_run = dry_run,
                 reason     = decision.reason,
                 original_size = current_size,
-                review_subtitles = (
-                    json.dumps(decision.flagged_subtitles)
-                    if decision.flagged_subtitles else None
-                ),
+                review_subtitles = review_subs,
+                # Previously omitted, so the column default (True) applied to
+                # every manual-review row. queue._apply_decision_to_item then
+                # moves that same row to "pending" without correcting it, so a
+                # PRE-EXISTING file that went through review reported
+                # is_new_file=True to _load_plex_notify_data — which returns
+                # early with a refresh only and never queues the
+                # PlexAnalyzeBacklog entry. Plex kept stale stream metadata for
+                # exactly the files a human had to intervene on.
+                is_new_file = is_new_file,
                 sonarr_series_id = sonarr_series_id,
                 radarr_movie_id  = radarr_movie_id,
             ))
@@ -789,7 +870,7 @@ def _process_file(
         )
         if existing_skip:
             existing_skip.reason       = decision.reason
-            existing_skip.completed_at = datetime.utcnow()
+            existing_skip.completed_at = utcnow()
         else:
             db.add(QueueItem(
                 file_id       = media_file.id,
@@ -797,7 +878,7 @@ def _process_file(
                 is_dry_run    = False,
                 reason        = decision.reason,
                 original_size = current_size,
-                completed_at  = datetime.utcnow(),
+                completed_at  = utcnow(),
             ))
 
         db.commit()
@@ -981,5 +1062,3 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
-
-

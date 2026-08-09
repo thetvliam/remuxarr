@@ -16,6 +16,7 @@ export function useActions({
   fetchAll,
   fetchForge,
   setHistoryRefreshKey,
+  invalidateHistory,
 }) {
   /* The optimistic update is rolled back on failure, and the failure is
    * reported loudly. This is the app's safety interlock: if the PUT failed
@@ -85,8 +86,9 @@ export function useActions({
       // tab's self-fetching hook re-queries and actually reflects the clear.
       // Tagged with status: "dry_run" so only that tab refreshes — clearing
       // dry-run previews has no effect on success/failed/skipped items.
-      setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "dry_run" }));
-    } catch (_) {
+      invalidateHistory?.("dry_run");
+    } catch (err) {
+        console.error("Clear dry-run previews failed", err);
       toast("Failed to clear dry-run previews", "error");
     }
   };
@@ -143,9 +145,14 @@ export function useActions({
   const openDetail = (item, endpoint) => {
     setModal(item); // show immediately with basic data
     fetch(`${api}${endpoint}/${item.id}`)
-    .then(r => r.json())
+    // Without the r.ok check, a 404's JSON error body was passed straight
+    // to setModal — so the modal's contents became { detail: "…" }, the
+    // filename and planned actions vanished, and planned_actions being
+    // undefined left it on "Loading…" forever with no error shown.
+    // Falling back to the row data keeps the modal useful.
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then(full => setModal(full))
-    .catch(() => {}); // keep basic modal if fetch fails
+    .catch(() => {}); // keep the basic modal if the detail fetch fails
   };
 
   // Re-queue a failed/cancelled item and close the modal
@@ -164,19 +171,31 @@ export function useActions({
     // wouldn't fire at all if the retry lands on success rather than
     // failure. Bump directly so the Failed tab reflects the removal now,
     // regardless of what the retry eventually resolves to.
-    setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
+    //
+    // Tagged from the ITEM, not hardcoded to "failed". This same handler backs
+    // the modal's ▶ PROCESS NOW button for dry_run items, and _retry_with_reprobe
+    // deletes the dry-run row outright (preserve_completed_record is only true
+    // for success/skipped). eventAffectsTab("failed", "dry_run") is false, so a
+    // hardcoded "failed" left the Dry Run tab showing a row that no longer
+    // existed.
+    invalidateHistory?.(item.status || null);
     toast(`Re-queued: ${item.file?.filename || "file"}`, "notice");
   };
 
   // Remove a completed/failed item from history, resetting it for re-scan
   const dismissItem = async (item) => {
-    const r = await fetch(`${api}/api/history/${item.id}/`, { method: "DELETE" }).catch(() => null);
+    const r = await fetch(`${api}/api/history/${item.id}`, { method: "DELETE" }).catch(() => null);
     if (!r?.ok) {
       toast(`Could not dismiss: ${item.file?.filename || "file"}`, "error");
       return;
     }
     setModal(null);
     fetchAll();
+    // fetchAll refetches queue/active/manual-review/worker/scan — never
+    // history. Without this the row the user just dismissed stayed visible in
+    // the History panel until something unrelated triggered a refresh.
+    // Tagged from the item since it could have been in any tab.
+    invalidateHistory?.(item.status || null);
     toast(`Dismissed: ${item.file?.filename || "file"}`, "neutral");
   };
 
@@ -221,7 +240,13 @@ export function useActions({
       }
       toast(`Removed from queue: ${item.file?.filename || "file"}`, "neutral");
       fetchAll();
-    } catch (_) {
+      // The DELETE sets QueueItem.status = "cancelled", and history.py folds
+      // "cancelled" into the Failed tab (useHistoryData.eventAffectsTab is
+      // written to handle exactly that mapping). Without this the newly
+      // cancelled item never appeared there and the tab badge stayed stale.
+      invalidateHistory?.("failed");
+    } catch (err) {
+        console.error("Remove queue item failed", err);
       toast("Failed to remove item", "error");
     }
   };
@@ -239,7 +264,11 @@ export function useActions({
         "neutral",
       );
       fetchAll();
-    } catch (_) {
+      // Same as dismissQueueItem: these become "cancelled", which the Failed
+      // tab shows.
+      invalidateHistory?.("failed");
+    } catch (err) {
+        console.error("Clear queue failed", err);
       toast("Failed to clear queue", "error");
     }
   };
@@ -251,7 +280,8 @@ export function useActions({
       if (!r.ok) { toast("Failed to prioritize item", "error"); return; }
       toast(`Moved to top: ${item.file?.filename || "file"}`, "notice");
       fetchAll();
-    } catch (_) {
+    } catch (err) {
+        console.error("Prioritize queue item failed", err);
       toast("Failed to prioritize item", "error");
     }
   };
@@ -261,10 +291,21 @@ export function useActions({
     try {
       const r = await fetch(`${api}/api/queue/retry-all`, { method: "POST" });
       if (!r.ok) { toast("Retry all failed", "error"); return; }
-      const { retried, skipped } = await r.json();
+      const { retried, skipped, manual_review: needsReview, errors } = await r.json();
       const parts = [];
       if (retried > 0) parts.push(`${retried} requeued`);
-      if (skipped > 0) parts.push(`${skipped} skipped (file missing)`);
+      // No longer "(file missing)". skipped now also covers items the re-run
+      // decided need no work — a settings change can make a previously-failed
+      // file a legitimate no-op, and calling that a missing file was wrong.
+      if (skipped > 0) parts.push(`${skipped} skipped`);
+      // Surfaced separately because these are not done: they are waiting on
+      // the user in the Review tab, and folding them into either count above
+      // hid that entirely.
+      if (needsReview > 0) parts.push(`${needsReview} need review`);
+      if (errors?.length) {
+        console.warn("Retry all — items that errored:", errors);
+        parts.push(`${errors.length} errored`);
+      }
       toast(
         parts.length ? `Retry all: ${parts.join(", ")}` : "No failed items to retry",
             retried > 0 ? "notice" : "neutral",
@@ -275,9 +316,10 @@ export function useActions({
       // response comes back, and nothing else will tell the Failed tab
       // that until (and unless) each one individually completes later.
       if (retried > 0) {
-        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: "failed" }));
+        invalidateHistory?.("failed");
       }
-    } catch (_) {
+    } catch (err) {
+        console.error("Retry-all failed", err);
       toast("Retry all failed", "error");
     }
   };

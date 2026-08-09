@@ -27,10 +27,7 @@ A file could hold pending + manual_review items simultaneously:
 Run from the project root:
     pytest tests/ -v
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.api.routes.queue import cancel_item, clear_pending
 from app.core.scanner import _supersede_stale_pending_items

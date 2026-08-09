@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
  *  WEBSOCKET HOOK
  *  Uses a callback ref so the effect never re-fires on re-renders;
  *  only reconnects when the URL changes.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useWebSocket(url, onMessage, onReconnect) {
     const wsRef    = useRef(null);
     const cbRef    = useRef(onMessage);
@@ -69,7 +69,13 @@ export function useWebSocket(url, onMessage, onReconnect) {
                     timerRef.current = setTimeout(connect, 3000);
                 };
                 ws.onerror = () => ws.close();
-            } catch (_) {
+            } catch (err) {
+                // warn, not error, and matching the onmessage handler above:
+                // this catch covers synchronous WebSocket construction failure
+                // (malformed URL), which is a persistent misconfiguration —
+                // the 3s retry below means it would otherwise repeat forever
+                // with nothing anywhere explaining why nothing ever connects.
+                console.warn("WebSocket connect failed:", err);
                 if (!active) return;
                 timerRef.current = setTimeout(connect, 3000);
             }
@@ -82,12 +88,12 @@ export function useWebSocket(url, onMessage, onReconnect) {
             if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send("ping");
         }, 25000);
 
-        return () => {
-            active = false;
-            clearTimeout(timerRef.current);
-            clearInterval(ping);
-            wsRef.current?.close();
-        };
+            return () => {
+                active = false;
+                clearTimeout(timerRef.current);
+                clearInterval(ping);
+                wsRef.current?.close();
+            };
     }, [url]);
 
     return connected;

@@ -18,7 +18,7 @@ Design notes:
 import logging
 import threading
 from collections import deque
-from datetime import datetime
+from app.core.timeutil import utcnow
 
 MAX_RECORDS = 500
 
@@ -35,7 +35,24 @@ class MemoryLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             entry = {
-                "ts":      datetime.now().strftime("%H:%M:%S"),
+                # Full ISO-8601 UTC, not a pre-formatted "%H:%M:%S" string.
+                #
+                # This field is the one place in the app that bypassed the
+                # store-UTC / display-local convention: it was formatted
+                # server-side and rendered raw by LogViewer, so the displayed
+                # clock was whatever the server's local time happened to be.
+                # It looked right only because the container has no TZ set and
+                # therefore runs UTC — matching a UTC-offset user by accident,
+                # and being silently wrong for everyone else.
+                #
+                # Switching the format to UTC while still rendering it raw made
+                # that visible: log lines showed UTC while the queue and history
+                # panels showed local, so on BST they disagreed by an hour.
+                #
+                # Sending ISO lets the frontend apply the same toUtcDate() +
+                # toLocaleTimeString() path everything else uses, so the log
+                # viewer agrees with the rest of the UI in every timezone.
+                "ts":      utcnow().isoformat(),
                 "level":   record.levelname,
                 "module":  record.name,
                 "message": msg,

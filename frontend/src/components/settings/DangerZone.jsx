@@ -35,7 +35,8 @@ export const DangerZone = ({ api, toast }) => {
             } else {
                 toast?.("Failed to clear database", "error");
             }
-        } catch (_) {
+        } catch (err) {
+            console.error("Clear database failed", err);
             toast?.("Failed to clear database", "error");
         } finally {
             setClearing(false);

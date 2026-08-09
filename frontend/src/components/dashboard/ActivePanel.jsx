@@ -6,7 +6,7 @@ import { SegBar } from "../bars/SegBar";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = false }) => {
   const { palette, type, space, radius, size, surface } = useTheme();
 
@@ -69,7 +69,7 @@ export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = fa
         padding: `${space.hair}px ${space.xs}px`,
         background: surface.dryRunBg,
         border: `1px solid ${alpha(palette.yellow, ALPHA.heavy)}`,
-                                          borderRadius: radius.none,
+                                          borderRadius: radius.badge,
                                           color: palette.yellow,
                                           fontSize: type.size.xs,
                                           letterSpacing: type.tracking.wide,

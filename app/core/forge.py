@@ -26,7 +26,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
@@ -450,7 +450,7 @@ def claim_next_forge_job() -> int | None:
             return None
 
         job.status     = "processing"
-        job.started_at = datetime.utcnow()
+        job.started_at = utcnow()
         db.commit()
         return job.id
     except Exception:
@@ -567,7 +567,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
 
         media: MediaFile | None = db.get(MediaFile, job.file_id)
         if not media or not os.path.exists(media.path):
-            finish_forge_job(job_id, False, None, None, "File not found on disk")
+            finish_forge_job(job_id, False, None, "File not found on disk")
             return None
 
         undo_audio_output_index: int | None = None
@@ -577,7 +577,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
                 fresh_tracks = extract_tracks(probe_data)
             except ProbeError as exc:
                 finish_forge_job(
-                    job_id, False, None, None,
+                    job_id, False, None,
                     f"Could not probe file to locate the AC3 track for undo: {exc}",
                 )
                 return None
@@ -592,12 +592,12 @@ def load_forge_job_data(job_id: int) -> dict | None:
                     "without touching the file.",
                     job_id, media.path,
                 )
-                finish_forge_job(job_id, True, None, None, None)
+                finish_forge_job(job_id, True, None, None)
                 return None
 
             if outcome == "mismatch":
                 finish_forge_job(
-                    job_id, False, None, None,
+                    job_id, False, None,
                     "The file's audio layout no longer matches what this "
                     "forge job produced (an AC3 5.1 track exists but is not "
                     "the last audio track) — the file at this path appears "
@@ -655,10 +655,19 @@ def update_forge_progress(job_id: int, percent: float, current_action: str) -> N
 def finish_forge_job(
     job_id:      int,
     success:     bool,
-    output_path: str | None,
     output_size: int | None,
     error:       str | None,
 ) -> None:
+    """
+    Record a forge job's terminal state.
+
+    Deliberately takes no output_path. Forge rewrites the media file in place
+    (worker.py passes output_path=input_path to run_forge_command), so the
+    "output path" is always the source path, already reachable from this row
+    via media_file.path — and Ac3ForgeJob has no column to store it in anyway.
+    The parameter existed but was never read, which read as though the path
+    were being persisted alongside output_size when it never was.
+    """
     from app.database.models import Ac3ForgeJob
 
     db = SessionLocal()
@@ -667,7 +676,7 @@ def finish_forge_job(
         if not job:
             return
 
-        job.completed_at  = datetime.utcnow()
+        job.completed_at  = utcnow()
         job.progress      = 100.0 if success else job.progress
         job.output_size   = output_size
         job.error_message = error

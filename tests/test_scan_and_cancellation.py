@@ -26,12 +26,9 @@ Run from the project root:
     pytest tests/test_scan_and_cancellation.py -v
 """
 import asyncio
-import os
-import sys
 import threading
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _fresh_db():

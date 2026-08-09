@@ -50,5 +50,5 @@ def notify_sonarr(base_url: str, api_key: str, series_id: int) -> None:
             "Sonarr: RescanSeries HTTP %d for series %d: %s",
             exc.code, series_id, exc.reason,
         )
-    except Exception as exc:
-        logger.error("Sonarr: RescanSeries failed for series %d: %s", series_id, exc)
+    except Exception:
+        logger.exception("Sonarr: RescanSeries failed for series %d", series_id)

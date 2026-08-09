@@ -7,10 +7,7 @@ the section's "select all" acts on what the server returned — so an
 under-reported list means a bulk action silently skips files the user
 believes are included.
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _db():

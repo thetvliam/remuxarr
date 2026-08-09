@@ -30,3 +30,9 @@ npm-debug.log*
 .vscode/
 .idea/
 *.swp
+
+# Coverage reports (generated for SonarQube analysis)
+coverage.xml
+.coverage
+.coverage.*
+htmlcov/

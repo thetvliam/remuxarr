@@ -15,7 +15,7 @@ import logging
 import os
 import shutil
 from dataclasses import replace as dc_replace
-from datetime import datetime
+from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision, analyze_file
@@ -110,7 +110,7 @@ def abort_job(job_id: int) -> bool:
         if job and job.status == "processing":
             job.status         = "cancelled"
             job.error_message  = "Aborted by user"
-            job.completed_at   = datetime.utcnow()
+            job.completed_at   = utcnow()
             if job.media_file:
                 # Reset the delta-scan sentinels alongside the status, the
                 # same as cancel_item / clear_pending / clear_dry_run and
@@ -154,13 +154,58 @@ async def start_worker() -> None:
             for job in stuck:
                 job.status        = "failed"
                 job.error_message = "Interrupted by container restart or crash"
-                job.completed_at  = datetime.utcnow()
+                job.completed_at  = utcnow()
                 if job.media_file:
                     job.media_file.status = "error"
             db.commit()
             logger.info(
                 "Reset %d interrupted 'processing' job(s) to 'failed' on startup",
                 len(stuck),
+            )
+
+        # Same treatment for forge jobs, which previously had none. A forge
+        # row left at "processing" was permanently wedged: _has_pending_forge()
+        # matches only pending/undo_pending so it is never reclaimed;
+        # get_candidates() and add_to_queue exclude "processing" so the file
+        # cannot be re-added; GET /api/forge/active matches "processing" so the
+        # UI shows it running forever; DELETE /api/forge/{id}/ requires
+        # "pending" so it cannot be cancelled; and abort_job() only knows
+        # _active_task_registry, which forge tasks are never added to. Every
+        # exit was closed — the only recovery was editing the database.
+        #
+        # The mapping is deliberate. A forward job goes to "failed", which is
+        # NOT in the candidate-exclusion list, so the file becomes re-addable.
+        # An undo goes to "undo_failed", which IS excluded from candidates but
+        # is explicitly accepted by the undo route as a retryable state.
+        # Imported locally, matching the other Ac3ForgeJob references in this
+        # module (see _has_pending_forge and _process_next_forge).
+        from app.database.models import Ac3ForgeJob
+
+        stuck_forge = (
+            db.query(Ac3ForgeJob)
+            .filter(Ac3ForgeJob.status == "processing")
+            .all()
+        )
+        if stuck_forge:
+            for job in stuck_forge:
+                job.status       = "undo_failed" if job.is_undo else "failed"
+                # Deliberately hedged rather than asserting the work was lost.
+                # run_staged_subprocess swaps outputs into place atomically, so
+                # an interruption leaves the file either untouched OR fully
+                # rewritten — and from the job row alone there is no way to
+                # tell which. Claiming "failed, nothing happened" would be a
+                # lie half the time, and forge is in-place, so a user who
+                # re-runs it on an already-forged file would add a second AC3
+                # track.
+                job.error_message = (
+                    "Interrupted by container restart or crash. The file may or "
+                    "may not have been modified — check its audio tracks before "
+                    "running this again."
+                )
+                job.completed_at = utcnow()
+            db.commit()
+            logger.info(
+                "Reset %d interrupted forge job(s) on startup", len(stuck_forge)
             )
 
     _worker_task = asyncio.create_task(_loop(), name="remuxarr-worker")
@@ -599,15 +644,57 @@ def _flag_subtitle_encoding_review(
         job = db.get(QueueItem, job_id)
         if job:
             file = db.get(MediaFile, job.file_id)
-            job.status           = "manual_review"
-            job.reason           = reason
-            job.review_subtitles = json.dumps(flagged) if flagged else None
-            job.error_message    = None
-            job.progress         = 0.0
-            job.current_action   = None
-            job.started_at       = None
-            if file:
-                file.status = "manual_review"
+
+            if not flagged:
+                # No Track row matched any failing stream index — reachable
+                # when the stored tracks are stale relative to the file on
+                # disk. Two reasons not to raise a manual review here:
+                #
+                # 1. There is nothing to review. The Review page renders one
+                #    Keep/Remove row per flagged track, so the user would get
+                #    an empty decision, and `reason` above degrades to the
+                #    nonsense "Contains 0 subtitle track () with non-UTF-8
+                #    encoded characters".
+                #
+                # 2. It corrupts an unrelated signal. review_subtitles IS NULL
+                #    is the established discriminator for "this review came
+                #    from the undefined-audio-count gate" — resolve_subtitles_
+                #    bulk and approve_manual_review both rely on it. Writing a
+                #    NULL here made a subtitle-encoding review indistinguishable
+                #    from a threshold review, so approving it set
+                #    und_audio_threshold_acknowledged on a file that never
+                #    tripped that gate, permanently exempting it.
+                #
+                # Failing is both honest and actionable: a rescan refreshes the
+                # Track rows, after which a retry flags the real tracks.
+                logger.warning(
+                    "Job %d failed on subtitle encoding but no stored track "
+                    "matched stream indices %s — the track records are stale. "
+                    "Failing the job rather than raising an empty review.",
+                    job_id, sorted(failed_stream_indices),
+                )
+                job.status        = "failed"
+                job.error_message = (
+                    "Subtitle extraction failed on non-UTF-8 encoded text, but "
+                    "the affected tracks could not be identified from this "
+                    "file's stored track list. Re-scan the file to refresh its "
+                    "track data, then retry."
+                )
+                job.completed_at   = utcnow()
+                job.progress       = 0.0
+                job.current_action = None
+                if file:
+                    file.status = "error"
+            else:
+                job.status           = "manual_review"
+                job.reason           = reason
+                job.review_subtitles = json.dumps(flagged)
+                job.error_message    = None
+                job.progress         = 0.0
+                job.current_action   = None
+                job.started_at       = None
+                if file:
+                    file.status = "manual_review"
         try:
             db.commit()
         except Exception:
@@ -733,7 +820,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             subtitle_pairs = [
                 (a.stream_index, a.external_path) for a in extract_actions
             ]
-            result, srt_results = await execute_ffmpeg_combined(
+            result, _ = await execute_ffmpeg_combined(
                 input_path          = input_path,
                 output_path         = output_path,
                 decision            = decision,
@@ -785,7 +872,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
-                result, srt_results = await execute_ffmpeg_combined(
+                result, _ = await execute_ffmpeg_combined(
                     input_path           = input_path,
                     output_path          = output_path,
                     decision             = retry_decision,
@@ -803,9 +890,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             # untouched — the previous partial-success contract here could
             # record job SUCCESS while a subtitle had silently vanished
             # (removed from the mux, never written as a sidecar, only a
-            # log warning to show for it). srt_results is retained in the
-            # return shape for per-track detail, but no partial-failure
-            # branch exists anymore.
+            # log warning to show for it). The per-track ExtractionResults
+            # are therefore discarded above rather than inspected: under
+            # all-or-nothing every one of them mirrors result.success, so
+            # checking them would only re-test result.success under another
+            # name. They remain in the function's return shape for callers
+            # that want the per-track paths.
         else:
             # Two-pass fallback: subtitle extractions first, then remux.
             #
@@ -958,7 +1048,7 @@ def _claim_next() -> int | None:
             return None
 
         job.status     = "processing"
-        job.started_at = datetime.utcnow()
+        job.started_at = utcnow()
         db.commit()
         return job.id
     except Exception:
@@ -1070,7 +1160,7 @@ def _load_job_data(job_id: int):
             job.status = "skipped"
             job.reason = decision.reason
             job.review_subtitles = None
-            job.completed_at = datetime.utcnow()
+            job.completed_at = utcnow()
             media.status = "skipped"
             db.commit()
             return None
@@ -1140,7 +1230,7 @@ def _finish_job(
         else:
             job.status = "success" if success else "failed"
 
-        job.completed_at  = datetime.utcnow()
+        job.completed_at  = utcnow()
         if success:
             job.progress = 100.0   # leave progress untouched on failure
         job.output_path   = output_path
@@ -1156,7 +1246,7 @@ def _finish_job(
                     media.status = "queued"
                 else:
                     media.status         = "processed"
-                    media.last_processed = datetime.utcnow()
+                    media.last_processed = utcnow()
                     # Track new path if container changed (e.g. MKV → MP4)
                     if output_path and output_path != media.path:
                         # A stale MediaFile row from a previous processing
@@ -1323,7 +1413,7 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
             if job and job.status == "processing":
                 job.status        = "failed"
                 job.error_message = reason[:500]
-                job.completed_at  = datetime.utcnow()
+                job.completed_at  = utcnow()
                 if job.media_file:
                     job.media_file.status = "error"
                 db.commit()
@@ -1915,12 +2005,12 @@ async def _process_next_forge(ws_manager) -> bool:
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)
         await loop.run_in_executor(
-            None, finish_forge_job, job_id, False, None, None, str(exc)
+            None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
         await loop.run_in_executor(
             None, finish_forge_job,
-            job_id, result.success, result.output_path, result.output_size, result.error
+            job_id, result.success, result.output_size, result.error
         )
 
     final = await loop.run_in_executor(None, load_forge_final_state, job_id)

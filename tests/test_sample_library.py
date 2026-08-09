@@ -39,12 +39,10 @@ committed by regenerating it —
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.config import settings as app_settings
 from app.core.decision import IMAGE_BASED_SUBS, analyze_file

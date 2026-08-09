@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
@@ -30,18 +30,18 @@ const STORAGE_KEY = "remuxarr.settingsCategory";
 const SectionHeader = ({ label, first }) => {
   const { palette, type, space } = useTheme();
   return (
-  <div style={{
-    display: "flex",
-    alignItems: "center",
-    gap: space.md,
-    margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
-    paddingBottom: space.sm,
-    borderBottom: `1px solid ${palette.border}`,
-  }}>
-  <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-  {label.toUpperCase()}
-  </span>
-  </div>
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: space.md,
+      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
+      paddingBottom: space.sm,
+      borderBottom: `1px solid ${palette.border}`,
+    }}>
+    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+    {label.toUpperCase()}
+    </span>
+    </div>
   );
 };
 
@@ -74,7 +74,8 @@ const TestConnectionButton = ({ api, service }) => {
         setState("err");
         setResult(d.error || "Unknown error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Connection test request failed", err);
       setState("err");
       setResult("Request failed");
     }
@@ -96,19 +97,19 @@ const TestConnectionButton = ({ api, service }) => {
     style={{
       padding: `${space.xs}px ${space.xl}px`,
       background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
-      border: `1px solid ${color}`,
-      borderRadius: radius.sm,
-      color,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.normal,
-      cursor: state === "loading" ? "not-allowed" : "pointer",
-      transition: "all 0.15s",
-      maxWidth: 320,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+          border: `1px solid ${color}`,
+          borderRadius: radius.sm,
+          color,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.normal,
+          cursor: state === "loading" ? "not-allowed" : "pointer",
+          transition: "all 0.15s",
+          maxWidth: 320,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
     }}
     >
     {label}
@@ -144,10 +145,10 @@ const PlexBacklogStatus = ({ api }) => {
     <span style={{
       padding: `${space.hair}px ${space.sm}px`,
       background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
-      border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
-      borderRadius: radius.sm,
-      color: count > 0 ? palette.amber : palette.dim,
-      fontSize: type.size.sm, fontWeight: type.weight.bold,
+          border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
+          borderRadius: radius.sm,
+          color: count > 0 ? palette.amber : palette.dim,
+          fontSize: type.size.sm, fontWeight: type.weight.bold,
     }}
     title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
     >
@@ -180,15 +181,15 @@ const EmailBreakerStatus = ({ api }) => {
     return () => clearInterval(id);
   }, [api]);
 
-  if (!state || !state.tripped) return null;
+  if (!state?.tripped) return null;
 
   return (
     <div style={{
       display: "flex", alignItems: "flex-start", gap: space.sm,
       padding: `${space.md}px ${space.lg}px`, marginTop: space.sm,
       background: alpha(palette.red, ALPHA.trace), border: `1px solid ${alpha(palette.red, ALPHA.heavy)}`,
-      borderRadius: radius.sm,
-      color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
+          borderRadius: radius.sm,
+          color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
     }}>
     <span style={{ flexShrink: 0 }}>⚠</span>
     <span>
@@ -208,7 +209,7 @@ const EmailBreakerStatus = ({ api }) => {
  * always laid out (just transparent until hover) so nothing shifts as the
  * pointer moves down the list, and it stays visible on mobile, where there
  * is no hover to discover it with. */
-const FieldRow = ({ field, value, onChange, isMobile }) => {
+const FieldRow = ({ field, value, onChange, isMobile, immediate = false }) => {
   const { palette, type, space, radius } = useTheme();
   const [open,  setOpen]  = useState(false);
   const [hover, setHover] = useState(false);
@@ -286,13 +287,27 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
       {field.description}
       </div>
     )}
-    </div>
 
-    <div style={{ flexShrink: 0, paddingTop: space.hair }}>
-    <SettingInput field={field} value={value} onChange={onChange} />
-    </div>
-    </div>
-    </div>
+    {/* Without this the row is indistinguishable from its neighbours while
+      behaving differently — it commits on click and never appears in the
+      SaveBar count. An unexplained inconsistency reads as a bug. */}
+      {immediate && (
+        <div style={{
+          color: palette.dim,
+          fontSize: type.size.xs,
+          letterSpacing: type.tracking.snug,
+          marginTop: space.xs,
+        }}>
+        Applies immediately — no save needed
+        </div>
+      )}
+      </div>
+
+      <div style={{ flexShrink: 0, paddingTop: space.hair }}>
+      <SettingInput field={field} value={value} onChange={onChange} />
+      </div>
+      </div>
+      </div>
   );
 };
 
@@ -300,78 +315,78 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 const NavSidebar = ({ active, onSelect, dirty }) => {
   const { palette, type, space, size } = useTheme();
   return (
-  <nav style={{
-    flexShrink: 0,
-    width: 190,
-    position: "sticky",
-    top: 0,
-    alignSelf: "flex-start",
-    display: "flex",
-    flexDirection: "column",
-    gap: space.hair,
-    paddingRight: space.xxl,
-    borderRight: `1px solid ${palette.border}`,
-  }}>
-  {CATEGORIES.map(c => {
-    const on = c.id === active;
-    return (
-      <button
-      key={c.id}
-      onClick={() => onSelect(c.id)}
-      style={{
-        textAlign: "left",
-        padding: `${space.md}px ${space.lg}px`,
-        background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
-        border: "none",
-        borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
-        color: on ? palette.amber : palette.muted,
-        fontSize: type.size.md,
-        fontFamily: type.family,
-        fontWeight: on ? type.weight.bold : type.weight.medium,
-        letterSpacing: type.tracking.tight,
-        cursor: "pointer",
-        transition: "all 0.12s",
-      }}
-      >
-      {c.label}
-      </button>
-    );
-  })}
-  {dirty && (
-    <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
-    ● UNSAVED
-    </div>
-  )}
-  </nav>
+    <nav style={{
+      flexShrink: 0,
+      width: 190,
+      position: "sticky",
+      top: 0,
+      alignSelf: "flex-start",
+      display: "flex",
+      flexDirection: "column",
+      gap: space.hair,
+      paddingRight: space.xxl,
+      borderRight: `1px solid ${palette.border}`,
+    }}>
+    {CATEGORIES.map(c => {
+      const on = c.id === active;
+      return (
+        <button
+        key={c.id}
+        onClick={() => onSelect(c.id)}
+        style={{
+          textAlign: "left",
+          padding: `${space.md}px ${space.lg}px`,
+          background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
+              border: "none",
+              borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+              color: on ? palette.amber : palette.muted,
+              fontSize: type.size.md,
+              fontFamily: type.family,
+              fontWeight: on ? type.weight.bold : type.weight.medium,
+              letterSpacing: type.tracking.tight,
+              cursor: "pointer",
+              transition: "all 0.12s",
+        }}
+        >
+        {c.label}
+        </button>
+      );
+    })}
+    {dirty && (
+      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+      ● UNSAVED
+      </div>
+    )}
+    </nav>
   );
 };
 
 const NavDropdown = ({ active, onSelect }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-  <select
-  value={active}
-  onChange={e => onSelect(e.target.value)}
-  style={{
-    flex: 1,
-    minWidth: 0,
-    padding: `${space.md}px ${space.md}px`,
-    background: palette.card,
-    border: `1px solid ${palette.border}`,
-    borderRadius: radius.sm,
-    color: palette.text,
-    fontSize: type.size.base,
-    fontFamily: type.family,
-    fontWeight: type.weight.semibold,
-    cursor: "pointer",
-  }}
-  >
-  {CATEGORIES.map(c => (
-    <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
-    {c.label}
-    </option>
-  ))}
-  </select>
+    <select
+    value={active}
+    onChange={e => onSelect(e.target.value)}
+    style={{
+      flex: 1,
+      minWidth: 0,
+      padding: `${space.md}px ${space.md}px`,
+      background: palette.card,
+      border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
+      color: palette.text,
+      fontSize: type.size.base,
+      fontFamily: type.family,
+      fontWeight: type.weight.semibold,
+      cursor: "pointer",
+    }}
+    >
+    {CATEGORIES.map(c => (
+      <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
+      {c.label}
+      </option>
+    ))}
+    </select>
   );
 };
 
@@ -416,14 +431,14 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       marginLeft: "auto",
       padding: `${space.xs}px ${space.xxl}px`,
       background: alpha(btnColor, ALPHA.medium),
-      border: `1px solid ${btnColor}`,
-      borderRadius: radius.sm,
-      color: btnColor,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+          border: `1px solid ${btnColor}`,
+          borderRadius: radius.sm,
+          color: btnColor,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
     }}
     >
@@ -435,13 +450,14 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange, liveToggles = {} }) => {
   const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
   const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
   const [status,   setStatus]   = useState("idle");
+  const [loadError, setLoadError] = useState(false);
 
   // Drop the "saved" confirmation back to idle after 2.5s. Same reason as
   // above: the bare setTimeout it replaces could fire into a remounted
@@ -458,22 +474,63 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     } catch (_) { return CATEGORIES[0].id; }
   });
 
-  useEffect(() => {
-    Promise.all([
+  // Extracted from the mount effect so it can be re-run on demand. Anything
+  // that changes settings server-side WITHOUT going through this page's own
+  // save() has to call this, or the page keeps rendering pre-change values —
+  // see the reload prop passed to BackupRestoreSection below.
+  const loadSettings = useCallback(() => {
+    return Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                fetch(`${api}/api/settings`).then(r => r.json()),
+                       fetch(`${api}/api/settings/`).then(r => r.json()),
     ])
-    .then(([s, v]) => { setSchema(s); setValues(v); setBaseline(v); })
-    .catch(() => {});
+    .then(([s, v]) => {
+      setSchema(s);
+      setValues(v);
+      // baseline must move with values. It is what isDirty compares against,
+      // so leaving it stale would leave the page looking clean while showing
+      // different data than it holds.
+      setBaseline(v);
+      setLoadError(false);
+    })
+    .catch((err) => {
+      // Not silent: this is a one-shot load, and on failure `schema` stays []
+      // so the entire settings page renders as an empty shell with no field,
+      // no error and nothing to retry — indistinguishable from "this app has
+      // no settings". The pollers above swallow deliberately (they retry every
+      // 10s and would flood the console); this one gets exactly one report.
+      console.error("Failed to load settings schema/values", err);
+      setLoadError(true);
+    });
   }, [api]);
+
+  useEffect(() => { loadSettings(); }, [loadSettings]);
+
+  // Bumped alongside loadSettings so sibling sections that fetch their own
+  // settings independently (MaintenanceSection reads three keys directly) also
+  // refetch. Without it the main fields would update after an import while
+  // those three toggles kept showing pre-import state.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reloadAllSettings = useCallback(() => {
+    setReloadKey(k => k + 1);
+    return loadSettings();
+  }, [loadSettings]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, active); } catch (_) { /* ignore */ }
   }, [active]);
 
   // Dirty = any schema field whose current value differs from the saved snapshot.
+  //
+  // Live-toggle keys are excluded by definition rather than by accident. Their
+  // onChange goes to the shared action instead of set(), so `values` never
+  // moves for them and they would not appear here anyway — but relying on that
+  // makes a real invariant look incidental. Being explicit also keeps the
+  // SaveBar count honest: toggling dry run must not make the page claim an
+  // unsaved change, since the change is already saved.
   const dirtyKeys = schema
   .map(f => f.key)
+  .filter(k => !liveToggles[k])
   .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
   const isDirty = dirtyKeys.length > 0;
 
@@ -493,22 +550,52 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     const snapshot = values;
     setStatus("saving");
     try {
-      const schemaKeys   = new Set(schema.map(f => f.key));
-      const schemaValues = Object.fromEntries(
-        Object.entries(snapshot).filter(([k]) => schemaKeys.has(k))
-      );
-      const r = await fetch(`${api}/api/settings`, {
+      // Only the keys the user actually changed on this page.
+      //
+      // This previously sent EVERY schema key from `values`, which is a
+      // snapshot taken at page load. Two schema fields — dry_run_mode and
+      // auto_start_jobs, both group "Worker" — are also written from outside
+      // this page: the header toggles both, and abort_job sets
+      // auto_start_jobs=False server-side as a safety stop. So:
+      //
+      //   1. open Settings
+      //   2. toggle DRY RUN in the header (backend now true, toast confirms)
+      //   3. change anything unrelated, press SAVE
+      //   4. the PUT carries dry_run_mode:false from step 1's snapshot
+      //
+      // Dry run silently switches off, and the same shape re-enables
+      // auto_start_jobs after an abort — undoing the stop the abort button
+      // exists to apply. BackupRestoreSection's comment already diagnosed
+      // this exact mechanism for the import trigger and fixed that one path
+      // with reloadAllSettings(); the header-toggle trigger has the same
+      // shape and was not covered. Sending dirtyKeys closes both, and is
+      // less code than the filter it replaces.
+      const payload = Object.fromEntries(dirtyKeys.map(k => [k, snapshot[k]]));
+
+      // Nothing to do — the SaveBar is disabled when clean, but a double
+      // click or an Enter keypress can still land here.
+      if (dirtyKeys.length === 0) {
+        setStatus("saved");
+        return;
+      }
+
+      const r = await fetch(`${api}/api/settings/`, {
         method:  "PUT",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(schemaValues),
+        body:    JSON.stringify(payload),
       });
       if (r.ok) {
-        setBaseline(snapshot);          // saved values become the new clean baseline
         setStatus("saved");
+        // Re-read rather than trusting the local snapshot. The unsent keys
+        // are exactly the ones that may have been changed elsewhere, so this
+        // is what makes the page agree with the backend again instead of
+        // continuing to render step 1's stale values.
+        await loadSettings();
       } else {
         setStatus("error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Saving settings failed", err);
       setStatus("error");
     }
   };
@@ -518,7 +605,8 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   // schema grouped by declared group name
   const groupsMap = schema.reduce((acc, field) => {
     const g = field.group || "General";
-    (acc[g] = acc[g] || []).push(field);
+    acc[g] ??= [];
+    acc[g].push(field);
     return acc;
   }, {});
 
@@ -528,15 +616,29 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     return (
       <div key={groupName}>
       <SectionHeader label={groupName} first={first} />
-      {fields.map(field => (
-        <FieldRow
-        key={field.key}
-        field={field}
-        value={values[field.key]}
-        onChange={v => set(field.key, v)}
-        isMobile={isMobile}
-        />
-      ))}
+      {fields.map(field => {
+        // dry_run_mode and auto_start_jobs are owned by the app-level state
+        // that the header renders from, not by this page's loaded snapshot.
+        // Rendering them from `live` and committing through the SAME action
+        // the header calls means the two controls cannot disagree: there is
+        // one value, not two copies to keep in step.
+        //
+        // Previously they were ordinary staged fields, so changing one here
+        // updated the header only after a full page reload — the page
+        // remounts on every tab change and refetches, but useAppData sits
+        // above the page switch and never does.
+        const live = liveToggles[field.key];
+        return (
+          <FieldRow
+          key={field.key}
+          field={field}
+          value={live ? live.value : values[field.key]}
+          onChange={live ? live.onToggle : (v => set(field.key, v))}
+          isMobile={isMobile}
+          immediate={!!live}
+          />
+        );
+      })}
       {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
         <TestConnectionButton api={api} service={groupName.toLowerCase()} />
       )}
@@ -552,7 +654,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (cat.custom === "maintenance") {
       return (
         <>
-        <MaintenanceSection api={api} toast={toast} />
+        <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
         <LogViewer api={api} toast={toast} />
         </>
       );
@@ -560,7 +662,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     if (cat.custom === "backup") {
       return (
         <>
-        <BackupRestoreSection api={api} toast={toast} />
+        <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
         <FullBackupSection api={api} toast={toast} />
         <DangerZone api={api} toast={toast} />
         </>
@@ -570,10 +672,16 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
       return <AppearanceSection />;
     }
     if (schema.length === 0) {
+      // Two different situations shared one message before. The fetch is a
+      // one-shot with no retry, so once it has failed this placeholder is
+      // permanent — telling the user to "connect to the backend" implies a
+      // wait that will never end. Reloading is the only actual recovery.
       return (
         <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: space.xxxl }}>
-        Connect to the backend to load settings…
-        </div>
+        {loadError
+          ? "Couldn't load settings from the backend. Reload the page to try again."
+          : "Connect to the backend to load settings…"}
+          </div>
       );
     }
     return cat.groups.map((g, i) => renderGroup(g, i === 0));

@@ -150,7 +150,7 @@ export default function App() {
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
       toast, fetchAll,
-      pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey,
+      pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
       reviewRefreshKey,
   } = data;
 
@@ -190,7 +190,18 @@ export default function App() {
     /* ── Render ───────────────────────────────────────────────────────────── */
     return (
       <div style={{
-        height: "100vh",
+        /* dvh, not vh. vh is the viewport INCLUDING the mobile address bar,
+         * so the bottom of the layout — and the toast stack anchored to it —
+         * sat underneath the bar. DetailModal already used dvh for exactly
+         * this reason and said so; the shell it sits in did not.
+         *
+         * Feature-detected rather than written as two declarations: this is a
+         * JS object, not a CSS rule, so a duplicate key would just replace the
+         * first and leave no fallback at all on a browser without dvh. */
+        height:
+        typeof CSS !== "undefined" && CSS.supports?.("height", "100dvh")
+        ? "100dvh"
+        : "100vh",
         display: "flex",
         flexDirection: "column",
         background: palette.bg,
@@ -322,13 +333,28 @@ export default function App() {
 
           {page === "settings" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <SettingsPage api={api} toast={toast} isMobile={isMobile} onDirtyChange={setSettingsDirty} />
+            <SettingsPage
+            api={api}
+            toast={toast}
+            isMobile={isMobile}
+            onDirtyChange={setSettingsDirty}
+            /* dry_run_mode and auto_start_jobs are rendered from the app-level
+             *              state rather than the page's own loaded snapshot, and applied on
+             *              click. The header owns them: it toggles both, and abort_job
+             *              clears auto_start_jobs server-side as a safety stop. Passing the
+             *              live value and the same action the header calls means there is
+             *              one source of truth rather than two copies to keep in step. */
+            liveToggles={{
+              dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
+              auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },
+            }}
+            />
             </div>
           )}
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} />
+            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} />
             </div>
           )}
 
@@ -341,6 +367,7 @@ export default function App() {
             processed={forgeProcessed}
             onAdd={forgeAdd}
             onUndo={forgeUndo}
+            workerPaused={workerPaused}
             isMobile={isMobile}
             />
             </div>

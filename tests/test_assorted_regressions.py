@@ -49,12 +49,10 @@ import asyncio
 import os
 import shutil
 import subprocess
-import sys
 import time
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.probe import _normalise_container
 from app.core.worker import _is_subtitle_encoding_failure

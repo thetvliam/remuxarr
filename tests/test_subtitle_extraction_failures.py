@@ -29,9 +29,7 @@ Run from the project root:
 """
 import asyncio
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 from app.core.worker import _is_subtitle_encoding_failure

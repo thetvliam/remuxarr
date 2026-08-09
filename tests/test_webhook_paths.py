@@ -20,10 +20,7 @@ These target the pure path-extraction helpers directly. Run from the
 project root:
     pytest tests/ -v
 """
-import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.api.routes.webhooks import _radarr_paths, _sonarr_paths
 

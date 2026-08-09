@@ -19,7 +19,7 @@ export const ActionBadge = ({ type: actionType }) => {
             padding: `${space.hair}px ${space.xs}px`,
             background: cfg.bg,
             border: `1px solid ${cfg.border}`,
-            borderRadius: radius.none,
+            borderRadius: radius.badge,
             color: cfg.text,
             fontSize: type.size.xs,
             fontFamily: type.family,

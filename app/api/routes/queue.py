@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from datetime import datetime
+from app.core.timeutil import utcnow
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -232,7 +233,7 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.status = "skipped"
         item.reason = decision.reason
         item.review_subtitles = None
-        item.completed_at = datetime.utcnow()
+        item.completed_at = utcnow()
         media.status = "skipped"
         return
 
@@ -348,7 +349,7 @@ def clear_pending(db: Session = Depends(get_db)):
         .filter(QueueItem.status == "pending")
         # completed_at stamped for the same reason as cancel_item — see
         # its comment (NULLs sort last in the completed_at-DESC history).
-        .update({"status": "cancelled", "completed_at": datetime.utcnow()})
+        .update({"status": "cancelled", "completed_at": utcnow()})
     )
     if file_ids:
         db.query(MediaFile).filter(
@@ -439,7 +440,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     # without it would sink to the bottom of the Failed tab regardless of
     # recency and render a "—" timestamp. cancel_item and clear_pending
     # were the two "cancelled"-producing paths that missed this.
-    item.completed_at = datetime.utcnow()
+    item.completed_at = utcnow()
     if item.media_file:
         item.media_file.size   = -1
         item.media_file.mtime  = -1.0
@@ -471,7 +472,15 @@ def retry_all_failed(db: Session = Depends(get_db)):
 
     app_cfg = get_app_settings(db)
     dry_run = _current_dry_run_mode(db)
-    retried = 0
+    # One shared ScanStats across the loop instead of a throwaway per item.
+    # "retried" previously counted every item _process_file did not raise on,
+    # which is not the same thing as re-queued: the decision engine re-runs
+    # with force_probe=True and may legitimately decide the file now needs no
+    # work (skipped) or needs a human (manual_review). A settings change that
+    # made 40 of 50 failures a no-op still reported "50 requeued", and the
+    # Queue then showed 10. The stats object already distinguishes these — it
+    # was just being discarded.
+    stats = ScanStats()
     skipped = 0
     errors: list[dict] = []
 
@@ -499,11 +508,10 @@ def retry_all_failed(db: Session = Depends(get_db)):
                 db, file_path, app_cfg,
                 force_probe      = True,
                 dry_run          = dry_run,
-                stats            = ScanStats(),
+                stats            = stats,
                 sonarr_series_id = sonarr_series_id,
                 radarr_movie_id  = radarr_movie_id,
             )
-            retried += 1
         except Exception as exc:
             # Mirrors scan_library()'s own per-file protection — without
             # this, one bad file (e.g. the ValueError decision.py raises
@@ -520,7 +528,20 @@ def retry_all_failed(db: Session = Depends(get_db)):
             # results are unaffected.
             db.rollback()
 
-    return {"retried": retried, "skipped": skipped, "errors": errors}
+    return {
+        # Only items that actually became pending work.
+        "retried":       stats.queued,
+        # Source file gone at the top of the loop, plus files the re-run
+        # decided need no work — both are "not re-queued", and the caller
+        # renders them as one "skipped" figure.
+        "skipped":       skipped + stats.skipped,
+        # Reported separately because these are not finished: they are waiting
+        # on the user, and folding them into either count above would hide
+        # that. Absent before, so a retry that moved items to Review looked
+        # like it had done nothing to them.
+        "manual_review": stats.manual_review,
+        "errors":        errors,
+    }
 
 
 class SubtitleOverridesRequest(BaseModel):
@@ -691,6 +712,19 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     the image-subtitle one — confirmed via resolve_subtitles_bulk's own
     docstring, which notes the threshold gate never populates that
     field.
+
+    INVARIANT this depends on: every code path that raises a manual review
+    for a SUBTITLE reason must write a non-null review_subtitles. There is
+    exactly one place that could previously violate it —
+    worker._flag_subtitle_encoding_review, which wrote NULL when no stored
+    Track matched the failing stream indices (stale track rows). That made a
+    subtitle-encoding review indistinguishable from a threshold review, so
+    approving it set und_audio_threshold_acknowledged on a file that never
+    tripped the threshold gate, permanently exempting it from a real check.
+    That path now fails the job instead, since an empty flagged list gives
+    the user nothing to review either way. If a new subtitle-review trigger
+    is ever added, it must populate this field or this inference breaks
+    again — see tests/test_manual_review_refresh.py.
     """
     item = db.get(QueueItem, item_id)
     if not item:

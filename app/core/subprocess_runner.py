@@ -88,6 +88,31 @@ async def probe_duration(path: str) -> float | None:
 # ── The generic executor ─────────────────────────────────────────────────────
 
 
+def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
+    """
+    Copy every temp output to "<final>.part" and fsync it. Synchronous.
+
+    MUST be called through run_in_executor, never directly from a coroutine.
+    These are potentially multi-gigabyte cross-filesystem copies (tmpfs → array):
+    running one on the event loop stalls WebSocket broadcasts, API responses and
+    the worker's job-claiming loop for its entire duration, which is what this
+    helper exists to prevent.
+
+    `part_paths` is caller-owned and appended to as each copy completes, so a
+    partially-finished run is still visible to the caller's OSError handler
+    after the exception propagates out of the executor. Do not turn this into a
+    return value — on the failure path there is no return.
+
+    Raises OSError (including ENOSPC), handled by the caller.
+    """
+    for o in outputs:
+        part = o.final_path + ".part"
+        shutil.copyfile(o.temp_path, part)
+        with open(part, "rb") as f:
+            os.fsync(f.fileno())
+        part_paths.append(part)
+
+
 async def run_staged_subprocess(
     cmd: list[str],
     outputs: list[StagedOutput],
@@ -231,14 +256,38 @@ async def run_staged_subprocess(
         # the final's own directory. The exposure drops from
         # "gigabytes of copying with no original" to per-file metadata
         # renames.
+        #
+        # The first pass runs in an executor rather than inline: it is the one
+        # genuinely long blocking operation left in this coroutine, and on the
+        # event loop it froze the UI (no progress updates, no API responses) for
+        # the whole copy. _stage_parts appends to part_paths as it goes, so the
+        # handler below still sees exactly which .part files a failed run had
+        # created.
         part_paths: list[str] = []
+        staging = asyncio.ensure_future(
+            asyncio.get_running_loop().run_in_executor(
+                None, _stage_parts, outputs, part_paths
+            )
+        )
         try:
-            for o in outputs:
-                part = o.final_path + ".part"
-                shutil.copyfile(o.temp_path, part)
-                with open(part, "rb") as f:
-                    os.fsync(f.fileno())
-                part_paths.append(part)
+            # shield(), not a bare await: staging is now interruptible where the
+            # inline loop it replaced was not, and an abort landing mid-copy
+            # would otherwise send us straight to the outer CancelledError
+            # handler while this thread is still running. A default
+            # ThreadPoolExecutor thread cannot be interrupted, so that handler's
+            # cleanup would race a live copy — deleting .part files the thread
+            # then recreates for later outputs, leaving exactly the orphans the
+            # cleanup exists to prevent. Shielding lets the copy finish, so
+            # cleanup always runs against a settled filesystem, and the abort is
+            # re-raised immediately afterwards. This preserves the previous
+            # behaviour: staging was effectively uninterruptible before.
+            await asyncio.shield(staging)
+        except asyncio.CancelledError:
+            try:
+                await staging
+            except Exception:
+                pass          # already aborting; a staging failure changes nothing
+            raise
         except OSError as exc:
             for p in part_paths + [o.final_path + ".part" for o in outputs]:
                 cleanup_temp_file(p)

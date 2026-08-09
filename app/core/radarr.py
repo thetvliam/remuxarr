@@ -45,5 +45,5 @@ def notify_radarr(base_url: str, api_key: str, movie_id: int) -> None:
             "Radarr: RescanMovie HTTP %d for movie %d: %s",
             exc.code, movie_id, exc.reason,
         )
-    except Exception as exc:
-        logger.error("Radarr: RescanMovie failed for movie %d: %s", movie_id, exc)
+    except Exception:
+        logger.exception("Radarr: RescanMovie failed for movie %d", movie_id)

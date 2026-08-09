@@ -11,8 +11,8 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * MANUAL REVIEW PAGE
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
-export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey, reviewRefreshKey = 0 }) => {
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey, invalidateHistory, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
@@ -32,15 +32,28 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
             const r = await fetch(`${api}/api/queue/resolve-subtitles-bulk`, { method: "POST" });
             if (r.ok) {
                 const data = await r.json();
-                toast?.(
-                    `Resolved ${data.resolved}${data.still_unresolved ? `, ${data.still_unresolved} still needed review` : ""}`,
-                    "info",
-                );
+                const stillNeeded = data.still_unresolved
+                ? `, ${data.still_unresolved} still needed review`
+                : "";
+                toast?.(`Resolved ${data.resolved}${stillNeeded}`, "info");
+                // The endpoint commits per item so one bad file cannot roll
+                // back the rest, and returns what failed. Discarding that meant
+                // a partially-successful bulk resolve reported as a clean one.
+                if (Array.isArray(data.errors) && data.errors.length) {
+                    console.warn("Bulk resolve — items not resolved:", data.errors);
+                    toast?.(
+                        `${data.errors.length} item${data.errors.length === 1 ? "" : "s"} could not be resolved — ` +
+                        `see the browser console for details`,
+                        "error",
+                    );
+                }
                 onRefresh();
+                invalidateHistory?.(null);
             } else {
                 toast?.("Bulk resolve failed", "error");
             }
-        } catch (_) {
+        } catch (err) {
+            console.error("Bulk resolve failed", err);
             toast?.("Bulk resolve failed", "error");
         } finally {
             setBulkResolving(false);
@@ -59,6 +72,11 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
             return;
         }
         onRefresh();
+        // Same reasoning as skip() and resolveSubtitle() either side of this.
+        // Approving re-runs the decision engine, and if the fresh decision
+        // finds nothing to do the item lands on "skipped" — a terminal status
+        // the Skipped tab displays. onRefresh (fetchAll) never touches history.
+        invalidateHistory?.(null);
     };
     const skip = async (id) => {
         const r = await fetch(`${api}/api/queue/${id}`, { method: "DELETE" }).catch(() => null);
@@ -72,7 +90,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
         // "cancelled" status, which the Failed tab's own count already
         // includes, so without this the History panel goes stale until
         // something else happens to trigger a refresh.
-        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
+        invalidateHistory?.(null);
     };
     const resolveSubtitle = async (id, streamIndex, choice) => {
         const r = await fetch(`${api}/api/queue/${id}/resolve-subtitles`, {
@@ -88,7 +106,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
         // Same reasoning as skip() above — resolving can move the item to
         // "skipped" or "pending" (later completed/failed), any of which
         // the History panel needs to know about.
-        setHistoryRefreshKey?.(prev => ({ key: prev.key + 1, status: null }));
+        invalidateHistory?.(null);
     };
 
     return (
@@ -275,8 +293,8 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
                 })
             }
 
-            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} toast={toast} />
-            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
             </div>
     );
 };

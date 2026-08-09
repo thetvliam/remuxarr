@@ -13,7 +13,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *
  * Each toggle/tag saves immediately via PATCH /api/settings/{key} so
  * there's no separate Save button needed (mirrors how DangerZone works).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
@@ -35,6 +35,13 @@ const ToggleRow = ({ label, description, checked, onChange, disabled = false }) 
     </div>
     </div>
     <button
+    // role + aria-checked is what conveys on/off here. The switch is drawn
+    // entirely with a positioned knob, so without them it announced as an
+    // unlabelled button with no state at all — the label sits in a sibling
+    // div, so aria-label carries it across.
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
     onClick={() => !disabled && onChange(!checked)}
     disabled={disabled}
     style={{
@@ -84,7 +91,13 @@ const TimeTagInput = ({ value = [], onChange }) => {
       setError("That time is already in the list");
       return;
     }
-    onChange([...value, t].sort());
+    // Explicit comparator: the intent is chronological order, and a bare
+    // .sort() only happens to produce it because isValidTime above enforces
+    // zero-padded 24-hour HH:MM, where lexicographic and chronological
+    // coincide. That is an invisible coupling between two functions — relax
+    // the regex to allow "9:00", or move to 12-hour times, and the schedule
+    // list silently misorders with nothing pointing back here.
+    onChange([...value, t].sort((a, b) => a.localeCompare(b)));
     setDraft("");
     setError("");
   };
@@ -174,7 +187,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 };
 
 /* ── Main component ─────────────────────────────────────────────────────── */
-export const MaintenanceSection = ({ api, toast }) => {
+export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
@@ -221,7 +234,10 @@ export const MaintenanceSection = ({ api, toast }) => {
       });
     })
     .catch(() => {});
-  }, [api]);
+    // reloadKey: bumped by SettingsPage after a settings import, which changes
+    // these three keys server-side without this component knowing. Without it
+    // the toggles kept rendering pre-import values indefinitely.
+  }, [api, reloadKey]);
 
   /* Applied optimistically so the toggle responds instantly, and rolled
    * back if the write fails. Previously the toast reported the failure but
@@ -244,7 +260,8 @@ export const MaintenanceSection = ({ api, toast }) => {
         revert();
         toast?.("Failed to save setting", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Save maintenance setting failed", err);
       revert();
       toast?.("Failed to save setting", "error");
     }
@@ -258,16 +275,25 @@ export const MaintenanceSection = ({ api, toast }) => {
       if (r.ok) {
         const data = await r.json();
         setCleanupResult(data.removed);
-        toast?.(
-          data.removed === 0
-          ? "Cleanup complete — no stale entries found"
-          : `Cleanup complete — removed ${data.removed} stale ${data.removed === 1 ? "entry" : "entries"}`,
-          "info",
-        );
+        // No success toast here. The backend broadcasts "cleanup_completed"
+        // over the WebSocket and useAppData raises the toast from that, so
+        // toasting the HTTP response too produced two near-identical messages
+        // for every click ("removed N stale entries" here vs "N stale entries
+        // removed" there — and character-for-character identical when the
+        // count was zero).
+        //
+        // The WebSocket is the right one to keep: it also refreshes the
+        // history and review panels, and it fires for a cleanup triggered
+        // anywhere, not just from this button. The inline cleanupResult below
+        // still gives immediate local feedback.
+        //
+        // The failure paths keep their toasts — a request that never reached
+        // the backend produces no broadcast, so nothing else would report it.
       } else {
         toast?.("Cleanup failed", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Cleanup failed", err);
       toast?.("Cleanup failed", "error");
     } finally {
       setCleanupRunning(false);
@@ -293,7 +319,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to start rescan", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Rescan request failed", err);
       toast?.("Failed to start rescan", "error");
     }
   };
@@ -311,7 +338,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to check for orphaned files", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Orphaned-file check failed", err);
       toast?.("Failed to check for orphaned files", "error");
     } finally {
       setOrphanedLoading(false);
@@ -358,7 +386,8 @@ export const MaintenanceSection = ({ api, toast }) => {
       } else {
         toast?.("Failed to remove orphaned files", "error");
       }
-    } catch (_) {
+    } catch (err) {
+      console.error("Remove orphaned files failed", err);
       toast?.("Failed to remove orphaned files", "error");
     } finally {
       setOrphanedRemoving(false);

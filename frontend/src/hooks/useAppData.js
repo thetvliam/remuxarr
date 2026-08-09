@@ -32,7 +32,7 @@ const _pageFromHash = () => {
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
  *  nothing else in the codebase needs to change.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -71,6 +71,30 @@ export function useAppData() {
   // `status: null` means "could affect anything" (used for scan/cleanup,
   // which can touch multiple statuses at once) — every tab refreshes then.
   const [historyRefreshKey, setHistoryRefreshKey] = useState({ key: 0, status: null });
+
+  /**
+   * Mark History as stale.
+   *
+   * Exists because the raw
+   *   setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: X }))
+   * incantation was written out by hand at every call site that might have
+   * invalidated the panel — and four sites that needed it did not have it
+   * (dismissItem, clearQueue, dismissQueueItem, ReviewPage.approve), so a row
+   * the user had just dismissed or cancelled stayed on screen until something
+   * unrelated triggered a refresh.
+   *
+   * fetchAll() does NOT cover this: it refetches active jobs, queue,
+   * manual-review, worker and scan status, and deliberately never touches
+   * history, which paginates separately via useHistoryData.
+   *
+   * @param status  Which status just changed, so a tab unrelated to it can skip
+   *                the refetch. Pass null (the default) when the change could
+   *                affect more than one tab, or when the item's status is not
+   *                known at the call site — null always refreshes.
+   */
+  const invalidateHistory = useCallback((status = null) => {
+    setHistoryRefreshKey(prev => ({ key: prev.key + 1, status }));
+  }, []);
 
   // Incremented whenever the audio/subtitle language flag tables may have
   // changed — the Review page's two language sections fetch their own
@@ -125,12 +149,22 @@ export function useAppData() {
 
       const state = event.state ?? {};
 
+      /* event.state is the state of the entry being navigated TO, not the
+       * one being left. Going back from an open modal therefore lands on
+       * the { modal: false } page entry and is handled by the else branch —
+       * this if only fires going FORWARD into a modal entry, where it
+       * closes the modal rather than reopening it.
+       *
+       * Behaviour is fine either way, since forward-into-a-modal is not a
+       * flow the app produces. The comments said the opposite, which
+       * matters because closedByUserRef below is reasoned about in terms of
+       * this model. */
       if (state.modal) {
-        // Navigating back from the "modal open" history entry → close it
+        // Forward navigation INTO a modal entry.
         modalRef.current = null;
         setModalState(null);
       } else {
-        // Navigating back from a page history entry → restore that page
+        // Back to a page entry, including back out of an open modal.
         const target = VALID_PAGES.has(state.page) ? state.page : "dashboard";
         pageRef.current = target;
         setPageState(target);
@@ -148,6 +182,10 @@ export function useAppData() {
    *    Called by AppHeader nav tabs. Pushes a new history entry so the back
    *    button can return to the previous tab. */
   const setPage = useCallback((newPage) => {
+    // Clicking the tab you are already on pushed another identical entry,
+    // so Back then needed one press per click before it did anything
+    // visible — the button looked broken rather than slow.
+    if (pageRef.current === newPage) return;
     pageRef.current = newPage;
     setPageState(newPage);
     window.history.pushState(
@@ -206,28 +244,40 @@ export function useAppData() {
    * degrades to the fallback rather than rendering that colour. */
   const toast = useCallback((msg, tone) => {
     const id = Date.now() + Math.random();
-    setToasts(t => {
-      const next = [...t, { id, msg, tone }];
-      return next.slice(-8);
-    });
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
+    setToasts(t => [...t, { id, msg, tone }].slice(-8));
+    const isOtherToast = (x) => x.id !== id;
+    const dismiss = () => setToasts(t => t.filter(isOtherToast));
+    setTimeout(dismiss, 5000);
   }, []);
 
   /* ── Data fetching ────────────────────────────────────────────────────── */
   const fetchAll = useCallback(async () => {
-    const [a, q, r, w, s, sc] = await Promise.allSettled([
+    // dry_run_mode is fetched here, alongside auto_start_jobs, rather than
+    // only once on mount. Both are written from outside this hook — the
+    // header toggles either, Settings writes both, and abort_job clears
+    // auto_start_jobs server-side — but only auto_start_jobs was refreshed,
+    // so the dry-run badge could disagree with the backend for an entire
+    // session. Worse, the next header click computes `!dryRun` from the
+    // stale value, so it can write back the state that is already set and
+    // then toast whichever the client believed. toggleDryRun's own comment
+    // calls that out as "the difference between a preview and an
+    // irreversible write" for the failure path; staleness produced the same
+    // visible outcome by another route.
+    const [a, q, r, w, s, sc, dr] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
-                                                         fetch(`${api}/api/queue`).then(r => r.json()),
+                                                         fetch(`${api}/api/queue/`).then(r => r.json()),
                                                          fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
                                                          fetch(`${api}/api/worker/status`).then(r => r.json()),
                                                          fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
                                                          fetch(`${api}/api/scan/status`).then(r => r.json()),
+                                                         fetch(`${api}/api/settings/dry_run_mode`).then(r => r.json()),
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);
     if (r.status  === "fulfilled") setReview(Array.isArray(r.value) ? r.value : []);
     if (w.status  === "fulfilled") setWorkerPaused(w.value?.paused ?? false);
     if (s.status  === "fulfilled") setAutoStart(s.value?.value ?? true);
+    if (dr.status === "fulfilled") setDryRun(!!dr.value?.value);
     if (sc.status === "fulfilled") {
       setScanning(sc.value?.running ?? false);
       if (sc.value?.running && sc.value?.total > 0) {
@@ -263,13 +313,6 @@ export function useAppData() {
         }, 3000);
         return () => clearInterval(id);
       }, [scanning, api]);
-
-      useEffect(() => {
-        fetch(`${api}/api/settings/dry_run_mode`)
-        .then(r => r.json())
-        .then(d => setDryRun(!!d.value))
-        .catch(() => {});
-      }, [api]);
 
       /* ── WebSocket event handler ──────────────────────────────────────────── */
       const onWsMsg = useCallback((msg) => {
@@ -310,7 +353,7 @@ export function useAppData() {
              * what keep the UI correct, so they must not sit behind a
              * cosmetic string operation that can throw. */
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: msg.status }));
+            invalidateHistory(msg.status ?? null);
             setReviewRefreshKey(k => k + 1);
             toast(
               msg.status === "dry_run"
@@ -338,7 +381,7 @@ export function useAppData() {
 
           case "scan_progress":
             setScanProgress({ scanned: msg.scanned, total: msg.total });
-            fetch(`${api}/api/queue`).then(r => r.json())
+            fetch(`${api}/api/queue/`).then(r => r.json())
             .then(d => { if (Array.isArray(d)) setQueue(d); })
             .catch(() => {});
             break;
@@ -353,7 +396,7 @@ export function useAppData() {
                   "notice",
             );
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            invalidateHistory(null);
             setReviewRefreshKey(k => k + 1);
             break;
 
@@ -365,7 +408,7 @@ export function useAppData() {
               "info",
             );
             fetchAll();
-            setHistoryRefreshKey(prev => ({ key: prev.key + 1, status: null }));
+            invalidateHistory(null);
             setReviewRefreshKey(k => k + 1);
             break;
 
@@ -392,13 +435,19 @@ export function useAppData() {
             setForgeRefreshKey(k => k + 1);
             break;
         }
-      /* No theme value appears in this callback any more — the toasts it
-       * raises name a tone, and the colour is resolved by Toasts at render.
-       * That is the point of the change: a dependency array cannot go stale
-       * on a value it never captures. `api` stays because the body reads it
-       * directly; it was missing before, masked only by `fetchAll` happening
-       * to close over the same value. */
-      }, [fetchAll, fetchForge, toast, api]);
+        /* No theme value appears in this callback any more — the toasts it
+         * raises name a tone, and the colour is resolved by Toasts at render.
+         * That is the point of the change: a dependency array cannot go stale
+         * on a value it never captures. `api` stays because the body reads it
+         * directly; it was missing before, masked only by `fetchAll` happening
+         * to close over the same value.
+         *
+         * invalidateHistory is a useCallback with an empty dep array, so it is
+         * referentially stable and adding it here does not cause this callback
+         * to be rebuilt on every render — it is listed because the rule is set
+         * to error and it caught this omission when the raw
+         * setHistoryRefreshKey calls were routed through the helper. */
+      }, [fetchAll, fetchForge, toast, api, invalidateHistory]);
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
@@ -416,7 +465,7 @@ export function useAppData() {
         showApiBar, setShowApiBar,
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
-        historyRefreshKey, setHistoryRefreshKey,
+        historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
         reviewRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey,
           toast, fetchAll, fetchForge,
