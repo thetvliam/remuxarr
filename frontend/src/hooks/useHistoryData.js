@@ -55,7 +55,12 @@ const PAGE_SIZE = 50;
 // tab's backend query also matches "cancelled", so a cancelled job (e.g.
 // from Abort) must still refresh that tab even though the literal status
 // string differs.
-function eventAffectsTab(eventStatus, tab) {
+// Exported for tests. It mirrors a backend status filter, so it is the kind
+// of pure mapping that should be pinned directly rather than only through the
+// hook's fetch behaviour — a drift between this and history.py shows up as a
+// tab that silently stops refreshing, which is invisible until someone
+// notices a stale row.
+export function eventAffectsTab(eventStatus, tab) {
   if (eventStatus == null) return true;          // scan/cleanup — always relevant
   if (tab === "all") return true;                 // "all" shows every status
   if (eventStatus === tab) return true;

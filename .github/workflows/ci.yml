@@ -97,6 +97,16 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The frontend had no tests at all until this was added, on a codebase
+      # of comparable size to the backend that now holds real state-machine
+      # logic — paginated fetch generation counters, history relevance gating,
+      # settings dirty-tracking. `vite build` cannot see any of it: the two
+      # defects these first tests pin (every integer setting reset by focus +
+      # blur, and a settings save PUTting stale values over live ones) both
+      # built and linted perfectly cleanly.
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build
 

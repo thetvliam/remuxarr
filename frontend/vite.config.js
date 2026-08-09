@@ -7,6 +7,19 @@ export default defineConfig({
     outDir:    "dist",
     emptyOutDir: true,
   },
+  // Vitest config lives here rather than in a separate vitest.config.js so
+  // there is one place where aliases and plugins are declared — a second
+  // config file is how test and build environments drift apart.
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: "./src/test/setup.js",
+    include: ["src/**/*.test.{js,jsx}"],
+    // The suite must stay fast enough to run on every commit, like the
+    // backend's 3s one. Nothing here should touch the network or a timer
+    // it does not control.
+    testTimeout: 5000,
+  },
   server: {
     // Dev server proxies /api and /ws to the FastAPI backend
     proxy: {
