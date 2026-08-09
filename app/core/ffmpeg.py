@@ -10,6 +10,7 @@ determine_output_path()       — decides where to write the output file
 
 import logging
 import os
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -490,7 +491,6 @@ def _pick_temp_dir(reference_path: str) -> str:
     plenty of room.  Checking first and falling back keeps the fast-path
     benefit while safely handling files that exceed available RAM.
     """
-    import shutil as _shutil
     preferred = app_settings.TEMP_DIR
     try:
         os.makedirs(preferred, exist_ok=True)
@@ -502,7 +502,7 @@ def _pick_temp_dir(reference_path: str) -> str:
             needed = 0
         # Add 10 % headroom; always require at least 256 MB free.
         needed = max(int(needed * 1.1), 256 * 1024 * 1024)
-        free = _shutil.disk_usage(preferred).free
+        free = shutil.disk_usage(preferred).free
         if free >= needed:
             return preferred
         logger.warning(

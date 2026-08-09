@@ -7,8 +7,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Server
-    HOST: str = "0.0.0.0"
-    PORT: int = 9191
+    # HOST/PORT deliberately absent. They existed here and nothing read them:
+    # the container runs uvicorn with the address on the command line, and
+    # docker-compose maps the port. A settings field nobody consumes reads as
+    # a supported override, so changing REMUXARR_PORT looked like it should
+    # work and silently did nothing.
 
     # Database — lives in /config so it survives container restarts
     DATABASE_PATH: str = "/config/remuxarr.db"

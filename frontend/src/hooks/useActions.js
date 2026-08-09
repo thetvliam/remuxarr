@@ -15,7 +15,6 @@ export function useActions({
   toast,
   fetchAll,
   fetchForge,
-  setHistoryRefreshKey,
   invalidateHistory,
   setForgeRefreshKey,
 }) {

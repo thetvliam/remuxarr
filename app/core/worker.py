@@ -810,6 +810,19 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     #
     # Falls back to the original two-pass approach for jobs that only have
     # subtitle extractions or only have a main remux (no combined work).
+    #
+    # NOT dead code, despite reading like it. A review proposed simplifying
+    # this to `use_combined = bool(extract_actions)` on the grounds that the
+    # else-branch was unreachable. Measured against the 18-file sample library
+    # at production defaults: 5 records take the combined path and 13 take
+    # this one. The common case is a file with NO extractable text subtitle —
+    # none at all, or only PGS/VOBSUB, which are image-based and never
+    # extracted to SRT — where extract_actions is empty and the whole job is
+    # a plain remux.
+    #
+    # The reachability argument also has to hold on BOTH sides of the `and`,
+    # not just one: extract_actions empty is ordinary, and a file needing only
+    # extraction with no other work reaches it too.
     non_extract_actions = [
         a for a in decision.actions if a.action_type != "extract_subtitle"
     ]

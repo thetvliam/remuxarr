@@ -172,12 +172,23 @@ Everything from here happens in the web UI, not in any config file:
 
 ## Development
 
-The backend has a real test suite - 184 tests covering the decision engine (what happens to each file and why), library scanning, queue and job lifecycle, Sonarr/Radarr webhook path translation, FFmpeg command construction, AC3 Forge, and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 334 tests covering the decision engine (what happens to each file and why), library scanning, queue and job lifecycle, Sonarr/Radarr webhook path translation, FFmpeg command construction, AC3 Forge, startup recovery, and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r tests/requirements-test.txt
-pytest tests/ -v
+pytest
 ```
+
+The frontend has its own suite covering the settings save path, integer input
+handling, and history refresh gating:
+
+```bash
+cd frontend && npm install && npm test
+```
+
+Both run in CI on every push, alongside pyflakes and eslint. A few backend
+tests exercise a real FFmpeg/ffprobe and skip if the binaries are missing - CI
+installs them so they always run.
 
 See [`tests/README.md`](tests/README.md) for more detail, including how to run this same suite inside a deployed container against production FFmpeg.
 
