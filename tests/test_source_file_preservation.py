@@ -14,13 +14,13 @@ is the overwhelming majority, since output_path only differs when the
 container changes. Drop the `output_path != input_path` term and the line
 deletes the file the job just successfully produced.
 
-That mutation was injected during a review of this suite and the entire suite
-passed. It is silent, total data loss on every remux that is not a container
-conversion, with a job row reporting success. Nothing guarded it.
+Deleting that term leaves the entire suite passing. It is silent, total data
+loss on every remux that is not a container conversion, with a job row
+reporting success. Nothing guarded it.
 
 WHAT THESE TESTS PIN
 --------------------
-  • in-place success        -> source must SURVIVE (this is the mutation)
+  • in-place success        -> source must SURVIVE (the regression)
   • container-change success -> source must be DELETED (the guard's real purpose)
   • failure                  -> source must SURVIVE regardless of paths
 
@@ -106,7 +106,7 @@ def scenario(tmp_path, monkeypatch):
     return build
 
 
-# ── The mutation ─────────────────────────────────────────────────────────────
+# ── The regression ───────────────────────────────────────────────────────────
 
 def test_in_place_success_does_not_delete_the_source(scenario):
     """

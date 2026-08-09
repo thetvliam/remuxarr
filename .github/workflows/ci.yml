@@ -75,7 +75,7 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --cov --cov-report=xml:coverage.xml --cov-report=term
 
-      # Uploaded rather than gated on a threshold. Coverage sits around 45%,
+      # Uploaded rather than gated on a threshold. Coverage sits around 50%,
       # concentrated in the decision engine, so a minimum would either be set
       # so low it means nothing or would block unrelated work. The artifact
       # makes the trend visible without turning it into a merge blocker.

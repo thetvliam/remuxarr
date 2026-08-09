@@ -1,28 +1,28 @@
 """
-Four small backend fixes, none of which raised anything.
+Forge selection, ordering, and counting.
 
 Each produced a wrong external call, a wrong ordering, or a wrong number, and
 the app carried on. That is what makes them worth pinning: nothing in the logs
 would ever have pointed at any of them.
 
-  B-4   The forge path queued a Plex Analyze backlog row without the dedup the
-        main pipeline applies, so forge-then-undo accumulated one row per
-        operation and issued a duplicate Analyze per row — the expensive call
-        the backlog queue exists to rate-limit.
+  * The forge path queued a Plex Analyze backlog row without the dedup the
+    main pipeline applies, so forge-then-undo accumulated one row per
+    operation and issued a duplicate Analyze per row — the expensive call the
+    backlog queue exists to rate-limit.
 
-  B-5   queue_forge_job picked its AAC 5.1 source with an unordered .first(),
-        while get_candidates orders by stream_index specifically so that
-        "the first AAC 5.1 track" is deterministic. On a file with an English
-        and a commentary track the user could be shown one and get the other.
+  * queue_forge_job picked its AAC 5.1 source with an unordered .first(),
+    while get_candidates orders by stream_index specifically so that "the
+    first AAC 5.1 track" is deterministic. On a file with an English and a
+    commentary track the user could be shown one and get the other.
 
-  B-6   list_processed ordered by completed_at DESC, but undo_job resets
-        completed_at to None and undo_pending is one of the listed statuses —
-        so SQLite sorted the row the user had just clicked Undo on to the very
-        bottom of the list.
+  * list_processed ordered by completed_at DESC, but undo_job resets
+    completed_at to None and undo_pending is one of the listed statuses — so
+    SQLite sorted the row the user had just clicked Undo on to the very bottom
+    of the list.
 
-  B-11  ignore_flags counted every file that existed rather than every flag it
-        cleared, so re-submitting a stale selection reported work it had not
-        done.
+  * ignore_flags counted every file that existed rather than every flag it
+    cleared, so re-submitting a stale selection reported work it had not
+    done.
 """
 import pytest
 
@@ -49,7 +49,7 @@ def _media(db, name="Movie.mkv"):
     return mf
 
 
-# ── B-5: which AAC 5.1 track gets forged ─────────────────────────────────────
+# ── Which AAC 5.1 track gets forged ──────────────────────────────────────────
 
 def test_forge_selects_the_lowest_indexed_aac_51_track(db):
     """
@@ -93,7 +93,7 @@ def test_forge_raises_when_no_aac_51_track_exists(db):
         queue_forge_job(db, media.id)
 
 
-# ── B-6: processed-list ordering ─────────────────────────────────────────────
+# ── Processed-list ordering ──────────────────────────────────────────────────
 
 def test_undone_job_does_not_sink_to_the_bottom(db):
     """
@@ -146,7 +146,7 @@ def test_completed_jobs_still_sort_newest_first(db):
     assert [r["output_size"] for r in rows] == [300, 200, 100]
 
 
-# ── B-11: the ignore count ───────────────────────────────────────────────────
+# ── The ignore count ─────────────────────────────────────────────────────────
 
 def test_ignore_counts_only_flags_actually_cleared(db):
     """
@@ -194,7 +194,7 @@ def test_ignore_reports_zero_for_an_entirely_stale_selection(db):
     assert ignore_flags(IgnoreRequest(file_ids=[media.id, 9999]), db) == {"ignored": 0}
 
 
-# ── B-4: Plex Analyze backlog dedup ──────────────────────────────────────────
+# ── Plex Analyze backlog dedup ───────────────────────────────────────────────
 
 def test_forge_backlog_enqueue_is_deduplicated(db, monkeypatch):
     """

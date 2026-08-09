@@ -1,9 +1,9 @@
 """
 Seams the suite reached but did not close.
 
-Three pieces of behaviour that mutation testing showed were unprotected, and
-which have in common that they are one function call past where an existing
-test stopped, or in a module with near-zero coverage.
+Three pieces of behaviour that were unprotected, and which have in common that
+they are one function call past where an existing test stopped, or in a module
+with near-zero coverage. Each can be broken without failing anything else.
 
 FASTSTART
   test_decision.py already builds the exact decision that matters and asserts
@@ -45,7 +45,7 @@ def _mp4_tracks():
 
 def test_language_only_remux_preserves_faststart(settings):
     """
-    THE surviving mutation. A language-tag correction has nothing else to do
+    THE regression. A language-tag correction has nothing else to do
     and correctly generates no add_faststart action — so the only thing
     keeping +faststart on the command is source_already_faststart.
 

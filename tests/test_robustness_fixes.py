@@ -12,7 +12,7 @@ import pytest
 from app.core.scanner import _walk_media_dirs
 
 
-# ── B-19: symlink cycles ─────────────────────────────────────────────────────
+# ── Symlink cycles ───────────────────────────────────────────────────────────
 
 def test_symlink_cycle_terminates(tmp_path):
     """
@@ -133,7 +133,7 @@ def test_mutating_returned_settings_cannot_corrupt_the_defaults(db):
     assert get_app_settings(db)["keep_audio_languages"] == before
 
 
-# ── B-12: log timestamps ─────────────────────────────────────────────────────
+# ── Log timestamps ───────────────────────────────────────────────────────────
 
 def test_log_timestamps_are_iso_utc(monkeypatch):
     """
@@ -202,7 +202,7 @@ def test_log_timestamps_are_iso_utc(monkeypatch):
         time.tzset()
 
 
-# ── B-10: retry-all accounting ───────────────────────────────────────────────
+# ── Retry-all accounting ─────────────────────────────────────────────────────
 
 def test_retry_all_reports_queued_not_merely_processed(db, monkeypatch, tmp_path):
     """

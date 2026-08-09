@@ -3,28 +3,32 @@ Manual-review correctness: refresh, provenance, and the null discriminator.
 
 Four separate bugs, all in the same flow, all invisible from the UI.
 
-B-7  An existing manual_review row was never updated. The skip branch 40 lines
-     below does the opposite and updates in place. Since a fresh analyze_file()
-     has just run, a settings change or a replaced file left the Review page
-     showing the original reason AND the original flagged track list — and
-     resolve_subtitles acts on the STREAM INDICES in that list, so a user's
-     Keep/Remove choice was applied against indices that no longer described
-     the file.
+STALE REVIEW ROWS
+    An existing manual_review row was never updated. The skip branch 40 lines
+    below does the opposite and updates in place. Since a fresh analyze_file()
+    has just run, a settings change or a replaced file left the Review page
+    showing the original reason AND the original flagged track list — and
+    resolve_subtitles acts on the STREAM INDICES in that list, so a user's
+    Keep/Remove choice was applied against indices that no longer described
+    the file.
 
-B-6  The manual-review branch never passed is_new_file, so every such row took
-     the column default of True. A pre-existing file that went through review
-     then reported is_new_file=True to _load_plex_notify_data, which returns
-     early with a refresh only and never queues the PlexAnalyzeBacklog entry.
-     Plex kept stale stream metadata for exactly the files a human had to
-     intervene on.
+LOST FILE PROVENANCE
+    The manual-review branch never passed is_new_file, so every such row took
+    the column default of True. A pre-existing file that went through review
+    then reported is_new_file=True to _load_plex_notify_data, which returns
+    early with a refresh only and never queues the PlexAnalyzeBacklog entry.
+    Plex kept stale stream metadata for exactly the files a human had to
+    intervene on.
 
-B-11 review_subtitles IS NULL is the discriminator for "this review came from
-     the undefined-audio-count threshold gate". _flag_subtitle_encoding_review
-     wrote NULL when no stored Track matched the failing stream indices, so a
-     subtitle-encoding review looked like a threshold review, and approving it
-     permanently acknowledged a gate the file never tripped.
+AMBIGUOUS REVIEW PROVENANCE
+    review_subtitles IS NULL is the discriminator for "this review came from
+    the undefined-audio-count threshold gate". _flag_subtitle_encoding_review
+    wrote NULL when no stored Track matched the failing stream indices, so a
+    subtitle-encoding review looked like a threshold review, and approving it
+    permanently acknowledged a gate the file never tripped.
 
-B-2  IMAGE_BASED_SUBS and MP4_INCOMPATIBLE_SUBS disagreed about "vobsub".
+DISAGREEING SUBTITLE SETS
+    IMAGE_BASED_SUBS and MP4_INCOMPATIBLE_SUBS disagreed about "vobsub".
 """
 import json
 import os
@@ -34,7 +38,7 @@ import pytest
 
 
 
-# ── B-2: the two subtitle sets must agree ────────────────────────────────────
+# ── The two subtitle sets must agree ─────────────────────────────────────────
 
 def test_image_based_subs_is_a_subset_of_mp4_incompatible():
     """
@@ -63,7 +67,7 @@ def test_vobsub_specifically_blocks_mp4():
     assert "vobsub" in MP4_INCOMPATIBLE_SUBS
 
 
-# ── B-7 / B-6: the manual-review branch ──────────────────────────────────────
+# ── The manual-review branch ─────────────────────────────────────────────────
 
 @pytest.fixture
 def db():
@@ -222,7 +226,7 @@ def test_arr_ids_are_filled_in_but_never_cleared(db):
 
 def test_new_review_row_records_is_new_file_false(db):
     """
-    B-6. Without this the column default (True) applied to every review row,
+    Without this the column default (True) applied to every review row,
     and a pre-existing file that went through review reported is_new_file=True
     to _load_plex_notify_data — which returns early and never queues the
     PlexAnalyzeBacklog entry that gives Plex correct stream metadata.
@@ -268,7 +272,7 @@ def test_scanner_branch_matches_this_shape():
     del review
 
 
-# ── B-11: the null discriminator ─────────────────────────────────────────────
+# ── The null discriminator ───────────────────────────────────────────────────
 
 def test_encoding_review_with_no_matching_tracks_fails_instead_of_reviewing(db, monkeypatch):
     """
@@ -347,7 +351,7 @@ def test_encoding_review_with_matching_tracks_still_reviews(db, monkeypatch):
 
 def test_approving_a_subtitle_review_does_not_acknowledge_the_audio_gate(db):
     """
-    End to end: the collision B-11 describes. A subtitle review must never
+    End to end: the provenance collision. A subtitle review must never
     flip und_audio_threshold_acknowledged, because that permanently exempts
     the file from a check it never tripped.
     """

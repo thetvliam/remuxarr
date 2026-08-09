@@ -26,7 +26,7 @@ import pytest
 
 
 
-# ── Forge job reset (B-3) ────────────────────────────────────────────────────
+# ── Forge job reset ──────────────────────────────────────────────────────────
 
 @pytest.fixture
 def db():
@@ -202,7 +202,7 @@ def test_stranded_job_would_otherwise_be_unrecoverable(db):
     assert db.get(Ac3ForgeJob, jid).status == "failed"
 
 
-# ── Orphaned file sweep (B-4) ────────────────────────────────────────────────
+# ── Orphaned file sweep ──────────────────────────────────────────────────────
 
 def _age(path, seconds):
     """Backdate mtime so the sweep's in-flight guard doesn't skip the file."""
