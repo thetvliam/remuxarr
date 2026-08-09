@@ -715,8 +715,29 @@ def analyze_file(
             continue
 
         if extract_subs_to_srt and codec in SRT_CONVERTIBLE_SUBS:
+            # The sidecar carries the language in its FILENAME, which is how
+            # Plex identifies it — so a subtitle_language_overrides entry has
+            # to be resolved here, before the path is built.
+            #
+            # It previously was not. _apply_language_override_pass only
+            # rewrites copy_track/transcode_track actions, and an extracted
+            # subtitle is neither, so the override was skipped as a "no-op,
+            # the correct and safe outcome". That reasoning holds for a
+            # DROPPED track — there is nothing left to tag — but not for an
+            # extracted one, where a real artifact's permanent name depends on
+            # the language. The user's choice was accepted, the flag row was
+            # then deleted because the mismatch had cleared, and the file was
+            # still written as Movie.und.forced.srt.
+            #
+            # Deliberately scoped to the sidecar name and the action's own
+            # language field. It does NOT feed back into the keep/drop
+            # decision above: _sub_is_kept already ran against the track's
+            # real tag, and re-running it here would mean a language
+            # correction could silently add or remove a subtitle track, which
+            # is not what the Review page offers to do.
+            srt_lang = (subtitle_language_overrides.get(si) or "").strip().lower() or lang
             srt_path = _build_srt_path(
-                file_info.get("path", ""), lang, is_forced, is_sdh, is_dub, used_srt_paths
+                file_info.get("path", ""), srt_lang, is_forced, is_sdh, is_dub, used_srt_paths
             )
             used_srt_paths.add(srt_path)
             tags = []
@@ -727,7 +748,7 @@ def analyze_file(
             actions.append(Action(
                 action_type="extract_subtitle",
                 description=(
-                    f"Extract subtitle [{lang}] {codec}{tag_str} "
+                    f"Extract subtitle [{srt_lang}] {codec}{tag_str} "
                     f"(stream {track['stream_index']}) to external SRT: "
                     f"{Path(srt_path).name}"
                 ),
@@ -735,7 +756,7 @@ def analyze_file(
                 stream_index=track["stream_index"],
                 order=order,
                 external_path=srt_path,
-                language=lang,
+                language=srt_lang,
                 is_forced=is_forced,
             ))
             order += 1
@@ -845,15 +866,24 @@ def analyze_file(
         lang_mode  = settings.get("undefined_language_mode", "all_undefined_per_type")
 
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
-        extracted_si = {a.stream_index for a in actions if a.action_type == "extract_subtitle"}
 
         for track_type in ("audio", "subtitle"):
-            # Only kept tracks of this type (not dropped, not extracted to SRT)
+            # Kept tracks of this type. "Kept" includes subtitles bound for
+            # extraction: previously extracted_si was excluded here alongside
+            # dropped_si, which — because extract_text_subtitles_to_srt
+            # defaults to ON — emptied und_kept for essentially every text
+            # subtitle and left Subtitle Language Review producing no rows at
+            # all on a stock install, despite shipping a table, migration,
+            # index, router and UI section.
+            #
+            # A dropped track genuinely has nothing to review; an extracted
+            # one does. The sidecar's filename encodes the language
+            # permanently and is what Plex reads, so an undefined tag is
+            # exactly as worth surfacing there as on an embedded track.
             type_tracks = [
                 t for t in tracks
                 if t["track_type"] == track_type
                 and t["stream_index"] not in dropped_si
-                and t["stream_index"] not in extracted_si
             ]
             und_kept = [
                 t for t in type_tracks
@@ -881,7 +911,9 @@ def analyze_file(
                 if (
                     action.track_type == track_type
                     and action.stream_index in qualifying
-                    and action.action_type in ("copy_track", "transcode_track")
+                    and action.action_type in (
+                        "copy_track", "transcode_track", "extract_subtitle",
+                    )
                 ):
                     # A track with an already-pending override (the user
                     # already resolved this via Apply, possibly before a
@@ -896,7 +928,17 @@ def analyze_file(
                     if action.stream_index in overrides_for_type:
                         continue
                     if und_mode == "always_fix":
-                        actions[i] = dc_replace(action, target_language=lang_value)
+                        if action.action_type == "extract_subtitle":
+                            # The sidecar's language lives in its filename, so
+                            # fixing the tag means renaming the artifact, not
+                            # setting target_language on a stream that will
+                            # not exist in the output.
+                            actions[i] = _relabel_extract_action(
+                                action, lang_value,
+                                file_info.get("path", ""), used_srt_paths,
+                            )
+                        else:
+                            actions[i] = dc_replace(action, target_language=lang_value)
                         has_language_fix = True
                         und_fixed_indices.add(action.stream_index)
                     else:   # always_ask — flag for review, don't touch the track
@@ -939,7 +981,17 @@ def analyze_file(
     # whether some OTHER track in the same file already happens to match a
     # preferred language.
     if audio_language_mismatch is None and und_flagged_audio:
-        si = next(iter(und_flagged_audio))
+        # min(), not next(iter(...)). These are sets, so iteration follows
+        # hash-table slot order, which for ints is not ascending —
+        # next(iter({18, 2, 10})) is 18. The index is not cosmetic:
+        # AudioLanguageFlag.stream_index is the track the Review page's
+        # Apply action writes the corrected language to, and the model's
+        # docstring says the detected language alone cannot re-identify the
+        # track. On a file with several und tracks the user's correction
+        # landed on whichever one the hash table happened to yield.
+        # min() also matches the "first track" model used elsewhere —
+        # absolute_fallback_stream_index already does this.
+        si = min(und_flagged_audio)
         audio_language_mismatch = {"stream_index": si, "language": "und"}
 
     # ── Subtitle language mismatch detection (for Subtitle Language Review) ──
@@ -949,7 +1001,7 @@ def analyze_file(
     # there is for audio.
     subtitle_language_mismatch = None
     if und_flagged_subtitle:
-        si = next(iter(und_flagged_subtitle))
+        si = min(und_flagged_subtitle)      # see the min() note above
         subtitle_language_mismatch = {"stream_index": si, "language": "und"}
 
     # A persisted override (audio_language_overrides / subtitle_language_
@@ -1141,6 +1193,45 @@ def _video_audio_mp4_compatible(
             return False
 
     return True
+
+
+def _relabel_extract_action(
+    action,
+    new_lang:   str,
+    media_path: str,
+    used_paths: set[str],
+):
+    """
+    Return a copy of an extract_subtitle action retagged to `new_lang`, with
+    its sidecar path rebuilt to match.
+
+    An extracted subtitle carries its language in the FILENAME — that is how
+    Plex identifies it — so "fix the undefined language tag" means renaming
+    the artifact. Setting target_language would do nothing: the stream is not
+    in the output at all.
+
+    The old path is discharged from `used_paths` before the new one is built,
+    so the rename cannot collide with the name it is replacing and pick up a
+    spurious ".2" suffix.
+    """
+    used_paths.discard(action.external_path)
+    new_path = _build_srt_path(
+        media_path, new_lang,
+        action.is_forced or False,
+        ".sdh." in (action.external_path or ""),
+        ".dub." in (action.external_path or ""),
+        used_paths,
+    )
+    used_paths.add(new_path)
+    return dc_replace(
+        action,
+        language=new_lang,
+        external_path=new_path,
+        description=(
+            f"{action.description.split(' to external SRT:')[0]} "
+            f"to external SRT: {Path(new_path).name}"
+        ),
+    )
 
 
 def _build_srt_path(
