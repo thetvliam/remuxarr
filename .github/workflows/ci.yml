@@ -21,6 +21,23 @@ jobs:
           pip install -r requirements.txt
           pip install -r tests/requirements-test.txt
 
+      # Four tests are gated on `shutil.which("ffmpeg")` and skip silently
+      # without it — they are the only ones that run a real FFmpeg/ffprobe
+      # against a generated fixture, so they cover the seam between the
+      # command builder and the binary that no unit test can reach.
+      #
+      # GitHub's ubuntu images have historically shipped FFmpeg preinstalled,
+      # so these were probably running. That is the problem: it is an
+      # undocumented property of the runner image, skipif turns its
+      # disappearance into a green build rather than a red one, and the loss
+      # would be silent. Installing it explicitly makes the dependency real.
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app
 
