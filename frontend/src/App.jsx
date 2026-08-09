@@ -333,7 +333,22 @@ export default function App() {
 
           {page === "settings" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <SettingsPage api={api} toast={toast} isMobile={isMobile} onDirtyChange={setSettingsDirty} />
+            <SettingsPage
+            api={api}
+            toast={toast}
+            isMobile={isMobile}
+            onDirtyChange={setSettingsDirty}
+            /* dry_run_mode and auto_start_jobs are rendered from the app-level
+             *              state rather than the page's own loaded snapshot, and applied on
+             *              click. The header owns them: it toggles both, and abort_job
+             *              clears auto_start_jobs server-side as a safety stop. Passing the
+             *              live value and the same action the header calls means there is
+             *              one source of truth rather than two copies to keep in step. */
+            liveToggles={{
+              dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
+              auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },
+            }}
+            />
             </div>
           )}
 

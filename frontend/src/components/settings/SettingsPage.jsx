@@ -30,18 +30,18 @@ const STORAGE_KEY = "remuxarr.settingsCategory";
 const SectionHeader = ({ label, first }) => {
   const { palette, type, space } = useTheme();
   return (
-  <div style={{
-    display: "flex",
-    alignItems: "center",
-    gap: space.md,
-    margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
-    paddingBottom: space.sm,
-    borderBottom: `1px solid ${palette.border}`,
-  }}>
-  <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-  {label.toUpperCase()}
-  </span>
-  </div>
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: space.md,
+      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
+      paddingBottom: space.sm,
+      borderBottom: `1px solid ${palette.border}`,
+    }}>
+    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
+    {label.toUpperCase()}
+    </span>
+    </div>
   );
 };
 
@@ -75,7 +75,7 @@ const TestConnectionButton = ({ api, service }) => {
         setResult(d.error || "Unknown error");
       }
     } catch (err) {
-        console.error("Connection test request failed", err);
+      console.error("Connection test request failed", err);
       setState("err");
       setResult("Request failed");
     }
@@ -97,19 +97,19 @@ const TestConnectionButton = ({ api, service }) => {
     style={{
       padding: `${space.xs}px ${space.xl}px`,
       background: state === "idle" ? "transparent" : `${alpha(color, ALPHA.low)}`,
-      border: `1px solid ${color}`,
-      borderRadius: radius.sm,
-      color,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.normal,
-      cursor: state === "loading" ? "not-allowed" : "pointer",
-      transition: "all 0.15s",
-      maxWidth: 320,
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
+          border: `1px solid ${color}`,
+          borderRadius: radius.sm,
+          color,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.normal,
+          cursor: state === "loading" ? "not-allowed" : "pointer",
+          transition: "all 0.15s",
+          maxWidth: 320,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
     }}
     >
     {label}
@@ -145,10 +145,10 @@ const PlexBacklogStatus = ({ api }) => {
     <span style={{
       padding: `${space.hair}px ${space.sm}px`,
       background: count > 0 ? alpha(palette.amber, ALPHA.low) : "transparent",
-      border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
-      borderRadius: radius.sm,
-      color: count > 0 ? palette.amber : palette.dim,
-      fontSize: type.size.sm, fontWeight: type.weight.bold,
+          border: `1px solid ${count > 0 ? alpha(palette.amber, ALPHA.heavy) : palette.border}`,
+          borderRadius: radius.sm,
+          color: count > 0 ? palette.amber : palette.dim,
+          fontSize: type.size.sm, fontWeight: type.weight.bold,
     }}
     title={count >= 1000 ? count.toLocaleString() + " items" : undefined}
     >
@@ -188,8 +188,8 @@ const EmailBreakerStatus = ({ api }) => {
       display: "flex", alignItems: "flex-start", gap: space.sm,
       padding: `${space.md}px ${space.lg}px`, marginTop: space.sm,
       background: alpha(palette.red, ALPHA.trace), border: `1px solid ${alpha(palette.red, ALPHA.heavy)}`,
-      borderRadius: radius.sm,
-      color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
+          borderRadius: radius.sm,
+          color: palette.red, fontSize: type.size.md, lineHeight: type.leading.normal,
     }}>
     <span style={{ flexShrink: 0 }}>⚠</span>
     <span>
@@ -209,7 +209,7 @@ const EmailBreakerStatus = ({ api }) => {
  * always laid out (just transparent until hover) so nothing shifts as the
  * pointer moves down the list, and it stays visible on mobile, where there
  * is no hover to discover it with. */
-const FieldRow = ({ field, value, onChange, isMobile }) => {
+const FieldRow = ({ field, value, onChange, isMobile, immediate = false }) => {
   const { palette, type, space, radius } = useTheme();
   const [open,  setOpen]  = useState(false);
   const [hover, setHover] = useState(false);
@@ -287,13 +287,27 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
       {field.description}
       </div>
     )}
-    </div>
 
-    <div style={{ flexShrink: 0, paddingTop: space.hair }}>
-    <SettingInput field={field} value={value} onChange={onChange} />
-    </div>
-    </div>
-    </div>
+    {/* Without this the row is indistinguishable from its neighbours while
+      behaving differently — it commits on click and never appears in the
+      SaveBar count. An unexplained inconsistency reads as a bug. */}
+      {immediate && (
+        <div style={{
+          color: palette.dim,
+          fontSize: type.size.xs,
+          letterSpacing: type.tracking.snug,
+          marginTop: space.xs,
+        }}>
+        Applies immediately — no save needed
+        </div>
+      )}
+      </div>
+
+      <div style={{ flexShrink: 0, paddingTop: space.hair }}>
+      <SettingInput field={field} value={value} onChange={onChange} />
+      </div>
+      </div>
+      </div>
   );
 };
 
@@ -301,78 +315,78 @@ const FieldRow = ({ field, value, onChange, isMobile }) => {
 const NavSidebar = ({ active, onSelect, dirty }) => {
   const { palette, type, space, size } = useTheme();
   return (
-  <nav style={{
-    flexShrink: 0,
-    width: 190,
-    position: "sticky",
-    top: 0,
-    alignSelf: "flex-start",
-    display: "flex",
-    flexDirection: "column",
-    gap: space.hair,
-    paddingRight: space.xxl,
-    borderRight: `1px solid ${palette.border}`,
-  }}>
-  {CATEGORIES.map(c => {
-    const on = c.id === active;
-    return (
-      <button
-      key={c.id}
-      onClick={() => onSelect(c.id)}
-      style={{
-        textAlign: "left",
-        padding: `${space.md}px ${space.lg}px`,
-        background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
-        border: "none",
-        borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
-        color: on ? palette.amber : palette.muted,
-        fontSize: type.size.md,
-        fontFamily: type.family,
-        fontWeight: on ? type.weight.bold : type.weight.medium,
-        letterSpacing: type.tracking.tight,
-        cursor: "pointer",
-        transition: "all 0.12s",
-      }}
-      >
-      {c.label}
-      </button>
-    );
-  })}
-  {dirty && (
-    <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
-    ● UNSAVED
-    </div>
-  )}
-  </nav>
+    <nav style={{
+      flexShrink: 0,
+      width: 190,
+      position: "sticky",
+      top: 0,
+      alignSelf: "flex-start",
+      display: "flex",
+      flexDirection: "column",
+      gap: space.hair,
+      paddingRight: space.xxl,
+      borderRight: `1px solid ${palette.border}`,
+    }}>
+    {CATEGORIES.map(c => {
+      const on = c.id === active;
+      return (
+        <button
+        key={c.id}
+        onClick={() => onSelect(c.id)}
+        style={{
+          textAlign: "left",
+          padding: `${space.md}px ${space.lg}px`,
+          background: on ? alpha(palette.amber, ALPHA.soft) : "transparent",
+              border: "none",
+              borderLeft: `${size.accentThin}px solid ${on ? palette.amber : "transparent"}`,
+              color: on ? palette.amber : palette.muted,
+              fontSize: type.size.md,
+              fontFamily: type.family,
+              fontWeight: on ? type.weight.bold : type.weight.medium,
+              letterSpacing: type.tracking.tight,
+              cursor: "pointer",
+              transition: "all 0.12s",
+        }}
+        >
+        {c.label}
+        </button>
+      );
+    })}
+    {dirty && (
+      <div style={{ marginTop: space.xl, paddingLeft: space.lg, color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.wide, fontWeight: type.weight.bold }}>
+      ● UNSAVED
+      </div>
+    )}
+    </nav>
   );
 };
 
 const NavDropdown = ({ active, onSelect }) => {
   const { palette, type, space, radius } = useTheme();
   return (
-  <select
-  value={active}
-  onChange={e => onSelect(e.target.value)}
-  style={{
-    flex: 1,
-    minWidth: 0,
-    padding: `${space.md}px ${space.md}px`,
-    background: palette.card,
-    border: `1px solid ${palette.border}`,
-    borderRadius: radius.sm,
-    color: palette.text,
-    fontSize: type.size.base,
-    fontFamily: type.family,
-    fontWeight: type.weight.semibold,
-    cursor: "pointer",
-  }}
-  >
-  {CATEGORIES.map(c => (
-    <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
-    {c.label}
-    </option>
-  ))}
-  </select>
+    <select
+    value={active}
+    onChange={e => onSelect(e.target.value)}
+    style={{
+      flex: 1,
+      minWidth: 0,
+      padding: `${space.md}px ${space.md}px`,
+      background: palette.card,
+      border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
+      color: palette.text,
+      fontSize: type.size.base,
+      fontFamily: type.family,
+      fontWeight: type.weight.semibold,
+      cursor: "pointer",
+    }}
+    >
+    {CATEGORIES.map(c => (
+      <option key={c.id} value={c.id} style={{ background: palette.card, color: palette.text }}>
+      {c.label}
+      </option>
+    ))}
+    </select>
   );
 };
 
@@ -417,14 +431,14 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
       marginLeft: "auto",
       padding: `${space.xs}px ${space.xxl}px`,
       background: alpha(btnColor, ALPHA.medium),
-      border: `1px solid ${btnColor}`,
-      borderRadius: radius.sm,
-      color: btnColor,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: (status === "saving" || !dirty) ? "default" : "pointer",
+          border: `1px solid ${btnColor}`,
+          borderRadius: radius.sm,
+          color: btnColor,
+          fontSize: type.size.sm,
+          fontFamily: type.family,
+          fontWeight: type.weight.bold,
+          letterSpacing: type.tracking.wide,
+          cursor: (status === "saving" || !dirty) ? "default" : "pointer",
           transition: "all 0.15s",
     }}
     >
@@ -436,8 +450,8 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
-export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) => {
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange, liveToggles = {} }) => {
   const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
@@ -467,7 +481,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   const loadSettings = useCallback(() => {
     return Promise.all([
       fetch(`${api}/api/settings/schema`).then(r => r.json()),
-      fetch(`${api}/api/settings/`).then(r => r.json()),
+                       fetch(`${api}/api/settings/`).then(r => r.json()),
     ])
     .then(([s, v]) => {
       setSchema(s);
@@ -507,8 +521,16 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
   }, [active]);
 
   // Dirty = any schema field whose current value differs from the saved snapshot.
+  //
+  // Live-toggle keys are excluded by definition rather than by accident. Their
+  // onChange goes to the shared action instead of set(), so `values` never
+  // moves for them and they would not appear here anyway — but relying on that
+  // makes a real invariant look incidental. Being explicit also keeps the
+  // SaveBar count honest: toggling dry run must not make the page claim an
+  // unsaved change, since the change is already saved.
   const dirtyKeys = schema
   .map(f => f.key)
+  .filter(k => !liveToggles[k])
   .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
   const isDirty = dirtyKeys.length > 0;
 
@@ -573,7 +595,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
         setStatus("error");
       }
     } catch (err) {
-        console.error("Saving settings failed", err);
+      console.error("Saving settings failed", err);
       setStatus("error");
     }
   };
@@ -594,15 +616,29 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
     return (
       <div key={groupName}>
       <SectionHeader label={groupName} first={first} />
-      {fields.map(field => (
-        <FieldRow
-        key={field.key}
-        field={field}
-        value={values[field.key]}
-        onChange={v => set(field.key, v)}
-        isMobile={isMobile}
-        />
-      ))}
+      {fields.map(field => {
+        // dry_run_mode and auto_start_jobs are owned by the app-level state
+        // that the header renders from, not by this page's loaded snapshot.
+        // Rendering them from `live` and committing through the SAME action
+        // the header calls means the two controls cannot disagree: there is
+        // one value, not two copies to keep in step.
+        //
+        // Previously they were ordinary staged fields, so changing one here
+        // updated the header only after a full page reload — the page
+        // remounts on every tab change and refetches, but useAppData sits
+        // above the page switch and never does.
+        const live = liveToggles[field.key];
+        return (
+          <FieldRow
+          key={field.key}
+          field={field}
+          value={live ? live.value : values[field.key]}
+          onChange={live ? live.onToggle : (v => set(field.key, v))}
+          isMobile={isMobile}
+          immediate={!!live}
+          />
+        );
+      })}
       {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
         <TestConnectionButton api={api} service={groupName.toLowerCase()} />
       )}
@@ -645,7 +681,7 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange }) =>
         {loadError
           ? "Couldn't load settings from the backend. Reload the page to try again."
           : "Connect to the backend to load settings…"}
-        </div>
+          </div>
       );
     }
     return cat.groups.map((g, i) => renderGroup(g, i === 0));
