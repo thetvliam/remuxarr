@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.core.forge import get_candidates, queue_forge_job
@@ -79,7 +79,19 @@ def list_processed(db: Session = Depends(get_db)):
     jobs = (
         db.query(Ac3ForgeJob)
         .filter(Ac3ForgeJob.status.in_(["success", "failed", "undo_failed", "undo_pending"]))
-        .order_by(desc(Ac3ForgeJob.completed_at))
+        # COALESCE, not completed_at alone. undo_job resets completed_at to
+        # None when it moves a job to undo_pending — correct, since the undo
+        # has not completed — but "undo_pending" is one of the statuses listed
+        # above, so those rows sort with a NULL key. SQLite puts NULL last
+        # under DESC, which sends the job the user just clicked Undo on to the
+        # BOTTOM of the list, below every historical entry.
+        #
+        # That is exactly backwards: it is the most recently acted-on row and
+        # the one the user is waiting to watch. Falling back to created_at
+        # keeps it near the top where it was a moment ago, and leaves ordering
+        # unchanged for every row that does have a completion time.
+        .order_by(desc(func.coalesce(Ac3ForgeJob.completed_at,
+                                     Ac3ForgeJob.created_at)))
         .all()
     )
     return [_serialize(j, include_file=True) for j in jobs]

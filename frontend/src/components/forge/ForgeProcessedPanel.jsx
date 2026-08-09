@@ -22,7 +22,7 @@ export const ForgeProcessedPanel = ({ jobs, onUndo }) => (
 );
 
 const ForgeProcessedRow = ({ job, onUndo }) => {
-    const { palette, type, space, radius, size, surface } = useTheme();
+    const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
     const f = job.file || {};
 
@@ -52,11 +52,7 @@ const ForgeProcessedRow = ({ job, onUndo }) => {
         }}
         >
         <LED
-        color={
-            isUndoPending ? palette.blue
-            : isFailed || isUndoFailed ? palette.red
-            : palette.green
-        }
+        color={statusColor[job.status] ?? palette.green}
         pulse={isUndoPending}
         size={size.ledSizeSm}
         />

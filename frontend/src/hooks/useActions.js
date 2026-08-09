@@ -17,6 +17,7 @@ export function useActions({
   fetchForge,
   setHistoryRefreshKey,
   invalidateHistory,
+  setForgeRefreshKey,
 }) {
   /* The optimistic update is rolled back on failure, and the failure is
    * reported loudly. This is the app's safety interlock: if the PUT failed
@@ -215,6 +216,13 @@ export function useActions({
     }
     toast("Added to forge queue", "info");
     fetchForge();
+    // fetchForge refreshes the ACTIVE and PROCESSED panels only.
+    // CandidatesPanel is self-fetching off forgeRefreshKey, and the file just
+    // added is no longer a candidate — get_candidates excludes anything with
+    // a pending/processing job. Without this bump the row stayed on screen
+    // until something unrelated refreshed it, and clicking it again returned
+    // a 400 "already queued" that reads as a broken button.
+    setForgeRefreshKey?.(k => k + 1);
   };
 
   const forgeUndo = async (jobId) => {
@@ -225,6 +233,10 @@ export function useActions({
     }
     toast("Undo queued", "info");
     fetchForge();
+    // Same reasoning in reverse: an undone file becomes a candidate again
+    // once the undo completes, and the candidates list will not notice on its
+    // own.
+    setForgeRefreshKey?.(k => k + 1);
   };
 
   // Remove a single pending item from the queue inline (no modal needed).

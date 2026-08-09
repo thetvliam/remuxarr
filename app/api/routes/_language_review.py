@@ -297,9 +297,15 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 .filter(Flag.file_id == file_id)
                 .first()
             )
+            # count only when a flag was actually cleared. It previously
+            # incremented for any file that merely existed, so re-submitting a
+            # stale selection — a list another client had already resolved, or
+            # a page left open across a rescan — reported "Ignoring 12 files"
+            # having ignored none of them. The count is the only feedback this
+            # action gives, so an inflated one is the whole signal being wrong.
             if flag:
                 db.delete(flag)
-            count += 1
+                count += 1
 
         db.commit()
         return {"ignored": count}

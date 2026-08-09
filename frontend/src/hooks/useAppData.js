@@ -467,7 +467,7 @@ export function useAppData() {
         autoStart, setAutoStart,
         historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
         reviewRefreshKey,
-        forgeActive, forgeProcessed, forgeRefreshKey,
+        forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,
       };

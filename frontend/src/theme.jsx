@@ -128,6 +128,15 @@ const buildStatusColor = (p) => ({
   skipped:       p.dim,
   cancelled:     p.dim,
   dry_run:       p.violet,
+
+  // Forge job statuses. Absent before, so statusColor[job.status] was
+  // undefined for any forge row and ForgeProcessedPanel carried its own
+  // ternary instead — a second, partial copy of this map that no other
+  // consumer knew about. Any new view rendering a forge job would have hit
+  // the same gap and silently produced an uncoloured indicator.
+  undo_pending:  p.blue,     // in flight, mirrors "processing"
+  undone:        p.dim,      // terminal; the file is a candidate again
+  undo_failed:   p.red,      // the AC3 track is still present
 });
 
 /* Toast tones. Callers name the MEANING of a message — "error", "success" —

@@ -1733,12 +1733,30 @@ def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
         # Analyze when the user has opted into it. No expected_language —
         # forge changes the codec layout, not language tags.
         if cfg.get("plex_analyze_backlog_enabled", False):
-            db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
-            db.commit()
-            logger.info(
-                "Plex: queued %s for backlog analyze after forge job %d",
-                media.path, forge_job_id,
+            # Same dedup as the main pipeline's enqueue. Without it a file that
+            # is forged and then undone — or forged twice while the drain is
+            # behind — accumulates a backlog row per operation, and every one
+            # of them issues its own Analyze against the same ratingKey.
+            # Analyze is the expensive Plex call the backlog exists to
+            # rate-limit in the first place, so duplicates defeat the point of
+            # the queue and multiply load on a server that is often a NAS.
+            existing = (
+                db.query(PlexAnalyzeBacklog)
+                .filter(PlexAnalyzeBacklog.file_id == media.id)
+                .first()
             )
+            if existing:
+                logger.debug(
+                    "Plex: %s already queued for backlog analyze, not re-adding "
+                    "after forge job %d", media.path, forge_job_id,
+                )
+            else:
+                db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
+                db.commit()
+                logger.info(
+                    "Plex: queued %s for backlog analyze after forge job %d",
+                    media.path, forge_job_id,
+                )
 
         return {
             "url":        url,
