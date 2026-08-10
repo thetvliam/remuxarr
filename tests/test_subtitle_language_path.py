@@ -109,7 +109,7 @@ def test_dropped_subtitle_is_not_flagged():
     assert d.subtitle_language_mismatch is None
 
 
-# ── Flagged index (B-3) ──────────────────────────────────────────────────────
+# ── Flagged index ────────────────────────────────────────────────────────────
 
 def test_und_flag_targets_lowest_stream_index():
     """
@@ -148,7 +148,7 @@ def test_und_audio_flag_targets_lowest_stream_index():
     assert d.audio_language_mismatch["stream_index"] == 3
 
 
-# ── The override reaching the sidecar (B-1) ──────────────────────────────────
+# ── The override reaching the sidecar ────────────────────────────────────────
 
 def test_subtitle_override_reaches_the_sidecar_filename():
     """
@@ -292,7 +292,7 @@ def test_mode_all_undefined_per_type_requires_all_und():
     assert mixed.subtitle_language_mismatch is None
 
 
-# ── Config alignment guard (G-3) ─────────────────────────────────────────────
+# ── Config alignment guard ───────────────────────────────────────────────────
 
 def test_base_settings_match_production_defaults():
     """

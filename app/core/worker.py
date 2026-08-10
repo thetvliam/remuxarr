@@ -135,6 +135,83 @@ def abort_job(job_id: int) -> bool:
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
+def recover_interrupted_jobs(db) -> tuple[int, int]:
+    """
+    Reset every job left at "processing" by an unclean shutdown.
+
+    Takes a caller-supplied session and does not commit anything else, so it
+    can be driven directly by a test. start_worker() is the only production
+    caller; it was the only home for this logic until the test file named
+    after it had to transcribe a copy to reach it, which meant deleting the
+    block from start_worker broke nothing in the suite.
+
+    Returns (queue_items_reset, forge_jobs_reset).
+    """
+    # Jobs still in "processing" were left behind by a crash, SIGKILL, or an
+    # unclean container restart. Without this they stay in "processing"
+    # forever and block the UI.
+    stuck = db.query(QueueItem).filter(QueueItem.status == "processing").all()
+    if stuck:
+        for job in stuck:
+            job.status        = "failed"
+            job.error_message = "Interrupted by container restart or crash"
+            job.completed_at  = utcnow()
+            if job.media_file:
+                job.media_file.status = "error"
+        db.commit()
+        logger.info(
+            "Reset %d interrupted 'processing' job(s) to 'failed' on startup",
+            len(stuck),
+        )
+
+    # Same treatment for forge jobs, which previously had none. A forge row
+    # left at "processing" was permanently wedged: _has_pending_forge()
+    # matches only pending/undo_pending so it is never reclaimed;
+    # get_candidates() and add_to_queue exclude "processing" so the file
+    # cannot be re-added; GET /api/forge/active matches "processing" so the
+    # UI shows it running forever; DELETE /api/forge/{id}/ requires
+    # "pending" so it cannot be cancelled; and abort_job() only knows
+    # _active_task_registry, which forge tasks are never added to. Every
+    # exit was closed — the only recovery was editing the database.
+    #
+    # The mapping is deliberate. A forward job goes to "failed", which is
+    # NOT in the candidate-exclusion list, so the file becomes re-addable.
+    # An undo goes to "undo_failed", which IS excluded from candidates but
+    # is explicitly accepted by the undo route as a retryable state.
+    # Imported locally, matching the other Ac3ForgeJob references in this
+    # module (see _has_pending_forge and _process_next_forge).
+    from app.database.models import Ac3ForgeJob
+
+    stuck_forge = (
+        db.query(Ac3ForgeJob)
+        .filter(Ac3ForgeJob.status == "processing")
+        .all()
+    )
+    if stuck_forge:
+        for job in stuck_forge:
+            job.status       = "undo_failed" if job.is_undo else "failed"
+            # Deliberately hedged rather than asserting the work was lost.
+            # run_staged_subprocess swaps outputs into place atomically, so
+            # an interruption leaves the file either untouched OR fully
+            # rewritten — and from the job row alone there is no way to
+            # tell which. Claiming "failed, nothing happened" would be a
+            # lie half the time, and forge is in-place, so a user who
+            # re-runs it on an already-forged file would add a second AC3
+            # track.
+            job.error_message = (
+                "Interrupted by container restart or crash. The file may or "
+                "may not have been modified — check its audio tracks before "
+                "running this again."
+            )
+            job.completed_at = utcnow()
+        db.commit()
+        logger.info(
+            "Reset %d interrupted forge job(s) on startup", len(stuck_forge)
+        )
+
+    return len(stuck), len(stuck_forge)
+
+
 async def start_worker() -> None:
     global _worker_task, _running, _paused
     _running = True
@@ -146,67 +223,7 @@ async def start_worker() -> None:
         cfg = get_app_settings(db)
         _paused = not cfg.get("auto_start_jobs", True)
 
-        # Reset any jobs that are still in "processing" state — these were
-        # left behind by a crash, SIGKILL, or an unclean container restart.
-        # Without this they stay in "processing" forever and block the UI.
-        stuck = db.query(QueueItem).filter(QueueItem.status == "processing").all()
-        if stuck:
-            for job in stuck:
-                job.status        = "failed"
-                job.error_message = "Interrupted by container restart or crash"
-                job.completed_at  = utcnow()
-                if job.media_file:
-                    job.media_file.status = "error"
-            db.commit()
-            logger.info(
-                "Reset %d interrupted 'processing' job(s) to 'failed' on startup",
-                len(stuck),
-            )
-
-        # Same treatment for forge jobs, which previously had none. A forge
-        # row left at "processing" was permanently wedged: _has_pending_forge()
-        # matches only pending/undo_pending so it is never reclaimed;
-        # get_candidates() and add_to_queue exclude "processing" so the file
-        # cannot be re-added; GET /api/forge/active matches "processing" so the
-        # UI shows it running forever; DELETE /api/forge/{id}/ requires
-        # "pending" so it cannot be cancelled; and abort_job() only knows
-        # _active_task_registry, which forge tasks are never added to. Every
-        # exit was closed — the only recovery was editing the database.
-        #
-        # The mapping is deliberate. A forward job goes to "failed", which is
-        # NOT in the candidate-exclusion list, so the file becomes re-addable.
-        # An undo goes to "undo_failed", which IS excluded from candidates but
-        # is explicitly accepted by the undo route as a retryable state.
-        # Imported locally, matching the other Ac3ForgeJob references in this
-        # module (see _has_pending_forge and _process_next_forge).
-        from app.database.models import Ac3ForgeJob
-
-        stuck_forge = (
-            db.query(Ac3ForgeJob)
-            .filter(Ac3ForgeJob.status == "processing")
-            .all()
-        )
-        if stuck_forge:
-            for job in stuck_forge:
-                job.status       = "undo_failed" if job.is_undo else "failed"
-                # Deliberately hedged rather than asserting the work was lost.
-                # run_staged_subprocess swaps outputs into place atomically, so
-                # an interruption leaves the file either untouched OR fully
-                # rewritten — and from the job row alone there is no way to
-                # tell which. Claiming "failed, nothing happened" would be a
-                # lie half the time, and forge is in-place, so a user who
-                # re-runs it on an already-forged file would add a second AC3
-                # track.
-                job.error_message = (
-                    "Interrupted by container restart or crash. The file may or "
-                    "may not have been modified — check its audio tracks before "
-                    "running this again."
-                )
-                job.completed_at = utcnow()
-            db.commit()
-            logger.info(
-                "Reset %d interrupted forge job(s) on startup", len(stuck_forge)
-            )
+        recover_interrupted_jobs(db)
 
     _worker_task = asyncio.create_task(_loop(), name="remuxarr-worker")
     logger.info("Background worker started (paused=%s)", _paused)
@@ -810,6 +827,18 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     #
     # Falls back to the original two-pass approach for jobs that only have
     # subtitle extractions or only have a main remux (no combined work).
+    #
+    # NOT dead code, despite reading like it — the else-branch is the MAJORITY
+    # path. Measured against the 18-file sample library at production
+    # defaults: 5 records take the combined path and 13 take this one. The
+    # common case is a file with NO extractable text subtitle —
+    # none at all, or only PGS/VOBSUB, which are image-based and never
+    # extracted to SRT — where extract_actions is empty and the whole job is
+    # a plain remux.
+    #
+    # The reachability argument also has to hold on BOTH sides of the `and`,
+    # not just one: extract_actions empty is ordinary, and a file needing only
+    # extraction with no other work reaches it too.
     non_extract_actions = [
         a for a in decision.actions if a.action_type != "extract_subtitle"
     ]
@@ -1733,12 +1762,30 @@ def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
         # Analyze when the user has opted into it. No expected_language —
         # forge changes the codec layout, not language tags.
         if cfg.get("plex_analyze_backlog_enabled", False):
-            db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
-            db.commit()
-            logger.info(
-                "Plex: queued %s for backlog analyze after forge job %d",
-                media.path, forge_job_id,
+            # Same dedup as the main pipeline's enqueue. Without it a file that
+            # is forged and then undone — or forged twice while the drain is
+            # behind — accumulates a backlog row per operation, and every one
+            # of them issues its own Analyze against the same ratingKey.
+            # Analyze is the expensive Plex call the backlog exists to
+            # rate-limit in the first place, so duplicates defeat the point of
+            # the queue and multiply load on a server that is often a NAS.
+            existing = (
+                db.query(PlexAnalyzeBacklog)
+                .filter(PlexAnalyzeBacklog.file_id == media.id)
+                .first()
             )
+            if existing:
+                logger.debug(
+                    "Plex: %s already queued for backlog analyze, not re-adding "
+                    "after forge job %d", media.path, forge_job_id,
+                )
+            else:
+                db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
+                db.commit()
+                logger.info(
+                    "Plex: queued %s for backlog analyze after forge job %d",
+                    media.path, forge_job_id,
+                )
 
         return {
             "url":        url,

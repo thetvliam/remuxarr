@@ -1,11 +1,11 @@
 """
-Startup recovery — stranded forge jobs and orphaned work-in-progress files.
+Startup recovery — stranded jobs and orphaned work-in-progress files.
 
 Both behaviours run once at boot and had no coverage. Both exist to undo the
 damage of an unclean shutdown, which is exactly the situation nobody exercises
 by hand.
 
-FORGE JOB RESET
+JOB RESET
   QueueItem rows stuck at "processing" were already reset at startup;
   Ac3ForgeJob rows were not. A forge row left at "processing" was permanently
   wedged — _has_pending_forge() matches only pending/undo_pending, candidate
@@ -13,11 +13,25 @@ FORGE JOB RESET
   running forever, DELETE requires "pending", and abort_job() only knows the
   main task registry. The only recovery was editing the database.
 
+  This file previously transcribed that reset into a local helper, because
+  start_worker() opened its own SessionLocal and spawned the asyncio loop.
+  The tests passed against the copy, so the shipped code was never executed:
+  deleting BOTH resets from start_worker outright left the whole suite green.
+  The logic now lives in worker.recover_interrupted_jobs(db), which takes a
+  caller-supplied session so these tests can drive the real thing, and
+  test_start_worker_actually_performs_the_recovery pins the wiring that the
+  transcription was hiding.
+
+  Verified by mutation: 13 mutations of the recovery, each killed by at least
+  one test here.
+
 ORPHANED FILE SWEEP
   Cleanup globbed TEMP_DIR only. _stage_parts writes "<final>.part" inside the
   media library, and _pick_temp_dir falls back to the media directory when
   TEMP_DIR is short on space — so the two places large orphans actually
-  accumulate were both unswept.
+  accumulate were both unswept. These tests already called
+  _cleanup_orphaned_temp_files directly and were not part of the mutation run
+  above, which targeted the recovery function only.
 """
 import os
 import time
@@ -26,7 +40,7 @@ import pytest
 
 
 
-# ── Forge job reset (B-3) ────────────────────────────────────────────────────
+# ── Forge job reset ──────────────────────────────────────────────────────────
 
 @pytest.fixture
 def db():
@@ -55,27 +69,19 @@ def _seed(db, status, is_undo=False, idx=0):
 
 def _reset_forge(db):
     """
-    The reset logic from start_worker, applied to a caller-supplied session.
+    Drive the real startup reset and return how many forge jobs it touched.
 
-    start_worker() opens its own SessionLocal and starts the asyncio loop, so
-    calling it directly would drag in the whole worker lifecycle. This mirrors
-    the block; test_status_mapping_matches_route_expectations below pins the
-    part that actually matters — that the chosen statuses agree with what the
-    routes accept.
+    This used to be a transcription of the block inside start_worker(),
+    because start_worker() opens its own SessionLocal and spawns the asyncio
+    loop. That made these tests inert: deleting the reset from start_worker
+    entirely left the whole suite green. The logic now lives in
+    worker.recover_interrupted_jobs(db), which takes a caller-supplied
+    session precisely so this can call the shipped code.
     """
-    from app.core.timeutil import utcnow
-    from app.database.models import Ac3ForgeJob
+    import app.core.worker as worker
 
-    stuck = db.query(Ac3ForgeJob).filter(Ac3ForgeJob.status == "processing").all()
-    for job in stuck:
-        job.status = "undo_failed" if job.is_undo else "failed"
-        job.error_message = (
-            "Interrupted by container restart or crash. The file may or may not "
-            "have been modified — check its audio tracks before running this again."
-        )
-        job.completed_at = utcnow()
-    db.commit()
-    return len(stuck)
+    _, forge_count = worker.recover_interrupted_jobs(db)
+    return forge_count
 
 
 def test_stranded_forward_forge_job_becomes_failed(db):
@@ -202,7 +208,171 @@ def test_stranded_job_would_otherwise_be_unrecoverable(db):
     assert db.get(Ac3ForgeJob, jid).status == "failed"
 
 
-# ── Orphaned file sweep (B-4) ────────────────────────────────────────────────
+# ── Queue item reset ─────────────────────────────────────────────────────────
+
+def _seed_queue(db, status, idx=0):
+    from app.database.models import MediaFile, QueueItem
+
+    name = f"q{idx}.mkv"
+    mf = MediaFile(path=f"/m/{name}", filename=name, directory="/m",
+                   size=1, mtime=1.0, status="processing")
+    db.add(mf)
+    db.commit()
+    job = QueueItem(file_id=mf.id, status=status, progress=37.0)
+    db.add(job)
+    db.commit()
+    return job.id
+
+
+def test_stranded_queue_item_becomes_failed(db):
+    """
+    The older half of the same reset. A QueueItem left at "processing" after a
+    crash otherwise shows as running forever, and max_concurrent_jobs counts
+    it against the pool, so enough of them stall the queue outright.
+    """
+    import app.core.worker as worker
+    from app.database.models import QueueItem
+
+    jid = _seed_queue(db, "processing")
+    queue_count, _ = worker.recover_interrupted_jobs(db)
+    assert queue_count == 1
+
+    job = db.get(QueueItem, jid)
+    assert job.status == "failed"
+    assert job.completed_at is not None
+    assert "Interrupted" in job.error_message
+
+
+def test_stranded_queue_item_errors_its_media_row(db):
+    """
+    The MediaFile is dragged to "error" alongside the job. Left at
+    "processing" it would misreport in the library view, and no scan resets
+    it — the scanner only writes status on files whose size/mtime changed.
+    """
+    import app.core.worker as worker
+    from app.database.models import MediaFile, QueueItem
+
+    jid = _seed_queue(db, "processing")
+    worker.recover_interrupted_jobs(db)
+
+    file_id = db.get(QueueItem, jid).file_id
+    assert db.get(MediaFile, file_id).status == "error"
+
+
+def test_queue_reset_leaves_other_statuses_alone(db):
+    """Pending work must survive a restart — only "processing" is stranded."""
+    import app.core.worker as worker
+    from app.database.models import QueueItem
+
+    ids = {
+        s: _seed_queue(db, s, idx=i)
+        for i, s in enumerate(["pending", "success", "failed", "manual_review"])
+    }
+    queue_count, _ = worker.recover_interrupted_jobs(db)
+    assert queue_count == 0
+    for status, jid in ids.items():
+        assert db.get(QueueItem, jid).status == status
+
+
+def test_a_queue_item_with_a_dangling_media_row_does_not_break_the_reset(db):
+    """
+    The `if job.media_file:` guard. file_id is NOT NULL, so the orphan this
+    protects against is a dangling foreign key, not a missing one — and
+    SQLite does not enforce ondelete="CASCADE" unless PRAGMA foreign_keys=ON,
+    which this project never sets. That is why scanner.py's
+    _delete_media_file_and_related deletes related tables by hand, and its
+    docstring records two tables having been silently orphaned by exactly
+    that mistake.
+
+    Such a job must not take the whole startup reset down with it — that
+    would strand every OTHER interrupted job too, on the one code path whose
+    entire purpose is to unstrand them.
+    """
+    from sqlalchemy import text
+
+    import app.core.worker as worker
+    from app.database.models import QueueItem
+
+    orphan = _seed_queue(db, "processing", idx=0)
+    normal = _seed_queue(db, "processing", idx=1)
+
+    # Delete the MediaFile the way a bulk path that forgot a table would.
+    orphan_file_id = db.get(QueueItem, orphan).file_id
+    db.execute(text("DELETE FROM media_files WHERE id = :i"),
+               {"i": orphan_file_id})
+    db.commit()
+    db.expire_all()
+
+    queue_count, _ = worker.recover_interrupted_jobs(db)
+
+    assert queue_count == 2
+    assert db.get(QueueItem, orphan).status == "failed"
+    assert db.get(QueueItem, normal).status == "failed", (
+        "an orphaned job aborted the reset before the healthy ones were done"
+    )
+
+
+def test_both_halves_run_in_one_pass(db):
+    """
+    Queue items and forge jobs are reset by the same call. Recovering only one
+    kind would leave the other wedged, and start_worker calls this exactly
+    once at boot.
+    """
+    import app.core.worker as worker
+    from app.database.models import Ac3ForgeJob, QueueItem
+
+    q = _seed_queue(db, "processing")
+    f = _seed(db, "processing")
+
+    assert worker.recover_interrupted_jobs(db) == (1, 1)
+    assert db.get(QueueItem, q).status == "failed"
+    assert db.get(Ac3ForgeJob, f).status == "failed"
+
+
+def test_start_worker_actually_performs_the_recovery(db, monkeypatch):
+    """
+    The point of the extraction. Everything above drives
+    recover_interrupted_jobs directly, which proves the logic but not that
+    anything calls it — the previous version of this file transcribed the
+    logic instead, so removing the block from start_worker left all 334 tests
+    green.
+
+    Drives the real start_worker with its session factory and loop stubbed,
+    so what is under test is the wiring: boot reaches the recovery.
+    """
+    import asyncio
+    from contextlib import contextmanager
+
+    import app.core.worker as worker
+    from app.database.models import Ac3ForgeJob, QueueItem
+
+    q = _seed_queue(db, "processing")
+    f = _seed(db, "processing")
+
+    @contextmanager
+    def _session():
+        yield db          # never closes the test's session
+
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(worker, "SessionLocal", _session)
+    monkeypatch.setattr(worker, "get_app_settings", lambda _db: {})
+    monkeypatch.setattr(worker, "_loop", _noop)
+
+    asyncio.run(worker.start_worker())
+    if worker._worker_task:
+        worker._worker_task.cancel()
+
+    assert db.get(QueueItem, q).status == "failed", (
+        "start_worker booted without resetting an interrupted queue item"
+    )
+    assert db.get(Ac3ForgeJob, f).status == "failed", (
+        "start_worker booted without resetting an interrupted forge job"
+    )
+
+
+# ── Orphaned file sweep ──────────────────────────────────────────────────────
 
 def _age(path, seconds):
     """Backdate mtime so the sweep's in-flight guard doesn't skip the file."""

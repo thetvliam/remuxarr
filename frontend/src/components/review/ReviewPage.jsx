@@ -11,8 +11,8 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * MANUAL REVIEW PAGE
  * Lists files that triggered the "multiple undefined audio tracks" gate.
  * User can approve (send to queue) or skip (dismiss).
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
-export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey, invalidateHistory, reviewRefreshKey = 0 }) => {
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
@@ -33,8 +33,8 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
             if (r.ok) {
                 const data = await r.json();
                 const stillNeeded = data.still_unresolved
-                ? `, ${data.still_unresolved} still needed review`
-                : "";
+                    ? `, ${data.still_unresolved} still needed review`
+                    : "";
                 toast?.(`Resolved ${data.resolved}${stillNeeded}`, "info");
                 // The endpoint commits per item so one bad file cannot roll
                 // back the rest, and returns what failed. Discarding that meant
@@ -293,8 +293,8 @@ export const ReviewPage = ({ api, items, onRefresh, toast, setHistoryRefreshKey,
                 })
             }
 
-            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
-            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            <AudioLanguageReviewSection api={api} onRefresh={onRefresh} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
             </div>
     );
 };

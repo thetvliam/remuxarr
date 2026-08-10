@@ -407,6 +407,18 @@ def queue_forge_job(db: Session, file_id: int):
             Track.codec      == "aac",
             Track.channels   == 6,
         )
+        # Ordered for the same reason get_candidates orders its own scan:
+        # "the first AAC 5.1 track" has to mean the same thing in both places.
+        # This was a bare .first(), i.e. whatever the query planner returned —
+        # in practice rowid order, which usually matches stream order but is
+        # not guaranteed to, and stops matching after rows are deleted and
+        # re-inserted by a rescan.
+        #
+        # A mismatch is not cosmetic: the candidate list shows the user one
+        # track's language and channel layout, and the job then forges a
+        # different track. On a file with an English and a commentary AAC 5.1,
+        # that means an AC3 track built from the commentary.
+        .order_by(Track.stream_index)
         .first()
     )
     if not aac_track:

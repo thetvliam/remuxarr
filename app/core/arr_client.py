@@ -11,8 +11,20 @@ import urllib.request
 
 
 def arr_post(base_url: str, api_key: str, body: dict) -> dict:
-    """POST to /api/v3/command and return the parsed JSON response."""
-    url  = f"{base_url}/api/v3/command"
+    """
+    POST to /api/v3/command and return the parsed JSON response.
+
+    base_url is rstripped of trailing slashes before the path is appended.
+    Without it a stored URL ending in "/" produced "//api/v3/command", and the
+    failure was invisible from every direction: settings.py rstrips these URLs
+    inside its test-connection handlers but not on save, so "Test Connection"
+    succeeded on exactly the URL that would then fail; and both notifiers
+    swallow every exception by design, so the rejected command produced no
+    error anywhere — the rescan simply never happened, the replaced file was
+    never detected, and Plex never learned it changed. plex.py's
+    _plex_request already normalised this way; these clients now agree.
+    """
+    url  = f"{base_url.rstrip('/')}/api/v3/command"
     data = json.dumps(body).encode()
     req  = urllib.request.Request(
         url,

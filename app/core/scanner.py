@@ -1044,8 +1044,6 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     """
     from sqlalchemy import and_, or_
 
-    from app.database.models import Ac3ForgeJob
-
     job = (
         db.query(Ac3ForgeJob)
         .filter(
@@ -1062,3 +1060,5 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         .first()
     )
     return job.audio_track_count if job else None
+
+

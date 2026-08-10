@@ -150,7 +150,7 @@ export default function App() {
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
       toast, fetchAll,
-      pendingQueue, wsConnected, historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
+      pendingQueue, wsConnected, historyRefreshKey, invalidateHistory,
       reviewRefreshKey,
   } = data;
 
@@ -339,11 +339,11 @@ export default function App() {
             isMobile={isMobile}
             onDirtyChange={setSettingsDirty}
             /* dry_run_mode and auto_start_jobs are rendered from the app-level
-             *              state rather than the page's own loaded snapshot, and applied on
-             *              click. The header owns them: it toggles both, and abort_job
-             *              clears auto_start_jobs server-side as a safety stop. Passing the
-             *              live value and the same action the header calls means there is
-             *              one source of truth rather than two copies to keep in step. */
+               state rather than the page's own loaded snapshot, and applied on
+               click. The header owns them: it toggles both, and abort_job
+               clears auto_start_jobs server-side as a safety stop. Passing the
+               live value and the same action the header calls means there is
+               one source of truth rather than two copies to keep in step. */
             liveToggles={{
               dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
               auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },
@@ -354,7 +354,7 @@ export default function App() {
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} setHistoryRefreshKey={setHistoryRefreshKey} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} />
+            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} />
             </div>
           )}
 

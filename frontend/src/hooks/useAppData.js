@@ -465,9 +465,9 @@ export function useAppData() {
         showApiBar, setShowApiBar,
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
-        historyRefreshKey, setHistoryRefreshKey, invalidateHistory,
+        historyRefreshKey, invalidateHistory,
         reviewRefreshKey,
-        forgeActive, forgeProcessed, forgeRefreshKey,
+        forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,
       };
