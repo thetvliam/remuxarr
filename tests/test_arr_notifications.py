@@ -20,19 +20,22 @@ So the payload contents are pinned per module, and
 test_the_two_notifiers_do_not_share_a_payload guards the specific
 copy-paste failure directly.
 
-KNOWN GAP DOCUMENTED HERE, NOT FIXED:
-  test_a_trailing_slash_in_the_base_url_produces_a_double_slash records
-  current behaviour rather than desired behaviour. arr_post does not strip a
-  trailing slash from base_url, while plex.py's _plex_request does, and
-  settings.py rstrips these same URLs — but only inside its test-connection
-  handlers, not on save. See that test's docstring; this is a question for a
-  human, not something to quietly change under a coverage commit.
+FIXED IN THIS COMMIT:
+  arr_post did not strip a trailing slash from base_url, so a stored URL
+  ending in "/" produced "//api/v3/command". settings.py rstrips these same
+  URLs but only inside its test-connection handlers, so "Test Connection"
+  passed on exactly the URL that then failed in normal use — and the swallow
+  above meant the failure was silent. plex.py's _plex_request already
+  normalised this way; the clients now agree. See
+  test_trailing_slashes_do_not_double_up.
 
-Verified by mutation: 25 mutations across the three modules, of which 23 are
-killed by at least one test here. Both survivors are the same equivalent:
+Verified by mutation: 28 mutations across the three modules, of which 25 are
+killed by at least one test here. All three survivors are equivalent:
 narrowing either notifier's `except urllib.error.HTTPError` changes only which
 log line fires, because a bare `except Exception` sits directly below it in
-both files. (plex.py has the identical shape.)
+both files (plex.py has the identical shape); and strip("/") for rstrip("/")
+in arr_post cannot be distinguished, because separating them needs a base_url
+with a leading slash and urllib rejects a schemeless URL outright.
 """
 import json
 import urllib.error
@@ -173,32 +176,48 @@ def test_errors_propagate_out_of_the_client(http):
         http.arr_post("http://sonarr:8989", "key", {"name": "X"})
 
 
-def test_a_trailing_slash_in_the_base_url_produces_a_double_slash(http):
+@pytest.mark.parametrize("base_url", [
+    "http://sonarr:8989",
+    "http://sonarr:8989/",
+    "http://sonarr:8989///",
+])
+def test_trailing_slashes_do_not_double_up(http, base_url):
     """
-    DOCUMENTS CURRENT BEHAVIOUR — this is a bug report, not an endorsement.
+    Regression test. arr_post used to interpolate base_url directly, so a
+    stored URL ending in "/" produced "http://sonarr:8989//api/v3/command".
 
-    arr_post interpolates base_url directly, so a stored URL ending in "/"
-    yields "http://sonarr:8989//api/v3/command". Three things make that worse
-    than it looks:
+    That failure was invisible from every direction, which is why it survived:
+    settings.py rstrips sonarr_url/radarr_url inside its test-connection
+    handlers but NOT on save, so "Test Connection" succeeded on precisely the
+    URL that would then fail in normal use; and both notifiers swallow every
+    exception by design, so an *arr rejecting the doubled path logged nothing
+    a user would see. The rescan just never happened — the replaced file was
+    never detected, EpisodeFileDelete/MovieFileDelete never fired, and Plex
+    never learned the file had changed.
 
-      • plex.py's _plex_request DOES rstrip("/"), so the two clients disagree.
-      • settings.py rstrips sonarr_url/radarr_url, but only inside its
-        test-connection handlers — not on save. So "Test Connection" succeeds
-        on a trailing-slash URL while real notifications use the double-slash
-        form.
-      • both notifiers swallow every exception by design, so if an *arr
-        rejects the doubled path there is no user-visible signal — the rescan
-        simply never happens.
-
-    Left as-is deliberately: changing it is a one-line fix but it is a
-    behaviour change to a live integration, which is a decision for a human
-    rather than something to slip into a coverage commit. If it is fixed,
-    this test should be inverted rather than deleted.
+    plex.py's _plex_request already rstripped; the two clients now agree.
     """
-    http.arr_post("http://sonarr:8989/", "key", {"name": "RescanSeries"})
+    http.arr_post(base_url, "key", {"name": "RescanSeries"})
 
     assert http._state["requests"][0]["req"].full_url == \
-        "http://sonarr:8989//api/v3/command"
+        "http://sonarr:8989/api/v3/command"
+
+
+def test_a_path_component_in_the_base_url_survives(http):
+    """
+    rstrip strips characters, not a suffix, so an *arr behind a reverse proxy
+    subpath must keep it.
+
+    Note this does NOT distinguish rstrip("/") from strip("/"): a base_url
+    with a leading slash would, but urllib.request.Request rejects a
+    schemeless URL outright, so no such input can reach this function. The
+    two are equivalent for every value that can actually arrive here, and no
+    test can separate them — rstrip is used because it says what is meant.
+    """
+    http.arr_post("http://host/sonarr/", "key", {"name": "RescanSeries"})
+
+    assert http._state["requests"][0]["req"].full_url == \
+        "http://host/sonarr/api/v3/command"
 
 
 # ── notify_sonarr ────────────────────────────────────────────────────────────
