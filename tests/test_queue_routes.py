@@ -28,10 +28,24 @@ COUNTS THAT MEAN WHAT THEY SAY
   straight into UI copy, so they are tested against the ScanStats outcomes
   rather than against the number of items looped over.
 
-Verified by mutation: 37 mutations of queue.py, every one killed by at least
-one test here, and no equivalents among them. The invariant test was checked
-the same way — adding a new dismissal route that sets status but forgets the
-sentinels fails it by name.
+Verified by mutation: 37 mutations of queue.py's cancel/clear/prioritise/retry/
+serialise routes, every one killed by at least one test here. The invariant
+test was checked the same way — adding a new dismissal route that sets status
+but forgets the sentinels fails it by name.
+
+That 37-mutation figure originally read as though it covered queue.py as a
+whole. It did not: approve_manual_review was outside it, and an independent
+audit found the endpoint had ZERO effective coverage — a test in
+test_manual_review_refresh.py appeared to cover it but re-implemented the
+inference in its own body and never called it. Four mutations of that endpoint
+survived the entire suite. The approve tests below are the fix; the wording
+above is now scoped to what it actually measured.
+
+Also added from that audit: worker._claim_next, which nothing referenced at
+all (both reversing the claim order and inverting the pending filter survived).
+It is tested here rather than in a worker file because it is the consumption
+end of the prioritize feature above — the ordering was pinned at the route
+level and never verified where it is read.
 """
 import json
 
@@ -554,6 +568,195 @@ def test_one_bad_file_does_not_abandon_the_rest_of_the_batch(db, retry):
     assert result["errors"][0]["path"] == "/media/f2.mkv"
 
 
+# ── approve_manual_review ────────────────────────────────────────────────────
+#
+# These replace a tautological test that lived in test_manual_review_refresh.py
+# and re-implemented this endpoint's inference in its own body — it never
+# called approve_manual_review, so it passed regardless of what queue.py did.
+# Three mutations of the endpoint (invert the inference, never set the flag,
+# drop the status guard) all survived the entire suite before these existed.
+
+def _review_item(db, review_subtitles=None, status="manual_review"):
+    """A manual-review item whose media row has a video and an audio track."""
+    from app.database.models import Track
+
+    _file(db)
+    db.add_all([
+        Track(file_id=1, stream_index=0, track_type="video", codec="h264"),
+        Track(file_id=1, stream_index=1, track_type="audio", codec="aac",
+              language="eng", channels=2),
+    ])
+    db.commit()
+    return _item(db, status=status, review_subtitles=review_subtitles)
+
+
+def test_approving_a_threshold_review_acknowledges_the_gate(db):
+    """
+    review_subtitles being NULL is the established signal that this review
+    came from the undefined-audio threshold gate rather than the image-
+    subtitle one. That gate has no per-track override, so without persisting
+    the exemption the fresh analyze_file() below would re-trigger the
+    identical gate immediately — a track's language tag never changes on its
+    own, so the item would bounce straight back into manual review forever.
+    """
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import MediaFile
+
+    _review_item(db, review_subtitles=None)
+
+    approve_manual_review(1, db)
+
+    assert db.get(MediaFile, 1).und_audio_threshold_acknowledged is True
+
+
+def test_approving_a_subtitle_review_does_not_acknowledge_the_audio_gate(db):
+    """
+    The provenance collision, tested against the real endpoint this time.
+
+    A subtitle-encoding review carries a non-null review_subtitles. Flipping
+    the acknowledgement flag for it would permanently exempt the file from a
+    threshold check it never tripped — a silent, permanent loss of a safety
+    gate, on a file the user only meant to approve some subtitles for.
+    """
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import MediaFile
+
+    _review_item(db, review_subtitles=json.dumps([{"stream_index": 2}]))
+
+    approve_manual_review(1, db)
+
+    assert db.get(MediaFile, 1).und_audio_threshold_acknowledged is False, (
+        "approving a SUBTITLE review acknowledged the undefined-audio "
+        "threshold gate — the file is now permanently exempt from a check "
+        "it never tripped"
+    )
+
+
+def test_approving_re_runs_the_decision_engine(db, monkeypatch):
+    """
+    Not just a status flip. The worker recomputes its own decision at pickup,
+    so processing was never wrong — but the reason text and Planned Actions
+    shown in the UI stayed stale, still describing why the file needed review,
+    for as long as it sat in the queue.
+    """
+    import app.api.routes.queue as q
+
+    _review_item(db, review_subtitles=None)
+
+    seen = {}
+    real_analyze = q.analyze_file
+
+    def _spy(file_info, tracks, cfg, **kw):
+        seen["called"] = True
+        seen["acknowledged"] = file_info.get("und_audio_threshold_acknowledged")
+        return real_analyze(file_info, tracks, cfg, **kw)
+
+    monkeypatch.setattr(q, "analyze_file", _spy)
+
+    q.approve_manual_review(1, db)
+
+    assert seen.get("called"), "approve did not re-run the decision engine"
+
+
+def test_the_exemption_is_visible_to_the_fresh_decision(db, monkeypatch):
+    """
+    Ordering, which is the whole point of setting the flag first. If the
+    exemption were persisted after analyze_file ran, the fresh decision would
+    still see the un-acknowledged file, re-trigger the gate, and leave the
+    item in manual_review — the flag would be set but useless until the next
+    scan.
+    """
+    import app.api.routes.queue as q
+
+    _review_item(db, review_subtitles=None)
+
+    seen = {}
+    real_analyze = q.analyze_file
+
+    def _spy(file_info, tracks, cfg, **kw):
+        seen["acknowledged"] = file_info.get("und_audio_threshold_acknowledged")
+        return real_analyze(file_info, tracks, cfg, **kw)
+
+    monkeypatch.setattr(q, "analyze_file", _spy)
+
+    q.approve_manual_review(1, db)
+
+    assert seen["acknowledged"] is True, (
+        "analyze_file saw the file as un-acknowledged — the exemption was "
+        "applied after the decision instead of before it"
+    )
+
+
+def test_the_decision_outcome_is_applied_to_the_item(db, monkeypatch):
+    """
+    The fresh decision has to reach the row. Computing it and discarding it
+    would leave the item in manual_review with its stale reason — which is
+    exactly the pre-fix behaviour the endpoint's docstring describes.
+    """
+    import app.api.routes.queue as q
+    from app.database.models import QueueItem
+
+    _review_item(db, review_subtitles=None)
+
+    applied = []
+    real_apply = q._apply_decision_to_item
+    monkeypatch.setattr(
+        q, "_apply_decision_to_item",
+        lambda db_, item, media, decision: (
+            applied.append(decision), real_apply(db_, item, media, decision))[1],
+    )
+
+    q.approve_manual_review(1, db)
+
+    assert applied, "the fresh decision was computed and then discarded"
+    assert db.get(QueueItem, 1).status != "manual_review", (
+        "the item stayed in manual_review after approval"
+    )
+
+
+def test_approving_a_missing_item_is_a_404(db):
+    from app.api.routes.queue import approve_manual_review
+
+    with pytest.raises(HTTPException) as exc:
+        approve_manual_review(999, db)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("status", ["pending", "processing", "success",
+                                    "failed", "cancelled", "dry_run"])
+def test_only_manual_review_items_can_be_approved(db, status):
+    """
+    "processing" matters most: the worker owns that row, and re-running the
+    decision engine underneath it would rewrite the planned actions of a job
+    already executing them.
+    """
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import MediaFile
+
+    _review_item(db, review_subtitles=None, status=status)
+
+    with pytest.raises(HTTPException) as exc:
+        approve_manual_review(1, db)
+    assert exc.value.status_code == 400
+
+    assert db.get(MediaFile, 1).und_audio_threshold_acknowledged is False, (
+        "a rejected approval still acknowledged the threshold gate"
+    )
+
+
+def test_approving_an_item_whose_media_row_is_gone_is_a_404(db):
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import QueueItem
+
+    _review_item(db, review_subtitles=None)
+    db.query(QueueItem).filter(QueueItem.id == 1).update({"file_id": 4242})
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        approve_manual_review(1, db)
+    assert exc.value.status_code == 404
+
+
 # ── _serialize ───────────────────────────────────────────────────────────────
 
 def test_a_serialised_item_carries_its_file_details(db):
@@ -660,3 +863,113 @@ def test_missing_timestamps_serialise_as_null_rather_than_raising(db):
     assert out["started_at"] is None
     assert out["completed_at"] is None
     assert out["created_at"] is not None
+
+
+# ── worker._claim_next ───────────────────────────────────────────────────────
+#
+# Found by an independent mutation audit (Phase 1): `grep -rn "_claim_next"
+# tests/` returned nothing, and both reversing the claim order and inverting
+# the pending filter survived the entire 662-test suite.
+#
+# This lives here rather than in a worker test file because it is the
+# consumption end of the prioritize feature tested above: prioritize_item's
+# effect on ordering was pinned at the route level and then never verified at
+# the point where the ordering is actually read.
+
+@pytest.fixture
+def claim(db, monkeypatch):
+    """Bind worker.SessionLocal to the test's own session, unclosed."""
+    from sqlalchemy.orm import sessionmaker
+
+    import app.core.worker as worker
+
+    monkeypatch.setattr(worker, "SessionLocal",
+                        sessionmaker(bind=db.get_bind()))
+    return worker
+
+
+def test_an_empty_queue_claims_nothing(claim):
+    assert claim._claim_next() is None
+
+
+def test_only_pending_items_are_claimable(claim, db):
+    """
+    The serious one. Claiming a "processing" item re-runs a job already
+    executing; claiming "success" reprocesses a finished file; claiming
+    "manual_review" bypasses the gate the user has not answered yet.
+    """
+    for i, status in enumerate(["processing", "success", "failed",
+                                "manual_review", "cancelled", "dry_run"], 1):
+        _file(db, file_id=i)
+        _item(db, item_id=i, file_id=i, status=status)
+
+    assert claim._claim_next() is None, (
+        "the worker claimed a job that was not pending — it will re-run "
+        "finished or in-flight work"
+    )
+
+
+def test_the_lowest_priority_number_is_claimed_first(claim, db):
+    """
+    Priority ascends: lower wins. This is what prioritize_item manipulates,
+    and reversing it would make "move to top" mean "move to bottom".
+    """
+    for i, priority in enumerate([5, 1, 9], 1):
+        _file(db, file_id=i)
+        _item(db, item_id=i, file_id=i, status="pending", priority=priority)
+
+    assert claim._claim_next() == 2
+
+
+def test_ties_are_broken_by_the_oldest_item(claim, db):
+    """FIFO within a priority band, so equal-priority work cannot starve."""
+    from datetime import datetime, timedelta
+
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    for i, offset in enumerate([2, 0, 1], 1):
+        _file(db, file_id=i)
+        _item(db, item_id=i, file_id=i, status="pending", priority=5,
+              created_at=base + timedelta(minutes=offset))
+
+    assert claim._claim_next() == 2
+
+
+def test_priority_outranks_age(claim, db):
+    """A prioritised item jumps the queue even if it is the newest."""
+    from datetime import datetime, timedelta
+
+    base = datetime(2026, 1, 1, 12, 0, 0)
+    _file(db, file_id=1)
+    _item(db, item_id=1, file_id=1, status="pending", priority=5,
+          created_at=base)
+    _file(db, file_id=2)
+    _item(db, item_id=2, file_id=2, status="pending", priority=4,
+          created_at=base + timedelta(hours=1))
+
+    assert claim._claim_next() == 2
+
+
+def test_claiming_marks_the_item_processing_and_stamps_started_at(claim, db):
+    """
+    The claim has to be recorded, or the next tick claims the same row again
+    and two workers process one file concurrently.
+    """
+    from app.database.models import QueueItem
+
+    _file(db)
+    _item(db, status="pending")
+
+    claim._claim_next()
+
+    db.expire_all()
+    row = db.get(QueueItem, 1)
+    assert row.status == "processing"
+    assert row.started_at is not None
+
+
+def test_a_claimed_item_is_not_claimed_twice(claim, db):
+    _file(db)
+    _item(db, status="pending")
+
+    assert claim._claim_next() == 1
+    assert claim._claim_next() is None, "the same job was claimed twice"

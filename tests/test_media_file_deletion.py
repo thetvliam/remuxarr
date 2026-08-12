@@ -498,6 +498,36 @@ def test_with_no_scan_paths_configured_everything_is_an_orphan(db, tmp_path):
     assert len(find_orphaned_media_files(db, [])) == 2
 
 
+def test_a_sibling_directory_sharing_a_prefix_is_not_reported_as_inside(db, tmp_path):
+    """
+    The separator-boundary guard on the orphan side. Scan path "/media/tv"
+    must not be treated as covering "/media/tv2/...", or files in a
+    differently-named sibling library look configured and are never reported
+    as orphans — so a library removed from settings stays invisible forever,
+    which is the exact condition this function exists to surface.
+
+    cleanup_deleted_files has the identical idiom and is pinned by
+    test_a_sibling_directory_sharing_a_name_prefix_is_not_matched above; this
+    is the second copy. Found by an independent mutation audit (Phase 1),
+    which had to skip it because the two copies made the anchor ambiguous.
+    """
+    from app.core.scanner import find_orphaned_media_files
+
+    tv  = tmp_path / "tv"
+    tv2 = tmp_path / "tv2"
+    tv.mkdir()
+    tv2.mkdir()
+    _media(db, str(tv / "inside.mkv"))
+    stray = _media(db, str(tv2 / "stray.mkv"))
+
+    found = find_orphaned_media_files(db, [str(tv)])
+
+    assert [m.id for m in found] == [stray.id], (
+        "a file under a name-prefix sibling of the scan path was treated as "
+        "inside the configured library"
+    )
+
+
 def test_removing_orphans_clears_their_related_rows_too(db, tmp_path):
     """Uses the same complete deletion helper, not a bare MediaFile delete."""
     from app.core.scanner import remove_orphaned_media_files
@@ -538,3 +568,101 @@ def test_removing_orphans_does_not_check_scan_paths(db, tmp_path):
 
     assert remove_orphaned_media_files(db, [media.id]) == 1
     assert db.query(MediaFile).count() == 0
+
+
+# ── JSON override loading ────────────────────────────────────────────────────
+#
+# Found by an independent mutation audit (Phase 1). Dropping the int(k)
+# conversion survived the entire 662-test suite, as did corrupting the
+# degradation contract. One shared helper backs all three override features
+# (subtitle, audio-language, subtitle-language), so one gap covered three.
+
+def _media_with(db, **cols):
+    from app.database.models import MediaFile
+
+    mf = MediaFile(path="/media/tv/ep.mkv", filename="ep.mkv",
+                   directory="/media/tv", size=1, mtime=1.0, **cols)
+    db.add(mf)
+    db.commit()
+    return mf
+
+
+def test_override_keys_are_converted_to_integers(db):
+    """
+    JSON object keys are ALWAYS strings; analyze_file looks these up by
+    integer stream_index (subtitle_overrides.get(si) where si comes from
+    track["stream_index"]). Drop the conversion and every lookup silently
+    misses — no exception, no log line. Every decision a user made in manual
+    review, Audio Language Review and Subtitle Language Review is discarded,
+    and the file returns to manual review on the next scan.
+
+    Asserting equality is sufficient: {2: "keep"} != {"2": "keep"}.
+
+    Audit ref: SCN-05.
+    """
+    from app.core.scanner import _load_int_keyed_json_overrides
+
+    media = _media_with(db, subtitle_overrides='{"2": "keep", "3": "drop"}')
+
+    result = _load_int_keyed_json_overrides(media, "subtitle_overrides")
+
+    assert result == {2: "keep", 3: "drop"}
+    assert all(isinstance(k, int) for k in result), (
+        f"override keys left as strings: {list(result)} — every stream_index "
+        f"lookup in analyze_file will silently miss"
+    )
+
+
+@pytest.mark.parametrize("attr", [
+    "subtitle_overrides",
+    "audio_language_overrides",
+    "subtitle_language_overrides",
+])
+def test_every_override_column_shares_the_conversion(db, attr):
+    """All three features route through the one helper — none may drift."""
+    from app.core.scanner import _load_int_keyed_json_overrides
+
+    media = _media_with(db, **{attr: '{"5": "eng"}'})
+
+    assert _load_int_keyed_json_overrides(media, attr) == {5: "eng"}
+
+
+def test_corrupt_override_json_degrades_to_an_empty_dict(db):
+    """
+    The degradation contract: corrupt bookkeeping must not raise. This is
+    called during scanning and job pickup, so an exception here would fail
+    the file rather than simply ignoring an unreadable override.
+
+    Audit ref: SCN-06.
+    """
+    from app.core.scanner import _load_int_keyed_json_overrides
+
+    media = _media_with(db, subtitle_overrides="{not valid json")
+
+    assert _load_int_keyed_json_overrides(media, "subtitle_overrides") == {}
+
+
+@pytest.mark.parametrize("stored", [
+    '["not", "a", "dict"]',      # valid JSON, wrong shape → .items() missing
+    '{"notanint": "keep"}',      # valid dict, key not int-convertible
+    '"a bare string"',
+    "42",
+])
+def test_structurally_wrong_override_json_also_degrades(db, stored):
+    """
+    The except clause catches ValueError, AttributeError and TypeError
+    specifically — each corresponds to one of these shapes, and all three
+    have to be caught for the contract to hold.
+    """
+    from app.core.scanner import _load_int_keyed_json_overrides
+
+    media = _media_with(db, subtitle_overrides=stored)
+
+    assert _load_int_keyed_json_overrides(media, "subtitle_overrides") == {}
+
+
+def test_an_empty_override_column_is_an_empty_dict(db):
+    from app.core.scanner import _load_int_keyed_json_overrides
+
+    assert _load_int_keyed_json_overrides(
+        _media_with(db, subtitle_overrides=None), "subtitle_overrides") == {}

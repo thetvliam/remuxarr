@@ -169,3 +169,118 @@ def test_failed_in_place_keeps_the_source(scenario):
     assert source.exists()
     assert source.read_bytes() == b"ORIGINAL-MEDIA-BYTES"
     assert finished["ok"] is False
+
+
+# ── Dry run must not touch the disk ──────────────────────────────────────────
+#
+# Found by an independent mutation audit (Phase 1). Neutering the dry-run
+# short-circuit in _run_job survived the entire 662-test suite. The existing
+# dry-run tests all exercise _finish_job, the bookkeeping function — the
+# dry-run STATUS was pinned, the dry-run BEHAVIOUR was not.
+#
+# This file is the right home: the guard being removed sends a dry run through
+# disk-space pre-flight, subtitle extraction, FFmpeg, and the source-deletion
+# branch immediately above. A "preview" would destructively remux and could
+# delete the original.
+
+@pytest.fixture
+def dry_run_scenario(tmp_path, monkeypatch):
+    """
+    As `scenario`, but the loaded job is a dry run and execute_ffmpeg records
+    any call rather than performing one — so the assertion is that the guard
+    returned before reaching it.
+    """
+    source = tmp_path / "Movie.mkv"
+    source.write_bytes(b"ORIGINAL-MEDIA-BYTES")
+
+    calls = {"ffmpeg": [], "finished": {}}
+
+    def build(output_path=None):
+        resolved_out = str(source) if output_path is None else str(output_path)
+        decision = SimpleNamespace(actions=[], target_container=None)
+
+        def fake_load(_job_id):
+            job_dict  = {"is_dry_run": True}
+            file_dict = {"path": str(source), "size": 0}
+            return job_dict, file_dict, [], {"job_timeout_minutes": 0}, decision
+
+        async def fake_execute(**kwargs):
+            calls["ffmpeg"].append(kwargs)
+            out = kwargs["output_path"]
+            with open(out, "wb") as f:
+                f.write(b"REMUXED-MEDIA-BYTES")
+            return SimpleNamespace(success=True, output_path=out,
+                                   output_size=19, error=None)
+
+        def fake_finish(job_id, ok, out_path, out_size, err):
+            calls["finished"].update(job_id=job_id, ok=ok, error=err)
+
+        monkeypatch.setattr(worker, "_load_job_data", fake_load)
+        monkeypatch.setattr(worker, "execute_ffmpeg", fake_execute)
+        monkeypatch.setattr(worker, "_finish_job", fake_finish)
+        monkeypatch.setattr(worker, "determine_output_path",
+                            lambda _in, _dec: resolved_out)
+        monkeypatch.setattr(worker, "execute_ffmpeg_combined", None, raising=False)
+        return source, calls
+
+    return build
+
+
+def test_a_dry_run_never_invokes_ffmpeg(dry_run_scenario):
+    """
+    The guard that makes a dry run dry. Without it the job proceeds to real
+    execution — a preview would rewrite the user's file.
+    """
+    _source, calls = dry_run_scenario()
+
+    _run()
+
+    assert calls["ffmpeg"] == [], (
+        "FFmpeg was invoked for a DRY RUN — the short-circuit in _run_job is "
+        "gone and previews now destructively remux"
+    )
+
+
+def test_a_dry_run_leaves_the_source_byte_identical(dry_run_scenario):
+    """The user's file must be untouched, not merely 'still present'."""
+    source, _calls = dry_run_scenario()
+
+    _run()
+
+    assert source.read_bytes() == b"ORIGINAL-MEDIA-BYTES", (
+        "a dry run modified the source file"
+    )
+
+
+def test_a_dry_run_with_a_container_change_does_not_delete_the_original(
+        dry_run_scenario, tmp_path):
+    """
+    The worst case. With the guard gone, a dry run of an MKV→MP4 conversion
+    reaches the source-deletion branch immediately above: output_path !=
+    input_path, so the original is removed. A preview would delete the file it
+    was previewing.
+    """
+    new_path = tmp_path / "Movie.mp4"
+    source, calls = dry_run_scenario(output_path=str(new_path))
+
+    _run()
+
+    assert source.exists(), (
+        "a DRY RUN deleted the source file — the container-change deletion "
+        "branch was reached because the dry-run short-circuit is gone"
+    )
+    assert source.read_bytes() == b"ORIGINAL-MEDIA-BYTES"
+    assert not new_path.exists(), "a dry run produced a real output file"
+
+
+def test_a_dry_run_still_finishes_its_job(dry_run_scenario):
+    """
+    Short-circuiting must not mean abandoning the row — the job still has to
+    reach a terminal state, or it sits at 'processing' until the next restart.
+    """
+    _source, calls = dry_run_scenario()
+
+    _run()
+
+    assert calls["finished"].get("ok") is True
+    assert calls["finished"].get("job_id") == 1

@@ -239,3 +239,50 @@ def test_malformed_window_is_closed_not_open(monkeypatch):
     assert _win("03:00", None, None, monkeypatch) is False
     assert _win("03:00", "", "", monkeypatch) is False
     assert _win("03:00", "not a time", "06:00", monkeypatch) is False
+
+
+def test_an_existing_mp4_missing_faststart_gets_it_added(settings):
+    """
+    Case 2 of the three the comment documents, and the only one that had no
+    test: rewriting an EXISTING MP4 that was never faststart-optimised.
+
+    The distinguishing setup is a source that is ALREADY mp4 (so no
+    change_container action) and was NOT already optimised (so
+    source_already_faststart is False) — leaving the add_faststart action as
+    the only term that can put +faststart on the command.
+
+    Found by an independent mutation audit (Phase 1): dropping the
+    has_faststart_action term survived the entire 662-test suite, because the
+    two sibling terms were each covered and this one was reachable only
+    through a combination no test built.
+    """
+    tracks = _mp4_tracks()
+    decision = analyze_file(
+        make_file_info(path="/media/Movie.mp4", container="mp4"),
+        tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=False,
+    )
+
+    assert decision.target_container == "mp4"
+    assert decision.source_already_faststart is False, (
+        "source is already optimised — this test cannot isolate the "
+        "add_faststart term"
+    )
+    assert not any(a.action_type == "change_container" for a in decision.actions), (
+        "a container conversion is present — case 1 would supply +faststart "
+        "regardless and this test would prove nothing"
+    )
+    assert any(a.action_type == "add_faststart" for a in decision.actions), (
+        "no add_faststart action was generated, so there is nothing to test"
+    )
+
+    cmd = build_ffmpeg_command("/media/Movie.mp4", "/tmp/out.mp4",
+                               decision, tracks)
+
+    assert "+faststart" in cmd, (
+        "an add_faststart action was planned but the command omits "
+        "+faststart — the job reports success and the file stays "
+        "un-optimised, so the next scan queues the identical work again"
+    )
+    assert cmd[cmd.index("+faststart") - 1] == "-movflags"
