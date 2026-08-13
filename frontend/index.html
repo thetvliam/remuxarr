@@ -3,9 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Favicon reuses the same icon-only mark the mobile header does; no
-         separate copy needed. Vite copies public/ to the dist root at build. -->
-    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <!-- Favicon. The SVG is the primary: it is vector, so it stays sharp at
+         every size a browser or OS asks for, and its artwork is orange
+         throughout on a fully transparent ground, which reads on both light
+         and dark browser chrome. That is why there is no
+         prefers-color-scheme variant here — there is nothing to switch
+         between, and a media-scoped pair would be two files to keep in sync
+         for no visible difference.
+
+         The 32px PNG is a fallback, not a duplicate: Safari on older macOS
+         and a number of feed readers, bookmark managers and chat unfurlers
+         ignore rel="icon" with an SVG type entirely and would otherwise show
+         nothing. Declared after the SVG so browsers that understand both
+         prefer the vector.
+
+         apple-touch-icon is the dark square rather than the transparent
+         mark, because iOS composites a transparent home-screen icon onto
+         black and flattens it — supplying the version that already has its
+         own background is the only way to control what that looks like.
+
+         Vite copies public/ to the dist root at build. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- Bootstrap value only. ThemeProvider rewrites this on mount and on
          every theme change; without that, mobile browser chrome stayed the
          default theme's colour whatever the user selected. -->

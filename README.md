@@ -1,4 +1,8 @@
-![Remuxarr Logo](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-name.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_dark_transparent.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light_transparent.png">
+  <img alt="Remuxarr" src="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light.png" width="600">
+</picture>
 
 # Remuxarr
 

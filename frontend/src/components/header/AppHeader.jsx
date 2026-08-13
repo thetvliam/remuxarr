@@ -11,7 +11,7 @@ import { ApiBar } from "./ApiBar";
  *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * * * * ═*═════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },
@@ -25,18 +25,34 @@ const NAV_ITEMS = [
  * time (and app.main's static handler serves from there), so these absolute
  * paths work in dev and in the container alike.
  *
- *   variant="full" → /logo-name.svg   icon + wordmark (~4:1), desktop header
- *   variant="mark" → /logo.svg        icon only (1:1),        mobile header
+ *   variant="mark" → /logo.svg            icon only (1:1),        mobile header
+ *   variant="full" → /logo-name-<scheme>  icon + wordmark (~4:1), desktop header
+ *
+ * The mark is the transparent icon, which is orange throughout and legible on
+ * any background, so it needs no per-theme variant. The wordmark does: its
+ * lettering is near-white in the dark asset and near-black in the light one,
+ * so the wrong file is invisible rather than merely off-brand.
+ *
+ * Keyed on the ACTIVE THEME's colorScheme, deliberately NOT on the system's
+ * prefers-color-scheme. Remuxarr picks its own palette and both themes it
+ * ships (terminal, soft) are dark, so a user whose OS is set to light would
+ * otherwise get black lettering on Remuxarr's dark header — a system query
+ * would be reading a signal this app does not follow. Adding a light theme
+ * later needs no change here: set colorScheme: "light" on it and the light
+ * wordmark is picked up automatically.
  *
  * Height is fixed and width follows the file's own aspect ratio, so the
  * lockup can be re-exported at a different ratio without touching this code.
  * If a file is missing or fails to load, the original CSS placeholder renders
  * instead — the header degrades to the old look rather than a broken image.
  */
-const LOGO_SRC = { mark: "/logo.svg", full: "/logo-name.svg" };
+const LOGO_SRC = {
+  mark: () => "/logo.svg",
+  full: (scheme) => (scheme === "light" ? "/logo-name-light.svg" : "/logo-name-dark.svg"),
+};
 
 const Logo = ({ variant = "mark", height = 24 }) => {
-  const { palette, type, space, surface } = useTheme();
+  const { palette, type, space, surface, colorScheme } = useTheme();
   const [failed, setFailed] = useState(false);
 
   if (failed) {
@@ -60,7 +76,7 @@ const Logo = ({ variant = "mark", height = 24 }) => {
 
   return (
     <img
-    src={LOGO_SRC[variant]}
+    src={LOGO_SRC[variant](colorScheme)}
     alt="Remuxarr"
     draggable={false}
     onError={() => setFailed(true)}
