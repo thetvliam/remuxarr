@@ -7,7 +7,7 @@
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
 
-  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-padding.png</Icon>
+  <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo_transparent.png</Icon>
 
   <!-- The port here is the CONTAINER port, not the host port. -->
   <WebUI>http://[IP]:[PORT:9191]</WebUI>
@@ -21,7 +21,6 @@
   <Support>https://github.com/thetvliam/remuxarr/issues</Support>
   <Project>https://github.com/thetvliam/remuxarr</Project>
   <TemplateURL>https://raw.githubusercontent.com/thetvliam/remuxarr/main/templates/remuxarr.xml</TemplateURL>
-  <ReadMe>https://raw.githubusercontent.com/thetvliam/remuxarr/main/README.md</ReadMe>
 
   <Category>MediaApp:Video Tools:Utilities</Category>
 
