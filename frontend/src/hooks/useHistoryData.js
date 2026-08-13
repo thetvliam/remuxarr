@@ -48,7 +48,7 @@ const PAGE_SIZE = 50;
  *  that clears loadingRef. Without this, the old finally block would reset
  *  loadingRef for the newer fetch, causing stale results or missing updates.
  *  This is the fix for the skipped tab not updating after a scan completes.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ * ═ *══════════════════════════════════════════════════════════════════════════ */
 
 // True if a change tagged with eventStatus should cause a tab showing
 // `tab` to refresh. Mirrors history.py's own status filter — the Failed
@@ -86,14 +86,32 @@ export function useHistoryData(api, status, refreshKey, search) {
   const prevApiRef    = useRef(api);
   const prevStatusRef = useRef(status);
   const prevSearchRef = useRef(search);
+  const hasRunRef     = useRef(false);
 
   useEffect(() => {
     const apiChanged    = prevApiRef.current    !== api;
     const statusChanged = prevStatusRef.current !== status;
     const searchChanged = prevSearchRef.current !== search;
+    // The first run has nothing to compare against — the three refs above are
+    // initialised to these very values — so all three "changed" flags are
+    // false on mount and the mount would otherwise be misread as a
+    // refreshKey-only change and gated like one.
+    //
+    // That was a real bug, not a theoretical one. HistoryPanel is mounted
+    // only while page === "dashboard" (App.jsx), so it unmounts on
+    // navigation, while historyRefreshKey lives in useAppData and survives.
+    // Navigate to Settings, have a job fail (invalidateHistory("failed")),
+    // come back: the panel remounts on its default "success" tab, sees a
+    // standing { status: "failed" } key, decides it is irrelevant, and never
+    // performs its initial fetch. The tab renders permanently empty until the
+    // user switches tabs or a relevant invalidation happens to arrive.
+    const isFirstRun = !hasRunRef.current;
+    hasRunRef.current = true;
+
     // If none of api/status/search changed, this effect run must have been
     // triggered by refreshKey itself — the only remaining dependency.
-    const onlyRefreshKeyChanged = !apiChanged && !statusChanged && !searchChanged;
+    const onlyRefreshKeyChanged =
+    !isFirstRun && !apiChanged && !statusChanged && !searchChanged;
 
     prevApiRef.current    = api;
     prevStatusRef.current = status;
