@@ -107,8 +107,15 @@ describe("mount", () => {
     const { result } = renderHook(() =>
       useHistoryData("", "success", STALE_FAILED, ""));
 
-    await waitFor(() => expect(calls.length).toBe(1));
-    expect(result.current.items).toHaveLength(1);
+    // Wait on the STATE, not on calls.length. The counter increments the
+    // moment fetch is INVOKED, whereas the response promise, json() and the
+    // re-render all land in later microtasks — so a waitFor on the counter
+    // can be satisfied before any state exists. That passed consistently
+    // locally and failed in CI, which is slower and lost the race. The items
+    // array is the real subject of this test anyway: it is what the user sees
+    // when the bug is present, and reaching it implies the fetch happened.
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    expect(calls).toHaveLength(1);
   });
 
   it("still fetches on mount when the refreshKey is relevant", async () => {
