@@ -509,3 +509,26 @@ def test_the_two_id_extractors_read_their_own_payload_shapes():
     """
     assert _sonarr_series_id({"movie": {"id": 5}}) is None
     assert _radarr_movie_id({"series": {"id": 5}}) is None
+
+
+def test_a_sonarr_rename_takes_the_new_path_not_the_previous_one():
+    """
+    Rename payloads carry previousPath alongside path. Only the new path is
+    usable: after a rename the file no longer exists at the old location, so
+    queuing it would probe-fail on a missing file. The stale row is the
+    scanner's problem, not the webhook's.
+
+    Merged from the Phase 4 audit, which covered this and the tests above did
+    not.
+    """
+    payload = {"renamedEpisodeFiles": [
+        {"path": "/media/Show/new.mkv", "previousPath": "/media/Show/old.mkv"},
+    ]}
+    assert _sonarr_paths(payload) == ["/media/Show/new.mkv"]
+
+
+def test_a_radarr_rename_takes_the_new_path_not_the_previous_one():
+    payload = {"renamedMovieFiles": [
+        {"path": "/media/Movie/new.mkv", "previousPath": "/media/Movie/old.mkv"},
+    ]}
+    assert _radarr_paths(payload) == ["/media/Movie/new.mkv"]

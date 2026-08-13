@@ -973,3 +973,148 @@ def test_a_claimed_item_is_not_claimed_twice(claim, db):
 
     assert claim._claim_next() == 1
     assert claim._claim_next() is None, "the same job was claimed twice"
+
+
+# ── approve_manual_review: the three outcomes ────────────────────────────────
+#
+# Merged from the Phase 4 audit's tests/test_approve_manual_review.py. Its
+# guard and provenance tests duplicated the ones above (it was written against
+# the pre-fix tree and could not see them), so only the genuinely new material
+# is taken: what the item actually BECOMES once the fresh decision runs.
+#
+# The tests above pin that the decision is re-run and applied; these pin the
+# outcomes it produces. Note the useful gotcha the audit recorded: building a
+# genuinely "no changes needed" file needs an MP4 whose path is NOT on disk,
+# because is_faststart_mp4 returns None ("undeterminable") for an unreadable
+# file, which unlike False raises no add_faststart action.
+
+def _reviewable(db, *, path="/m/Show.mkv", container="mkv", tracks):
+    """A manual_review item with an explicit track list."""
+    from app.database.models import MediaFile, QueueItem, Track
+
+    mf = MediaFile(id=1, path=path, filename=path.rsplit("/", 1)[-1],
+                   directory="/m", size=1, mtime=1.0, container=container,
+                   video_codec="h264")
+    db.add(mf)
+    db.commit()
+    for si, tt, codec, lang in tracks:
+        db.add(Track(file_id=1, stream_index=si, track_type=tt, codec=codec,
+                     language=lang, channels=2, is_default=False,
+                     is_forced=False, is_hearing_impaired=False, is_dub=False))
+    db.commit()
+    qi = QueueItem(id=1, file_id=1, status="manual_review", is_dry_run=False,
+                   reason="needs review", review_subtitles=None)
+    db.add(qi)
+    db.commit()
+    return mf, qi
+
+
+_UND_PAIR_PLUS_FRENCH = [
+    (0, "video", "h264", None),
+    (1, "audio", "eac3", "und"),
+    (2, "audio", "eac3", "und"),
+    (3, "audio", "eac3", "fre"),   # gives the engine something to drop
+]
+
+
+def test_an_approved_item_needing_work_moves_to_pending_with_fresh_actions(db):
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import PlannedAction
+
+    media, item = _reviewable(db, tracks=_UND_PAIR_PLUS_FRENCH)
+
+    approve_manual_review(1, db)
+
+    db.expire_all()
+    assert item.status == "pending"
+    assert media.status == "queued"
+    assert db.query(PlannedAction).filter_by(queue_item_id=1).count() > 0, (
+        "moved to pending with no planned actions to show the user"
+    )
+
+
+def test_stale_planned_actions_are_replaced_not_appended(db):
+    """
+    The re-run regenerates the action list. Leaving the old rows in place shows
+    a Planned Actions panel describing two different decisions at once.
+    """
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import PlannedAction
+
+    _reviewable(db, tracks=_UND_PAIR_PLUS_FRENCH)
+    db.add(PlannedAction(queue_item_id=1, order=0, action_type="stale",
+                         description="from the previous decision"))
+    db.commit()
+
+    approve_manual_review(1, db)
+
+    db.expire_all()
+    kinds = {a.action_type
+             for a in db.query(PlannedAction).filter_by(queue_item_id=1).all()}
+    assert "stale" not in kinds, "the previous decision's actions survived the re-run"
+
+
+def test_an_approved_file_needing_no_changes_is_skipped_and_stamped(db):
+    """
+    completed_at matters: the Skipped tab orders by it DESC and SQLite sorts
+    NULLs last, so an unstamped row sinks to the bottom and renders "—".
+    """
+    from app.api.routes.queue import approve_manual_review
+
+    media, item = _reviewable(
+        db, path="/m/Clean.mp4", container="mp4",
+        tracks=[(0, "video", "h264", None), (1, "audio", "aac", "eng")],
+    )
+
+    approve_manual_review(1, db)
+
+    db.expire_all()
+    assert item.status == "skipped"
+    assert media.status == "skipped"
+    assert item.completed_at is not None
+
+
+def test_an_item_tripping_a_second_gate_stays_in_review_with_a_fresh_reason(db):
+    """
+    Approving the audio-threshold gate must not push an item past an unrelated
+    image-subtitle gate that still applies.
+
+    The audit's version of this test hedged with an if/else covering both
+    outcomes, which cannot fail meaningfully — status is always one of them.
+    The behaviour is deterministic and asserted as such: the item stays in
+    manual_review, and its reason is regenerated to describe the gate that is
+    NOW blocking it rather than the one that was.
+    """
+    from app.api.routes.queue import approve_manual_review
+    from app.database.models import QueueItem
+
+    _reviewable(db, path="/m/Subs.mkv", tracks=[
+        (0, "video", "h264", None),
+        (1, "audio", "eac3", "eng"),
+        (2, "subtitle", "dvd_subtitle", "eng"),
+    ])
+    db.query(QueueItem).filter(QueueItem.id == 1).update(
+        {"review_subtitles": json.dumps([{"stream_index": 2}])})
+    db.commit()
+
+    approve_manual_review(1, db)
+
+    db.expire_all()
+    item = db.get(QueueItem, 1)
+    assert item.status == "manual_review"
+    assert "image-based subtitle" in item.reason, (
+        f"reason not regenerated for the gate now blocking it: {item.reason!r}"
+    )
+
+
+def test_approving_returns_the_serialised_item_with_its_actions(db):
+    """The response feeds the modal directly, so it must carry the new actions."""
+    from app.api.routes.queue import approve_manual_review
+
+    _reviewable(db, tracks=_UND_PAIR_PLUS_FRENCH)
+
+    payload = approve_manual_review(1, db)
+
+    assert payload["id"] == 1
+    assert "planned_actions" in payload
+    assert payload["planned_actions"], "returned no actions to render"
