@@ -82,6 +82,7 @@ def build_add_ac3_command(
     aac_stream_index:  int,     # global ffprobe stream index of the AAC 5.1 track
     audio_track_count: int,     # number of audio tracks BEFORE adding AC3
     container:         str = "mkv",
+    add_faststart:     bool = True,
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -123,11 +124,19 @@ def build_add_ac3_command(
         "-f", fmt,
     ]
 
-    # Apply +faststart when writing MP4 — mirrors the main remux pipeline's
-    # unconditional rule for any MP4 output. Without this, every file forge
-    # touches loses faststart (even if the original had it), and the next
-    # library scan re-queues it purely to re-add faststart — wasted work.
-    if container == "mp4":
+    # Apply +faststart when writing MP4, unless add_faststart_to_mp4 is off.
+    # With the setting ON this matters because forge rewrites the whole
+    # container: without the flag every file forge touches loses faststart
+    # (even if the original had it), and the next library scan re-queues it
+    # purely to re-add faststart — wasted work.
+    #
+    # With the setting OFF the flag is suppressed here too. Forge is a
+    # separate pipeline from the main remux, but the setting reads as a
+    # global policy for this application, so leaving forge emitting the flag
+    # would mean "off" still produced faststart output for anyone who uses
+    # AC3 forge — the same partial-off behaviour that made the setting
+    # ineffective before.
+    if container == "mp4" and add_faststart:
         cmd += ["-movflags", "+faststart"]
 
     cmd.append(temp_path)
@@ -139,6 +148,7 @@ def build_undo_command(
     temp_path:             str,
     ac3_audio_output_index: int,   # resolved at UNDO time by resolve_forge_ac3_for_undo
     container:             str = "mkv",
+    add_faststart:         bool = True,
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
@@ -171,8 +181,9 @@ def build_undo_command(
     ]
 
     # Same faststart rule as build_add_ac3_command — undo also rewrites the
-    # whole file, so it needs to re-apply faststart for the same reason.
-    if container == "mp4":
+    # whole file, so it re-applies faststart for the same reason when the
+    # setting is on, and suppresses it entirely when off.
+    if container == "mp4" and add_faststart:
         cmd += ["-movflags", "+faststart"]
 
     cmd.append(temp_path)
@@ -643,6 +654,10 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "undo_audio_output_index": undo_audio_output_index,
             "original_size":      job.original_size,
             "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
+            # Read here for the same reason as job_timeout_minutes above:
+            # this function already holds the session open. The command
+            # builders need it to honour add_faststart_to_mp4.
+            "add_faststart":       app_cfg.get("add_faststart_to_mp4", True),
         }
     finally:
         db.close()

@@ -1,25 +1,94 @@
 # Remuxarr test suite
 
-## What's here so far
+807 tests across 35 files, plus 137 frontend tests under
+`frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
+number below matters more than that one.
 
-`test_decision.py` — regression tests for `app/core/decision.py`'s
-`analyze_file()`, the pure decision engine that decides what happens to
-every file. Every test is tied to a real incident from this project's
-development — see each test's docstring for exactly what it guards
-against. No ffmpeg, no database, no real files needed — `analyze_file()`
-takes plain dicts in and returns a plain dataclass out, so these run in
-well under a second.
+## What's here
+
+**The decision engine** — `test_decision.py`, `test_subtitle_language_path.py`,
+`test_command_and_pure_functions.py`. `analyze_file()` decides what happens to
+every file; these take plain dicts in and assert on a plain dataclass out, so
+they need no ffmpeg, no database and no real files, and run in well under a
+second. Most are tied to a specific incident from this project's development —
+see each docstring.
+
+**Scanning and the database** — `test_scan_and_cancellation.py`,
+`test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
+`test_settings_persistence.py`, `test_backup_restore.py`. Real SQLite, real
+temp files. `test_media_file_deletion.py` derives the list of tables
+referencing `media_files` from the model metadata at runtime rather than
+hardcoding it, so adding a table and forgetting to delete from it fails there
+by name.
+
+**Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
+`test_job_finalisation.py`, `test_history_routes.py`,
+`test_manual_review_refresh.py`, `test_startup_recovery.py`,
+`test_background_tasks.py`.
+
+**FFmpeg and staging** — `test_ffmpeg_command.py`,
+`test_source_file_preservation.py`, `test_forge_and_staging.py`,
+`test_subtitle_extraction_failures.py`. Some run a real subprocess against real
+temp files; a few need real ffmpeg/ffprobe and skip when the binaries are
+absent (CI installs them, so they always run there).
+
+**AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
+`test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
+
+**Integrations** — `test_webhook_paths.py`, `test_arr_notifications.py`,
+`test_plex_client.py`, `test_scheduler.py`.
+
+**Language review** — `test_audio_language_review.py`,
+`test_subtitle_language_review.py`, `test_language_review_isolation.py`.
+
+**Sample library** — `test_sample_library.py` runs the real pipeline against a
+fixed set of probed media files (`tests/sample_library/`) and compares against
+recorded golden decisions.
+
+**Cross-cutting regressions** — `test_assorted_regressions.py`,
+`test_robustness_fixes.py`, `test_timestamp_roundtrip.py`, and
+`test_spa_fallback_security.py`. These are grouped by the incident that
+prompted them rather than by the module they touch, so they span several areas
+each.
+
+## How these tests are written
+
+Coverage percentage is not the measure used here. Several modules in this
+project once sat at high coverage while the code underneath was completely
+unprotected — one module reported 100% branch coverage on 41% of its lines
+because only a single pure helper was exercised, and the hook body it lived
+beside had no tests at all.
+
+So the standard is **mutation testing**: a deliberate change is made to the
+production code, and the suite must fail. Tests here are added only once a
+specific mutation kills them, and the mutations that no other test catches are
+recorded in the file docstrings. Where a mutation cannot be killed because it
+genuinely changes nothing observable, that is written down as an equivalent
+mutant rather than papered over with a test that only appears to guard it.
+
+Two failure modes this has caught, both of which read as coverage:
+
+- A test that re-implemented the logic it was checking inside its own body and
+  never called the production function — it passed regardless of what the app
+  did.
+- Tests asserting only on a spy, never on the resulting DOM or database state,
+  so a value could be committed correctly while the user was shown something
+  else entirely.
 
 ## Running it — two options, same suite either way
 
-**Option A — I run it myself**, as part of verifying any change to
-`decision.py` before handing you the file. This is already happening
-going forward: any time I touch this function, running this suite first
-is now part of how I check the change before it reaches you.
+**Option A — locally.**
 
-**Option B — you run it yourself**, inside the actual deployed container,
-against the real production environment (real ffmpeg 8.1, real file
-paths) as an independent check after any deploy:
+```bash
+pip install -r tests/requirements-test.txt
+pytest
+
+cd frontend && npm install && npm test
+```
+
+**Option B — inside the deployed container**, against the real production
+environment (real ffmpeg, real file paths), as an independent check after a
+deploy:
 
 ```bash
 docker exec -it remuxarr bash
@@ -28,22 +97,21 @@ pip install -r tests/requirements-test.txt --break-system-packages
 pytest tests/ -v
 ```
 
-`pytest` and its dependency aren't part of the production `requirements.txt`
-on purpose — they only get installed if you actually run this, so the
-deployed image doesn't carry test tooling it never uses day to day.
+`pytest` and its dependencies aren't part of the production `requirements.txt`
+on purpose — they only get installed if you actually run this, so the deployed
+image doesn't carry test tooling it never uses day to day.
 
-## What's not here yet
+## Conventions
 
-This only covers the pure decision logic — the part of the codebase with
-the highest concentration of real bugs found this session (the silent-audio
-fallback, the language-override pass, the container-detection ValueError,
-the threshold clamp), and the cheapest to test since it needs nothing but
-Python.
-
-Not yet covered: anything that actually runs ffmpeg, touches the database,
-or calls Sonarr/Radarr/Plex. That's a natural next phase — a small library
-of synthetic test video files (generated with ffmpeg's own test-source
-generators, not real copyrighted media) that could be run through the
-actual scan → decide → process pipeline end to end, then re-probed to
-confirm the real output matches expectations. Worth building once this
-layer has proven itself useful in practice.
+- No inter-file ordering dependence: any file can be run alone.
+- Module-level state (caches, refresh keys, worker globals) is reset by an
+  autouse fixture wherever it exists, since a leaked entry can make a broken
+  lookup look like it works.
+- `pytest.ini` sets `filterwarnings = default`, so new warnings are visible
+  rather than swallowed. Two pre-existing ones remain: Pydantic's class-based
+  `Config` in `app/config.py`, and Starlette's `httpx` deprecation in
+  `test_spa_fallback_security.py`.
+- Frontend tests wait on rendered state rather than on a spy's call count. The
+  counter increments when a request is *issued*; the state lands later, and
+  waiting on the counter produces a race that passes locally and fails on
+  slower CI.

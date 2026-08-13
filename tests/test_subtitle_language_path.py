@@ -312,3 +312,86 @@ def test_base_settings_match_production_defaults():
         "A test needing a non-production value should set it on the settings "
         "fixture rather than changing the shared default."
     )
+
+
+# ── Sidecar naming: positive assertions ──────────────────────────────────────
+#
+# Found by an independent mutation audit (Phase 1). The existing collision test
+# asserts only an ABSENCE (".2.srt" not in path), which passes whether the
+# suffix sequence starts at 2, 3, or 99 — and would pass if numeric
+# disambiguation were removed altogether. These pin the scheme positively.
+
+def _dub(si, lang="eng", forced=False, sdh=False):
+    return {"track_type": "subtitle", "stream_index": si, "codec": "subrip",
+            "language": lang, "channels": None, "is_default": False,
+            "is_forced": forced, "is_hearing_impaired": sdh, "is_dub": True,
+            "title": None}
+
+
+def test_a_genuine_sidecar_collision_is_disambiguated_from_two():
+    """
+    Two subtitle tracks with the same language and no distinguishing forced,
+    SDH or dub flag produce the same candidate filename. The second must
+    become exactly '.2.srt' — the first free integer, not an arbitrary one.
+
+    Audit ref: DEC-10 — starting the sequence at 3 instead of 2 survived,
+    because the only assertion touching this was a negative one.
+    """
+    cfg = _prod(fix_undefined_language="always_leave")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, lang="eng"),
+                              _sub(3, lang="eng")], cfg)
+
+    first  = _action_for(d, 2).external_path
+    second = _action_for(d, 3).external_path
+
+    assert first.endswith("Movie.en.srt"), first
+    assert second.endswith("Movie.en.2.srt"), (
+        f"second sidecar named {second!r} — the numeric disambiguation "
+        f"sequence must start at 2"
+    )
+
+
+def test_a_third_collision_continues_the_sequence():
+    """The counter increments rather than reusing the first free value."""
+    cfg = _prod(fix_undefined_language="always_leave")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, lang="eng"),
+                              _sub(3, lang="eng"), _sub(4, lang="eng")], cfg)
+
+    assert _action_for(d, 4).external_path.endswith("Movie.en.3.srt"), \
+        _action_for(d, 4).external_path
+
+
+# ── Sidecar naming: the .dub suffix ──────────────────────────────────────────
+#
+# is_dub was False in every fixture in the entire suite, so none of this
+# branch was reachable. Audit ref: DEC-11.
+
+def test_a_plain_dub_track_gets_the_dub_suffix():
+    cfg = _prod(fix_undefined_language="always_leave")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _dub(2)], cfg)
+
+    assert _action_for(d, 2).external_path.endswith("Movie.en.dub.srt"), \
+        _action_for(d, 2).external_path
+
+
+def test_a_forced_dub_track_is_named_forced_not_forced_dub():
+    """
+    decision.py's comment: forced and SDH serve a specific purpose that
+    matters more than the dub/sub distinction, and combining them adds noise
+    without benefit. So '.dub' is suppressed rather than appended.
+    """
+    cfg = _prod(fix_undefined_language="always_leave")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _dub(2, forced=True)], cfg)
+
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Movie.en.forced.srt"), path
+    assert "dub" not in path, f"'.dub' was not suppressed for a forced track: {path}"
+
+
+def test_an_sdh_dub_track_is_named_sdh_not_sdh_dub():
+    cfg = _prod(fix_undefined_language="always_leave")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _dub(2, sdh=True)], cfg)
+
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Movie.en.sdh.srt"), path
+    assert "dub" not in path, f"'.dub' was not suppressed for an SDH track: {path}"

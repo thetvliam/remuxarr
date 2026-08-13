@@ -371,8 +371,13 @@ SETTINGS_SCHEMA = [
                        "of the file (i.e. not web-optimised) and rewrite them "
                        "with -movflags +faststart. This lets Plex and other "
                        "players begin streaming before the full file downloads. "
-                       "Only existing MP4 files are checked — files converted "
-                       "from MKV always get fast start applied automatically.",
+                       "Files converted from MKV, and existing MP4s that are "
+                       "already optimised, also get fast start applied or "
+                       "preserved on any remux. Turning this off suppresses "
+                       "-movflags +faststart everywhere, including MKV-to-MP4 "
+                       "conversions and AC3 Forge — note that an MP4 which is "
+                       "already fast-start will lose it the next time the file "
+                       "is remuxed for any reason.",
     },
     # ── Metadata ───────────────────────────────────────────────────────────
     {

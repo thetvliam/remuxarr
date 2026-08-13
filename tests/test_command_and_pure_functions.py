@@ -239,3 +239,502 @@ def test_malformed_window_is_closed_not_open(monkeypatch):
     assert _win("03:00", None, None, monkeypatch) is False
     assert _win("03:00", "", "", monkeypatch) is False
     assert _win("03:00", "not a time", "06:00", monkeypatch) is False
+
+
+def test_an_existing_mp4_missing_faststart_gets_it_added(settings):
+    """
+    Case 2 of the three the comment documents, and the only one that had no
+    test: rewriting an EXISTING MP4 that was never faststart-optimised.
+
+    The distinguishing setup is a source that is ALREADY mp4 (so no
+    change_container action) and was NOT already optimised (so
+    source_already_faststart is False) — leaving the add_faststart action as
+    the only term that can put +faststart on the command.
+
+    Found by an independent mutation audit (Phase 1): dropping the
+    has_faststart_action term survived the entire 662-test suite, because the
+    two sibling terms were each covered and this one was reachable only
+    through a combination no test built.
+    """
+    tracks = _mp4_tracks()
+    decision = analyze_file(
+        make_file_info(path="/media/Movie.mp4", container="mp4"),
+        tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=False,
+    )
+
+    assert decision.target_container == "mp4"
+    assert decision.source_already_faststart is False, (
+        "source is already optimised — this test cannot isolate the "
+        "add_faststart term"
+    )
+    assert not any(a.action_type == "change_container" for a in decision.actions), (
+        "a container conversion is present — case 1 would supply +faststart "
+        "regardless and this test would prove nothing"
+    )
+    assert any(a.action_type == "add_faststart" for a in decision.actions), (
+        "no add_faststart action was generated, so there is nothing to test"
+    )
+
+    cmd = build_ffmpeg_command("/media/Movie.mp4", "/tmp/out.mp4",
+                               decision, tracks)
+
+    assert "+faststart" in cmd, (
+        "an add_faststart action was planned but the command omits "
+        "+faststart — the job reports success and the file stays "
+        "un-optimised, so the next scan queues the identical work again"
+    )
+    assert cmd[cmd.index("+faststart") - 1] == "-movflags"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# webhooks.py pure helpers
+#
+# Found by an independent mutation audit (Phase 2): 7 of 8 mutations of
+# webhooks.py survived the whole suite — the weakest module either phase
+# audited. All five helpers below are pure: no HTTP client, no DB, no async.
+#
+# _translate_path is the direct analogue of plex.translate_path_to_plex, whose
+# equivalent mutations were all killed in Phase 1. The same class of function
+# was well tested in one module and untested in the other, and this one's own
+# docstring says a wrong result causes "silent queue failures".
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.api.routes.webhooks import (  # noqa: E402
+    _radarr_movie_id, _radarr_paths, _sonarr_paths, _sonarr_series_id,
+    _translate_path,
+)
+
+
+# ── _translate_path ──────────────────────────────────────────────────────────
+
+def test_a_matching_prefix_is_translated():
+    """
+    The case the function exists for: Sonarr and Remuxarr mount the same
+    physical directory at different container paths.
+    """
+    assert _translate_path("/media/Show/ep.mkv", "/media", "/media/tv") == \
+        "/media/tv/Show/ep.mkv"
+
+
+def test_an_exact_prefix_match_translates_to_the_bare_local_prefix():
+    assert _translate_path("/media", "/media", "/data") == "/data"
+
+
+def test_a_path_outside_the_remote_prefix_is_untouched():
+    assert _translate_path("/other/ep.mkv", "/media", "/data") == "/other/ep.mkv"
+
+
+def test_a_sibling_directory_sharing_a_prefix_is_not_translated():
+    """
+    The separator boundary. "/media" must not match "/media2/..." — a loose
+    `remote in path` test would rewrite an unrelated library's paths into a
+    directory that does not exist, and the queue attempt fails silently.
+
+    Audit ref: WHK-01.
+    """
+    assert _translate_path("/media2/ep.mkv", "/media", "/data") == "/media2/ep.mkv"
+
+
+def test_a_prefix_appearing_mid_path_is_not_translated():
+    """
+    The other half of WHK-01: a loose substring match would also fire on a
+    remote prefix buried in the middle of an unrelated path.
+    """
+    assert _translate_path("/mnt/media/ep.mkv", "/media", "/data") == \
+        "/mnt/media/ep.mkv"
+
+
+@pytest.mark.parametrize("remote,local", [
+    ("", "/data"),
+    ("/media", ""),
+    ("", ""),
+    ("/", "/data"),      # rstrips to empty
+    ("/media", "/"),
+])
+def test_a_blank_prefix_pair_passes_the_path_through(remote, local):
+    """
+    BOTH prefixes are required. Unconfigured setups — where the two containers
+    already agree on the path — must work out of the box, and a half-filled
+    settings pair must not produce a half-translated path.
+
+    Audit ref: WHK-02 (guard removed) and WHK-03 (or → and, so one blank
+    prefix still translates: "/media/ep.mkv" with local "" becomes
+    "/ep.mkv", pointing at nothing).
+    """
+    assert _translate_path("/media/ep.mkv", remote, local) == "/media/ep.mkv"
+
+
+def test_trailing_slashes_on_either_prefix_do_not_double_up():
+    assert _translate_path("/media/ep.mkv", "/media/", "/data/") == "/data/ep.mkv"
+
+
+# ── _sonarr_paths ────────────────────────────────────────────────────────────
+
+def test_a_sonarr_download_event_yields_its_episode_file():
+    assert _sonarr_paths({"episodeFile": {"path": "/media/ep.mkv"}}) == \
+        ["/media/ep.mkv"]
+
+
+def test_a_sonarr_rename_event_yields_every_renamed_file():
+    payload = {"renamedEpisodeFiles": [{"path": "/media/a.mkv"},
+                                       {"path": "/media/b.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_a_sonarr_import_event_yields_every_episode_file():
+    """
+    The third payload shape — the episodeFiles array used by import/upgrade.
+    It was silently dropped with nothing failing: the rename array was covered
+    and this one was not, so one of Sonarr's three event shapes queued nothing.
+
+    Audit ref: WHK-05.
+    """
+    payload = {"episodeFiles": [{"path": "/media/a.mkv"},
+                                {"path": "/media/b.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_sonarr_paths_are_deduplicated_in_order():
+    """
+    A payload can name the same file in more than one array. Without the
+    dedupe the file is queued once per mention, so a single import produces
+    duplicate jobs racing each other over one file.
+
+    Audit ref: WHK-06.
+    """
+    payload = {
+        "episodeFile":         {"path": "/media/a.mkv"},
+        "renamedEpisodeFiles": [{"path": "/media/a.mkv"}],
+        "episodeFiles":        [{"path": "/media/a.mkv"}, {"path": "/media/b.mkv"}],
+    }
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_sonarr_entries_without_a_path_are_skipped():
+    payload = {"episodeFile": {}, "renamedEpisodeFiles": [{"path": None}, {}],
+               "episodeFiles": [{"path": "/media/real.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/real.mkv"]
+
+
+def test_an_empty_sonarr_payload_yields_no_paths():
+    assert _sonarr_paths({}) == []
+
+
+# ── _radarr_paths ────────────────────────────────────────────────────────────
+
+def test_a_radarr_download_event_yields_its_movie_file():
+    assert _radarr_paths({"movieFile": {"path": "/media/m.mkv"}}) == \
+        ["/media/m.mkv"]
+
+
+def test_a_radarr_rename_event_reads_the_plural_array():
+    """
+    renamedMovieFiles is a LIST. The previous code read "renamedMovieFile", a
+    field Radarr never emits, so Rename events matched nothing — Download kept
+    working, which is what hid it.
+    """
+    payload = {"renamedMovieFiles": [{"path": "/media/a.mkv"},
+                                     {"path": "/media/b.mkv"}]}
+    assert _radarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_radarr_paths_are_deduplicated_in_order():
+    payload = {"movieFile": {"path": "/media/a.mkv"},
+               "renamedMovieFiles": [{"path": "/media/a.mkv"},
+                                     {"path": "/media/b.mkv"}]}
+    assert _radarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_an_empty_radarr_payload_yields_no_paths():
+    assert _radarr_paths({}) == []
+
+
+# ── ID extraction ────────────────────────────────────────────────────────────
+
+def test_a_sonarr_series_id_is_read_as_an_integer():
+    assert _sonarr_series_id({"series": {"id": "42"}}) == 42
+
+
+def test_a_radarr_movie_id_is_read_as_an_integer():
+    assert _radarr_movie_id({"movie": {"id": "17"}}) == 17
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"series": {}},
+    {"series": None},
+    {"series": {"id": None}},
+    {"series": {"id": "not a number"}},
+    {"series": "not a dict"},
+])
+def test_a_malformed_series_id_degrades_to_none(payload):
+    """
+    None specifically, not a sentinel. _resolve_translated_path_sync branches
+    on `if series_id:` — a truthy sentinel like -1 selects the SONARR path
+    prefixes for a payload whose series could not be identified, translating
+    the path with the wrong mapping. The id is also stored on the queue item
+    and later drives a RescanSeries call, so a bogus value addresses a series
+    that does not exist.
+
+    Audit ref: WHK-07.
+    """
+    assert _sonarr_series_id(payload) is None
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"movie": {}},
+    {"movie": None},
+    {"movie": {"id": None}},
+    {"movie": {"id": "not a number"}},
+    {"movie": "not a dict"},
+])
+def test_a_malformed_movie_id_degrades_to_none(payload):
+    """
+    Same contract, opposite failure shape: 0 is falsy, so a 0 sentinel would
+    silently skip Radarr path translation entirely rather than misapply it —
+    equally wrong, and equally invisible.
+
+    Audit ref: WHK-08.
+    """
+    assert _radarr_movie_id(payload) is None
+
+
+def test_the_two_id_extractors_read_their_own_payload_shapes():
+    """
+    Near-identical functions reading different keys — the copy-paste shape.
+    A Sonarr payload must not yield a movie id, or vice versa.
+    """
+    assert _sonarr_series_id({"movie": {"id": 5}}) is None
+    assert _radarr_movie_id({"series": {"id": 5}}) is None
+
+
+def test_a_sonarr_rename_takes_the_new_path_not_the_previous_one():
+    """
+    Rename payloads carry previousPath alongside path. Only the new path is
+    usable: after a rename the file no longer exists at the old location, so
+    queuing it would probe-fail on a missing file. The stale row is the
+    scanner's problem, not the webhook's.
+
+    Merged from the Phase 4 audit, which covered this and the tests above did
+    not.
+    """
+    payload = {"renamedEpisodeFiles": [
+        {"path": "/media/Show/new.mkv", "previousPath": "/media/Show/old.mkv"},
+    ]}
+    assert _sonarr_paths(payload) == ["/media/Show/new.mkv"]
+
+
+def test_a_radarr_rename_takes_the_new_path_not_the_previous_one():
+    payload = {"renamedMovieFiles": [
+        {"path": "/media/Movie/new.mkv", "previousPath": "/media/Movie/old.mkv"},
+    ]}
+    assert _radarr_paths(payload) == ["/media/Movie/new.mkv"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# add_faststart_to_mp4 as an absolute off switch
+#
+# The setting used to gate only ONE of the three paths that emit
+# -movflags +faststart. Turning it off still produced the flag on an MKV→MP4
+# conversion and on any remux of an already-optimised MP4, so for most
+# libraries it did nothing observable. It is now an absolute off switch:
+# with it disabled the flag is never emitted, on any path, in either pipeline.
+#
+# The three ON cases are tested alongside the OFF ones deliberately — a test
+# file that only asserts absence would pass just as happily if the feature
+# stopped working entirely.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.core.forge import build_add_ac3_command, build_undo_command  # noqa: E402
+
+
+def _mp4_faststart_settings(enabled):
+    from tests.conftest import BASE_SETTINGS
+
+    return {**BASE_SETTINGS, "add_faststart_to_mp4": enabled,
+            "prefer_mp4_container": True}
+
+
+def _cmd_for(settings, *, container, has_faststart, tracks=None):
+    tracks = tracks or _mp4_tracks()
+    decision = analyze_file(
+        make_file_info(path=f"/media/Movie.{container}", container=container),
+        tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=has_faststart,
+    )
+    return decision, build_ffmpeg_command(
+        f"/media/Movie.{container}", "/tmp/out.mp4", decision, tracks)
+
+
+# ── The setting ON: all three paths still emit the flag ──────────────────────
+
+def test_a_container_conversion_web_optimises_the_new_mp4():
+    """Case 1. A genuinely new MP4 gets faststart while the feature is on."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mkv", has_faststart=None)
+
+    assert any(a.action_type == "change_container" for a in decision.actions)
+    assert "+faststart" in cmd
+
+
+def test_an_existing_mp4_missing_faststart_still_gets_it_added():
+    """Case 2 — the one path the setting always gated correctly."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mp4", has_faststart=False)
+
+    assert any(a.action_type == "add_faststart" for a in decision.actions)
+    assert "+faststart" in cmd
+
+
+def test_an_already_optimised_mp4_keeps_faststart_through_an_unrelated_remux():
+    """
+    Case 3. FFmpeg silently rebuilds the container with the moov atom at the
+    end even on a pure stream-copy, so an unrelated remux would otherwise
+    undo an already-correct file's optimisation as a side effect.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mp4", has_faststart=True)
+
+    assert decision.source_already_faststart is True
+    assert "+faststart" in cmd
+
+
+# ── The setting OFF: no path emits the flag ──────────────────────────────────
+
+def test_turning_the_setting_off_suppresses_it_on_a_container_conversion():
+    """
+    Previously unreachable by the setting: an MKV→MP4 conversion applied
+    +faststart regardless, so a user who turned this off still got it on
+    every converted file.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mkv", has_faststart=None)
+
+    assert any(a.action_type == "change_container" for a in decision.actions), (
+        "no conversion happened — this test is not exercising case 1"
+    )
+    assert "+faststart" not in cmd
+
+
+def test_turning_the_setting_off_suppresses_it_for_an_already_optimised_source():
+    """
+    The other previously-ungated path, and the one with a real consequence:
+    with the setting off, an already-faststart MP4 LOSES the optimisation on
+    the next remux, because FFmpeg rebuilds the container without it. That is
+    the intended meaning of "never apply it", and nothing re-adds it, since
+    the add_faststart action is gated on the same setting.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mp4", has_faststart=True)
+
+    assert decision.source_already_faststart is True, (
+        "the source was not detected as already optimised — this test is not "
+        "exercising case 3"
+    )
+    assert "+faststart" not in cmd
+
+
+def test_turning_the_setting_off_raises_no_add_faststart_action():
+    """Case 2, unchanged — it was already gated, and must stay gated."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mp4", has_faststart=False)
+
+    assert not any(a.action_type == "add_faststart" for a in decision.actions)
+    assert "+faststart" not in cmd
+
+
+def test_the_decision_carries_the_setting_to_the_command_builder():
+    """
+    build_ffmpeg_command takes only (input, output, decision, tracks), so the
+    policy has to travel on the decision. faststart_enabled is deliberately
+    separate from source_already_faststart: that one is a FACT about the
+    source, this one is POLICY, and conflating them would make "the source
+    was optimised" untrue whenever the setting happened to be off.
+    """
+    on, _  = _cmd_for(_mp4_faststart_settings(True),  container="mp4",
+                      has_faststart=True)
+    off, _ = _cmd_for(_mp4_faststart_settings(False), container="mp4",
+                      has_faststart=True)
+
+    assert on.faststart_enabled is True
+    assert off.faststart_enabled is False
+    assert off.source_already_faststart is True, (
+        "the setting overwrote a fact about the source file"
+    )
+
+
+# ── Forge honours the same switch ────────────────────────────────────────────
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_applies_faststart_to_mp4_while_the_setting_is_on(builder, kwargs):
+    cmd = builder(input_path="/media/Movie.mp4", temp_path="/tmp/t.mp4",
+                  container="mp4", add_faststart=True, **kwargs)
+
+    assert "+faststart" in cmd
+
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_suppresses_faststart_when_the_setting_is_off(builder, kwargs):
+    """
+    Forge is a separate pipeline and applied the flag unconditionally, so
+    "off" still produced faststart output for anyone using AC3 forge — the
+    same partial-off behaviour that made the setting ineffective elsewhere.
+    """
+    cmd = builder(input_path="/media/Movie.mp4", temp_path="/tmp/t.mp4",
+                  container="mp4", add_faststart=False, **kwargs)
+
+    assert "+faststart" not in cmd
+    assert "-movflags" not in cmd
+
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_never_applies_faststart_to_a_non_mp4(builder, kwargs):
+    """The flag is an MP4 container option; it is meaningless on Matroska."""
+    cmd = builder(input_path="/media/Movie.mkv", temp_path="/tmp/t.mkv",
+                  container="mkv", add_faststart=True, **kwargs)
+
+    assert "+faststart" not in cmd
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_a_no_changes_decision_still_carries_the_setting(enabled):
+    """
+    analyze_file has two Decision construction sites — the "no changes needed"
+    early return and the main one — and they populate the object
+    independently. The early-return path produces should_process=False so no
+    command is built from it today, which is exactly why hardcoding the field
+    there survives every behavioural test. Pinned so the two sites cannot
+    drift: a later change that made a skipped decision reach the builder would
+    otherwise silently re-enable the flag.
+    """
+    # A file with genuinely nothing to do: already MP4, already faststart,
+    # one preferred-language audio track, no subtitles.
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(path="/media/Movie.mp4", container="mp4"),
+        tracks, _mp4_faststart_settings(enabled),
+        has_faststart=True,
+    )
+
+    assert not decision.should_process, (
+        f"fixture produced work ({decision.reason!r}) — this test is not "
+        f"exercising the early-return construction site"
+    )
+    assert decision.faststart_enabled is enabled

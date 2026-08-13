@@ -62,6 +62,12 @@ def _job_data(**over):
         "audio_track_count":    2,
         "undo_audio_output_index": 1,
         "job_timeout_minutes":  120,
+        # load_forge_job_data reads add_faststart_to_mp4 and passes it to the
+        # command builders. _process_next_forge indexes it directly rather
+        # than .get()-ing a default, so a producer that stopped supplying it
+        # fails the job loudly instead of silently emitting +faststart on a
+        # library where the setting is off.
+        "add_faststart":        True,
     }
     data.update(over)
     return data
@@ -279,6 +285,29 @@ def test_an_add_job_builds_the_add_command(forge):
     assert kind == "add"
     assert kw["aac_stream_index"] == 1
     assert kw["audio_track_count"] == 2
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("is_undo", [False, True])
+def test_the_faststart_setting_reaches_the_command_builder(
+        forge, monkeypatch, enabled, is_undo):
+    """
+    The wiring, which the builders' own unit tests cannot see. forge.py reads
+    add_faststart_to_mp4 in load_forge_job_data and _process_next_forge hands
+    it to whichever builder runs; drop it at either end and the builders fall
+    back to their default of True, so a library with the setting off would
+    still get +faststart on every forged MP4 — silently, since nothing else
+    in the pipeline inspects the flag.
+    """
+    monkeypatch.setattr(
+        forge, "load_forge_job_data",
+        lambda jid: _job_data(is_undo=is_undo, add_faststart=enabled),
+    )
+
+    _run(_WS())
+
+    _kind, kw = forge._calls["built"][0]
+    assert kw["add_faststart"] is enabled
 
 
 def test_an_undo_job_uses_the_freshly_resolved_track_index(forge, monkeypatch):

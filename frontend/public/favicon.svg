@@ -2,12 +2,12 @@
 <!-- Created with Inkscape (http://www.inkscape.org/) -->
 
 <svg
-   width="136"
-   height="136"
-   viewBox="0 0 35.983333 35.983332"
+   width="124.00001"
+   height="124.00001"
+   viewBox="0 0 32.808335 32.808335"
    version="1.1"
    id="svg1"
-   sodipodi:docname="logo_transparent.svg"
+   sodipodi:docname="favicon.svg"
    inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
@@ -23,9 +23,9 @@
      inkscape:pageopacity="0"
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
-     inkscape:zoom="2.0771262"
-     inkscape:cx="88.824648"
-     inkscape:cy="73.418747"
+     inkscape:zoom="3.221774"
+     inkscape:cx="103.5144"
+     inkscape:cy="58.818527"
      inkscape:window-width="1920"
      inkscape:window-height="1008"
      inkscape:window-x="0"
@@ -450,14 +450,22 @@
        y1="117.54382"
        x2="150.06502"
        y2="30.657402" />
+    <linearGradient
+       xlink:href="#linearGradient8"
+       id="linearGradient49"
+       gradientUnits="userSpaceOnUse"
+       x1="57.567097"
+       y1="117.54382"
+       x2="150.06502"
+       y2="30.657402" />
   </defs>
   <g
      id="g105"
-     transform="matrix(0.9302012,0,0,0.9302012,-5.1719422,1.5519069)"
+     transform="matrix(0.9302012,0,0,0.9302012,-6.7594424,-0.03559309)"
      style="display:inline">
     <g
        id="g88"
-       style="display:inline;fill:url(#linearGradient48);fill-opacity:1;stroke:none;stroke-opacity:1"
+       style="display:inline;fill:url(#linearGradient49);fill-opacity:1;stroke:none;stroke-opacity:1"
        transform="matrix(1.0750362,0,0,1.0750362,0.15572852,-3.6594128)">
       <rect
          style="display:inline;fill:#ffffff;fill-opacity:0;stroke-width:0.264585"

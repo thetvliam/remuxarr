@@ -2029,6 +2029,7 @@ async def _process_next_forge(ws_manager) -> bool:
                 ac3_audio_output_index  = job_data["undo_audio_output_index"],
                 temp_path               = temp_path,
                 container               = job_data["container"],
+                add_faststart           = job_data["add_faststart"],
             )
         else:
             action_label = "Adding AC3 5.1 track"
@@ -2038,6 +2039,7 @@ async def _process_next_forge(ws_manager) -> bool:
                 aac_stream_index  = job_data["aac_stream_index"],
                 audio_track_count = job_data["audio_track_count"],
                 container         = job_data["container"],
+                add_faststart     = job_data["add_faststart"],
             )
 
         result = await run_forge_command(

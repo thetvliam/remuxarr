@@ -349,25 +349,12 @@ def test_encoding_review_with_matching_tracks_still_reviews(db, monkeypatch):
     assert json.loads(row.review_subtitles)[0]["stream_index"] == 2
 
 
-def test_approving_a_subtitle_review_does_not_acknowledge_the_audio_gate(db):
-    """
-    End to end: the provenance collision. A subtitle review must never
-    flip und_audio_threshold_acknowledged, because that permanently exempts
-    the file from a check it never tripped.
-    """
-    from app.database.models import QueueItem
-
-    media = _media(db)
-    qi = QueueItem(
-        file_id=media.id, status="manual_review", is_dry_run=False,
-        reason="subtitle encoding",
-        review_subtitles=json.dumps([{"stream_index": 2}]),
-    )
-    db.add(qi)
-    db.commit()
-
-    # The inference under test, as written in approve_manual_review.
-    if qi.review_subtitles is None:
-        media.und_audio_threshold_acknowledged = True
-
-    assert not media.und_audio_threshold_acknowledged
+#
+# NOTE: a test named test_approving_a_subtitle_review_does_not_acknowledge_the
+# _audio_gate previously lived here. It was a tautology — it re-implemented
+# approve_manual_review's inference inside its own body and asserted against
+# that copy, so it never called the endpoint and would have passed no matter
+# what queue.py did. It is replaced by the real end-to-end tests in
+# tests/test_queue_routes.py, which drive the endpoint itself. The tests above
+# keep their proper remit: that the review-RAISING paths populate
+# review_subtitles, which is the invariant the endpoint's inference depends on.

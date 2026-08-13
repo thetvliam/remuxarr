@@ -147,6 +147,7 @@ export function useAppData() {
         return;
       }
 
+      const hasState = event.state != null;
       const state = event.state ?? {};
 
       /* event.state is the state of the entry being navigated TO, not the
@@ -165,7 +166,25 @@ export function useAppData() {
         setModalState(null);
       } else {
         // Back to a page entry, including back out of an open modal.
-        const target = VALID_PAGES.has(state.page) ? state.page : "dashboard";
+        //
+        // Two different fallbacks, deliberately not merged. A history entry
+        // the app never created carries NO state object — a manually edited
+        // fragment, or an in-page anchor — and for those the URL is the only
+        // record of where the user is, so honour it. _pageFromHash() already
+        // does exactly this on initial load; the handler simply was not
+        // reusing it, so it forced "dashboard" and navigated the app away
+        // from the page the URL still named, leaving state and URL
+        // disagreeing with every later Back press compounding it.
+        //
+        // A state object that IS present but names an invalid page is a
+        // different situation: the app created that entry, so its page value
+        // is authoritative — just stale, most plausibly an entry from a
+        // version where that page existed. "dashboard" is the right answer
+        // there, and reaching for the URL would be trusting a fragment the
+        // same stale entry wrote.
+        const target = VALID_PAGES.has(state.page)
+        ? state.page
+        : (hasState ? "dashboard" : _pageFromHash());
         pageRef.current = target;
         setPageState(target);
         // Also close any open modal — defensive, shouldn't normally be open
@@ -265,12 +284,12 @@ export function useAppData() {
     // visible outcome by another route.
     const [a, q, r, w, s, sc, dr] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
-                                                         fetch(`${api}/api/queue/`).then(r => r.json()),
-                                                         fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
-                                                         fetch(`${api}/api/worker/status`).then(r => r.json()),
-                                                         fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
-                                                         fetch(`${api}/api/scan/status`).then(r => r.json()),
-                                                         fetch(`${api}/api/settings/dry_run_mode`).then(r => r.json()),
+                                                             fetch(`${api}/api/queue/`).then(r => r.json()),
+                                                             fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
+                                                             fetch(`${api}/api/worker/status`).then(r => r.json()),
+                                                             fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
+                                                             fetch(`${api}/api/scan/status`).then(r => r.json()),
+                                                             fetch(`${api}/api/settings/dry_run_mode`).then(r => r.json()),
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);

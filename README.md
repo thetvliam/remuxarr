@@ -1,4 +1,8 @@
-![Remuxarr Logo](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo-name.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)"  srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_dark_transparent.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light_transparent.png">
+  <img alt="Remuxarr" src="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light.png" width="600">
+</picture>
 
 # Remuxarr
 
@@ -172,15 +176,17 @@ Everything from here happens in the web UI, not in any config file:
 
 ## Development
 
-The backend has a real test suite - 334 tests covering the decision engine (what happens to each file and why), library scanning, queue and job lifecycle, Sonarr/Radarr webhook path translation, FFmpeg command construction, AC3 Forge, startup recovery, and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 807 tests across 35 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r tests/requirements-test.txt
 pytest
 ```
 
-The frontend has its own suite covering the settings save path, integer input
-handling, and history refresh gating:
+The frontend has its own suite - 137 tests covering the app's central state
+hook (routing, toasts, history invalidation), every mutating user action,
+paginated and history data fetching, the settings save path, and integer input
+handling:
 
 ```bash
 cd frontend && npm install && npm test

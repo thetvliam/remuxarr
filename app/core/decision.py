@@ -196,6 +196,29 @@ class ProcessingDecision:
     # silent regression in the file itself.
     source_already_faststart: bool = False
 
+    # Whether the add_faststart_to_mp4 setting is enabled. Carried on the
+    # decision so build_ffmpeg_command can honour it without needing a
+    # settings lookup of its own — it takes only (input, output, decision,
+    # tracks), and resolving policy here keeps all settings reads in one
+    # place.
+    #
+    # Distinct from source_already_faststart directly above, deliberately:
+    # that field is a FACT about the source file, this one is POLICY. Turning
+    # the setting off must suppress the flag on every path, including ones
+    # that are not "adding" faststart at all — preserving an already-optimised
+    # source, and web-optimising a brand-new MP4 from a container conversion.
+    # Both of those used to fire regardless of the setting, so switching it
+    # off still produced +faststart on most MP4 outputs.
+    #
+    # Note the consequence, which is intended but worth knowing: with this
+    # False, a remux of an already-faststart MP4 no longer re-applies the
+    # flag, and FFmpeg silently rebuilds the container with the moov atom at
+    # the end. An already-optimised file therefore LOSES its optimisation the
+    # next time anything remuxes it. That is what "never apply it" means for
+    # a tool that rewrites whole containers; nothing here re-adds it, and
+    # needs_faststart is gated on the same setting so no rescan loop results.
+    faststart_enabled: bool = True
+
 
 # ── Main function ──────────────────────────────────────────────────────────────
 
@@ -1061,6 +1084,7 @@ def analyze_file(
             audio_language_mismatch=audio_language_mismatch,
             subtitle_language_mismatch=subtitle_language_mismatch,
             source_already_faststart=has_faststart is True,
+            faststart_enabled=add_faststart,
         )
 
     # ── Build human-readable reason ────────────────────────────────────────
@@ -1103,6 +1127,7 @@ def analyze_file(
         audio_language_mismatch=audio_language_mismatch,
         subtitle_language_mismatch=subtitle_language_mismatch,
         source_already_faststart=has_faststart is True,
+        faststart_enabled=add_faststart,
     )
 
 

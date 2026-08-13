@@ -760,3 +760,115 @@ def test_kept_mov_text_still_allows_conversion(settings):
                                 video_codec="h264")
     decision = analyze_file(file_info, tracks, settings)
     assert any(a.action_type == "change_container" for a in decision.actions)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Gaps found by an independent mutation audit (Phase 1)
+#
+# Each of these pins a mutation that survived the entire 662-test suite.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_an_acknowledged_threshold_gate_actually_exempts_the_file(settings):
+    """
+    The other half of the acknowledgement contract (queue.py's approve
+    endpoint sets the flag; this is what setting it is FOR).
+
+    Without this, the flag was untested end to end: nothing verified it was
+    set correctly, and nothing verified that setting it exempted anything. A
+    user approving a manual review would watch the file bounce straight back
+    into manual review, forever, with no test failing.
+
+    Audit ref: DEC-03 — dropping the `and not ...acknowledged` term survived.
+    """
+    settings["und_audio_threshold"] = 2
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=3, track_type="audio", codec="aac", language="und"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                               video_codec="h264")
+
+    gated = analyze_file(file_info, tracks, settings)
+    assert gated.is_manual_review, (
+        "the threshold gate did not fire — this test cannot prove the "
+        "exemption works if there is nothing to be exempt from"
+    )
+
+    exempt = analyze_file({**file_info, "und_audio_threshold_acknowledged": True},
+                          tracks, settings)
+
+    assert not exempt.is_manual_review, (
+        "an acknowledged file still went to manual review — approving it in "
+        "the UI would be a no-op and the file would bounce back forever"
+    )
+
+
+def test_a_default_flag_does_not_override_the_language_filter(settings):
+    """
+    The scenario decision.py's own comment names:
+
+        Stream 1: Italian EAC3 (default)
+        Stream 2: English EAC3
+
+    Italian must not be kept merely for being default-flagged when English
+    is already being retained. keep_default_audio is a safety net for files
+    with no usable track, not an override of the language filter.
+
+    The guard half of this pair was already pinned
+    (test_default_flagged_track_survives_when_keep_default_audio_disabled);
+    the keep half was not.
+
+    Audit ref: DEC-05 — dropping `and not has_preferred_audio` survived.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="eac3",
+                   language="ita", is_default=True),
+        make_track(stream_index=2, track_type="audio", codec="eac3",
+                   language="eng"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                               video_codec="h264")
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    dropped = {a.stream_index for a in decision.actions
+               if a.track_type == "audio" and a.action_type == "drop_track"}
+
+    assert 1 in dropped, (
+        "the Italian default-flagged track was kept even though a "
+        "preferred-language track was available — keep_default_audio "
+        "overrode the language filter"
+    )
+    assert 2 not in dropped, "the English track was dropped"
+
+
+def test_the_absolute_fallback_keeps_the_first_audio_track(settings):
+    """
+    The fallback's stated contract is "force-keeps the FIRST audio track by
+    stream index". Every existing fallback test uses a single audio track,
+    where first and last are the same track — so the choice was unpinned and
+    a user would have got whichever the implementation happened to pick.
+
+    Audit ref: DEC-08 — min() → max() survived.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="ita"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="fre"),
+        make_track(stream_index=3, track_type="audio", codec="aac", language="spa"),
+    ]
+    file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
+                               video_codec="h264")
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    dropped = {a.stream_index for a in decision.actions
+               if a.track_type == "audio" and a.action_type == "drop_track"}
+
+    assert dropped == {2, 3}, (
+        f"the fallback kept the wrong track — dropped {sorted(dropped)}, "
+        f"expected the lowest stream_index (1) to be the survivor"
+    )
