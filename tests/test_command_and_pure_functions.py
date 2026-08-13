@@ -532,3 +532,209 @@ def test_a_radarr_rename_takes_the_new_path_not_the_previous_one():
         {"path": "/media/Movie/new.mkv", "previousPath": "/media/Movie/old.mkv"},
     ]}
     assert _radarr_paths(payload) == ["/media/Movie/new.mkv"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# add_faststart_to_mp4 as an absolute off switch
+#
+# The setting used to gate only ONE of the three paths that emit
+# -movflags +faststart. Turning it off still produced the flag on an MKV→MP4
+# conversion and on any remux of an already-optimised MP4, so for most
+# libraries it did nothing observable. It is now an absolute off switch:
+# with it disabled the flag is never emitted, on any path, in either pipeline.
+#
+# The three ON cases are tested alongside the OFF ones deliberately — a test
+# file that only asserts absence would pass just as happily if the feature
+# stopped working entirely.
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.core.forge import build_add_ac3_command, build_undo_command  # noqa: E402
+
+
+def _mp4_faststart_settings(enabled):
+    from tests.conftest import BASE_SETTINGS
+
+    return {**BASE_SETTINGS, "add_faststart_to_mp4": enabled,
+            "prefer_mp4_container": True}
+
+
+def _cmd_for(settings, *, container, has_faststart, tracks=None):
+    tracks = tracks or _mp4_tracks()
+    decision = analyze_file(
+        make_file_info(path=f"/media/Movie.{container}", container=container),
+        tracks, settings,
+        audio_language_overrides={1: "eng"},
+        has_faststart=has_faststart,
+    )
+    return decision, build_ffmpeg_command(
+        f"/media/Movie.{container}", "/tmp/out.mp4", decision, tracks)
+
+
+# ── The setting ON: all three paths still emit the flag ──────────────────────
+
+def test_a_container_conversion_web_optimises_the_new_mp4():
+    """Case 1. A genuinely new MP4 gets faststart while the feature is on."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mkv", has_faststart=None)
+
+    assert any(a.action_type == "change_container" for a in decision.actions)
+    assert "+faststart" in cmd
+
+
+def test_an_existing_mp4_missing_faststart_still_gets_it_added():
+    """Case 2 — the one path the setting always gated correctly."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mp4", has_faststart=False)
+
+    assert any(a.action_type == "add_faststart" for a in decision.actions)
+    assert "+faststart" in cmd
+
+
+def test_an_already_optimised_mp4_keeps_faststart_through_an_unrelated_remux():
+    """
+    Case 3. FFmpeg silently rebuilds the container with the moov atom at the
+    end even on a pure stream-copy, so an unrelated remux would otherwise
+    undo an already-correct file's optimisation as a side effect.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(True),
+                             container="mp4", has_faststart=True)
+
+    assert decision.source_already_faststart is True
+    assert "+faststart" in cmd
+
+
+# ── The setting OFF: no path emits the flag ──────────────────────────────────
+
+def test_turning_the_setting_off_suppresses_it_on_a_container_conversion():
+    """
+    Previously unreachable by the setting: an MKV→MP4 conversion applied
+    +faststart regardless, so a user who turned this off still got it on
+    every converted file.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mkv", has_faststart=None)
+
+    assert any(a.action_type == "change_container" for a in decision.actions), (
+        "no conversion happened — this test is not exercising case 1"
+    )
+    assert "+faststart" not in cmd
+
+
+def test_turning_the_setting_off_suppresses_it_for_an_already_optimised_source():
+    """
+    The other previously-ungated path, and the one with a real consequence:
+    with the setting off, an already-faststart MP4 LOSES the optimisation on
+    the next remux, because FFmpeg rebuilds the container without it. That is
+    the intended meaning of "never apply it", and nothing re-adds it, since
+    the add_faststart action is gated on the same setting.
+    """
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mp4", has_faststart=True)
+
+    assert decision.source_already_faststart is True, (
+        "the source was not detected as already optimised — this test is not "
+        "exercising case 3"
+    )
+    assert "+faststart" not in cmd
+
+
+def test_turning_the_setting_off_raises_no_add_faststart_action():
+    """Case 2, unchanged — it was already gated, and must stay gated."""
+    decision, cmd = _cmd_for(_mp4_faststart_settings(False),
+                             container="mp4", has_faststart=False)
+
+    assert not any(a.action_type == "add_faststart" for a in decision.actions)
+    assert "+faststart" not in cmd
+
+
+def test_the_decision_carries_the_setting_to_the_command_builder():
+    """
+    build_ffmpeg_command takes only (input, output, decision, tracks), so the
+    policy has to travel on the decision. faststart_enabled is deliberately
+    separate from source_already_faststart: that one is a FACT about the
+    source, this one is POLICY, and conflating them would make "the source
+    was optimised" untrue whenever the setting happened to be off.
+    """
+    on, _  = _cmd_for(_mp4_faststart_settings(True),  container="mp4",
+                      has_faststart=True)
+    off, _ = _cmd_for(_mp4_faststart_settings(False), container="mp4",
+                      has_faststart=True)
+
+    assert on.faststart_enabled is True
+    assert off.faststart_enabled is False
+    assert off.source_already_faststart is True, (
+        "the setting overwrote a fact about the source file"
+    )
+
+
+# ── Forge honours the same switch ────────────────────────────────────────────
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_applies_faststart_to_mp4_while_the_setting_is_on(builder, kwargs):
+    cmd = builder(input_path="/media/Movie.mp4", temp_path="/tmp/t.mp4",
+                  container="mp4", add_faststart=True, **kwargs)
+
+    assert "+faststart" in cmd
+
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_suppresses_faststart_when_the_setting_is_off(builder, kwargs):
+    """
+    Forge is a separate pipeline and applied the flag unconditionally, so
+    "off" still produced faststart output for anyone using AC3 forge — the
+    same partial-off behaviour that made the setting ineffective elsewhere.
+    """
+    cmd = builder(input_path="/media/Movie.mp4", temp_path="/tmp/t.mp4",
+                  container="mp4", add_faststart=False, **kwargs)
+
+    assert "+faststart" not in cmd
+    assert "-movflags" not in cmd
+
+
+@pytest.mark.parametrize("builder,kwargs", [
+    (build_add_ac3_command, {"aac_stream_index": 1, "audio_track_count": 2}),
+    (build_undo_command,    {"ac3_audio_output_index": 1}),
+])
+def test_forge_never_applies_faststart_to_a_non_mp4(builder, kwargs):
+    """The flag is an MP4 container option; it is meaningless on Matroska."""
+    cmd = builder(input_path="/media/Movie.mkv", temp_path="/tmp/t.mkv",
+                  container="mkv", add_faststart=True, **kwargs)
+
+    assert "+faststart" not in cmd
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_a_no_changes_decision_still_carries_the_setting(enabled):
+    """
+    analyze_file has two Decision construction sites — the "no changes needed"
+    early return and the main one — and they populate the object
+    independently. The early-return path produces should_process=False so no
+    command is built from it today, which is exactly why hardcoding the field
+    there survives every behavioural test. Pinned so the two sites cannot
+    drift: a later change that made a skipped decision reach the builder would
+    otherwise silently re-enable the flag.
+    """
+    # A file with genuinely nothing to do: already MP4, already faststart,
+    # one preferred-language audio track, no subtitles.
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+    ]
+    decision = analyze_file(
+        make_file_info(path="/media/Movie.mp4", container="mp4"),
+        tracks, _mp4_faststart_settings(enabled),
+        has_faststart=True,
+    )
+
+    assert not decision.should_process, (
+        f"fixture produced work ({decision.reason!r}) — this test is not "
+        f"exercising the early-return construction site"
+    )
+    assert decision.faststart_enabled is enabled

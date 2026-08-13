@@ -470,3 +470,50 @@ def test_every_part_is_fsynced_before_any_swap(tmp_path, monkeypatch):
     assert events.index("replace") > max(
         i for i, e in enumerate(events) if e == "fsync"
     ), f"a swap happened before the last fsync: {events}"
+
+
+# ── load_forge_job_data exposes the faststart setting ────────────────────────
+#
+# The builders honour add_faststart and _process_next_forge passes it along —
+# both pinned elsewhere. This is the remaining link: the value has to be READ
+# from settings in the first place. Hardcoding True here survives every other
+# test in the suite, because everything downstream stubs this function out,
+# and the result would be a library with the setting off still getting
+# +faststart on every forged MP4.
+
+@pytest.mark.parametrize("stored,expected", [(True, True), (False, False)])
+def test_load_forge_job_data_reads_the_faststart_setting(
+        tmp_path, monkeypatch, stored, expected):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.core.forge as forge_mod
+    from app.database.models import Ac3ForgeJob, Base, MediaFile
+    from app.database.session import update_app_setting
+
+    media_file = tmp_path / "Movie.mp4"
+    media_file.write_bytes(b"not really an mp4, but it exists")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'forge.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as db:
+        update_app_setting(db, "add_faststart_to_mp4", stored)
+        mf = MediaFile(path=str(media_file), filename="Movie.mp4",
+                       directory=str(tmp_path), size=1, mtime=1.0,
+                       container="mp4")
+        db.add(mf)
+        db.commit()
+        job = Ac3ForgeJob(file_id=mf.id, status="processing", is_undo=False,
+                          aac_stream_index=1, audio_track_count=2)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    monkeypatch.setattr(forge_mod, "SessionLocal", Session)
+
+    data = forge_mod.load_forge_job_data(job_id)
+
+    assert data is not None, "fixture did not produce a loadable job"
+    assert data["add_faststart"] is expected
