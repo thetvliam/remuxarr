@@ -286,3 +286,226 @@ def test_an_existing_mp4_missing_faststart_gets_it_added(settings):
         "un-optimised, so the next scan queues the identical work again"
     )
     assert cmd[cmd.index("+faststart") - 1] == "-movflags"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# webhooks.py pure helpers
+#
+# Found by an independent mutation audit (Phase 2): 7 of 8 mutations of
+# webhooks.py survived the whole suite — the weakest module either phase
+# audited. All five helpers below are pure: no HTTP client, no DB, no async.
+#
+# _translate_path is the direct analogue of plex.translate_path_to_plex, whose
+# equivalent mutations were all killed in Phase 1. The same class of function
+# was well tested in one module and untested in the other, and this one's own
+# docstring says a wrong result causes "silent queue failures".
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.api.routes.webhooks import (  # noqa: E402
+    _radarr_movie_id, _radarr_paths, _sonarr_paths, _sonarr_series_id,
+    _translate_path,
+)
+
+
+# ── _translate_path ──────────────────────────────────────────────────────────
+
+def test_a_matching_prefix_is_translated():
+    """
+    The case the function exists for: Sonarr and Remuxarr mount the same
+    physical directory at different container paths.
+    """
+    assert _translate_path("/media/Show/ep.mkv", "/media", "/media/tv") == \
+        "/media/tv/Show/ep.mkv"
+
+
+def test_an_exact_prefix_match_translates_to_the_bare_local_prefix():
+    assert _translate_path("/media", "/media", "/data") == "/data"
+
+
+def test_a_path_outside_the_remote_prefix_is_untouched():
+    assert _translate_path("/other/ep.mkv", "/media", "/data") == "/other/ep.mkv"
+
+
+def test_a_sibling_directory_sharing_a_prefix_is_not_translated():
+    """
+    The separator boundary. "/media" must not match "/media2/..." — a loose
+    `remote in path` test would rewrite an unrelated library's paths into a
+    directory that does not exist, and the queue attempt fails silently.
+
+    Audit ref: WHK-01.
+    """
+    assert _translate_path("/media2/ep.mkv", "/media", "/data") == "/media2/ep.mkv"
+
+
+def test_a_prefix_appearing_mid_path_is_not_translated():
+    """
+    The other half of WHK-01: a loose substring match would also fire on a
+    remote prefix buried in the middle of an unrelated path.
+    """
+    assert _translate_path("/mnt/media/ep.mkv", "/media", "/data") == \
+        "/mnt/media/ep.mkv"
+
+
+@pytest.mark.parametrize("remote,local", [
+    ("", "/data"),
+    ("/media", ""),
+    ("", ""),
+    ("/", "/data"),      # rstrips to empty
+    ("/media", "/"),
+])
+def test_a_blank_prefix_pair_passes_the_path_through(remote, local):
+    """
+    BOTH prefixes are required. Unconfigured setups — where the two containers
+    already agree on the path — must work out of the box, and a half-filled
+    settings pair must not produce a half-translated path.
+
+    Audit ref: WHK-02 (guard removed) and WHK-03 (or → and, so one blank
+    prefix still translates: "/media/ep.mkv" with local "" becomes
+    "/ep.mkv", pointing at nothing).
+    """
+    assert _translate_path("/media/ep.mkv", remote, local) == "/media/ep.mkv"
+
+
+def test_trailing_slashes_on_either_prefix_do_not_double_up():
+    assert _translate_path("/media/ep.mkv", "/media/", "/data/") == "/data/ep.mkv"
+
+
+# ── _sonarr_paths ────────────────────────────────────────────────────────────
+
+def test_a_sonarr_download_event_yields_its_episode_file():
+    assert _sonarr_paths({"episodeFile": {"path": "/media/ep.mkv"}}) == \
+        ["/media/ep.mkv"]
+
+
+def test_a_sonarr_rename_event_yields_every_renamed_file():
+    payload = {"renamedEpisodeFiles": [{"path": "/media/a.mkv"},
+                                       {"path": "/media/b.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_a_sonarr_import_event_yields_every_episode_file():
+    """
+    The third payload shape — the episodeFiles array used by import/upgrade.
+    It was silently dropped with nothing failing: the rename array was covered
+    and this one was not, so one of Sonarr's three event shapes queued nothing.
+
+    Audit ref: WHK-05.
+    """
+    payload = {"episodeFiles": [{"path": "/media/a.mkv"},
+                                {"path": "/media/b.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_sonarr_paths_are_deduplicated_in_order():
+    """
+    A payload can name the same file in more than one array. Without the
+    dedupe the file is queued once per mention, so a single import produces
+    duplicate jobs racing each other over one file.
+
+    Audit ref: WHK-06.
+    """
+    payload = {
+        "episodeFile":         {"path": "/media/a.mkv"},
+        "renamedEpisodeFiles": [{"path": "/media/a.mkv"}],
+        "episodeFiles":        [{"path": "/media/a.mkv"}, {"path": "/media/b.mkv"}],
+    }
+    assert _sonarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_sonarr_entries_without_a_path_are_skipped():
+    payload = {"episodeFile": {}, "renamedEpisodeFiles": [{"path": None}, {}],
+               "episodeFiles": [{"path": "/media/real.mkv"}]}
+    assert _sonarr_paths(payload) == ["/media/real.mkv"]
+
+
+def test_an_empty_sonarr_payload_yields_no_paths():
+    assert _sonarr_paths({}) == []
+
+
+# ── _radarr_paths ────────────────────────────────────────────────────────────
+
+def test_a_radarr_download_event_yields_its_movie_file():
+    assert _radarr_paths({"movieFile": {"path": "/media/m.mkv"}}) == \
+        ["/media/m.mkv"]
+
+
+def test_a_radarr_rename_event_reads_the_plural_array():
+    """
+    renamedMovieFiles is a LIST. The previous code read "renamedMovieFile", a
+    field Radarr never emits, so Rename events matched nothing — Download kept
+    working, which is what hid it.
+    """
+    payload = {"renamedMovieFiles": [{"path": "/media/a.mkv"},
+                                     {"path": "/media/b.mkv"}]}
+    assert _radarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_radarr_paths_are_deduplicated_in_order():
+    payload = {"movieFile": {"path": "/media/a.mkv"},
+               "renamedMovieFiles": [{"path": "/media/a.mkv"},
+                                     {"path": "/media/b.mkv"}]}
+    assert _radarr_paths(payload) == ["/media/a.mkv", "/media/b.mkv"]
+
+
+def test_an_empty_radarr_payload_yields_no_paths():
+    assert _radarr_paths({}) == []
+
+
+# ── ID extraction ────────────────────────────────────────────────────────────
+
+def test_a_sonarr_series_id_is_read_as_an_integer():
+    assert _sonarr_series_id({"series": {"id": "42"}}) == 42
+
+
+def test_a_radarr_movie_id_is_read_as_an_integer():
+    assert _radarr_movie_id({"movie": {"id": "17"}}) == 17
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"series": {}},
+    {"series": None},
+    {"series": {"id": None}},
+    {"series": {"id": "not a number"}},
+    {"series": "not a dict"},
+])
+def test_a_malformed_series_id_degrades_to_none(payload):
+    """
+    None specifically, not a sentinel. _resolve_translated_path_sync branches
+    on `if series_id:` — a truthy sentinel like -1 selects the SONARR path
+    prefixes for a payload whose series could not be identified, translating
+    the path with the wrong mapping. The id is also stored on the queue item
+    and later drives a RescanSeries call, so a bogus value addresses a series
+    that does not exist.
+
+    Audit ref: WHK-07.
+    """
+    assert _sonarr_series_id(payload) is None
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"movie": {}},
+    {"movie": None},
+    {"movie": {"id": None}},
+    {"movie": {"id": "not a number"}},
+    {"movie": "not a dict"},
+])
+def test_a_malformed_movie_id_degrades_to_none(payload):
+    """
+    Same contract, opposite failure shape: 0 is falsy, so a 0 sentinel would
+    silently skip Radarr path translation entirely rather than misapply it —
+    equally wrong, and equally invisible.
+
+    Audit ref: WHK-08.
+    """
+    assert _radarr_movie_id(payload) is None
+
+
+def test_the_two_id_extractors_read_their_own_payload_shapes():
+    """
+    Near-identical functions reading different keys — the copy-paste shape.
+    A Sonarr payload must not yield a movie id, or vice versa.
+    """
+    assert _sonarr_series_id({"movie": {"id": 5}}) is None
+    assert _radarr_movie_id({"series": {"id": 5}}) is None
