@@ -1,8 +1,18 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)"  srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_dark_transparent.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light_transparent.png">
-  <img alt="Remuxarr" src="https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_light.png" width="600">
-</picture>
+<!-- Single non-transparent banner, deliberately NOT a <picture> with
+     prefers-color-scheme sources. That media query reads the viewer's
+     OS/browser setting, not GitHub's own Appearance setting, so switching
+     GitHub to light while the OS stays dark left the banner on the wrong
+     variant. The GitHub-native mechanism that does follow the account theme
+     (#gh-dark-mode-only / #gh-light-mode-only) is deprecated in GitHub's own
+     docs and is GitHub-only — on Docker Hub, npm and VS Code it renders both
+     images stacked, and this README is published to Docker Hub.
+
+     banner_dark.png is fully opaque with square corners, so it carries its
+     own background and reads as a deliberate card on any canvas, in any
+     theme, in any renderer. Nothing to switch, nothing to get wrong. The
+     transparent variants remain in images_and_demo/ for use on surfaces
+     whose background is known. -->
+![Remuxarr](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_dark.png)
 
 # Remuxarr
 
