@@ -120,6 +120,7 @@ async def run_staged_subprocess(
     on_progress_line: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     stderr_tail_lines: int = 30,
     timeout_seconds: float | None = None,
+    before_staging: Callable[[], Awaitable[str | None]] | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
@@ -127,6 +128,12 @@ async def run_staged_subprocess(
     timeout_seconds: if set and > 0, the entire subprocess (drain + wait) is
     wrapped in asyncio.wait_for() with this limit.  On timeout the process is
     killed and a clean failure result is returned.  Set to None or 0 to disable.
+
+    before_staging: called once the subprocess has succeeded and every temp
+    is verified present, but before anything on the destination is touched —
+    the only point at which the originals and the finished outputs both
+    exist.  Return None to continue, or an error string to abort the run with
+    every original untouched.  See the call site for the full contract.
 
     All outputs succeed together or all fail together — any failure cleans up
     all temp paths.  On exception temp paths are cleaned and the exception is
@@ -222,6 +229,43 @@ async def run_staged_subprocess(
                 error=f"Temp file(s) missing after command completed: {', '.join(missing)}",
                 returncode=proc.returncode,
             )
+
+        # ── Last look at both versions of the file ─────────────────────────
+        # This is the only moment in the run where the ORIGINAL and the
+        # finished OUTPUT both exist: the subprocess has succeeded, every
+        # temp is verified present, and nothing on the destination has
+        # been touched yet. One line further down the originals start
+        # being overwritten and the pre-job state is gone.
+        #
+        # That window is what the revert feature's capture needs — it
+        # compares the two to work out what the job actually destroyed,
+        # rather than what it planned to. Exposed as a hook rather than
+        # done here because this function has no business knowing about
+        # revert points; it knows about the window.
+        #
+        # A hook that returns an error string aborts the run cleanly, with
+        # every original exactly as it was, matching what a staging
+        # failure does. That is deliberately the same contract as the rest
+        # of this function: nothing is half-applied. It is also what makes
+        # "refuse to process when a revert point cannot be recorded" a
+        # real option rather than a best-effort one — the refusal lands
+        # while the source file is still untouched.
+        #
+        # A hook that RAISES is not caught here. It falls to the outer
+        # handler, which cleans up temps and .part files and re-raises to
+        # the caller's job-failure logic — same outcome for the file,
+        # noisier for the operator, which is the right treatment for an
+        # unexpected error as opposed to a considered refusal.
+        if before_staging is not None:
+            hook_error = await before_staging()
+            if hook_error:
+                for o in outputs:
+                    cleanup_temp_file(o.temp_path)
+                return SubprocessRunResult(
+                    success=False,
+                    error=hook_error,
+                    returncode=proc.returncode,
+                )
 
         # ── Stage outputs into place — two phases, originals protected ────
         # The previous implementation deleted each original FIRST, then

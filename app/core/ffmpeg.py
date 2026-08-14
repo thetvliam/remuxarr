@@ -650,6 +650,7 @@ async def execute_ffmpeg_combined(
     job_id:               int,
     progress_callback:    Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds:      float | None = None,
+    before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
     Single-pass combined remux + subtitle extraction.
@@ -664,6 +665,12 @@ async def execute_ffmpeg_combined(
 
     Returns (FFmpegResult, [ExtractionResult, ...]) — one ExtractionResult
     per entry in subtitle_extractions, in the same order.
+
+    before_staging, if given, is awaited with the path of the finished main
+    output while it is still a temp file and every original is untouched —
+    the only point where the source and the result both exist. Returning an
+    error string from it aborts the whole run with nothing swapped into
+    place. See run_staged_subprocess for the full contract.
 
     Thin adapter over run_staged_subprocess(): the main output AND every
     SRT sidecar are passed to it as one staged set, so all outputs land
@@ -750,12 +757,21 @@ async def execute_ffmpeg_combined(
         for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions)
     ]
 
+    # The hook is handed temp_main — the finished output, still in the temp
+    # directory. The caller needs the produced file to compare against the
+    # source, and output_path does not exist yet at this point in the run
+    # (and for an in-place remux still holds the ORIGINAL, which is the
+    # opposite of what a caller asking for "the output" wants).
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_main)
+
     result = await run_staged_subprocess(
         main_cmd,
         staged_outputs,
         on_progress_line=on_progress_line,
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
     )
 
     if not result.success:
