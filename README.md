@@ -102,6 +102,12 @@ services:
       - /path/to/your/movies:/media/movies
       - /path/to/your/tv:/media/tv
 
+      # Optional: recycle bin for "revert to original". Stores the audio
+      # and subtitle tracks a job removed - never the video - so a file
+      # can be put back the way it was. Leave it out and the feature
+      # stays off. Must survive restarts, so not under /tmp.
+      - /path/to/appdata/remuxarr-recycle:/recycle
+
     environment:
       - TZ=America/New_York   # see "Setting your time zone" below
 

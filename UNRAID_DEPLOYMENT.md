@@ -13,7 +13,7 @@
    | Repository | `thetvliam/remuxarr:latest` |
    | Network Type | `Bridge` |
 
-4. Add four path mappings (**Add another Path, Port, Variable, or
+4. Add five path mappings (**Add another Path, Port, Variable, or
    Device**):
 
    | Container Path | Host Path |
@@ -22,6 +22,17 @@
    | `/media/movies` | your movies share, e.g. `/mnt/user/Media/Movies` |
    | `/media/tv` | your TV share, e.g. `/mnt/user/Media/TV` |
    | `/tmp/remuxarr` | `/tmp/remuxarr-temp` (RAM-backed on Unraid — avoids writing FFmpeg's intermediate output to your array) |
+   | `/recycle` | `/mnt/user/appdata/remuxarr-recycle` — optional, see below |
+
+   The last one is the recycle bin, which makes **revert to original**
+   possible: it stores the audio and subtitle tracks a job removed, so a
+   file can be put back the way it was. Only the removed tracks are kept,
+   never the video, so it is normally a small fraction of each file —
+   defaults are a 7 day / 20GB window, both changeable in Settings.
+
+   Leave it unmapped and the recycle bin stays off and tells you why.
+   Do **not** point it anywhere under `/tmp`: that is RAM-backed on Unraid,
+   so the whole retention window would disappear on reboot.
 
 5. Add one port mapping:
 
@@ -84,4 +95,5 @@ Paths:
   <your movies share>                →  /media/movies    (rw)
   <your TV share>                    →  /media/tv        (rw)
   /tmp/remuxarr-temp                 →  /tmp/remuxarr    (rw)
+  /mnt/user/appdata/remuxarr-recycle →  /recycle         (rw, optional)
 ```

@@ -30,6 +30,26 @@ services:
       - /path/to/your/movies:/media/movies:rw,z
       - /path/to/your/tv:/media/tv:rw,z
 
+      # Recycle bin — holds the "revert to original" sidecars: the audio
+      # and subtitle tracks a job removed, kept so a file can be put back
+      # the way it was. Size this for the retention window you want; the
+      # defaults are 7 days and 20GB, both changeable in Settings.
+      #
+      # :Z (uppercase) like /config above, not :z like the media mounts —
+      # nothing outside Remuxarr should be reading or writing this path.
+      #
+      # If you leave this mount out, the recycle bin simply stays off and
+      # says why. It is NOT declared as a VOLUME in the Dockerfile, on
+      # purpose: an anonymous volume would make the directory exist
+      # without the user having chosen where it lives, and sidecars would
+      # accumulate somewhere nobody sized or monitors. The mount being
+      # absent is how the app knows the feature was not configured.
+      #
+      # Put it on a disk with room to spare — a sidecar is only the tracks
+      # that were removed, never the video, so it is normally a small
+      # fraction of the file, but a large library sweep adds up.
+      - ./recycle:/recycle:Z
+
     # Reads from .env (see .env.example). Every variable there already
     # matches this app's own built-in default (see app/config.py) — an
     # untouched .env with nothing uncommented is completely fine, this
