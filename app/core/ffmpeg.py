@@ -205,6 +205,31 @@ def build_ffmpeg_command(
     )
     cmd += ["-f", out_fmt]
 
+    # Attachments — fonts for styled subtitles, cover art, posters.
+    #
+    # Without this map they are silently destroyed on every single remux,
+    # including a pure metadata fix that changes nothing else. The maps
+    # above are built from extract_tracks(), which returns only video,
+    # audio and subtitle streams, so no attachment has ever been named in
+    # a -map argument; FFmpeg's default stream selection does not pick
+    # them up, and the operation reports success. A file loses its fonts
+    # and the only evidence is that styled subtitles start rendering in a
+    # fallback typeface some time later.
+    #
+    # The "?" makes the map optional: without it, FFmpeg exits non-zero
+    # on any file that has no attachments, which is most of them.
+    # Verified both branches directly — attachments preserved when
+    # present, exit 0 when absent.
+    #
+    # Gated on the output format, not skipped defensively. Mapping an
+    # attachment into MP4 is not a no-op, it is a hard failure at header
+    # write ("Could not find tag for codec ttf"), so this must fire only
+    # for containers that can hold one. An MKV → MP4 conversion therefore
+    # still loses attachments, which is a real property of MP4 rather
+    # than something to work around here.
+    if out_fmt in ("matroska", "webm"):
+        cmd += ["-map", "0:t?"]
+
     # Apply +faststart when the output is MP4 AND the add_faststart_to_mp4
     # setting is on. The setting is an absolute off switch: with it disabled
     # the flag is never emitted here, on any path. Three cases can otherwise
