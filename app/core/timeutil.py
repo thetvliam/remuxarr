@@ -41,6 +41,24 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def utcnow_naive() -> datetime:
+    """
+    Current UTC time with tzinfo stripped, for COMPARING against values
+    read back from a DateTime column.
+
+    The columns are naive-UTC by convention (see STORAGE SEMANTICS above):
+    SQLAlchemy strips tzinfo on write, so anything loaded from the database
+    comes back naive. Comparing one of those to utcnow() raises
+    "can't compare offset-naive and offset-aware datetimes" — an error that
+    only appears once there is a row old enough to compare, which on a
+    retention cutoff means days after the code shipped.
+
+    Use utcnow() for values being WRITTEN and this for values being
+    compared against ones already read.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def utcnow_iso_z() -> str:
     """
     Current UTC time as an ISO-8601 string with a 'Z' suffix.
