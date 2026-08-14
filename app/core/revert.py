@@ -33,7 +33,12 @@ sidecar has to be built from what happened — the attachment loss above is
 exactly a case where the two disagree and nothing in the plan mentions it.
 """
 
-MANIFEST_VERSION = 1
+# 2: manifests describe the PRISTINE original and are extended in place by
+# later jobs, rather than each job writing a fresh manifest describing
+# whatever it was handed. processed_index/sidecar_index are re-resolved on
+# every capture and are only meaningful against the sidecar and processed
+# file recorded alongside them.
+MANIFEST_VERSION = 2
 
 
 def build_manifest(probe_data: dict, *, original_path: str,

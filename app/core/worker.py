@@ -1304,11 +1304,18 @@ def _record_revert_point(
     """
     Persist a captured sidecar as a RevertPoint row.
 
+    Updates the file's existing revert point when there is one, rather
+    than inserting a second. A revert point describes the pristine
+    original and accumulates — see revert_capture.py for why one per job
+    is broken.
+
     processed_size/processed_mtime fingerprint the file as this job left
     it, stat'ed here rather than taken from the FFmpeg result because the
     swap has already happened and what matters is what is on disk now. If
     Sonarr later replaces the episode, those two stop matching and revert
     refuses rather than muxing old tracks into a different release.
+    Refreshing them on every job is also what stops Remuxarr invalidating
+    its own revert points just by processing a file twice.
 
     Deliberately not stored in MediaFile.size/mtime, which several routes
     reset to the -1/-1.0 dismissal sentinels and so cannot be trusted for
@@ -1326,17 +1333,30 @@ def _record_revert_point(
             size, mtime = stat.st_size, stat.st_mtime
 
         with SessionLocal() as db:
-            db.add(RevertPoint(
-                file_id            = file_id,
-                sidecar_path       = captured.sidecar_path,
-                sidecar_size       = captured.sidecar_size,
-                manifest           = captured.manifest_json,
-                original_path      = captured.original_path,
-                original_container = captured.original_container,
-                processed_size     = size,
-                processed_mtime    = mtime,
-            ))
+            point = None
+            if captured.replaces_point_id is not None:
+                point = db.get(RevertPoint, captured.replaces_point_id)
+
+            if point is None:
+                point = RevertPoint(file_id=file_id)
+                db.add(point)
+
+            point.sidecar_path       = captured.sidecar_path
+            point.sidecar_size       = captured.sidecar_size
+            point.manifest           = captured.manifest_json
+            point.original_path      = captured.original_path
+            point.original_container = captured.original_container
+            point.processed_size     = size
+            point.processed_mtime    = mtime
             db.commit()
+
+        # Only once the row is committed. The other order would leave a row
+        # pointing at a file that had already been deleted; this order, at
+        # worst, leaves a superseded sidecar that the retention sweep's
+        # orphan pass collects.
+        if captured.replaces_sidecar_path and \
+                captured.replaces_sidecar_path != captured.sidecar_path:
+            delete_sidecar(captured.replaces_sidecar_path)
     except Exception:
         logger.exception(
             "Could not record revert point for file %d — discarding the sidecar",

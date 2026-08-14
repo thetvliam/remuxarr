@@ -27,15 +27,18 @@ and says which of the two changed.
 This is deliberately not MediaFile.size/mtime, which several routes reset
 to the -1/-1.0 dismissal sentinels and so cannot be trusted here.
 
-Revert is one level deep
-------------------------
-A file processed twice has two revert points. Reverting the newer one
-recreates the state the older one describes — but not byte for byte, so
-the older point's fingerprint no longer matches and its sentinel check
-would refuse it from then on. Rather than leave entries that can only
-ever fail, a successful revert clears every revert point for that file.
-Going back two steps is not supported, and pretending otherwise with
-rows that always refuse would be worse than saying so.
+Revert goes all the way back
+---------------------------
+A file has at most one revert point, describing the PRISTINE original,
+extended by every job that touches it. So a revert restores the file as
+it was before Remuxarr ever ran, not merely as it was before the most
+recent job — and there is nothing left to revert afterwards, which is why
+the point is consumed on success.
+
+The delete below is still written as "every point for this file" rather
+than "the one we used". Under the current model those are the same thing;
+written the narrow way, a stray second row would survive with a sidecar
+nothing could reach and a fingerprint that could never match again.
 """
 
 import json
@@ -214,9 +217,9 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             "stale until the next full rescan", restored_path, exc,
         )
 
-    # Every revert point for this file goes, not just the one used. See
-    # the module docstring: the others describe states this file no
-    # longer matches, and their sentinels would refuse them forever.
+    # The point has been spent: the file is back to the original it
+    # described, so there is nothing left to restore. Deleting by file_id
+    # rather than by id is deliberate — see the module docstring.
     for point in db.query(RevertPoint).filter(RevertPoint.file_id == media.id).all():
         delete_sidecar(point.sidecar_path)
         db.delete(point)

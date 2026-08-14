@@ -95,11 +95,24 @@ def _s(index, codec_type, codec, **kw):
 
 
 def _patch_probes(monkeypatch, original, produced):
-    """Return the two probe results in call order: source, then output."""
+    """
+    Return probe results keyed by PATH, not by call order.
+
+    Call order is not part of capture's contract — it probes the produced
+    file always and the source only on a file's first job — and an
+    order-keyed stub silently hands back the wrong file when that changes,
+    which reads as a logic bug in the code under test rather than a broken
+    harness.
+    """
     import app.core.revert_capture as rc
 
-    results = iter([original, produced])
-    monkeypatch.setattr(rc, "probe_file", lambda _p: next(results))
+    by_path = {"/m/Show.mkv": original, "/tmp/job_1.remuxarr_tmp": produced}
+
+    def fake(path, *_a, **_k):
+        assert path in by_path, f"unexpected probe of {path!r}"
+        return by_path[path]
+
+    monkeypatch.setattr(rc, "probe_file", fake)
 
 
 def _patch_ffmpeg(monkeypatch, *, fails=False):
@@ -378,6 +391,155 @@ def test_an_unprobeable_file_is_treated_as_unavailable(recycle, monkeypatch):
         app_cfg={"revert_enabled": True, "revert_require_point": True},
     )
     assert error is not None
+
+
+# ── Source planning and re-annotation ────────────────────────────────────────
+#
+# Reached through capture only in combinations our own jobs cannot
+# currently produce, so they are exercised directly. The alternative is
+# recording them as equivalent mutants, which would be true today and
+# quietly false the first time matching changes its mind about a stream.
+
+def _stream(index, **kw):
+    out = {"index": index, "type": "audio", "codec": "aac",
+           "processed_index": None}
+    out.update(kw)
+    return out
+
+
+def test_sources_prefer_the_previous_sidecar_over_the_current_file():
+    """
+    The sidecar copy came out of the pristine original. The copy in the
+    current file has been through however many jobs since and may have
+    been re-tagged or re-encoded on the way.
+    """
+    from app.core.revert_capture import _plan_sources
+
+    both = _stream(2, sidecar_index=0, processed_index=5)
+
+    assert _plan_sources([both], has_previous_sidecar=True) == [(both, 1, 0)]
+
+
+def test_sources_use_the_current_file_for_newly_lost_streams():
+    from app.core.revert_capture import _plan_sources
+
+    new_loss = _stream(2, processed_index=5)
+
+    assert _plan_sources([new_loss], has_previous_sidecar=True) == [(new_loss, 0, 5)]
+
+
+def test_a_first_job_reads_streams_at_their_original_indices():
+    from app.core.revert_capture import _plan_sources
+
+    fresh = _stream(2)
+
+    assert _plan_sources([fresh], has_previous_sidecar=False) == [(fresh, 0, 2)]
+
+
+def test_a_stream_in_neither_input_is_unavailable():
+    """
+    Writing the sidecar without it would leave the manifest claiming a
+    slot that holds something else, and restore would map it.
+    """
+    import app.core.revert_capture as rc
+
+    with pytest.raises(rc._Unavailable):
+        rc._plan_sources([_stream(2)], has_previous_sidecar=True)
+
+
+def test_reannotation_clears_a_stale_sidecar_index():
+    """
+    A stream that was in the previous sidecar and is matched in the new
+    output keeps no slot. Overwriting without clearing would leave the old
+    index, and restore prefers the sidecar when both are set — so that
+    track would come from whatever now sits at that slot.
+    """
+    from app.core.revert_capture import _reannotate
+
+    revived = _stream(2, sidecar_index=0)
+    matches = [(revived, 4)]
+
+    _reannotate(matches, sources=[])
+
+    assert revived["processed_index"] == 4
+    assert "sidecar_index" not in revived
+
+
+def test_reannotation_numbers_sidecar_slots_positionally():
+    from app.core.revert_capture import _reannotate
+
+    first, second = _stream(1), _stream(3)
+    matches = [(first, None), (second, None)]
+
+    _reannotate(matches, sources=[(first, 0, 9), (second, 1, 7)])
+
+    assert first["sidecar_index"] == 0
+    assert second["sidecar_index"] == 1
+    assert first["processed_index"] is None
+
+
+# ── Manifest versioning ──────────────────────────────────────────────────────
+
+def test_an_older_manifest_layout_starts_a_fresh_point(recycle, monkeypatch,
+                                                       tmp_path):
+    """
+    processed_index and sidecar_index mean something different in an
+    earlier layout. Building a sidecar on them would map real slots to
+    the wrong streams — worse than losing the ability to go all the way
+    back for that one file.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.revert_capture import _load_existing_point
+    from app.database.models import Base, RevertPoint
+    import app.database.session as session_mod
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+
+    sidecar = recycle / "7_1.remuxarr_revert"
+    sidecar.write_bytes(b"payload")
+
+    db = factory()
+    db.add(RevertPoint(file_id=7, sidecar_path=str(sidecar), sidecar_size=7,
+                       manifest=json.dumps({"version": 1, "streams": []}),
+                       original_path="/m/Show.mkv"))
+    db.commit()
+
+    assert _load_existing_point(7) is None
+
+
+def test_a_point_whose_sidecar_is_gone_starts_fresh(recycle, monkeypatch):
+    """
+    Extending needs the previous sidecar as an input. Without it on disk
+    the rebuild would fail at FFmpeg with a missing-input error instead of
+    doing the useful thing.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.revert import MANIFEST_VERSION
+    from app.core.revert_capture import _load_existing_point
+    from app.database.models import Base, RevertPoint
+    import app.database.session as session_mod
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+
+    db = factory()
+    db.add(RevertPoint(file_id=7, sidecar_path=str(recycle / "gone"),
+                       sidecar_size=7,
+                       manifest=json.dumps({"version": MANIFEST_VERSION,
+                                            "streams": []}),
+                       original_path="/m/Show.mkv"))
+    db.commit()
+
+    assert _load_existing_point(7) is None
 
 
 # ── Recording the row ────────────────────────────────────────────────────────

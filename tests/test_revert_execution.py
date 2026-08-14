@@ -142,8 +142,10 @@ def env(tmp_path, monkeypatch):
          "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=fre",
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
          "-f", "matroska", str(pristine)], check=True)
-    subprocess.run(build_sidecar_command(str(pristine), str(sidecar), lost),
-                   check=True)
+    subprocess.run(
+        build_sidecar_command([str(pristine)], str(sidecar),
+                              [(s, 0, s["index"]) for s in lost]),
+        check=True)
 
     sidecar_indices = {id(s): n for n, s in enumerate(lost)}
     for stream, produced_index in matches:
@@ -220,12 +222,13 @@ def test_a_successful_revert_clears_the_revert_point(env):
 
 
 @ffmpeg_required
-def test_sibling_revert_points_are_cleared_too(env):
+def test_a_stray_second_point_is_cleared_too(env):
     """
-    A file processed twice has two points. Reverting one recreates a state
-    the other describes, but not byte for byte, so its sentinel would
-    refuse it from then on. Leaving entries that can only ever fail is
-    worse than saying revert is one level deep.
+    Capture keeps one point per file, so a second row should not exist —
+    this pins what happens if one ever does. Its sidecar describes a state
+    the file no longer matches and its fingerprint could never match
+    again, so leaving it behind means a dead entry and a sidecar nothing
+    can reach.
     """
     from app.database.models import RevertPoint
 

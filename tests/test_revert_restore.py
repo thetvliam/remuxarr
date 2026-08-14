@@ -368,8 +368,10 @@ def test_real_round_trip_restores_the_original(tmp_path):
     assert len(lost) == 2, "fixture should lose the fre audio and the font"
 
     sidecar = tmp_path / "1.remuxarr_revert"
-    subprocess.run(build_sidecar_command(str(original), str(sidecar), lost),
-                   check=True)
+    subprocess.run(
+        build_sidecar_command([str(original)], str(sidecar),
+                              [(s, 0, s["index"]) for s in lost]),
+        check=True)
 
     sidecar_indices = {id(s): n for n, s in enumerate(lost)}
     for stream, produced_index in matches:

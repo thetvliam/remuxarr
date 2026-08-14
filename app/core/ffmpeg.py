@@ -332,13 +332,20 @@ _SUBTITLE_TRANSCODE = {"mov_text": "srt"}
 
 
 def build_sidecar_command(
-    input_path: str,
+    inputs: list[str],
     sidecar_path: str,
-    lost_streams: list[dict],
+    sources: list[tuple[dict, int, int]],
 ) -> list[str]:
     """
-    Return the FFmpeg argv to cut the destroyed streams out of the
-    original file and into a single Matroska sidecar.
+    Return the FFmpeg argv to collect destroyed streams into a single
+    Matroska sidecar.
+
+    `sources` is (stream, input_number, stream_index) per stream, in the
+    order they should appear in the sidecar. Two inputs rather than one
+    because a revert point accumulates: a second job on the same file has
+    to produce a sidecar holding both what THIS job destroyed (still
+    present in the file it was handed) and what an earlier job destroyed
+    (only in the previous sidecar). Neither source alone has everything.
 
     Matroska regardless of the source container: it is the only format
     that will hold an arbitrary mix of dropped audio, subtitles and
@@ -353,15 +360,8 @@ def build_sidecar_command(
     verified directly, ffmpeg rc=0 and ffprobe rc=1 on the same file. A
     revert point pointing at one of those is worse than no revert point,
     because nothing discovers it until someone tries to use it.
-
-    Note this makes attachment-only loss unrecoverable, which today is
-    the single most common kind: the remux path drops attachments on
-    every job, so a job that otherwise only re-tags languages destroys
-    the attachment and nothing else. That is the attachment bug's damage,
-    not this function's, and it is reported honestly rather than papered
-    over with a corrupt file.
     """
-    real_tracks = [s for s in lost_streams
+    real_tracks = [s for s, _i, _x in sources
                    if s.get("type") in ("video", "audio", "subtitle")]
     if not real_tracks:
         raise SidecarUnsupported(
@@ -369,24 +369,25 @@ def build_sidecar_command(
             "file with no tracks."
         )
 
-    cmd = [
-        app_settings.FFMPEG_PATH,
-        "-i", input_path,
-        "-y",
-        "-v", "error",
-    ]
+    cmd = [app_settings.FFMPEG_PATH]
+    for path in inputs:
+        cmd += ["-i", path]
+    cmd += ["-y", "-v", "error"]
 
     # Output-side subtitle ordinal, which is what -c:s:N addresses. It
     # counts only the subtitles going INTO the sidecar, so it is not the
-    # stream's index in either file.
+    # stream's index in any input.
     subtitle_ordinal = 0
     overrides: list[str] = []
 
-    for stream in lost_streams:
-        cmd += ["-map", f"0:{stream['index']}"]
+    for stream, input_number, stream_index in sources:
+        cmd += ["-map", f"{input_number}:{stream_index}"]
         if stream.get("type") == "subtitle":
+            # Only streams coming from a real media file can still be
+            # mov_text; anything already in a previous sidecar was
+            # converted on its way in and is SubRip by now.
             target = _SUBTITLE_TRANSCODE.get(stream.get("codec"))
-            if target:
+            if target and input_number == 0:
                 overrides += [f"-c:s:{subtitle_ordinal}", target]
             subtitle_ordinal += 1
 

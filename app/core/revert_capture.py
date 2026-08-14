@@ -6,6 +6,27 @@ both exist — see run_staged_subprocess's before_staging hook. It probes
 both, works out what the job destroyed, and cuts those streams into a
 sidecar on the recycle volume.
 
+One revert point per file, anchored to the original
+--------------------------------------------------
+A revert point describes the PRISTINE file — the way it was before
+Remuxarr ever touched it — not the state before the most recent job. A
+second job on the same file extends the existing point rather than
+adding another: it works out what is missing relative to that stored
+original, and rebuilds the sidecar to hold all of it.
+
+The alternative, one point per job, was tried first and is broken in a
+way that is easy to miss. Each point fingerprints the file as its own job
+left it, so the next job invalidates the previous point simply by
+rewriting the file — even a job that destroys nothing, like a language
+re-tag. The dropped subtitles would still be sitting on the recycle
+volume, intact and permanently unreachable, and the user would be told
+the file "has been modified since it was processed", blaming an outside
+change for something Remuxarr did itself.
+
+Rebuilding the sidecar needs two inputs, because neither alone has
+everything: what THIS job destroyed is still in the file it was handed,
+while what an EARLIER job destroyed exists only in the previous sidecar.
+
 Nothing here writes to the database. The sidecar is produced during the
 window; the row that points at it is written by the worker only once the
 job has actually succeeded, because a run can still fail after this
@@ -54,6 +75,76 @@ class CapturedRevertPoint:
     manifest_json: str
     original_path: str
     original_container: str | None
+    # Set when this extends an existing revert point rather than creating
+    # one. The worker updates that row instead of inserting a second, and
+    # unlinks the superseded sidecar once the new row is safely recorded —
+    # in that order, so a crash in between leaves a file the orphan sweep
+    # collects rather than a row pointing at nothing.
+    replaces_point_id: int | None = None
+    replaces_sidecar_path: str | None = None
+
+
+@dataclass
+class _ExistingPoint:
+    point_id: int
+    sidecar_path: str
+    manifest: dict
+
+
+def _load_existing_point(file_id: int) -> _ExistingPoint | None:
+    """
+    The revert point already held for this file, if any.
+
+    There is at most one by design. It describes the PRISTINE original,
+    not the state before the most recent job, and every later job extends
+    it rather than adding another — see the module docstring.
+
+    A manifest from an older layout is treated as absent, which starts a
+    fresh point anchored to the current file. That loses the ability to
+    go all the way back for that file, and is still better than building
+    a sidecar on annotations whose meaning has changed. Nothing has
+    shipped with an older layout, so this is defensive rather than a
+    migration path.
+    """
+    from app.core.revert import MANIFEST_VERSION
+    from app.database.models import RevertPoint
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        point = (
+            db.query(RevertPoint)
+            .filter(RevertPoint.file_id == file_id)
+            .order_by(RevertPoint.created_at.desc())
+            .first()
+        )
+        if point is None:
+            return None
+
+        try:
+            manifest = json.loads(point.manifest)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Revert point %d has an unreadable manifest; starting fresh",
+                point.id,
+            )
+            return None
+
+        if manifest.get("version") != MANIFEST_VERSION:
+            logger.warning(
+                "Revert point %d uses manifest version %r, not %r; starting fresh",
+                point.id, manifest.get("version"), MANIFEST_VERSION,
+            )
+            return None
+
+        if not os.path.exists(point.sidecar_path):
+            logger.warning(
+                "Revert point %d has no sidecar on disk; starting fresh", point.id,
+            )
+            return None
+
+        return _ExistingPoint(point_id=point.id,
+                              sidecar_path=point.sidecar_path,
+                              manifest=manifest)
 
 
 class _Unavailable(Exception):
@@ -87,6 +178,84 @@ async def _run(cmd: list[str]) -> None:
         )
 
 
+def _plan_sources(
+    lost: list[dict], *, has_previous_sidecar: bool,
+) -> list[tuple[dict, int, int]]:
+    """
+    Work out where each lost stream can be read from RIGHT NOW.
+
+    Input 0 is the file this job was handed; input 1, when there is one,
+    is the revert point's previous sidecar. Streams THIS job destroyed are
+    still in input 0, at the index the previous capture recorded for them.
+    Streams an EARLIER job destroyed are only in input 1.
+
+    The sidecar is checked first. Under the current annotations the two
+    are mutually exclusive — a stream the previous capture put in the
+    sidecar has processed_index None — so the order costs nothing today.
+    It is stated rather than left to chance because the direction matters
+    the moment that stops holding: the sidecar copy is the one that came
+    out of the pristine original, while the copy in input 0 has been
+    through however many jobs since and may have been re-tagged or
+    re-encoded on the way.
+
+    Raises _Unavailable for a stream in neither. Refusing beats writing a
+    sidecar that silently omits a track while the manifest claims it is
+    there — restore would then map a slot that holds something else.
+    """
+    sources: list[tuple[dict, int, int]] = []
+    for stream in lost:
+        sidecar_index = stream.get("sidecar_index")
+        processed_index = stream.get("processed_index")
+
+        if has_previous_sidecar and sidecar_index is not None:
+            sources.append((stream, 1, sidecar_index))
+        elif processed_index is not None:
+            sources.append((stream, 0, processed_index))
+        elif not has_previous_sidecar:
+            # A file's first job: nothing has been re-indexed yet, so the
+            # stream is still where the original said it was.
+            sources.append((stream, 0, stream["index"]))
+        else:
+            raise _Unavailable(
+                f"Stream {stream.get('index')} of the original is in "
+                f"neither the current file nor the previous sidecar."
+            )
+    return sources
+
+
+def _reannotate(
+    matches: list[tuple[dict, int | None]],
+    sources: list[tuple[dict, int, int]],
+) -> None:
+    """
+    Rewrite every stream's processed_index/sidecar_index in place, now
+    that both the sidecar and the processed file have changed.
+
+    Restore could re-derive this by matching the manifest against the
+    processed file again, but it should not have to: that file may have
+    been re-tagged, re-scanned or partially rewritten by then, and
+    re-running fuzzy matching against a moved target is exactly how a
+    revert puts the wrong track back. Resolved once, here, where both
+    files are known-good and one line from being swapped.
+
+    sidecar_index is positional: build_sidecar_command maps `sources` in
+    order, so the nth entry is output stream n.
+
+    Old annotations are CLEARED, not overwritten. Overwriting alone would
+    leave a stale sidecar_index on any stream that was lost before and is
+    matched now — and restore prefers the sidecar when both are present,
+    so it would source that track from whatever happens to sit at that
+    slot in the new sidecar.
+    """
+    new_sidecar_indices = {id(stream): n
+                           for n, (stream, _input, _index) in enumerate(sources)}
+    for stream, produced_index in matches:
+        stream["processed_index"] = produced_index
+        stream.pop("sidecar_index", None)
+        if id(stream) in new_sidecar_indices:
+            stream["sidecar_index"] = new_sidecar_indices[id(stream)]
+
+
 async def capture(
     *,
     input_path: str,
@@ -113,33 +282,65 @@ async def capture(
             raise _Unavailable(reason)
 
         try:
-            original_probe = probe_file(input_path)
             produced_probe = probe_file(produced_path)
         except ProbeError as exc:
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
-        # extract_format_info, not format_name.split(",")[0]. ffprobe
-        # reports "mov,mp4,m4a,3gp,3g2,mj2" for every MP4, so taking the
-        # first element yields "mov" — a real muxer, but not the one this
-        # file was, and restore would write a MOV where an MP4 belongs.
-        # _normalise_container already owns that translation and has the
-        # matroska/webm ordering trap documented alongside it.
-        container = extract_format_info(original_probe).get("container")
-        manifest = build_manifest(original_probe, original_path=input_path,
-                                  original_container=container)
+        existing = _load_existing_point(file_id)
+
+        if existing is None:
+            # First job on this file: the file it was handed IS the
+            # pristine original, so the manifest is built from it.
+            try:
+                original_probe = probe_file(input_path)
+            except ProbeError as exc:
+                raise _Unavailable(
+                    f"Could not probe for a revert point: {exc}"
+                ) from exc
+            # extract_format_info, not format_name.split(",")[0]. ffprobe
+            # reports "mov,mp4,m4a,3gp,3g2,mj2" for every MP4, so taking
+            # the first element yields "mov" — a real muxer, but not the
+            # one this file was, and restore would write a MOV where an
+            # MP4 belongs. _normalise_container already owns that
+            # translation and has the matroska/webm trap documented
+            # alongside it.
+            container = extract_format_info(original_probe).get("container")
+            manifest = build_manifest(original_probe, original_path=input_path,
+                                      original_container=container)
+        else:
+            # A later job. The manifest is NOT rebuilt from input_path —
+            # that file is already a processed version, and treating it as
+            # the original is exactly the bug this design replaces: each
+            # job would anchor to the last one's output, so reverting
+            # would only ever undo the most recent job while the earlier
+            # losses stayed gone.
+            manifest = existing.manifest
+            container = manifest.get("container")
+
         matches = match_streams(manifest, produced_probe)
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
         if not lost:
             logger.info(
-                "Job %d: nothing was destroyed, no revert point needed", job_id
+                "Job %d: nothing is missing from the original, no revert "
+                "point needed", job_id,
             )
             return None, None
 
+        # Where each lost stream can be read from RIGHT NOW. Streams this
+        # job destroyed are still in the file it was handed (input 0, at
+        # the index the previous capture recorded). Streams an earlier job
+        # destroyed exist only in the previous sidecar (input 1).
+        inputs = [input_path]
+        if existing is not None:
+            inputs.append(existing.sidecar_path)
+
+        sources = _plan_sources(lost, has_previous_sidecar=existing is not None)
+
         sidecar = sidecar_path_for(file_id, job_id)
         try:
-            cmd = build_sidecar_command(input_path, sidecar, lost)
+            cmd = build_sidecar_command(inputs, sidecar, sources)
         except SidecarUnsupported as exc:
             logger.info(
                 "Job %d: no revert point possible for %s — %s",
@@ -149,7 +350,8 @@ async def capture(
 
         await _run(cmd)
 
-        # Record where every original stream now lives, while we still know.
+        # Re-resolve where every original stream lives, now that both the
+        # sidecar and the processed file have changed.
         #
         # Restore could re-derive this by matching the manifest against the
         # processed file again, but it should not have to: that file may
@@ -158,13 +360,11 @@ async def capture(
         # how a revert puts the wrong track back. Resolved once, here,
         # where both files are known-good and one line from being swapped.
         #
-        # sidecar_index is positional: build_sidecar_command maps
-        # lost_streams in order, so the nth entry is output stream n.
-        sidecar_indices = {id(stream): n for n, stream in enumerate(lost)}
-        for stream, produced_index in matches:
-            stream["processed_index"] = produced_index
-            if id(stream) in sidecar_indices:
-                stream["sidecar_index"] = sidecar_indices[id(stream)]
+        # sidecar_index is positional: build_sidecar_command maps `sources`
+        # in order, so the nth entry is output stream n. Stale annotations
+        # from the previous capture are cleared rather than left to be
+        # read as if they still pointed somewhere real.
+        _reannotate(matches, sources)
 
         try:
             size = os.path.getsize(sidecar)
@@ -172,15 +372,19 @@ async def capture(
             raise _Unavailable(f"Sidecar vanished after being written: {exc}") from exc
 
         logger.info(
-            "Job %d: revert point captured (%d stream(s), %.1f MB) → %s",
-            job_id, len(lost), size / 1024 / 1024, sidecar,
+            "Job %d: revert point %s (%d stream(s) from the original, "
+            "%.1f MB) → %s",
+            job_id, "extended" if existing else "captured",
+            len(lost), size / 1024 / 1024, sidecar,
         )
         return CapturedRevertPoint(
             sidecar_path=sidecar,
             sidecar_size=size,
             manifest_json=json.dumps(manifest),
-            original_path=input_path,
+            original_path=manifest.get("path") or input_path,
             original_container=container,
+            replaces_point_id=existing.point_id if existing else None,
+            replaces_sidecar_path=existing.sidecar_path if existing else None,
         ), None
 
     except _Unavailable as exc:

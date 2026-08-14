@@ -92,6 +92,11 @@ def _stream(index, codec_type, codec, **kw):
     return s
 
 
+def _from_one(streams):
+    """Sources tuple for the single-input case: everything from input 0."""
+    return [(s, 0, s["index"]) for s in streams]
+
+
 def _probe(*streams, chapters=0):
     return {"streams": list(streams), "chapters": [{}] * chapters}
 
@@ -382,7 +387,8 @@ def test_attachment_only_loss_is_refused():
                              filename="Roboto.ttf"))["streams"]
 
     with pytest.raises(SidecarUnsupported):
-        build_sidecar_command("/m/Show.mkv", "/recycle/1.remuxarr_revert", lost)
+        build_sidecar_command(["/m/Show.mkv"], "/recycle/1.remuxarr_revert",
+                              _from_one(lost))
 
 
 def test_mov_text_is_converted_and_others_are_copied():
@@ -398,7 +404,8 @@ def test_mov_text_is_converted_and_others_are_copied():
         _stream(7, "subtitle", "mov_text", language="ger"),
     )["streams"]
 
-    cmd = build_sidecar_command("/m/Show.mp4", "/recycle/1.remuxarr_revert", lost)
+    cmd = build_sidecar_command(["/m/Show.mp4"], "/recycle/1.remuxarr_revert",
+                                _from_one(lost))
 
     assert "-c:s:1" in cmd, "the mov_text stream is the second subtitle out"
     assert cmd[cmd.index("-c:s:1") + 1] == "srt"
@@ -410,7 +417,8 @@ def test_sidecar_maps_original_indices_and_drops_chapters():
     from app.core.ffmpeg import build_sidecar_command
 
     lost = _manifest(_stream(4, "audio", "ac3", channels=6, language="spa"))["streams"]
-    cmd = build_sidecar_command("/m/Show.mkv", "/recycle/1.remuxarr_revert", lost)
+    cmd = build_sidecar_command(["/m/Show.mkv"], "/recycle/1.remuxarr_revert",
+                                _from_one(lost))
 
     assert "0:4" in cmd
     assert cmd[cmd.index("-map_chapters") + 1] == "-1"
@@ -486,8 +494,9 @@ def test_real_sidecar_round_trips_audio_subtitle_and_attachment(tmp_path):
     assert len(lost) == 2, "fixture did not produce the expected streams"
 
     sidecar = tmp_path / "1.remuxarr_revert"
-    subprocess.run(build_sidecar_command(str(source), str(sidecar), lost),
-                   check=True)
+    subprocess.run(
+        build_sidecar_command([str(source)], str(sidecar), _from_one(lost)),
+        check=True)
 
     rc, side = _ffprobe(sidecar)
     assert rc == 0, "sidecar is unreadable"
@@ -562,7 +571,9 @@ def test_real_mov_text_sidecar_requires_the_conversion(tmp_path):
     assert naive.returncode != 0, "matroska now accepts mov_text; drop the conversion"
 
     sidecar = tmp_path / "1.remuxarr_revert"
-    subprocess.run(build_sidecar_command(str(mp4), str(sidecar), lost), check=True)
+    subprocess.run(
+        build_sidecar_command([str(mp4)], str(sidecar), _from_one(lost)),
+        check=True)
 
     rc, side = _ffprobe(sidecar)
     assert rc == 0
