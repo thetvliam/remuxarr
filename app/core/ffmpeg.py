@@ -283,6 +283,88 @@ def build_extract_subtitle_command(
     ]
 
 
+# ── Command builder — revert sidecar ─────────────────────────────────────────────
+
+
+class SidecarUnsupported(Exception):
+    """Raised when the destroyed streams cannot be stored in a sidecar."""
+
+
+# Matroska cannot store MP4's mov_text. Copying one in fails at header
+# write with "Subtitle codec ... is not supported", so it is converted to
+# SubRip instead — verified to round-trip back to mov_text intact on
+# restore. Listed rather than hardcoded at the call site so anything else
+# found to need the same treatment lands in one place.
+_SUBTITLE_TRANSCODE = {"mov_text": "srt"}
+
+
+def build_sidecar_command(
+    input_path: str,
+    sidecar_path: str,
+    lost_streams: list[dict],
+) -> list[str]:
+    """
+    Return the FFmpeg argv to cut the destroyed streams out of the
+    original file and into a single Matroska sidecar.
+
+    Matroska regardless of the source container: it is the only format
+    that will hold an arbitrary mix of dropped audio, subtitles and
+    attachments. Chapters are excluded — they survive a remux, so they
+    are still in the processed file and storing a second copy here would
+    only invite the two disagreeing.
+
+    Raises SidecarUnsupported if the only losses are attachments. That
+    is not a fussy guard: Matroska has no concept of a file with zero
+    tracks, and FFmpeg writes one anyway and EXITS ZERO. The result is a
+    file that looks written, has a plausible size, and cannot be opened —
+    verified directly, ffmpeg rc=0 and ffprobe rc=1 on the same file. A
+    revert point pointing at one of those is worse than no revert point,
+    because nothing discovers it until someone tries to use it.
+
+    Note this makes attachment-only loss unrecoverable, which today is
+    the single most common kind: the remux path drops attachments on
+    every job, so a job that otherwise only re-tags languages destroys
+    the attachment and nothing else. That is the attachment bug's damage,
+    not this function's, and it is reported honestly rather than papered
+    over with a corrupt file.
+    """
+    real_tracks = [s for s in lost_streams
+                   if s.get("type") in ("video", "audio", "subtitle")]
+    if not real_tracks:
+        raise SidecarUnsupported(
+            "Nothing but attachments was lost; Matroska cannot store a "
+            "file with no tracks."
+        )
+
+    cmd = [
+        app_settings.FFMPEG_PATH,
+        "-i", input_path,
+        "-y",
+        "-v", "error",
+    ]
+
+    # Output-side subtitle ordinal, which is what -c:s:N addresses. It
+    # counts only the subtitles going INTO the sidecar, so it is not the
+    # stream's index in either file.
+    subtitle_ordinal = 0
+    overrides: list[str] = []
+
+    for stream in lost_streams:
+        cmd += ["-map", f"0:{stream['index']}"]
+        if stream.get("type") == "subtitle":
+            target = _SUBTITLE_TRANSCODE.get(stream.get("codec"))
+            if target:
+                overrides += [f"-c:s:{subtitle_ordinal}", target]
+            subtitle_ordinal += 1
+
+    # Base codec first, per-stream overrides after — later options win,
+    # so the order here is what lets a single mov_text stream be
+    # converted while everything else is still copied.
+    cmd += ["-c", "copy"] + overrides
+    cmd += ["-map_chapters", "-1", "-f", "matroska", sidecar_path]
+    return cmd
+
+
 # ── Executor — main remux ───────────────────────────────────────────────────────
 
 
