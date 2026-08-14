@@ -126,9 +126,15 @@ def _full_key(stream: dict) -> tuple:
     )
 
 
-def find_lost_streams(manifest: dict, processed_probe: dict) -> list[dict]:
+def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int | None]]:
     """
-    Return the manifest entries with no counterpart in the processed file.
+    Pair every manifest entry with its index in the processed file, or None
+    if it is no longer there.
+
+    Restore needs the whole mapping, not just the gaps: for each original
+    stream it has to know whether to pull that stream out of the processed
+    file or out of the sidecar, and at which index. find_lost_streams is
+    the capture-side view of the same answer.
 
     Matching runs in two passes, and the order matters:
 
@@ -160,6 +166,7 @@ def find_lost_streams(manifest: dict, processed_probe: dict) -> list[dict]:
     )["streams"]
 
     remaining = list(processed)
+    matched: dict[int, int | None] = {}
     unmatched = []
 
     # Pass 1 — exact.
@@ -167,20 +174,30 @@ def find_lost_streams(manifest: dict, processed_probe: dict) -> list[dict]:
         key = _full_key(original)
         for i, candidate in enumerate(remaining):
             if _full_key(candidate) == key:
+                matched[id(original)] = candidate["index"]
                 remaining.pop(i)
                 break
         else:
             unmatched.append(original)
 
     # Pass 2 — payload only, over what pass 1 could not place.
-    lost = []
     for original in unmatched:
         key = _payload_key(original)
         for i, candidate in enumerate(remaining):
             if _payload_key(candidate) == key:
+                matched[id(original)] = candidate["index"]
                 remaining.pop(i)
                 break
         else:
-            lost.append(original)
+            matched[id(original)] = None
 
-    return lost
+    return [(s, matched[id(s)]) for s in manifest.get("streams", [])]
+
+
+def find_lost_streams(manifest: dict, processed_probe: dict) -> list[dict]:
+    """
+    Return the manifest entries with no counterpart in the processed file.
+    A thin view over match_streams — see there for how matching works.
+    """
+    return [s for s, index in match_streams(manifest, processed_probe)
+            if index is None]

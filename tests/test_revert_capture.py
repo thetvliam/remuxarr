@@ -162,6 +162,42 @@ def test_a_dropped_track_is_captured(recycle, enabled, monkeypatch):
     assert captured.original_path == "/m/Show.mkv"
 
 
+def test_the_container_is_the_projects_normalised_name(recycle, enabled,
+                                                       monkeypatch):
+    """
+    Restore looks the original container up in ffmpeg._CONTAINER_FORMAT,
+    which is keyed on the project's normalised names — "mkv", "mp4". The
+    raw ffprobe format_name is neither: it reports "matroska,webm" for
+    every Matroska file and "mov,mp4,m4a,3gp,3g2,mj2" for every MP4, so
+    taking its first element yields "matroska" (not a key at all, making
+    every revert refuse) and "mov" (a key, but the wrong container —
+    restore would write a MOV where an MP4 belongs).
+    """
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    captured, _ = _capture(app_cfg=enabled)
+
+    from app.core.ffmpeg import _CONTAINER_FORMAT
+
+    assert captured.original_container == "mkv"
+    assert captured.original_container in _CONTAINER_FORMAT
+
+
+def test_an_mp4_original_is_recorded_as_mp4_not_mov(recycle, enabled,
+                                                    monkeypatch):
+    mp4_original = {
+        "streams": _ORIGINAL["streams"],
+        "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+    }
+    _patch_probes(monkeypatch, mp4_original, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    captured, _ = _capture(app_cfg=enabled)
+
+    assert captured.original_container == "mp4"
+
+
 def test_the_manifest_describes_the_original_not_the_result(recycle, enabled,
                                                             monkeypatch):
     """
@@ -176,6 +212,29 @@ def test_the_manifest_describes_the_original_not_the_result(recycle, enabled,
 
     assert len(manifest["streams"]) == 3
     assert [s["language"] for s in manifest["streams"]] == [None, "eng", "fre"]
+
+
+def test_the_manifest_records_where_every_stream_ended_up(recycle, enabled,
+                                                          monkeypatch):
+    """
+    Restore reads these rather than re-matching against the processed
+    file, which by then may have been re-tagged or re-scanned. Resolving
+    it here, while both files are known-good, is what stops a revert
+    putting the wrong track back.
+    """
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    captured, _ = _capture(app_cfg=enabled)
+    streams = json.loads(captured.manifest_json)["streams"]
+
+    survivors = [s for s in streams if s.get("processed_index") is not None]
+    lost = [s for s in streams if s.get("sidecar_index") is not None]
+
+    assert [s["index"] for s in survivors] == [0, 1]
+    assert [s["index"] for s in lost] == [2]
+    assert lost[0]["sidecar_index"] == 0
+    assert lost[0]["processed_index"] is None
 
 
 def test_sidecar_names_include_both_file_and_job(recycle, enabled, monkeypatch):

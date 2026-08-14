@@ -57,6 +57,36 @@ class ExtractionResult:
 # ── Command builder — main remux ────────────────────────────────────────────────
 
 
+# Normalised container name (probe._normalise_container) → FFmpeg muxer.
+#
+# Module-level rather than function-local so build_restore_command shares
+# the one table: a revert writes the ORIGINAL container back, and a second
+# copy of this map is a second place for the mkv/webm trap below to be got
+# wrong.
+_CONTAINER_FORMAT = {
+    "mkv": "matroska",
+    "mp4": "mp4",
+    "avi": "avi",
+    # No "m2ts" entry — _normalise_container (probe.py) can never
+    # actually produce it: every real .m2ts file's ffprobe format_name
+    # contains "mpegts", which the "ts" branch there always matches
+    # first, before any fallback path could return "m2ts" literally.
+    # Confirmed directly, including during the real .m2ts investigation
+    # for F-B2 earlier — genuinely unreachable, not just unlikely.
+    "ts": "mpegts",
+    "wmv": "asf",
+    # "webm" and "mov" are unreachable defensive keys, kept for
+    # intent (matching probe.py's annotated copy): _normalise_container
+    # can never return "webm" (its format_name always contains
+    # "matroska", matched first) and maps "mov"→"mp4", and
+    # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
+    # either value. Nothing reaches these; they just document the
+    # intended format if that ever changes.
+    "webm": "webm",
+    "mov": "mov",
+}
+
+
 def build_ffmpeg_command(
     input_path: str,
     output_path: str,
@@ -157,28 +187,6 @@ def build_ffmpeg_command(
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which
     # FFmpeg doesn't recognise, so it would otherwise refuse to mux.
-    _CONTAINER_FORMAT = {
-        "mkv": "matroska",
-        "mp4": "mp4",
-        "avi": "avi",
-        # No "m2ts" entry — _normalise_container (probe.py) can never
-        # actually produce it: every real .m2ts file's ffprobe format_name
-        # contains "mpegts", which the "ts" branch there always matches
-        # first, before any fallback path could return "m2ts" literally.
-        # Confirmed directly, including during the real .m2ts investigation
-        # for F-B2 earlier — genuinely unreachable, not just unlikely.
-        "ts": "mpegts",
-        "wmv": "asf",
-        # "webm" and "mov" are unreachable defensive keys, kept for
-        # intent (matching probe.py's annotated copy): _normalise_container
-        # can never return "webm" (its format_name always contains
-        # "matroska", matched first) and maps "mov"→"mp4", and
-        # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
-        # either value. Nothing reaches these; they just document the
-        # intended format if that ever changes.
-        "webm": "webm",
-        "mov": "mov",
-    }
     # Hard-fail on any container this map doesn't know, rather than
     # silently defaulting to matroska. The old `.get(..., "matroska")`
     # default was a genuine file-corruption bug: MEDIA_EXTENSIONS accepts
@@ -387,6 +395,121 @@ def build_sidecar_command(
     # converted while everything else is still copied.
     cmd += ["-c", "copy"] + overrides
     cmd += ["-map_chapters", "-1", "-f", "matroska", sidecar_path]
+    return cmd
+
+
+# ── Command builder — revert restore ─────────────────────────────────────────────
+
+
+class RestoreUnsupported(Exception):
+    """Raised when a manifest cannot be turned into a restore command."""
+
+
+def build_restore_command(
+    processed_path: str,
+    sidecar_path: str,
+    output_path: str,
+    manifest: dict,
+) -> list[str]:
+    """
+    Return the FFmpeg argv to rebuild the original file from the processed
+    one plus its sidecar.
+
+    Input 0 is the processed file, input 1 the sidecar. Every stream in
+    the manifest is mapped from whichever holds it, in the manifest's own
+    order — which is the ORIGINAL order, not the processed one. Getting
+    that wrong produces a file that plays but whose track order has
+    silently changed, which is the kind of difference nobody notices until
+    a player picks the wrong default.
+
+    Metadata is written back explicitly rather than left to stream copy.
+    Copying preserves whatever the processed file happens to carry, and
+    for any track a re-tagging job touched that is precisely the value
+    being reverted. Language, title and dispositions therefore all come
+    from the manifest, and are CLEARED where the manifest recorded none —
+    an absent tag is a value, and leaving the job's version in place would
+    make revert a partial undo that looks complete.
+
+    Raises RestoreUnsupported if the manifest predates the index
+    annotations or is internally inconsistent. Refusing is the only safe
+    response: a restore built on guesses would write a plausible file with
+    the wrong tracks in it.
+    """
+    streams = manifest.get("streams") or []
+    if not streams:
+        raise RestoreUnsupported("Manifest records no streams.")
+
+    container = manifest.get("container")
+    out_fmt = _CONTAINER_FORMAT.get(container)
+    if not out_fmt:
+        raise RestoreUnsupported(
+            f"No FFmpeg muxer known for original container {container!r}."
+        )
+
+    cmd = [
+        app_settings.FFMPEG_PATH,
+        "-i", processed_path,
+        "-i", sidecar_path,
+        "-y",
+        "-v", "error",
+        "-nostats",
+        "-progress", "pipe:1",
+    ]
+
+    maps: list[str] = []
+    meta: list[str] = []
+
+    for out_index, stream in enumerate(streams):
+        sidecar_index = stream.get("sidecar_index")
+        processed_index = stream.get("processed_index")
+
+        # The sidecar wins when a stream is somehow in both. Capture makes
+        # the two annotations mutually exclusive today, so this ordering
+        # costs nothing now — but it is stated rather than left to chance,
+        # because the direction matters the moment that changes. Matching
+        # errs towards "lost", so an over-captured stream is one the
+        # sidecar holds in its ORIGINAL codec and tagging while the
+        # processed file holds the job's rewritten version. Preferring the
+        # processed copy would quietly restore the very thing being
+        # reverted — a MKV → MP4 conversion, for instance, would put the
+        # mov_text subtitle back instead of the SubRip original.
+        if sidecar_index is not None:
+            maps += ["-map", f"1:{sidecar_index}"]
+        elif processed_index is not None:
+            maps += ["-map", f"0:{processed_index}"]
+        else:
+            # Neither annotation present. Either the manifest was written
+            # before capture recorded them, or the stream was lost and
+            # never made it into the sidecar. Both mean this file cannot
+            # be rebuilt faithfully, and a partial rebuild is worse than
+            # an honest refusal — it would report success while quietly
+            # dropping a track the user asked to get back.
+            raise RestoreUnsupported(
+                f"Stream {stream.get('index')} is in neither the processed "
+                f"file nor the sidecar."
+            )
+
+        # Attachments carry no language/title/disposition worth rewriting,
+        # and -metadata:s on an attachment stream is not meaningful.
+        if stream.get("type") == "attachment":
+            continue
+
+        # Empty values are deliberate: they clear a tag the job added.
+        meta += [f"-metadata:s:{out_index}", f"language={stream.get('language') or ''}"]
+        meta += [f"-metadata:s:{out_index}", f"title={stream.get('title') or ''}"]
+
+        flags = stream.get("disposition") or []
+        # "0" is FFmpeg's spelling for "no flags at all". Omitting the
+        # option entirely would instead inherit whatever the copied stream
+        # carries, which is the job's version, not the original's.
+        meta += [f"-disposition:{out_index}", "+".join(flags) if flags else "0"]
+
+    cmd += maps
+    cmd += ["-c", "copy"]
+    cmd += meta
+    # Chapters survive a remux, so the processed file still has them.
+    cmd += ["-map_chapters", "0"]
+    cmd += ["-f", out_fmt, output_path]
     return cmd
 
 

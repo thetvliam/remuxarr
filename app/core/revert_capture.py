@@ -39,9 +39,9 @@ from dataclasses import dataclass
 
 from app.config import settings as app_settings
 from app.core.ffmpeg import SidecarUnsupported, build_sidecar_command
-from app.core.probe import ProbeError, probe_file
+from app.core.probe import ProbeError, extract_format_info, probe_file
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
-from app.core.revert import build_manifest, find_lost_streams
+from app.core.revert import build_manifest, match_streams
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +118,17 @@ async def capture(
         except ProbeError as exc:
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
-        container = (original_probe.get("format", {})
-                     .get("format_name", "").split(",")[0] or None)
+        # extract_format_info, not format_name.split(",")[0]. ffprobe
+        # reports "mov,mp4,m4a,3gp,3g2,mj2" for every MP4, so taking the
+        # first element yields "mov" — a real muxer, but not the one this
+        # file was, and restore would write a MOV where an MP4 belongs.
+        # _normalise_container already owns that translation and has the
+        # matroska/webm ordering trap documented alongside it.
+        container = extract_format_info(original_probe).get("container")
         manifest = build_manifest(original_probe, original_path=input_path,
                                   original_container=container)
-        lost = find_lost_streams(manifest, produced_probe)
+        matches = match_streams(manifest, produced_probe)
+        lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
         if not lost:
@@ -142,6 +148,23 @@ async def capture(
             return None, None
 
         await _run(cmd)
+
+        # Record where every original stream now lives, while we still know.
+        #
+        # Restore could re-derive this by matching the manifest against the
+        # processed file again, but it should not have to: that file may
+        # have been re-tagged, re-scanned or partially rewritten by then,
+        # and re-running fuzzy matching against a moved target is exactly
+        # how a revert puts the wrong track back. Resolved once, here,
+        # where both files are known-good and one line from being swapped.
+        #
+        # sidecar_index is positional: build_sidecar_command maps
+        # lost_streams in order, so the nth entry is output stream n.
+        sidecar_indices = {id(stream): n for n, stream in enumerate(lost)}
+        for stream, produced_index in matches:
+            stream["processed_index"] = produced_index
+            if id(stream) in sidecar_indices:
+                stream["sidecar_index"] = sidecar_indices[id(stream)]
 
         try:
             size = os.path.getsize(sidecar)
