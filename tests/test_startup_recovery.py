@@ -390,7 +390,14 @@ def sweep(tmp_path, monkeypatch):
     (library / "Show" / "S01").mkdir(parents=True)
     temp_dir.mkdir()
 
+    # The recycle volume is the third sweep root. Tests that care about it
+    # reach it as tmp_path / "recycle" — the fixture creates it here rather
+    # than returning it so the existing three-tuple unpacking stays valid.
+    recycle = tmp_path / "recycle"
+    recycle.mkdir()
+
     monkeypatch.setattr(m.settings, "TEMP_DIR", str(temp_dir), raising=False)
+    monkeypatch.setattr(m.settings, "RECYCLE_DIR", str(recycle), raising=False)
 
     class _FakeSession:
         def __enter__(self): return self
@@ -444,6 +451,61 @@ def test_temp_dir_orphans_still_removed(sweep):
 
     run()
     assert not a.exists() and not b.exists()
+
+
+def test_part_file_on_the_recycle_volume_is_removed(sweep, tmp_path):
+    """
+    The recycle volume is the one location neither of the original two
+    sweep roots reaches: it is not TEMP_DIR and it is not in scan_paths.
+    A sidecar is staged as "<final>.part" like every other output, so a
+    crash mid-write leaves one here with nothing to collect it.
+    """
+    _temp, _library, run = sweep
+    orphan = tmp_path / "recycle" / "31.remuxarr_revert.part"
+    orphan.write_bytes(b"x" * 4096)
+    _age(orphan, 3600)
+
+    run()
+    assert not orphan.exists(), ".part orphan was not removed from the recycle volume"
+
+
+def test_completed_sidecars_survive_the_sweep(sweep, tmp_path):
+    """
+    The other half, and the more dangerous one to get wrong: a finished
+    sidecar is a retained file with a database row pointing at it, not an
+    orphan. Sweeping it would silently empty the recycle bin on every
+    container restart — the retention window would appear to work right up
+    until anyone restarted, which is exactly when they would not connect
+    the two.
+    """
+    _temp, _library, run = sweep
+    keep = tmp_path / "recycle" / "31.remuxarr_revert"
+    keep.write_bytes(b"dropped tracks")
+    _age(keep, 3600)
+
+    run()
+    assert keep.exists(), "the sweep deleted a live sidecar"
+
+
+def test_sweep_survives_an_unmounted_recycle_volume(sweep, tmp_path, monkeypatch):
+    """
+    RECYCLE_DIR points at a directory that does not exist whenever the
+    volume is not mounted, which is the default state for every existing
+    install upgrading into this feature. The sweep still has a library to
+    clean and must not abort on the way there.
+    """
+    import app.main as m
+
+    _temp, library, run = sweep
+    monkeypatch.setattr(m.settings, "RECYCLE_DIR", str(tmp_path / "gone"),
+                        raising=False)
+
+    orphan = library / "Show" / "S01" / "Episode.mkv.part"
+    orphan.write_bytes(b"x" * 128)
+    _age(orphan, 3600)
+
+    run()
+    assert not orphan.exists(), "library sweep stopped working without a recycle volume"
 
 
 def test_real_media_files_are_never_touched(sweep):

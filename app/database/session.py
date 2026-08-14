@@ -106,6 +106,30 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # configuration mistake (bad codec, bad path, etc.) causing every queued
     # file to fail and flooding the inbox with hundreds of identical emails.
     "email_failure_threshold":  5,
+    # ── Recycle bin (revert to original) ───────────────────────────────────
+    # Off by default, deliberately. Turning this on starts consuming a
+    # volume that an upgrading install has not mounted and has not sized —
+    # an existing user who pulls a new image should not discover the
+    # feature by running out of disk. A fresh install enables it in the
+    # same breath as mounting the volume, which is the point at which the
+    # size question has actually been answered.
+    "revert_enabled":            False,
+    # Retention is bounded twice, because either bound alone fails in a
+    # common case: a days-only window has no ceiling during a big library
+    # sweep, and a size-only cap keeps a single stale sidecar forever on a
+    # quiet library. Age is applied first, then oldest-first eviction until
+    # the total is under the cap.
+    "revert_retention_days":     7,
+    "revert_retention_max_gb":   20,
+    # What a job does when it cannot write a sidecar (volume missing, full,
+    # or the cap already reached). False = process anyway and record no
+    # revert point; True = fail the job and leave the file untouched.
+    #
+    # Defaults to False so that a recycle bin problem degrades the revert
+    # feature rather than stopping the library being maintained. The
+    # opposite default reads as the safe one and is not: it converts a
+    # full disk into every subsequent job failing.
+    "revert_require_space":      False,
     # ── Maintenance ────────────────────────────────────────────────────────
     "auto_cleanup_on_scan":   True,   # remove deleted-file DB rows after each scan
     "scheduled_scan_enabled": False,  # run library scans automatically

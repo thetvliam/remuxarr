@@ -95,7 +95,7 @@ def _fully_populate(db, media):
     PlannedAction hanging off the queue item."""
     from app.database.models import (
         Ac3ForgeJob, AudioLanguageFlag, PlannedAction, PlexAnalyzeBacklog,
-        QueueItem, SubtitleLanguageFlag, Track,
+        QueueItem, RevertPoint, SubtitleLanguageFlag, Track,
     )
 
     qi = QueueItem(file_id=media.id, status="pending")
@@ -112,6 +112,10 @@ def _fully_populate(db, media):
                           detected_language="dut"),
         SubtitleLanguageFlag(file_id=media.id, stream_index=2,
                              detected_language="und"),
+        RevertPoint(file_id=media.id,
+                    sidecar_path="/recycle/1.remuxarr_revert",
+                    manifest="{}",
+                    original_path=media.path),
     ])
     db.commit()
     return qi
@@ -120,12 +124,13 @@ def _fully_populate(db, media):
 def _counts(db):
     from app.database.models import (
         Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction,
-        PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track,
+        PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track,
     )
 
     return {m.__name__: db.query(m).count() for m in (
         MediaFile, QueueItem, PlannedAction, Track, Ac3ForgeJob,
         PlexAnalyzeBacklog, AudioLanguageFlag, SubtitleLanguageFlag,
+        RevertPoint,
     )}
 
 

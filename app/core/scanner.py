@@ -31,7 +31,8 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track
+from app.core.recycle import delete_sidecar
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -275,6 +276,11 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     and was never updated when they were added. SubtitleLanguageFlag was
     added directly alongside this comment specifically to avoid
     repeating that exact mistake a third time.
+
+    RevertPoint is the fifth, and the first whose rows own a file on
+    disk. Its sidecar is unlinked here as well — see the comment at that
+    delete for why the row alone is not enough and why the unlink is
+    deliberately outside the caller's transaction.
     """
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(
@@ -295,6 +301,31 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     ).delete(synchronize_session=False)
     db.query(SubtitleLanguageFlag).filter(
         SubtitleLanguageFlag.file_id == media.id
+    ).delete(synchronize_session=False)
+    # RevertPoint is the first referencing table with bytes on disk behind
+    # it, so deleting the row is only half the job — the sidecar has to go
+    # too. Nothing else would ever collect it: it lives on the recycle
+    # volume (not TEMP_DIR, not scan_paths, so the startup orphan sweep
+    # never sees it) and its suffix is outside MEDIA_EXTENSIONS, so no scan
+    # sees it either. Left behind, it is a permanent leak of exactly the
+    # disk the retention cap exists to bound.
+    #
+    # This runs on every scan for any file that has vanished from disk,
+    # since auto_cleanup_on_scan defaults to True — which is the common
+    # case, not an edge one: a file that was replaced or deleted is the
+    # normal end of a revert point's life.
+    #
+    # The unlink is not part of the caller's transaction. A rollback after
+    # this point would restore the row and leave the sidecar gone, which is
+    # the survivable direction: revert already has to treat a missing
+    # sidecar as "this revert point is no longer usable", because the user
+    # can empty the volume by hand at any time. The reverse — committing
+    # the row deletion while the file stays — is the leak above, with
+    # nothing left in the database to find it by.
+    for rp in db.query(RevertPoint).filter(RevertPoint.file_id == media.id).all():
+        delete_sidecar(rp.sidecar_path)
+    db.query(RevertPoint).filter(
+        RevertPoint.file_id == media.id
     ).delete(synchronize_session=False)
     db.query(Track).filter(
         Track.file_id == media.id

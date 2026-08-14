@@ -333,6 +333,10 @@ KNOWN_KEYS = {
     "auto_cleanup_on_scan",
     "scheduled_scan_enabled",
     "scheduled_scan_times",
+    "revert_enabled",
+    "revert_retention_days",
+    "revert_retention_max_gb",
+    "revert_require_space",
 }
 
 

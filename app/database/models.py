@@ -430,3 +430,79 @@ class SubtitleLanguageFlag(Base):
     created_at = Column(DateTime, default=utcnow)
 
     media_file = relationship("MediaFile", backref="subtitle_language_flag")
+
+
+class RevertPoint(Base):
+    """
+    One row per processed file that can still be reverted to its original
+    tracks — the database half of the recycle bin.
+
+    The disk half is `sidecar_path`: a Matroska file holding only the
+    streams the job actually destroyed (dropped audio/subtitles, and the
+    pre-transcode original of any track the corrupt-audio retry path
+    re-encoded). Video is never stored, because it is never re-encoded —
+    that asymmetry is the whole reason this is affordable.
+
+    Why the manifest exists as well as the sidecar
+    ----------------------------------------------
+    The worker re-probes and REPLACES this file's Track rows once a job
+    succeeds, so the pre-processing layout is not recoverable from the
+    database by the time anyone wants to revert. `manifest` is therefore
+    self-contained JSON describing the original: stream order, codecs,
+    dispositions (default/forced), titles, and — critically — the
+    ORIGINAL language tags. A language re-tag destroys metadata without
+    touching a single byte of payload, so those tracks need no sidecar
+    entry at all, but reverting them still needs to know what the tag
+    used to say.
+
+    Attachments are recorded here too. probe.extract_tracks() filters to
+    video/audio/subtitle, so an attachment has never appeared in the
+    tracks table and cannot be discovered from it — the manifest is built
+    from a fresh ffprobe, not from Track rows.
+
+    Staleness
+    ---------
+    processed_size/processed_mtime fingerprint the file as this job LEFT
+    it. If Sonarr upgrades the episode afterwards the sidecar no longer
+    describes what is on disk, and revert must refuse rather than mux the
+    old tracks into a different release. Deliberately not the same fields
+    as MediaFile.size/mtime, which are reset to the -1/-1.0 dismissal
+    sentinels by several routes and so cannot be trusted for this.
+
+    Lifecycle
+    ---------
+    Rows are removed by the retention sweep (age or size cap), by an
+    explicit empty-the-bin action, or by _delete_media_file_and_related
+    when the media file itself goes away. Every one of those paths must
+    unlink `sidecar_path` as well — an orphaned sidecar is invisible to
+    the scanner (its extension is deliberately outside MEDIA_EXTENSIONS)
+    and would sit on the volume forever.
+    """
+    __tablename__ = "revert_points"
+
+    id      = Column(Integer, primary_key=True, index=True)
+    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
+                     nullable=False, index=True)
+
+    # Absolute path of the sidecar inside RECYCLE_DIR.
+    sidecar_path = Column(String, nullable=False)
+    # Stored rather than stat()ed so the size-cap sweep can order and sum
+    # candidates in one query instead of touching the filesystem per row.
+    sidecar_size = Column(BigInteger, default=0)
+
+    # JSON — the original stream layout. See the class docstring.
+    manifest = Column(Text, nullable=False)
+
+    # Where the file lived BEFORE the job, and in what container. Both
+    # change on an MKV → MP4 conversion, and revert has to put the file
+    # back under its original name.
+    original_path      = Column(String, nullable=False)
+    original_container = Column(String)
+
+    # Fingerprint of the file as the job left it — see "Staleness" above.
+    processed_size  = Column(BigInteger)
+    processed_mtime = Column(Float)
+
+    created_at = Column(DateTime, default=utcnow, index=True)
+
+    media_file = relationship("MediaFile", backref="revert_points")

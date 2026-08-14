@@ -236,8 +236,24 @@ def _cleanup_orphaned_temp_files() -> None:
             scan_paths = []
             logger.warning("Could not read scan_paths for orphan cleanup: %s", exc)
 
+        # 3. The recycle volume. Sidecars are staged as "<final>.part" next
+        #    to their destination like every other output, so a crash during
+        #    a sidecar write leaves one here — and this is the one location
+        #    neither sweep above reaches, since the recycle volume is not
+        #    TEMP_DIR and is not in scan_paths. Without this, a leaked
+        #    sidecar .part is collected by nothing, ever.
+        #
+        #    Only the suffixes below are removed, which is what keeps this
+        #    safe: a completed sidecar ends in SIDECAR_SUFFIX and is a
+        #    retained file with a database row pointing at it, not an
+        #    orphan. Deleting those here would empty the recycle bin on
+        #    every container restart.
+        sweep_roots = list(scan_paths)
+        if settings.RECYCLE_DIR and os.path.isdir(settings.RECYCLE_DIR):
+            sweep_roots.append(settings.RECYCLE_DIR)
+
         suffixes = (".part", ".remuxarr_tmp", ".forge_tmp")
-        for root_path in scan_paths:
+        for root_path in sweep_roots:
             if not root_path or not os.path.isdir(root_path):
                 continue
             for dirpath, _dirnames, filenames in os.walk(root_path):
