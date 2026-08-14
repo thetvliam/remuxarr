@@ -121,15 +121,20 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # the total is under the cap.
     "revert_retention_days":     7,
     "revert_retention_max_gb":   20,
-    # What a job does when it cannot write a sidecar (volume missing, full,
-    # or the cap already reached). False = process anyway and record no
-    # revert point; True = fail the job and leave the file untouched.
+    # What a job does when the recycle bin cannot provide a revert point —
+    # volume missing, disk full, FFmpeg failed. False = process anyway and
+    # record nothing; True = fail the job, leaving the file untouched.
+    #
+    # This governs UNAVAILABLE only. A job that destroyed nothing, or
+    # destroyed only attachments (which Matroska cannot store alone), has
+    # no revert point to record and never blocks — see revert_capture.py
+    # on why those two cases stay separate.
     #
     # Defaults to False so that a recycle bin problem degrades the revert
     # feature rather than stopping the library being maintained. The
     # opposite default reads as the safe one and is not: it converts a
     # full disk into every subsequent job failing.
-    "revert_require_space":      False,
+    "revert_require_point":      False,
     # ── Maintenance ────────────────────────────────────────────────────────
     "auto_cleanup_on_scan":   True,   # remove deleted-file DB rows after each scan
     "scheduled_scan_enabled": False,  # run library scans automatically

@@ -336,7 +336,7 @@ KNOWN_KEYS = {
     "revert_enabled",
     "revert_retention_days",
     "revert_retention_max_gb",
-    "revert_require_space",
+    "revert_require_point",
 }
 
 

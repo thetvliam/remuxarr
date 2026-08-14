@@ -401,6 +401,7 @@ async def execute_ffmpeg(
     job_id: int,
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds: float | None = None,
+    before_staging: Callable[[str], Awaitable[str | None]] | None = None,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
@@ -460,12 +461,18 @@ async def execute_ffmpeg(
             )
         )
 
+    # Handed temp_output, not output_path — see execute_ffmpeg_combined's
+    # identical wrapper for why the distinction matters on an in-place remux.
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_output)
+
     result = await run_staged_subprocess(
         cmd,
         [StagedOutput(temp_path=temp_output, final_path=output_path)],
         on_progress_line=on_progress_line,
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
     )
 
     if not result.success:
