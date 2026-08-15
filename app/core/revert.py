@@ -99,7 +99,20 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # from the processed file keeps them for free; this is here so a
         # future check can notice if that ever stops being true.
         "chapters": len(probe_data.get("chapters") or []),
+        # Runtime, for identifying the file later. Two different releases
+        # of the same episode can share every codec, resolution and
+        # channel count and still differ by a few seconds — duration is
+        # the cheapest signal that separates them, and the only one in
+        # this manifest that a stream-by-stream comparison cannot see.
+        "duration": _as_float(probe_data.get("format", {}).get("duration")),
     }
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _payload_key(stream: dict) -> tuple:
