@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.api.ws_manager import ws_manager
 from app.core.recycle import delete_sidecar, recycle_dir_status
-from app.core.revert_match import attach, list_detached
+from app.core.revert_match import attach, find_candidates, list_detached
 from app.core.revert_restore import restore_revert_point
 from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_db
@@ -187,6 +187,25 @@ def _run_revert(point_id: int, loop) -> None:
         _revert_status.update(point_id=None, path=None)
 
     asyncio.run_coroutine_threadsafe(ws_manager.broadcast_json(payload), loop)
+
+
+@router.get("/{point_id}/candidates/")
+def candidates(point_id: int, db: Session = Depends(get_db)):
+    """
+    Files a detached revert point might belong to.
+
+    "exact" is not a suggestion — a rename does not touch a byte, so a
+    file still carrying the fingerprint the job recorded IS the file. The
+    UI can offer those as one-click. "nearby" is a guess and still goes
+    through the full check on attach.
+    """
+    point = db.get(RevertPoint, point_id)
+    if point is None:
+        raise HTTPException(404, "No such revert point")
+    if point.file_id is not None:
+        raise HTTPException(409, "That revert point is already attached to a file")
+
+    return find_candidates(point_id)
 
 
 @router.post("/{point_id}/attach/")

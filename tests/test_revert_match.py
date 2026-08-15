@@ -48,6 +48,15 @@ The full list:
   • Annotations carried over instead of re-resolved    → killed
   • Fingerprint not refreshed on attach                → killed
   • Attaching an already-attached point allowed        → killed
+  • Fingerprint candidates matched on size alone       → killed
+  • Dismissal sentinels not excluded from matching     → killed
+  • Nearby candidates not filtered to the directory    → killed
+  • Exact matches repeated as guesses                  → killed
+  • Candidates offered for an already-attached point   → killed
+
+Two of those were the same oversight in two places: a fingerprint check
+written against size and mtime, tested only for a differing mtime. The
+mirror case — same size, different mtime — went untested both times.
 
 No equivalent mutants.
 """
@@ -443,6 +452,131 @@ def test_a_missing_file_on_disk_is_refused(db, tmp_path, monkeypatch):
 
     assert outcome.success is False
     assert "not on disk" in outcome.error
+
+
+# ── Finding the file again ───────────────────────────────────────────────────
+
+def _extra_file(db, path, *, size, mtime, directory=None):
+    from app.database.models import MediaFile
+
+    import os as _os
+    media = MediaFile(path=path, filename=_os.path.basename(path),
+                      directory=directory or _os.path.dirname(path),
+                      size=size, mtime=mtime, container="mkv")
+    db.add(media)
+    db.commit()
+    return media
+
+
+def test_a_renamed_file_is_found_by_its_fingerprint(db, tmp_path):
+    """
+    Not a suggestion. A rename does not touch a byte, so the renamed file
+    still carries the fingerprint of the file the job produced — which
+    means the common case for detaching resolves conclusively rather than
+    by guesswork.
+    """
+    from app.core.revert_match import find_candidates
+
+    point, media, path = _setup(db, tmp_path)
+    point.file_id = None
+    point.detached_at = point.created_at
+    db.commit()
+
+    found = find_candidates(point.id)
+
+    assert [c["id"] for c in found["exact"]] == [media.id]
+
+
+def test_a_file_with_a_different_fingerprint_is_not_exact(db, tmp_path):
+    from app.core.revert_match import find_candidates
+
+    point, media, _path = _setup(db, tmp_path)
+    point.file_id = None
+    point.processed_size = media.size + 1
+    db.commit()
+
+    assert find_candidates(point.id)["exact"] == []
+
+
+def test_a_same_sized_file_with_a_different_mtime_is_not_exact(db, tmp_path):
+    """
+    Size alone is not a fingerprint. Two episodes of the same show from
+    the same encode land within bytes of each other and sometimes exactly
+    on it — an "exact" label that a size collision can earn is worse than
+    no label, because the UI presents it as conclusive.
+    """
+    from app.core.revert_match import find_candidates
+
+    point, media, _path = _setup(db, tmp_path)
+    point.file_id = None
+    db.commit()
+    _extra_file(db, "/m/Different.mkv", size=media.size, mtime=media.mtime + 900)
+
+    found = find_candidates(point.id)
+
+    assert [c["id"] for c in found["exact"]] == [media.id]
+
+
+def test_dismissed_rows_are_never_fingerprint_matches(db, tmp_path):
+    """
+    Several queue routes reset MediaFile.size/mtime to -1/-1.0 to dismiss a
+    file. Those rows describe nothing on disk, and matching on them would
+    pair a revert point with every OTHER dismissed row exactly — the worst
+    false positive available, since it looks conclusive.
+    """
+    from app.core.revert_match import find_candidates
+
+    point, _media, _path = _setup(db, tmp_path)
+    point.file_id = None
+    point.processed_size = -1
+    point.processed_mtime = -1.0
+    db.commit()
+    _extra_file(db, "/m/Dismissed.mkv", size=-1, mtime=-1.0)
+
+    assert find_candidates(point.id)["exact"] == []
+
+
+def test_files_in_the_originals_directory_are_offered_as_guesses(db, tmp_path):
+    from app.core.revert_match import find_candidates
+
+    point, _media, _path = _setup(db, tmp_path)
+    point.file_id = None
+    point.original_path = "/m/old/Show.mkv"
+    db.commit()
+    sibling = _extra_file(db, "/m/old/Show - S01E01.mkv", size=999, mtime=9.0)
+    _extra_file(db, "/m/elsewhere/Other.mkv", size=999, mtime=9.0)
+
+    found = find_candidates(point.id)
+
+    assert [c["id"] for c in found["nearby"]] == [sibling.id]
+
+
+def test_an_exact_match_is_not_repeated_as_a_guess(db, tmp_path):
+    """
+    Listed twice, a UI shows the same file under both headings and the
+    "exact" label stops meaning anything.
+    """
+    from app.core.revert_match import find_candidates
+
+    point, media, _path = _setup(db, tmp_path)
+    point.file_id = None
+    point.original_path = str(tmp_path / "Show.mkv")
+    db.commit()
+
+    found = find_candidates(point.id)
+
+    assert [c["id"] for c in found["exact"]] == [media.id]
+    assert media.id not in [c["id"] for c in found["nearby"]]
+
+
+def test_an_attached_point_offers_no_candidates(db, tmp_path):
+    from app.core.revert_match import find_candidates
+
+    point, media, _path = _setup(db, tmp_path)
+    point.file_id = media.id
+    db.commit()
+
+    assert find_candidates(point.id) == {"exact": [], "nearby": []}
 
 
 # ── Listing ──────────────────────────────────────────────────────────────────

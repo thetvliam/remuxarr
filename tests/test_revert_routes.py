@@ -357,6 +357,44 @@ def test_confirm_mismatch_is_forwarded_when_given(client, monkeypatch):
     assert seen["confirm"] is True
 
 
+# ── Candidates ───────────────────────────────────────────────────────────────
+
+def test_candidates_are_offered_for_a_detached_point(client):
+    api, db, recycle = client
+    from app.database.models import MediaFile, RevertPoint
+
+    _media, point, _sidecar = _seed(db, recycle, detached=True)
+    # A renamed copy: same size and mtime, new path.
+    stored = db.get(RevertPoint, point.id)
+    renamed = MediaFile(path="/m/Renamed.mkv", filename="Renamed.mkv",
+                        directory="/m", size=stored.processed_size,
+                        mtime=stored.processed_mtime, container="mkv")
+    db.add(renamed)
+    db.commit()
+
+    body = api.get(f"/api/revert/{point.id}/candidates/").json()
+
+    assert renamed.id in [c["id"] for c in body["exact"]]
+
+
+def test_candidates_are_refused_for_an_attached_point(client):
+    """
+    An attached point already knows its file. Offering candidates invites
+    a UI that quietly reassigns a live revert point to a different file.
+    """
+    api, db, recycle = client
+
+    _media, point, _sidecar = _seed(db, recycle)
+
+    assert api.get(f"/api/revert/{point.id}/candidates/").status_code == 409
+
+
+def test_candidates_for_an_unknown_point_are_a_404(client):
+    api, _db, _recycle = client
+
+    assert api.get("/api/revert/999/candidates/").status_code == 404
+
+
 # ── Discarding ───────────────────────────────────────────────────────────────
 
 def test_discarding_removes_the_sidecar_too(client):

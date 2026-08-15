@@ -232,6 +232,77 @@ def attach(point_id: int, file_id: int, *, confirm_mismatch: bool = False
                              reasons=assessment.reasons)
 
 
+# MediaFile.size/mtime are reset to these by the queue's dismissal routes.
+# A row carrying them is not describing a file on disk, so it can never be
+# a fingerprint match — and would otherwise match every OTHER dismissed row
+# exactly, which is the worst possible false positive.
+_DISMISSED_SIZE = -1
+_DISMISSED_MTIME = -1.0
+
+
+def find_candidates(point_id: int, limit: int = 20) -> dict:
+    """
+    Files this detached revert point might belong to.
+
+    Two kinds, and the first is not a guess.
+
+    EXACT — a media file whose recorded size AND mtime are what the point
+    fingerprinted. A rename does not touch a byte, so the renamed file
+    still carries the fingerprint of the file the job produced. This is
+    conclusive, and it is the common case, which is what makes the whole
+    detach-on-rename design work rather than merely survive.
+
+    NEARBY — files in the directory the original lived in. A pure guess,
+    offered because a rename that also moves the file between libraries
+    is rare, so this is a short list rather than the whole library. Every
+    one still goes through assess() on attach.
+
+    Deliberately cheap: database only, no probing. A library-wide scan
+    that ffprobes every file to answer "which of these is it" would take
+    minutes and is unnecessary — the fingerprint already answers it for
+    the case that matters, and attach probes the one file chosen.
+    """
+    from app.database.models import MediaFile, RevertPoint
+    from app.database.session import SessionLocal
+
+    with SessionLocal() as db:
+        point = db.get(RevertPoint, point_id)
+        if point is None or point.file_id is not None:
+            return {"exact": [], "nearby": []}
+
+        exact = []
+        if (point.processed_size is not None
+                and point.processed_mtime is not None
+                and point.processed_size != _DISMISSED_SIZE
+                and point.processed_mtime != _DISMISSED_MTIME):
+            exact = (
+                db.query(MediaFile)
+                .filter(MediaFile.size == point.processed_size,
+                        MediaFile.mtime == point.processed_mtime)
+                .limit(limit)
+                .all()
+            )
+
+        exact_ids = {m.id for m in exact}
+        directory = os.path.dirname(point.original_path or "")
+        nearby = []
+        if directory:
+            nearby = [
+                m for m in db.query(MediaFile)
+                             .filter(MediaFile.directory == directory)
+                             .limit(limit + len(exact_ids))
+                             .all()
+                if m.id not in exact_ids
+            ][:limit]
+
+        def describe(media):
+            return {"id": media.id, "path": media.path,
+                    "filename": media.filename, "size": media.size}
+
+        return {"exact": [describe(m) for m in exact],
+                "nearby": [describe(m) for m in nearby]}
+
+
 def list_detached() -> list[dict]:
     """
     Detached revert points, newest first, described well enough to be
