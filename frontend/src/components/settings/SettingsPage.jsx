@@ -17,6 +17,7 @@ const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVE
 const CATEGORIES = [
   { id: "processing",    label: "Library & Processing", groups: ["Library", "Metadata", "Audio", "Subtitles"] },
 { id: "worker",        label: "Worker",               groups: ["Worker"] },
+{ id: "recyclebin",    label: "Recycle Bin",          groups: ["Recycle Bin"] },
 { id: "integrations",  label: "Integrations",         groups: ["Sonarr", "Radarr", "Plex", "Plex Analyze Backlog"] },
 { id: "notifications", label: "Notifications",        groups: ["Email"] },
 { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },

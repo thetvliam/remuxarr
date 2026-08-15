@@ -542,6 +542,58 @@ SETTINGS_SCHEMA = [
                        "resolved in bulk from the Review tab once this is "
                        "set to Always Keep or Always Remove.",
     },
+    # ── Recycle Bin ────────────────────────────────────────────────────────
+    {
+        "key":         "revert_enabled",
+        "group":       "Recycle Bin",
+        "label":       "Keep Removed Tracks",
+        "type":        "boolean",
+        "description": "Store the audio and subtitle tracks a job removes, so "
+                       "files can be put back the way they were. Only the "
+                       "removed tracks are kept, never the video, so this is "
+                       "normally a small fraction of each file. Requires the "
+                       "/recycle volume to be mounted — without it this stays "
+                       "off and the Recycle Bin page says so. Off by default: "
+                       "an existing install should not start filling a volume "
+                       "nobody has sized.",
+    },
+    {
+        "key":         "revert_retention_days",
+        "group":       "Recycle Bin",
+        "label":       "Keep For (Days)",
+        "type":        "integer",
+        "min":         0,
+        "description": "Discard stored tracks older than this. 0 disables the "
+                       "age limit entirely — it does NOT mean discard "
+                       "immediately. Both this and the size limit apply; age "
+                       "is checked first.",
+    },
+    {
+        "key":         "revert_retention_max_gb",
+        "group":       "Recycle Bin",
+        "label":       "Maximum Size (GB)",
+        "type":        "integer",
+        "min":         0,
+        "description": "Discard the oldest stored tracks once the recycle bin "
+                       "exceeds this size. 0 disables the size limit. Both "
+                       "limits exist because either alone fails a common case: "
+                       "an age-only window has no ceiling during a large "
+                       "library sweep, and a size-only cap keeps one stale "
+                       "entry forever on a quiet library.",
+    },
+    {
+        "key":         "revert_require_point",
+        "group":       "Recycle Bin",
+        "label":       "Fail Jobs That Cannot Be Reverted",
+        "type":        "boolean",
+        "description": "When the recycle bin cannot store a job's removed "
+                       "tracks — volume missing, disk full — fail the job and "
+                       "leave the file untouched rather than processing it "
+                       "with no way back. Off by default, deliberately: this "
+                       "reads as the safe choice and turns a full disk into "
+                       "every subsequent job failing. Jobs that remove nothing "
+                       "are never affected.",
+    },
     # ── Worker ─────────────────────────────────────────────────────────────
     {
         "key":         "max_concurrent_jobs",
