@@ -42,7 +42,15 @@ protect:
 
 The remaining mutations, killed on the first run:
 
-  • Pass 2 removed entirely                      → killed (re-tag reported lost)
+  • The payload-plus-language pass removed       → killed. That mutant is
+                                                    the dual-audio bug
+                                                    reported from a real
+                                                    library, so it is the
+                                                    one that matters here.
+  • Pass order reversed, loosest first           → killed
+  • The language key ignoring language           → killed
+  • The language key folding disposition back in → killed
+  • The payload-only pass removed                → killed (re-tag reported lost)
   • language folded into the audio payload key   → killed
   • `remaining.pop()` dropped from either pass   → killed (duplicate matches)
   • attachments filtered out of build_manifest   → killed
@@ -293,6 +301,94 @@ def test_the_right_one_of_two_similar_tracks_is_reported():
     lost = find_lost_streams(original, processed)
     assert [s["language"] for s in lost] == ["eng"]
     assert [s["index"] for s in lost] == [1]
+
+
+def test_dropping_the_default_audio_track_does_not_confuse_the_survivor():
+    """
+    Reported from a real library, and the failure was silent and total.
+
+    A dual-audio release: Japanese default, English dub, identical codec
+    and channel layout. The job keeps English and drops Japanese. FFmpeg
+    then promotes the surviving English track to default, because the
+    default track it had was removed — so the kept track's disposition no
+    longer matches the original's through no decision of ours, and the
+    exact pass cannot pair it.
+
+    Both audio tracks then reached a pass that ignored language, where
+    Japanese claimed the match purely by coming first in the file. The
+    sidecar stored the English track — the one still in the file — and the
+    Japanese audio, actually destroyed, was gone for good. Nothing failed,
+    the sidecar had a plausible size and the right number of streams, and
+    the only way to notice was to read the languages.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(0, "video", "h264", width=1920, height=1080),
+        _stream(1, "audio", "aac", channels=2, sample_rate="48000",
+                language="jpn", disposition={"default": 1, "original": 1}),
+        _stream(2, "audio", "aac", channels=2, sample_rate="48000",
+                language="eng", disposition={"dub": 1}),
+    )
+    processed = _probe(
+        _stream(0, "video", "h264", width=1920, height=1080),
+        # Promoted to default by the drop.
+        _stream(1, "audio", "aac", channels=2, sample_rate="48000",
+                language="eng", disposition={"default": 1, "dub": 1}),
+    )
+
+    lost = find_lost_streams(original, processed)
+
+    assert [s["language"] for s in lost] == ["jpn"], (
+        "the sidecar would store the track that survived and lose the one "
+        "that was destroyed"
+    )
+
+
+def test_a_disposition_change_alone_never_means_lost():
+    """
+    The general form. A remux rewrites dispositions as a side effect of
+    what it removed, so they cannot be part of any key that decides
+    whether a stream survived.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(1, "audio", "eac3", channels=6, language="eng",
+                disposition={"dub": 1}),
+    )
+    processed = _probe(
+        _stream(1, "audio", "eac3", channels=6, language="eng",
+                disposition={"default": 1, "dub": 1}),
+    )
+
+    assert find_lost_streams(original, processed) == []
+
+
+def test_language_is_preferred_over_position_when_pairing():
+    """
+    The ordering property the middle pass exists for: a looser pass must
+    never claim a stream a stricter one could have placed. Here the two
+    candidates are interchangeable on payload alone, and only language
+    says which is which.
+    """
+    from app.core.revert import match_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn",
+                disposition={"default": 1}),
+        _stream(2, "audio", "aac", channels=2, language="eng",
+                title="English Dub"),
+    )
+    processed = _probe(
+        _stream(1, "audio", "aac", channels=2, language="eng",
+                disposition={"default": 1}),
+    )
+
+    by_index = {s["index"]: idx for s, idx in match_streams(original, processed)}
+
+    assert by_index[2] == 1, "the English track was not paired with itself"
+    assert by_index[1] is None, "the Japanese track was not reported as lost"
 
 
 def test_retagged_subtitle_title_is_not_reported_as_lost():

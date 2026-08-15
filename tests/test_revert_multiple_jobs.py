@@ -171,6 +171,90 @@ def _revert(lib):
     return asyncio.run(restore_revert_point(point.id))
 
 
+@pytest.fixture
+def dual_audio(tmp_path, monkeypatch):
+    """
+    A dual-audio release: Japanese default, English dub, identical codec
+    and channel layout. The shape that exposed the matching bug.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    recycle = tmp_path / "recycle"
+    recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    path = media_dir / "Spy.mkv"
+    subs = tmp_path / "s.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n\n")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+         "-i", str(subs),
+         "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:s",
+         "-metadata:s:a:0", "language=jpn", "-metadata:s:a:1", "language=eng",
+         "-metadata:s:s:0", "language=eng",
+         "-disposition:a:0", "default+original", "-disposition:a:1", "dub",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-ac", "2", "-ar", "48000", "-c:s", "srt",
+         "-f", "matroska", str(path)], check=True)
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    import app.core.worker as worker_mod
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Spy.mkv",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv", status="processed")
+    db.add(media)
+    db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path)}
+
+
+def test_the_dropped_audio_track_is_the_one_stored(dual_audio):
+    """
+    Reported from a real library. Keeping English and dropping Japanese
+    makes FFmpeg promote English to default, since the default track was
+    the one removed — so the kept track stops matching the original
+    exactly, through no decision of ours.
+
+    Both audio tracks then fell to a pass that ignored language, where
+    Japanese claimed the match by coming first in the file. The sidecar
+    stored English, still present in the processed file, and the Japanese
+    audio was gone for good. The sidecar had the right stream count and a
+    plausible size throughout.
+    """
+    _run_job(dual_audio, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
+
+    languages = [lang for kind, _codec, lang in _summarise(dual_audio["path"])
+                 if kind == "audio"]
+    assert languages == ["eng"], "fixture did not drop the Japanese track"
+
+    outcome = _revert(dual_audio)
+
+    assert outcome.success is True, outcome.error
+    restored = [(k, lang) for k, _c, lang in _summarise(dual_audio["path"])
+                if k == "audio"]
+    assert restored == [("audio", "jpn"), ("audio", "eng")], (
+        "the Japanese track was not restored — the sidecar stored the wrong one"
+    )
+
+
 # ── The regression ───────────────────────────────────────────────────────────
 
 def test_a_metadata_only_job_does_not_strand_the_first_jobs_tracks(lib):

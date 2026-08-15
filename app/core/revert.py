@@ -134,8 +134,24 @@ def _payload_key(stream: dict) -> tuple:
     return (kind, stream.get("codec"))
 
 
+def _language_key(stream: dict) -> tuple:
+    """
+    Payload identity plus language, and nothing else.
+
+    Dispositions are excluded because a remux rewrites them as a side
+    effect of what it removed: drop the default audio track and FFmpeg
+    promotes whatever is left, so a surviving track's disposition differs
+    from the original's through no decision of ours. Title is excluded for
+    the same reason a re-tag changes it.
+
+    Language survives both, which makes this the strongest key that is
+    still stable across an ordinary job.
+    """
+    return (_payload_key(stream), stream.get("language"))
+
+
 def _full_key(stream: dict) -> tuple:
-    """Payload identity plus the metadata a re-tag would change."""
+    """Payload identity plus every piece of metadata."""
     return (
         _payload_key(stream),
         stream.get("language"),
@@ -154,16 +170,26 @@ def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int
     file or out of the sidecar, and at which index. find_lost_streams is
     the capture-side view of the same answer.
 
-    Matching runs in two passes, and the order matters:
+    Matching runs in three passes, each looser than the last, and the
+    order is the whole design — a looser pass must never get to claim a
+    stream a stricter one could have placed correctly:
 
-      1. Exact — payload plus language, title and dispositions. This pairs
-         off every stream the job left completely alone, and pairs them
-         off FIRST, so they cannot be consumed as loose matches for
-         something else.
-      2. Payload only. What remains on each side after pass 1 is the
-         re-tagged streams and the genuinely destroyed ones; matching on
-         payload alone pairs the re-tagged ones up, because a re-tag
-         changes metadata without touching a byte of the stream.
+      1. Exact — payload plus language, title and dispositions. Pairs off
+         every stream the job left completely alone, first, so they cannot
+         be consumed as loose matches for something else.
+      2. Payload plus language. Pairs off streams whose dispositions or
+         title the job rewrote. This pass is not optional and its absence
+         was a real bug: dropping the default audio track makes FFmpeg
+         promote the survivor to default, so a kept track fails pass 1
+         through no decision of ours. Without this pass it fell to pass 3,
+         where a DIFFERENT track of the same codec and channel count
+         claimed the match first purely by being earlier in the file — and
+         the sidecar then stored the track that survived while the one
+         actually destroyed was lost for good.
+      3. Payload only. What remains is re-tagged streams and genuinely
+         destroyed ones; matching on payload alone pairs the re-tagged
+         ones up, because a re-tag changes metadata without touching a
+         byte of the stream.
 
     Anything still unmatched on the original side was destroyed.
 
@@ -198,16 +224,24 @@ def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int
         else:
             unmatched.append(original)
 
-    # Pass 2 — payload only, over what pass 1 could not place.
+    # Passes 2 and 3 — progressively looser, each over what the previous
+    # could not place. Running them as a sequence rather than merging them
+    # is what stops a loose match claiming a stream a tighter one owns.
+    for key_fn in (_language_key, _payload_key):
+        still_unmatched = []
+        for original in unmatched:
+            key = key_fn(original)
+            for i, candidate in enumerate(remaining):
+                if key_fn(candidate) == key:
+                    matched[id(original)] = candidate["index"]
+                    remaining.pop(i)
+                    break
+            else:
+                still_unmatched.append(original)
+        unmatched = still_unmatched
+
     for original in unmatched:
-        key = _payload_key(original)
-        for i, candidate in enumerate(remaining):
-            if _payload_key(candidate) == key:
-                matched[id(original)] = candidate["index"]
-                remaining.pop(i)
-                break
-        else:
-            matched[id(original)] = None
+        matched[id(original)] = None
 
     return [(s, matched[id(s)]) for s in manifest.get("streams", [])]
 
