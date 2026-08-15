@@ -472,17 +472,37 @@ class RevertPoint(Base):
     Lifecycle
     ---------
     Rows are removed by the retention sweep (age or size cap), by an
-    explicit empty-the-bin action, or by _delete_media_file_and_related
-    when the media file itself goes away. Every one of those paths must
-    unlink `sidecar_path` as well — an orphaned sidecar is invisible to
-    the scanner (its extension is deliberately outside MEDIA_EXTENSIONS)
-    and would sit on the volume forever.
+    explicit empty-the-bin action, or by a successful revert consuming
+    them. Every one of those paths must unlink `sidecar_path` as well — an
+    orphaned sidecar is invisible to the scanner (its extension is
+    deliberately outside MEDIA_EXTENSIONS) and would sit on the volume
+    forever.
+
+    _delete_media_file_and_related is the exception: it detaches rather
+    than deletes, and deliberately keeps the sidecar. See file_id.
     """
     __tablename__ = "revert_points"
 
     id      = Column(Integer, primary_key=True, index=True)
+    # NULLABLE, unlike every other table referencing media_files.
+    #
+    # A revert point outlives the row it was attached to. The scanner
+    # deletes a MediaFile row whenever its path is gone from disk, and it
+    # cannot tell a deletion from a RENAME — Sonarr changing a naming
+    # scheme moves an entire library in one pass. Cascading the delete
+    # here would destroy the stored tracks for files that still exist,
+    # which is the opposite of what a recycle bin is for.
+    #
+    # So the point is detached instead: file_id goes NULL, the sidecar
+    # stays, and it can be matched back to a file by hand. Retention still
+    # bounds it, so a detached point is not an unbounded leak.
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
-                     nullable=False, index=True)
+                     nullable=True, index=True)
+
+    # When the point lost its file, and NULL while it still has one. Both
+    # a flag and a record: the UI needs to explain why a point is unmatched
+    # and how long it has been that way.
+    detached_at = Column(DateTime, index=True)
 
     # Absolute path of the sidecar inside RECYCLE_DIR.
     sidecar_path = Column(String, nullable=False)

@@ -122,16 +122,28 @@ def _fully_populate(db, media):
 
 
 def _counts(db):
+    """
+    Rows still ATTACHED to a media file, per table.
+
+    RevertPoint is counted by attachment rather than existence because it
+    is detached rather than deleted — its rows survive on purpose. A plain
+    count would then report the deleted file's leftover row as if another
+    file's rows had been spared, which is the opposite of what these tests
+    are checking.
+    """
     from app.database.models import (
         Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction,
         PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track,
     )
 
-    return {m.__name__: db.query(m).count() for m in (
+    counts = {m.__name__: db.query(m).count() for m in (
         MediaFile, QueueItem, PlannedAction, Track, Ac3ForgeJob,
         PlexAnalyzeBacklog, AudioLanguageFlag, SubtitleLanguageFlag,
-        RevertPoint,
     )}
+    counts["RevertPoint"] = (
+        db.query(RevertPoint).filter(RevertPoint.file_id.isnot(None)).count()
+    )
+    return counts
 
 
 # ── The cascade itself ───────────────────────────────────────────────────────
@@ -149,11 +161,25 @@ def test_every_table_referencing_media_files_is_cleared(db):
 
     If this fails after a schema change, the fix is a new delete in
     _delete_media_file_and_related, not a change here.
+
+    DETACHED_TABLES is the one sanctioned way out, and it is deliberately
+    awkward: a table only belongs there if losing its rows when a file's
+    path disappears would destroy something the user wanted kept. Adding
+    a name to it is a claim that the rows survive AND are still bounded by
+    something else. Both halves are asserted separately below, so the
+    exemption cannot be used to smuggle in a table that simply leaks.
     """
     from sqlalchemy import text
 
     from app.core.scanner import _delete_media_file_and_related
     from app.database.models import Base, MediaFile
+
+    # revert_points: this function cannot tell a deletion from a rename,
+    # and Sonarr changing a naming scheme moves a whole library at once.
+    # Deleting the stored tracks for files that still exist is the
+    # opposite of what a recycle bin is for. Detached rows are bounded by
+    # the retention sweep instead — see test_retention_sweep.py.
+    DETACHED_TABLES = {"revert_points"}
 
     referencing = {
         table.name
@@ -162,6 +188,12 @@ def test_every_table_referencing_media_files_is_cleared(db):
         if fk.column.table.name == "media_files"
     }
     assert referencing, "metadata introspection found nothing — test is broken"
+
+    cleared = referencing - DETACHED_TABLES
+    assert DETACHED_TABLES <= referencing, (
+        f"DETACHED_TABLES names something that does not reference "
+        f"media_files: {sorted(DETACHED_TABLES - referencing)}"
+    )
 
     media = _media(db)
     _fully_populate(db, media)
@@ -182,7 +214,7 @@ def test_every_table_referencing_media_files_is_cleared(db):
 
     leftovers = {
         name: db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar()
-        for name in referencing
+        for name in cleared
     }
     orphaned = {n: c for n, c in leftovers.items() if c}
     assert not orphaned, (
@@ -190,6 +222,25 @@ def test_every_table_referencing_media_files_is_cleared(db):
         f"_delete_media_file_and_related needs a delete for each"
     )
     assert db.query(MediaFile).count() == 0
+
+    # The other half of the exemption. A table in DETACHED_TABLES has to
+    # actually keep its rows AND actually let go of the file — a row still
+    # pointing at a deleted media_files id is a dangling reference, not a
+    # detached record, and would fail the moment anything joined on it.
+    for name in DETACHED_TABLES:
+        surviving = db.execute(text(f"SELECT COUNT(*) FROM {name}")).scalar()
+        assert surviving, (
+            f"{name} is exempt from deletion but its rows were deleted "
+            f"anyway — either the exemption or the code is wrong"
+        )
+        still_attached = db.execute(
+            text(f"SELECT COUNT(*) FROM {name} WHERE file_id IS NOT NULL")
+        ).scalar()
+        assert not still_attached, (
+            f"{name} kept {still_attached} row(s) pointing at the deleted "
+            f"media file — detaching means clearing file_id, not just "
+            f"skipping the delete"
+        )
 
 
 def test_the_media_file_row_itself_is_removed(db):

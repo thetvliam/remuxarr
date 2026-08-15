@@ -302,6 +302,74 @@ def test_sweep_does_nothing_without_a_mounted_volume(tmp_path, monkeypatch):
     assert _sweep() == (0, 0)
 
 
+# ── Detached points ──────────────────────────────────────────────────────────
+#
+# _delete_media_file_and_related detaches a revert point rather than
+# deleting it, on the grounds that it cannot tell a rename from a
+# deletion. That exemption is only defensible because retention still
+# bounds what it leaves behind — these tests are the other half of the
+# argument made in test_media_file_deletion.py's DETACHED_TABLES.
+
+def _detached(bin_, name, *, age_days=0, size=1024):
+    from app.database.models import RevertPoint
+
+    path = bin_["root"] / f"{name}.remuxarr_revert"
+    path.write_bytes(b"x" * min(size, 4096))
+    row = RevertPoint(
+        file_id=None, sidecar_path=str(path), sidecar_size=size,
+        manifest="{}", original_path=f"/m/{name}.mkv",
+        created_at=utcnow_naive() - timedelta(days=age_days),
+        detached_at=utcnow_naive() - timedelta(days=age_days),
+    )
+    bin_["db"].add(row)
+    bin_["db"].commit()
+    return path
+
+
+def test_detached_points_still_expire(bin_):
+    """
+    Without this, a library-wide rename converts the whole recycle bin
+    into rows nothing will ever clear.
+    """
+    old = _detached(bin_, "detached_old", age_days=30)
+
+    _sweep()
+
+    assert not old.exists()
+
+
+def test_detached_points_still_count_against_the_cap(bin_):
+    """
+    Excluding them from the cap would let detached points crowd out the
+    live ones a user is far more likely to need.
+    """
+    gb = 1024 * 1024 * 1024
+    bin_["cfg"]["revert_retention_max_gb"] = 2
+
+    orphan = _detached(bin_, "detached", age_days=3, size=gb)
+    newer = _point(bin_, "newer", age_days=2, size=gb)
+    newest = _point(bin_, "newest", age_days=1, size=gb)
+
+    _sweep()
+
+    assert not orphan.exists(), "a detached point escaped the size cap"
+    assert newer.exists() and newest.exists()
+
+
+def test_a_detached_points_sidecar_is_not_swept_as_an_orphan(bin_):
+    """
+    Detached is not orphaned. It has a row, it is listed in the UI, and a
+    user can match it back to a renamed file — deleting the file under it
+    would make that impossible while the row still promised it.
+    """
+    path = _detached(bin_, "detached", age_days=1)
+    _age_file(path, 7200)
+
+    _sweep()
+
+    assert path.exists()
+
+
 # ── Independent of the feature toggle ────────────────────────────────────────
 
 def test_retention_still_applies_when_the_feature_is_off(bin_):

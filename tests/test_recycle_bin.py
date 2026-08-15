@@ -25,6 +25,20 @@ unit-test material:
      sweep misses it) and its suffix is outside MEDIA_EXTENSIONS (so
      every scan misses it).
 
+Two mutants survive individually and are recorded rather than papered
+over, because the pair is the interesting result: removing the explicit
+`rp.file_id = None`, and adding cascade="all, delete-orphan" to the
+backref. Either alone passes everything here — SQLAlchemy nullifies a
+loaded child's FK on parent delete anyway, and delete-orphan does not
+fire when the FK is cleared directly rather than through the collection.
+Applied TOGETHER the rows are deleted and these tests fail.
+
+That is the justification for a line that looks redundant: the explicit
+assignment is what makes detachment a property of the function rather
+than of the relationship's configuration, and it is the reason a future
+cascade change cannot quietly turn detaching back into deleting.
+Verified by applying all three combinations.
+
 Verified by mutation, 11 applied to recycle.py and the deletion path:
 
   • Returning True instead of False from delete_sidecar's FileNotFoundError
@@ -286,12 +300,14 @@ def _media_with_revert_point(db, recycle, *, sidecar_exists=True):
     return media, sidecar
 
 
-def test_deleting_a_media_file_removes_its_sidecar_from_disk(db, recycle):
+def test_a_vanished_file_detaches_its_revert_point_and_keeps_the_sidecar(db,
+                                                                        recycle):
     """
-    The row going without the file is a permanent, invisible disk leak —
-    nothing scans the recycle volume and nothing else records the path.
-    This fires on every scan for any file that has vanished from disk,
-    because auto_cleanup_on_scan defaults to True.
+    The rename case, which this function cannot distinguish from a
+    deletion — it only knows the path is gone. Sonarr changing a naming
+    scheme moves a whole library in one pass, and every one of those files
+    still exists. Deleting their stored tracks would empty the recycle bin
+    for a library that was never deleted.
     """
     from app.core.scanner import _delete_media_file_and_related
     from app.database.models import RevertPoint
@@ -301,11 +317,33 @@ def test_deleting_a_media_file_removes_its_sidecar_from_disk(db, recycle):
     _delete_media_file_and_related(db, media)
     db.commit()
 
-    assert not sidecar.exists(), "sidecar left on the recycle volume"
-    assert db.query(RevertPoint).count() == 0
+    assert sidecar.exists(), "the stored tracks were destroyed"
+    point = db.query(RevertPoint).one()
+    assert point.file_id is None, "the point still points at a deleted row"
+    assert point.detached_at is not None
 
 
-def test_deletion_completes_when_the_sidecar_is_already_gone(db, recycle):
+def test_a_detached_point_keeps_everything_needed_to_match_it_back(db, recycle):
+    """
+    Detaching is only useful if what survives identifies the file. The
+    original path and the manifest are how a user recognises which point
+    belongs to which renamed file.
+    """
+    from app.core.scanner import _delete_media_file_and_related
+    from app.database.models import RevertPoint
+
+    media, _sidecar = _media_with_revert_point(db, recycle)
+
+    _delete_media_file_and_related(db, media)
+    db.commit()
+
+    point = db.query(RevertPoint).one()
+    assert point.original_path == "/m/Show.mkv"
+    assert point.manifest
+    assert point.sidecar_path
+
+
+def test_detaching_completes_when_the_sidecar_is_already_gone(db, recycle):
     """
     Ordinary, not exceptional: retention may have swept the file already,
     or the user emptied the volume by hand.
@@ -318,14 +356,15 @@ def test_deletion_completes_when_the_sidecar_is_already_gone(db, recycle):
     _delete_media_file_and_related(db, media)
     db.commit()
 
-    assert db.query(RevertPoint).count() == 0
     assert db.query(MediaFile).count() == 0
+    assert db.query(RevertPoint).one().file_id is None
 
 
-def test_only_the_deleted_files_sidecar_is_removed(db, recycle):
+def test_another_files_revert_point_is_not_detached(db, recycle):
     """
-    The delete is filtered by file_id. Dropping that filter empties the
-    whole recycle bin whenever any one file disappears from the library.
+    The update is filtered by file_id. Dropping that filter detaches the
+    entire recycle bin the first time any one file disappears — unattended,
+    on every scan.
     """
     from app.core.scanner import _delete_media_file_and_related
     from app.database.models import MediaFile, RevertPoint
@@ -345,6 +384,8 @@ def test_only_the_deleted_files_sidecar_is_removed(db, recycle):
     _delete_media_file_and_related(db, doomed)
     db.commit()
 
-    assert not doomed_sidecar.exists()
-    assert keeper_sidecar.exists(), "another file's sidecar was deleted"
-    assert db.query(RevertPoint).count() == 1
+    assert doomed_sidecar.exists()
+    assert keeper_sidecar.exists()
+    attached = db.query(RevertPoint).filter(
+        RevertPoint.file_id.isnot(None)).all()
+    assert [p.file_id for p in attached] == [keeper.id]
