@@ -88,8 +88,9 @@ def _summarise(path):
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     """A pristine file, a mounted recycle volume, and a live database."""
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.config import settings as app_settings
     from app.database.models import Base, MediaFile
@@ -116,7 +117,7 @@ def lib(tmp_path, monkeypatch):
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-c:s", "srt",
          "-f", "matroska", str(path)], check=True)
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -177,8 +178,9 @@ def dual_audio(tmp_path, monkeypatch):
     A dual-audio release: Japanese default, English dub, identical codec
     and channel layout. The shape that exposed the matching bug.
     """
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.config import settings as app_settings
     from app.database.models import Base, MediaFile
@@ -207,7 +209,7 @@ def dual_audio(tmp_path, monkeypatch):
          "-c:a", "aac", "-ac", "2", "-ar", "48000", "-c:s", "srt",
          "-f", "matroska", str(path)], check=True)
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -277,6 +279,30 @@ def test_a_metadata_only_job_does_not_strand_the_first_jobs_tracks(lib):
     assert _summarise(lib["path"]) == lib["pristine"], (
         "the subtitles dropped by job 1 were not restored"
     )
+
+
+def test_the_metadata_change_itself_is_reverted(lib):
+    """
+    The other half of the same scenario. A re-tag leaves no trace in any
+    sidecar — no track was removed — so only the manifest remembers what
+    the tag used to say. If revert copied metadata through instead of
+    rewriting it from the manifest, this would be a partial undo that
+    looked complete: the dropped tracks back, the re-tag still applied.
+    """
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1)
+    _run_job(lib, ["-map", "0", "-c", "copy",
+                   "-metadata:s:a:0", "language=deu"], job_id=2)
+
+    _revert(lib)
+
+    languages = [lang for kind, _codec, lang in _summarise(lib["path"])
+                 if kind == "audio"]
+    assert "deu" not in languages, (
+        f"the job's language tag survived the revert: {languages}"
+    )
+    assert languages == [lang for kind, _c, lang in lib["pristine"]
+                         if kind == "audio"]
 
 
 def test_a_metadata_only_job_refreshes_the_fingerprint(lib):

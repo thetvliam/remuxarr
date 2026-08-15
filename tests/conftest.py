@@ -39,6 +39,37 @@ if os.path.exists(_db_path):
 
 import pytest
 
+
+def memory_engine():
+    """
+    An in-memory SQLite engine that survives being used from more than one
+    thread.
+
+    Two defaults make the plain `create_engine("sqlite://")` unusable as
+    soon as anything leaves the calling thread, and both fail the same
+    confusing way — "no such table", as though the schema were never
+    created:
+
+      • Every new connection to ":memory:" gets its OWN empty database.
+        StaticPool keeps exactly one, so the tables created on it are the
+        tables everything sees.
+      • SQLite refuses a connection used from a thread other than the one
+        that opened it. Production sets check_same_thread=False for the
+        same reason — the worker does its database work on executor
+        threads — so the tests should match.
+
+    Any test touching code that awaits run_in_executor, or that goes
+    through TestClient, needs this rather than the bare call.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
+    return create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
 # Every settings key analyze_file() actually reads, confirmed directly
 # against app/core/decision.py rather than assumed — see the grep this was
 # built from if these ever need re-verifying:

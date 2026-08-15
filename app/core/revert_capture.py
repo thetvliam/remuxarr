@@ -184,6 +184,23 @@ def sidecar_path_for(file_id: int, job_id: int) -> str:
     )
 
 
+async def _off_loop(fn, *args):
+    """
+    Run blocking work on a thread instead of the event loop.
+
+    capture() is awaited from inside run_staged_subprocess's hook, which
+    runs on the main loop alongside every job's progress broadcasts and
+    every HTTP handler. ffprobe on a spun-down array takes hundreds of
+    milliseconds, and capture does two probes plus a database query — all
+    of it synchronous, all of it previously on the loop.
+
+    Measured at 412 ms of stalled loop per probe against 12 ms through an
+    executor. That is not a slow revert; it is every OTHER job's progress
+    freezing while one job finishes.
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+
 async def _run(cmd: list[str]) -> None:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -297,16 +314,16 @@ async def capture(
     require = bool(app_cfg.get("revert_require_point"))
 
     try:
-        ready, reason = recycle_dir_status()
+        ready, reason = await _off_loop(recycle_dir_status)
         if not ready:
             raise _Unavailable(reason)
 
         try:
-            produced_probe = probe_file(produced_path)
+            produced_probe = await _off_loop(probe_file, produced_path)
         except ProbeError as exc:
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
-        existing = _load_existing_point(file_id)
+        existing = await _off_loop(_load_existing_point, file_id)
         # A row that exists but cannot be built on is superseded, not
         # ignored: `extend` decides what to build FROM, `existing` decides
         # which row to write back to.
@@ -319,7 +336,7 @@ async def capture(
             # a superseded point it is the best available, since whatever
             # the unusable row described can no longer be reconstructed.
             try:
-                original_probe = probe_file(input_path)
+                original_probe = await _off_loop(probe_file, input_path)
             except ProbeError as exc:
                 raise _Unavailable(
                     f"Could not probe for a revert point: {exc}"
@@ -394,7 +411,7 @@ async def capture(
         _reannotate(matches, sources)
 
         try:
-            size = os.path.getsize(sidecar)
+            size = await _off_loop(os.path.getsize, sidecar)
         except OSError as exc:
             raise _Unavailable(f"Sidecar vanished after being written: {exc}") from exc
 

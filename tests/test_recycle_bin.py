@@ -103,12 +103,13 @@ def unmounted(tmp_path, monkeypatch):
 
 @pytest.fixture
 def db():
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 

@@ -58,6 +58,7 @@ No equivalent mutants.
 import asyncio
 import json
 import os
+import time
 
 import pytest
 
@@ -66,13 +67,14 @@ import pytest
 
 def _memory_db(monkeypatch):
     """An isolated in-memory database, installed as SessionLocal."""
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -433,6 +435,75 @@ def test_an_unprobeable_file_is_treated_as_unavailable(recycle, monkeypatch):
     assert error is not None
 
 
+# ── Staying off the event loop ───────────────────────────────────────────────
+
+@pytest.mark.parametrize("slow_call", ["probe_file", "_load_existing_point"])
+def test_capture_does_not_block_the_event_loop(recycle, enabled, monkeypatch,
+                                               slow_call):
+    """
+    capture() is awaited from inside run_staged_subprocess's hook, which
+    runs on the main loop alongside every job's progress broadcasts and
+    every HTTP handler. It does two ffprobes and a database query, all
+    synchronous — and ffprobe on a spun-down array takes hundreds of
+    milliseconds.
+
+    Measured at 412 ms of stalled loop per probe before this, against
+    12 ms through an executor. The symptom is not a slow revert; it is
+    every OTHER job's progress freezing while one job finishes, which
+    reads as the app hanging.
+
+    Each call is slowed deliberately and in turn: a fast stub cannot tell
+    a blocking call from a non-blocking one, which is exactly why this
+    went unnoticed while every other test passed.
+
+    The database query is parametrised alongside the probes even though an
+    in-memory query is microseconds. In production the engine has a 30
+    second busy timeout, so a read waiting behind another job's write lock
+    is precisely the case that would stall the loop for seconds — and the
+    only way to test the property rather than the coincidence is to make
+    the call slow on purpose.
+    """
+    import app.core.revert_capture as rc
+
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    original = getattr(rc, slow_call)
+
+    def slow(*a, **k):
+        time.sleep(0.25)
+        return original(*a, **k)
+
+    monkeypatch.setattr(rc, slow_call, slow)
+
+    ticks = []
+
+    async def heartbeat(stop):
+        while not stop.is_set():
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.01)
+
+    async def run():
+        stop = asyncio.Event()
+        beat = asyncio.create_task(heartbeat(stop))
+        await asyncio.sleep(0.05)
+        await rc.capture(input_path="/m/Show.mkv",
+                         produced_path="/tmp/job_1.remuxarr_tmp",
+                         file_id=7, job_id=1, app_cfg=enabled)
+        await asyncio.sleep(0.05)
+        stop.set()
+        await beat
+
+    asyncio.run(run())
+
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    assert gaps, "the heartbeat never ran — the measurement is broken"
+    assert max(gaps) < 0.15, (
+        f"the event loop stalled for {max(gaps) * 1000:.0f} ms during capture; "
+        f"blocking work is running on it instead of an executor"
+    )
+
+
 # ── Source planning and re-annotation ────────────────────────────────────────
 #
 # Reached through capture only in combinations our own jobs cannot
@@ -531,14 +602,15 @@ def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
     Unusable, though, is not absent: the row still comes back so capture
     can take it over rather than leave a duplicate behind.
     """
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.core.revert_capture import _load_existing_point
     from app.database.models import Base, RevertPoint
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -560,13 +632,14 @@ def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
 
 def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
     """A revert point already on file that capture cannot build on."""
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base, RevertPoint
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -700,15 +773,16 @@ def test_a_point_whose_sidecar_is_gone_is_reported_as_unusable(recycle,
     doing the useful thing — and the row is still returned so it can be
     taken over rather than duplicated.
     """
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.core.revert import MANIFEST_VERSION
     from app.core.revert_capture import _load_existing_point
     from app.database.models import Base, RevertPoint
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -730,12 +804,13 @@ def test_a_point_whose_sidecar_is_gone_is_reported_as_unusable(recycle,
 
 @pytest.fixture
 def db(monkeypatch):
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
 

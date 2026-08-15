@@ -75,8 +75,9 @@ def env(tmp_path, monkeypatch):
     the original — the whole capture side, run for real, so the restore
     under test is working from genuine inputs.
     """
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.config import settings as app_settings
     from app.core.ffmpeg import build_sidecar_command
@@ -153,7 +154,7 @@ def env(tmp_path, monkeypatch):
         if id(stream) in sidecar_indices:
             stream["sidecar_index"] = sidecar_indices[id(stream)]
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
@@ -382,13 +383,14 @@ def test_a_missing_media_file_is_refused(env):
 
 
 def test_an_unknown_revert_point_is_refused(tmp_path, monkeypatch):
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     monkeypatch.setattr(session_mod, "SessionLocal", sessionmaker(bind=engine))
 

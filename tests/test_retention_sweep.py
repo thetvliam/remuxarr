@@ -55,8 +55,9 @@ from app.core.timeutil import utcnow_naive
 @pytest.fixture
 def bin_(tmp_path, monkeypatch):
     """A mounted recycle volume wired to an in-memory database."""
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.config import settings as app_settings
     from app.database.models import Base
@@ -66,7 +67,7 @@ def bin_(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(root), raising=False)
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)

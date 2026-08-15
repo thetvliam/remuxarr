@@ -72,13 +72,14 @@ from app.core.revert import MANIFEST_VERSION
 
 @pytest.fixture
 def db(monkeypatch):
-    from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
 
     from app.database.models import Base
     import app.database.session as session_mod
 
-    engine = create_engine("sqlite://")
+    engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
