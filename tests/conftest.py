@@ -19,6 +19,24 @@ import os
 # configured environment still wins.
 os.environ.setdefault("REMUXARR_DATABASE_PATH", "/tmp/remuxarr-test/remuxarr.db")
 
+# Start every run from an empty database, so a local run is the same run CI
+# gets.
+#
+# This is not tidiness. The shared sqlite file survives between local runs
+# and accumulates whatever tables and rows earlier runs created, so a test
+# that reaches the real SessionLocal instead of an isolated one PASSES
+# locally on state a previous run left behind, and fails on a clean
+# checkout. Ten tests shipped that way and were caught by CI rather than
+# here, having passed locally every time.
+#
+# Deleting it means such a test fails in both places, immediately and for
+# the same reason. Tests that genuinely want a database build their own
+# in-memory one; nothing legitimately depends on this file's contents
+# outliving a run.
+_db_path = os.environ["REMUXARR_DATABASE_PATH"]
+if os.path.exists(_db_path):
+    os.remove(_db_path)
+
 import pytest
 
 # Every settings key analyze_file() actually reads, confirmed directly

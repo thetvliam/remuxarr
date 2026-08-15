@@ -64,6 +64,42 @@ import pytest
 
 # ── Harness ──────────────────────────────────────────────────────────────────
 
+def _memory_db(monkeypatch):
+    """An isolated in-memory database, installed as SessionLocal."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base
+    import app.database.session as session_mod
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    return factory
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(monkeypatch):
+    """
+    Every test in this file gets its own empty database.
+
+    Autouse because capture reads the file's existing revert point before
+    doing anything, so any test that calls it touches the database whether
+    or not it looks like a database test. Without this they fall through
+    to the real SessionLocal and hit the suite-wide sqlite file that
+    conftest points REMUXARR_DATABASE_PATH at.
+
+    That is how these tests passed locally and failed in CI: the shared
+    file had been left behind by earlier runs, complete with a
+    revert_points table, so the query succeeded and returned nothing. A
+    clean checkout has no such file, the table does not exist, and ten
+    tests fail on "no such table". Reaching a real database at all was the
+    bug — the ambient state only decided whether it showed.
+    """
+    return _memory_db(monkeypatch)
+
+
 @pytest.fixture
 def recycle(tmp_path, monkeypatch):
     from app.config import settings as app_settings
