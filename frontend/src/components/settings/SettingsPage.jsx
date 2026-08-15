@@ -7,6 +7,7 @@ import { AppearanceSection } from "./AppearanceSection";
 import { BackupRestoreSection } from "./BackupRestoreSection";
 import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
+import { RecycleBinSection } from "./RecycleBinSection";
 import { LogViewer } from "./LogViewer";
 
 const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVED", error: "✗ ERROR" };
@@ -17,7 +18,7 @@ const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVE
 const CATEGORIES = [
   { id: "processing",    label: "Library & Processing", groups: ["Library", "Metadata", "Audio", "Subtitles"] },
 { id: "worker",        label: "Worker",               groups: ["Worker"] },
-{ id: "recyclebin",    label: "Recycle Bin",          groups: ["Recycle Bin"] },
+{ id: "recyclebin",    label: "Recycle Bin",          groups: ["Recycle Bin"], after: "recyclebin" },
 { id: "integrations",  label: "Integrations",         groups: ["Sonarr", "Radarr", "Plex", "Plex Analyze Backlog"] },
 { id: "notifications", label: "Notifications",        groups: ["Email"] },
 { id: "maintenance",   label: "Maintenance & Logs",   custom: "maintenance" },
@@ -685,7 +686,20 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange, live
           </div>
       );
     }
-    return cat.groups.map((g, i) => renderGroup(g, i === 0));
+    // `after` renders a component BELOW a category's saveable fields, for
+    // a category that is both configuration and a thing to act on. The
+    // recycle bin is the first: its retention limits are ordinary settings,
+    // and what those limits are currently holding belongs next to them
+    // rather than behind a separate nav item — this is a safety net for
+    // people still tuning their rules, not somewhere to visit regularly.
+    return (
+      <>
+      {cat.groups.map((g, i) => renderGroup(g, i === 0))}
+      {cat.after === "recyclebin" && (
+        <RecycleBinSection api={api} toast={toast} reloadKey={reloadKey} />
+      )}
+      </>
+    );
   };
 
   const saveBar = (
