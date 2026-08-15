@@ -86,9 +86,23 @@ class CapturedRevertPoint:
 
 @dataclass
 class _ExistingPoint:
+    """
+    The revert point already held for this file.
+
+    `manifest` is None when the row exists but cannot be built on — an
+    older manifest layout, unreadable JSON, a sidecar that is no longer on
+    the volume. That is deliberately NOT the same as there being no point
+    at all, and conflating the two was a bug: capture created a second row
+    beside the unusable one, so the file ended up with two revert points,
+    two sidecars, and a revert that deleted both.
+    """
     point_id: int
     sidecar_path: str
-    manifest: dict
+    manifest: dict | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.manifest is not None
 
 
 def _load_existing_point(file_id: int) -> _ExistingPoint | None:
@@ -99,12 +113,18 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
     not the state before the most recent job, and every later job extends
     it rather than adding another — see the module docstring.
 
-    A manifest from an older layout is treated as absent, which starts a
-    fresh point anchored to the current file. That loses the ability to
-    go all the way back for that file, and is still better than building
-    a sidecar on annotations whose meaning has changed. Nothing has
-    shipped with an older layout, so this is defensive rather than a
-    migration path.
+    A point that cannot be built on — older manifest layout, unreadable
+    JSON, sidecar gone from the volume — comes back with manifest=None
+    rather than as nothing at all. Capture then starts a fresh manifest
+    anchored to the current file but still SUPERSEDES that row, taking it
+    over and unlinking its sidecar.
+
+    Returning None for those cases instead is what produced duplicates:
+    the unusable row survived, a second was created beside it, and the
+    file had two revert points claiming to restore it. Only one could
+    ever work — the older row's fingerprint stops matching the moment the
+    new job rewrites the file — and a revert deleted both, so the counts
+    dropped by two.
     """
     from app.core.revert import MANIFEST_VERSION
     from app.database.models import RevertPoint
@@ -124,23 +144,23 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
             manifest = json.loads(point.manifest)
         except (TypeError, ValueError):
             logger.warning(
-                "Revert point %d has an unreadable manifest; starting fresh",
+                "Revert point %d has an unreadable manifest; replacing it",
                 point.id,
             )
-            return None
+            return _ExistingPoint(point.id, point.sidecar_path)
 
         if manifest.get("version") != MANIFEST_VERSION:
             logger.warning(
-                "Revert point %d uses manifest version %r, not %r; starting fresh",
+                "Revert point %d uses manifest version %r, not %r; replacing it",
                 point.id, manifest.get("version"), MANIFEST_VERSION,
             )
-            return None
+            return _ExistingPoint(point.id, point.sidecar_path)
 
         if not os.path.exists(point.sidecar_path):
             logger.warning(
-                "Revert point %d has no sidecar on disk; starting fresh", point.id,
+                "Revert point %d has no sidecar on disk; replacing it", point.id,
             )
-            return None
+            return _ExistingPoint(point.id, point.sidecar_path)
 
         return _ExistingPoint(point_id=point.id,
                               sidecar_path=point.sidecar_path,
@@ -287,10 +307,17 @@ async def capture(
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
         existing = _load_existing_point(file_id)
+        # A row that exists but cannot be built on is superseded, not
+        # ignored: `extend` decides what to build FROM, `existing` decides
+        # which row to write back to.
+        extend = existing is not None and existing.usable
 
-        if existing is None:
-            # First job on this file: the file it was handed IS the
-            # pristine original, so the manifest is built from it.
+        if not extend:
+            # Either this file's first job, or one whose existing point
+            # cannot be built on. Both take the file they were handed as
+            # the original — for a first job that is exactly right, and for
+            # a superseded point it is the best available, since whatever
+            # the unusable row described can no longer be reconstructed.
             try:
                 original_probe = probe_file(input_path)
             except ProbeError as exc:
@@ -333,10 +360,10 @@ async def capture(
         # the index the previous capture recorded). Streams an earlier job
         # destroyed exist only in the previous sidecar (input 1).
         inputs = [input_path]
-        if existing is not None:
+        if extend:
             inputs.append(existing.sidecar_path)
 
-        sources = _plan_sources(lost, has_previous_sidecar=existing is not None)
+        sources = _plan_sources(lost, has_previous_sidecar=extend)
 
         sidecar = sidecar_path_for(file_id, job_id)
         try:
@@ -374,7 +401,8 @@ async def capture(
         logger.info(
             "Job %d: revert point %s (%d stream(s) from the original, "
             "%.1f MB) → %s",
-            job_id, "extended" if existing else "captured",
+            job_id,
+            "extended" if extend else ("replaced" if existing else "captured"),
             len(lost), size / 1024 / 1024, sidecar,
         )
         return CapturedRevertPoint(

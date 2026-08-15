@@ -164,7 +164,10 @@ def _patch_ffmpeg(monkeypatch, *, fails=False):
     """
     import app.core.revert_capture as rc
 
+    commands = []
+
     async def fake(cmd):
+        commands.append(cmd)
         if fails:
             raise rc._Unavailable("FFmpeg failed writing the sidecar (rc=1)")
         os.makedirs(os.path.dirname(cmd[-1]), exist_ok=True)
@@ -172,6 +175,7 @@ def _patch_ffmpeg(monkeypatch, *, fails=False):
             f.write(b"x" * 2048)
 
     monkeypatch.setattr(rc, "_run", fake)
+    return commands
 
 
 def _capture(**kw):
@@ -516,13 +520,16 @@ def test_reannotation_numbers_sidecar_slots_positionally():
 
 # ── Manifest versioning ──────────────────────────────────────────────────────
 
-def test_an_older_manifest_layout_starts_a_fresh_point(recycle, monkeypatch,
-                                                       tmp_path):
+def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
+                                                          tmp_path):
     """
     processed_index and sidecar_index mean something different in an
     earlier layout. Building a sidecar on them would map real slots to
     the wrong streams — worse than losing the ability to go all the way
     back for that one file.
+
+    Unusable, though, is not absent: the row still comes back so capture
+    can take it over rather than leave a duplicate behind.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -545,14 +552,153 @@ def test_an_older_manifest_layout_starts_a_fresh_point(recycle, monkeypatch,
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    assert _load_existing_point(7) is None
+    existing = _load_existing_point(7)
+    assert existing is not None, "the row must still be returned, to be replaced"
+    assert existing.usable is False
+    assert existing.manifest is None
 
 
-def test_a_point_whose_sidecar_is_gone_starts_fresh(recycle, monkeypatch):
+def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
+    """A revert point already on file that capture cannot build on."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, RevertPoint
+    import app.database.session as session_mod
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+
+    sidecar = recycle / "7_1.remuxarr_revert"
+    if sidecar_exists:
+        sidecar.write_bytes(b"tracks from an older build")
+
+    db = factory()
+    db.add(RevertPoint(file_id=7, sidecar_path=str(sidecar), sidecar_size=26,
+                       manifest=manifest, original_path="/m/Show.mkv"))
+    db.commit()
+    return db, sidecar
+
+
+@pytest.mark.parametrize("label,manifest,sidecar_exists", [
+    ("older manifest layout", json.dumps({"version": 1, "streams": []}), True),
+    ("unreadable manifest",   "{not json",                               True),
+    ("sidecar gone",          json.dumps({"version": 2, "streams": []}), False),
+])
+def test_an_unusable_point_is_superseded_not_duplicated(recycle, enabled,
+                                                        monkeypatch, label,
+                                                        manifest,
+                                                        sidecar_exists):
+    """
+    Reported from a real install: the recycle bin counts fell by two on
+    every revert, from thirteen to eleven to nine.
+
+    A point written by an earlier build carries an older manifest layout,
+    so capture cannot extend it. Treating that as "no point exists" left
+    the old row in place and created a second beside it — two entries for
+    one file, two sidecars, both listed as restorable. Only one could ever
+    work, since the older row's fingerprint stops matching the moment the
+    new job rewrites the file, and reverting deleted both.
+
+    Superseding takes the row over instead. The old sidecar goes with it.
+    """
+    db, _sidecar = _unusable_point(recycle, monkeypatch, manifest=manifest,
+                                   sidecar_exists=sidecar_exists)
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    captured, error = _capture(app_cfg=enabled, file_id=7, job_id=2)
+
+    assert error is None
+    assert captured is not None
+    assert captured.replaces_point_id == 1, (
+        f"{label}: capture would create a second revert point for this file"
+    )
+
+
+def test_superseding_a_point_does_not_reuse_its_sidecar(recycle, enabled,
+                                                        monkeypatch):
+    """
+    The old sidecar's contents do not correspond to the new manifest's
+    annotations, so building the new one from it would map real slots to
+    the wrong streams. It is passed along only to be deleted.
+
+    The command is asserted rather than the outcome, because an unused
+    -i is invisible in the result: FFmpeg still opens every input it is
+    given, so passing the old sidecar along would work fine right up until
+    the case where that sidecar is the thing that went missing — which is
+    one of the three reasons a point becomes unusable in the first place.
+    """
+    db, old_sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 1, "streams": []}))
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    commands = _patch_ffmpeg(monkeypatch)
+
+    captured, _ = _capture(app_cfg=enabled, file_id=7, job_id=2)
+
+    assert captured.replaces_sidecar_path == str(old_sidecar)
+    assert captured.sidecar_path != str(old_sidecar)
+
+    inputs = [commands[0][i + 1] for i, a in enumerate(commands[0]) if a == "-i"]
+    assert inputs == ["/m/Show.mkv"], (
+        "the superseded sidecar was passed to FFmpeg as an input"
+    )
+
+
+def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
+                                                        monkeypatch):
+    """
+    The other side of the same assertion — otherwise "don't pass the old
+    sidecar" could be satisfied by never passing one at all, which breaks
+    every genuine extension.
+    """
+    from app.database.models import RevertPoint
+
+    db, old_sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 2, "streams": [], "path": "/m/Show.mkv",
+                             "container": "mkv", "duration": 60.0}))
+    # Make it usable: a current manifest describing the original.
+    point = db.query(RevertPoint).one()
+    manifest = json.loads(_capture_manifest())
+    point.manifest = json.dumps(manifest)
+    db.commit()
+
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    commands = _patch_ffmpeg(monkeypatch)
+
+    _capture(app_cfg=enabled, file_id=7, job_id=2)
+
+    inputs = [commands[0][i + 1] for i, a in enumerate(commands[0]) if a == "-i"]
+    assert inputs == ["/m/Show.mkv", str(old_sidecar)]
+
+
+def _capture_manifest():
+    """A current-layout manifest for the standard fixture original."""
+    from app.core.revert import build_manifest, match_streams
+
+    manifest = build_manifest(_ORIGINAL, original_path="/m/Show.mkv",
+                              original_container="mkv")
+    matches = match_streams(manifest, _PRODUCED)
+    lost = [s for s, i in matches if i is None]
+    sidecar_indices = {id(s): n for n, s in enumerate(lost)}
+    for stream, produced_index in matches:
+        stream["processed_index"] = produced_index
+        if id(stream) in sidecar_indices:
+            stream["sidecar_index"] = sidecar_indices[id(stream)]
+    return json.dumps(manifest)
+
+
+def test_a_point_whose_sidecar_is_gone_is_reported_as_unusable(recycle,
+                                                               monkeypatch):
     """
     Extending needs the previous sidecar as an input. Without it on disk
     the rebuild would fail at FFmpeg with a missing-input error instead of
-    doing the useful thing.
+    doing the useful thing — and the row is still returned so it can be
+    taken over rather than duplicated.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -575,7 +721,9 @@ def test_a_point_whose_sidecar_is_gone_starts_fresh(recycle, monkeypatch):
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    assert _load_existing_point(7) is None
+    existing = _load_existing_point(7)
+    assert existing is not None
+    assert existing.usable is False
 
 
 # ── Recording the row ────────────────────────────────────────────────────────
