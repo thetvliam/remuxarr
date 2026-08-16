@@ -80,7 +80,10 @@ def _probe(path):
 
 
 def _summarise(path):
-    return [(s["codec_type"], s["codec_name"],
+    # codec_name is absent on some attachment streams, so it is fetched
+    # rather than indexed — a KeyError here reads as a broken fixture
+    # rather than as the missing field it is.
+    return [(s["codec_type"], s.get("codec_name"),
              (s.get("tags") or {}).get("language"))
             for s in _probe(path)["streams"]]
 
@@ -170,6 +173,177 @@ def _revert(lib):
     lib["db"].expire_all()
     point = lib["db"].query(RevertPoint).one()
     return asyncio.run(restore_revert_point(point.id))
+
+
+@pytest.fixture
+def with_cover_art(tmp_path, monkeypatch):
+    """
+    An original whose LAST stream is not an attachment.
+
+    Matroska cover art is stored as an image attachment, and FFmpeg's
+    demuxer surfaces it as an attached_pic video stream — after every font
+    attachment. That ordering is the whole point of this fixture: it is
+    the shape that exposed the sidecar index bug.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+    from tests.conftest import memory_engine
+
+    media_dir = tmp_path / "media"; media_dir.mkdir()
+    recycle = tmp_path / "recycle"; recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    cover = tmp_path / "cover.jpg"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "testsrc=size=320x240:rate=10:duration=1", "-frames:v", "1",
+         str(cover)], check=True)
+    font = tmp_path / "FontA.otf"
+    font.write_bytes(b"FONTDATA" * 32)
+    subs = tmp_path / "s.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n\n")
+
+    path = media_dir / "Anime.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-i", str(subs),
+         "-map", "0:v", "-map", "1:a", "-map", "2:s",
+         "-metadata:s:a:0", "language=jpn", "-metadata:s:s:0", "language=eng",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-c:s", "srt",
+         "-attach", str(font), "-metadata:s:t:0", "mimetype=font/otf",
+         "-attach", str(cover), "-metadata:s:t:1", "mimetype=image/jpeg",
+         "-f", "matroska", str(path)], check=True)
+
+    kinds = [k for k, _c, _l in _summarise(path)]
+    assert kinds[-1] == "video", (
+        f"fixture must end with the cover art, not an attachment: {kinds}"
+    )
+
+    engine = memory_engine(); Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    import app.core.worker as worker_mod
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Anime.mkv",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv", status="processed")
+    db.add(media); db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path)}
+
+
+def test_cover_art_after_attachments_survives_a_round_trip(with_cover_art):
+    """
+    Reported from a real library, and it corrupted the file quietly.
+
+    sidecar_index is positional — the nth stream mapped becomes output
+    stream n — but the Matroska muxer writes every real track first and
+    attachments afterwards. Feed it [subtitle, font, cover-art] and it
+    writes [subtitle, cover-art, font]. Every index from the first
+    attachment onward then pointed at the wrong stream, so the restored
+    file had the cover art carrying a font's filename and mimetype, and
+    the fonts shifted by one.
+
+    Only files where a NON-attachment stream follows an attachment are
+    affected, which is why the earlier samples came back clean: their
+    attachments were last. Matroska cover art is exactly that shape.
+
+    Compared as a multiset rather than a sequence, because attachments are
+    not ordered tracks in Matroska and the muxer places them after every
+    real track regardless of the order they were mapped in. What has to
+    survive is that every stream comes back, once, as itself.
+    """
+    _run_job(with_cover_art,
+             ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
+
+    outcome = _revert(with_cover_art)
+
+    assert outcome.success is True, outcome.error
+    assert (sorted(map(str, _summarise(with_cover_art["path"])))
+            == sorted(map(str, with_cover_art["pristine"])))
+
+
+def test_cover_art_comes_back_as_a_video_stream(with_cover_art):
+    """
+    A known limitation, pinned so it is recorded rather than discovered.
+
+    Matroska stores cover art as an image ATTACHMENT; FFmpeg's demuxer
+    surfaces it as an attached_pic video stream. The sidecar therefore
+    holds it as a real video stream, and muxing it back produces a video
+    stream rather than an attachment — verified directly, including that
+    -disposition attached_pic does not convert it back.
+
+    So a reverted file with cover art gains a still-image video track
+    where the original had an attachment. Its filename and mimetype are
+    correct and no data is lost. Restoring it properly means extracting
+    the image and re-attaching it, which is a second pass over the file in
+    the one operation that overwrites the user's media — worth doing
+    deliberately, not as a side effect.
+
+    If this test starts failing, FFmpeg has changed and the limitation can
+    go.
+    """
+    _run_job(with_cover_art,
+             ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
+    _revert(with_cover_art)
+
+    covers = [s for s in _streams(with_cover_art["path"])
+              if _tag(s, "filename") == "cover.jpg"]
+
+    assert len(covers) == 1, "the cover art did not come back at all"
+    assert covers[0]["codec_type"] == "video"
+    assert _tag(covers[0], "mimetype") == "image/jpeg"
+
+
+def _streams(path):
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)],
+        capture_output=True, text=True)
+    return json.loads(out.stdout)["streams"]
+
+
+def _tag(stream, name):
+    """
+    Case-insensitive tag lookup.
+
+    Matroska stores an attachment's filename as a structural field, which
+    FFmpeg reports lowercase. Written back as an ordinary tag it comes out
+    uppercase. Matching on case would make this assert the container
+    convention rather than the value.
+    """
+    tags = stream.get("tags") or {}
+    return next((v for k, v in tags.items() if k.lower() == name), None)
+
+
+def test_restored_attachments_keep_their_own_filenames(with_cover_art):
+    """
+    The visible symptom of the index bug: the cover art came back carrying
+    a FONT's filename and mimetype. Stream identity and stream metadata
+    have to land on the same stream, and an assumption about stream order
+    breaks that quietly rather than loudly — every file still muxed, every
+    job still reported success.
+    """
+    _run_job(with_cover_art,
+             ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
+    _revert(with_cover_art)
+
+    named = {s["codec_type"]: _tag(s, "filename")
+             for s in _streams(with_cover_art["path"])
+             if _tag(s, "filename")}
+
+    assert named.get("attachment") == "FontA.otf"
+    assert named.get("video") == "cover.jpg", (
+        f"the cover art came back named {named.get('video')!r}"
+    )
 
 
 @pytest.fixture

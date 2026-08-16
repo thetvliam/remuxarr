@@ -238,9 +238,27 @@ def _plan_sources(
     Raises _Unavailable for a stream in neither. Refusing beats writing a
     sidecar that silently omits a track while the manifest claims it is
     there — restore would then map a slot that holds something else.
+
+    Attachments are placed LAST, and that ordering is load-bearing rather
+    than cosmetic. sidecar_index is positional — the nth source becomes
+    output stream n — but the Matroska muxer does not write streams in map
+    order: it emits every real track first and attachments afterwards.
+    Feed it [subtitle, font, cover-art] and it writes [subtitle, cover-art,
+    font], so every index from the first attachment onward points at the
+    wrong stream.
+
+    That is not hypothetical. It is what shipped, and it corrupted exactly
+    the files where a non-attachment stream follows an attachment in the
+    original — Matroska cover art, which the demuxer surfaces as an
+    attached_pic video stream after all the fonts. Sorting here makes map
+    order and file order the same by construction, and capture verifies it
+    against the written file rather than trusting this comment.
     """
+    ordered = ([s for s in lost if s.get("type") != "attachment"]
+               + [s for s in lost if s.get("type") == "attachment"])
+
     sources: list[tuple[dict, int, int]] = []
-    for stream in lost:
+    for stream in ordered:
         sidecar_index = stream.get("sidecar_index")
         processed_index = stream.get("processed_index")
 
@@ -393,6 +411,28 @@ async def capture(
             return None, None
 
         await _run(cmd)
+
+        # Check the sidecar we just wrote actually has the layout the
+        # indices assume. sidecar_index is positional, and _plan_sources
+        # orders attachments last so map order and file order coincide —
+        # but that is a claim about the Matroska muxer, not a guarantee,
+        # and it is the exact claim that was wrong before. A mismatch means
+        # every index past the divergence points at the wrong stream, which
+        # produces a revert that succeeds and rebuilds the file with tracks
+        # and metadata shuffled. Refusing is the only safe answer.
+        try:
+            written = await _off_loop(probe_file, sidecar)
+        except ProbeError as exc:
+            raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
+
+        expected = [stream.get("type") for stream, _i, _x in sources]
+        actual = [s.get("codec_type") for s in written.get("streams", [])]
+        if expected != actual:
+            raise _Unavailable(
+                f"The sidecar was written with a different stream order than "
+                f"requested ({actual} rather than {expected}); refusing to "
+                f"record indices that would point at the wrong streams."
+            )
 
         # Re-resolve where every original stream lives, now that both the
         # sidecar and the processed file have changed.

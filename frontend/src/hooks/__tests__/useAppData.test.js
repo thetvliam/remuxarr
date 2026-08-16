@@ -368,6 +368,25 @@ describe("useAppData — revert_complete", () => {
     expect(last.msg).toContain("changed size");
   });
 
+  it("refreshes the panel when a job completes, not only when one reverts", () => {
+    /**
+     * Reported: the recycle bin updated when entries were removed but not
+     * when they were added. A completed job is the only thing that creates
+     * a revert point, and fetchAll does not cover the recycle bin — it has
+     * its own endpoint and its own key. So the panel only ever shrank, and
+     * new entries appeared out of nowhere on the next manual reload.
+     */
+    const { result } = renderHook(() => useAppData());
+    const before = result.current.revertRefreshKey;
+
+    act(() => {
+      ws.onMessage({ event: "job_completed", status: "success",
+                     filename: "S01E01.mkv" });
+    });
+
+    expect(result.current.revertRefreshKey).not.toBe(before);
+  });
+
   it("does not throw on a message with nothing but a type", () => {
     // useWebSocket invokes this callback inside a bare catch, so anything
     // that throws here is swallowed and takes the refresh with it — the

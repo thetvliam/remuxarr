@@ -375,6 +375,16 @@ export function useAppData() {
             fetchAll();
             invalidateHistory(msg.status ?? null);
             setReviewRefreshKey(k => k + 1);
+            /* A successful job is the only thing that CREATES a revert
+             * point, and fetchAll does not cover the recycle bin — it has
+             * its own endpoint and its own key. Without this the panel
+             * only ever shrank: reverting refreshed it, processing did
+             * not, so entries appeared out of nowhere on the next manual
+             * reload. Bumped for every outcome rather than successes
+             * only, because a failed job can still have written and then
+             * discarded a sidecar, and the panel should reflect whatever
+             * is actually there. */
+            setRevertRefreshKey(k => k + 1);
             toast(
               msg.status === "dry_run"
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`

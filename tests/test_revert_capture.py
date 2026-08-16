@@ -137,20 +137,58 @@ def _patch_probes(monkeypatch, original, produced):
     Return probe results keyed by PATH, not by call order.
 
     Call order is not part of capture's contract — it probes the produced
-    file always and the source only on a file's first job — and an
-    order-keyed stub silently hands back the wrong file when that changes,
-    which reads as a logic bug in the code under test rather than a broken
-    harness.
+    file always, the source only on a file's first job, and the sidecar
+    after writing it — and an order-keyed stub silently hands back the
+    wrong file when that changes, which reads as a logic bug in the code
+    under test rather than a broken harness.
+
+    A sidecar path is answered by DERIVING its streams from the command
+    that wrote it, so the stub agrees with the file the real FFmpeg would
+    have produced. Returning a fixed shape instead would make capture's
+    layout check pass on a sidecar nothing actually wrote — and that check
+    exists precisely because assuming the written layout was how the
+    indices came to be wrong.
     """
     import app.core.revert_capture as rc
 
     by_path = {"/m/Show.mkv": original, "/tmp/job_1.remuxarr_tmp": produced}
+    state = _MOCK_STATE
 
     def fake(path, *_a, **_k):
-        assert path in by_path, f"unexpected probe of {path!r}"
-        return by_path[path]
+        if path in by_path:
+            return by_path[path]
+        if path.endswith(SIDECAR_SUFFIX) and state["commands"]:
+            return _sidecar_probe(state["commands"][-1], by_path, state)
+        raise AssertionError(f"unexpected probe of {path!r}")
 
     monkeypatch.setattr(rc, "probe_file", fake)
+
+
+_MOCK_STATE = {"commands": [], "sidecars": {}}
+SIDECAR_SUFFIX = ".remuxarr_revert"
+
+
+def _sidecar_probe(cmd, by_path, state):
+    """The streams a sidecar command maps, in the order it maps them."""
+    inputs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+
+    streams = []
+    for spec in maps:
+        input_n, _, index = spec.partition(":")
+        source_path = inputs[int(input_n)]
+        source = (by_path.get(source_path)
+                  or state["sidecars"].get(source_path)
+                  or {"streams": []})
+        match = next((st for st in source["streams"]
+                      if st["index"] == int(index)), None)
+        assert match is not None, f"command maps {spec}, which does not exist"
+        streams.append({**match, "index": len(streams)})
+
+    probe = {"streams": streams,
+             "format": {"format_name": "matroska,webm", "duration": "60.0"}}
+    state["sidecars"][cmd[-1]] = probe
+    return probe
 
 
 def _patch_ffmpeg(monkeypatch, *, fails=False):
@@ -166,7 +204,9 @@ def _patch_ffmpeg(monkeypatch, *, fails=False):
     """
     import app.core.revert_capture as rc
 
-    commands = []
+    commands = _MOCK_STATE["commands"]
+    commands.clear()
+    _MOCK_STATE["sidecars"].clear()
 
     async def fake(cmd):
         commands.append(cmd)
@@ -433,6 +473,75 @@ def test_an_unprobeable_file_is_treated_as_unavailable(recycle, monkeypatch):
         app_cfg={"revert_enabled": True, "revert_require_point": True},
     )
     assert error is not None
+
+
+# ── The written sidecar must match the recorded indices ──────────────────────
+
+def _reorder_sidecar_probe(monkeypatch):
+    """Make the sidecar come back in a different order than it was mapped."""
+    import app.core.revert_capture as rc
+
+    real = rc.probe_file
+
+    def shuffled(path, *a, **k):
+        probe = real(path, *a, **k)
+        if path.endswith(SIDECAR_SUFFIX):
+            streams = list(reversed(probe["streams"]))
+            return {**probe,
+                    "streams": [{**st, "index": i}
+                                for i, st in enumerate(streams)]}
+        return probe
+
+    monkeypatch.setattr(rc, "probe_file", shuffled)
+
+
+def test_a_sidecar_written_in_a_different_order_is_refused(recycle, monkeypatch):
+    """
+    sidecar_index is positional, so it is only correct if the muxer writes
+    streams in the order they were mapped. _plan_sources arranges the
+    sources so it does — but that is a claim about FFmpeg, and it is the
+    exact claim that was wrong before: the Matroska muxer puts attachments
+    after every real track, so mapping [subtitle, font, cover-art] wrote
+    [subtitle, cover-art, font] and every index past the font pointed at
+    the wrong stream. Files still muxed. Jobs still reported success. The
+    restored file had the cover art carrying a font's name.
+
+    Nothing triggers this check while the assumption holds, which is why
+    the mismatch is forced here. Recording indices that point at the wrong
+    streams is worse than recording none.
+    """
+    # Two lost streams of DIFFERENT types, or reversing the sidecar's
+    # order changes nothing and the test passes without exercising the
+    # check at all.
+    original = _probe(
+        _s(0, "video", "h264"),
+        _s(1, "audio", "aac", channels=2, language="eng"),
+        _s(2, "audio", "ac3", channels=6, language="fre"),
+        _s(3, "subtitle", "subrip", language="ger"),
+    )
+    _patch_probes(monkeypatch, original, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+    _reorder_sidecar_probe(monkeypatch)
+
+    captured, error = _capture(
+        app_cfg={"revert_enabled": True, "revert_require_point": True})
+
+    assert captured is None
+    assert error and "order" in error
+
+
+def test_a_matching_sidecar_layout_is_accepted(recycle, enabled, monkeypatch):
+    """
+    The other half: the check must not refuse the normal case, or every
+    revert point silently stops being created.
+    """
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+
+    captured, error = _capture(app_cfg=enabled)
+
+    assert error is None
+    assert captured is not None
 
 
 # ── Staying off the event loop ───────────────────────────────────────────────
@@ -742,6 +851,13 @@ def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
 
     _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
     commands = _patch_ffmpeg(monkeypatch)
+    # The existing sidecar holds the one stream the earlier job destroyed.
+    # Registered explicitly because nothing in this test wrote it through
+    # the mocked FFmpeg, so the harness cannot derive its contents.
+    _MOCK_STATE["sidecars"][str(old_sidecar)] = {
+        "streams": [dict(_ORIGINAL["streams"][2], index=0)],
+        "format": {"format_name": "matroska,webm"},
+    }
 
     _capture(app_cfg=enabled, file_id=7, job_id=2)
 
