@@ -59,7 +59,7 @@ This application was generated entirely using Claude. I acted as the architect, 
 - **Manual review, with bulk resolution** - files with genuinely ambiguous tracks (several undefined-language audio tracks, or image-based subtitles that can't be converted to SRT) are held for a human decision rather than guessed at. A settable policy (Settings → Library & Processing → Subtitles) can auto-resolve the subtitle case going forward, with a one-click bulk action for anything already sitting in review.
 - **Audio Language Review** - search-and-bulk-correct tool for tracks that have a *wrong* language tag rather than a missing one (common with some release groups) - confirm it's actually correct, or apply the right tag to every matching file at once.
 - **Dry run mode** - see every planned action across your whole library before anything real is touched. **On by default** for a fresh install - see First-time configuration below.
-- **Revert to original** - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
+- **Revert to original** (beta) - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
 - **Email notifications** - on job failure, with a circuit breaker so a bad setting doesn't flood your inbox.
 - **Scheduled scans**, **manual and orphaned-file cleanup**, **abort/pause controls**, and a live log viewer, all from the web UI.
 
@@ -191,11 +191,16 @@ Everything from here happens in the web UI, not in any config file:
 5. **Auto-start is on by default**, meaning the queue processes itself once dry run is off. If you'd rather review the queue manually before anything runs, turn this off in **Settings → Worker**.
 6. Sonarr, Radarr, Plex, and email integrations are all off until you provide real connection details - nothing is assumed enabled.
 
-## Reverting a processed file
+## Reverting a processed file (beta)
 
 Remuxarr can keep whatever a job removed, so a file can be put back the way it
 was. It is off by default and needs the `/recycle` volume mounted - see
 Installation above.
+
+**This feature is in beta.** It is newer than the rest of Remuxarr and has had
+less time in front of real libraries. Nothing it does is destructive on its own -
+it only ever adds a copy of what a job removed - but treat a revert point as a
+convenience rather than a backup, and do not rely on it as your only route back.
 
 It exists for the period while you are still working out what your language and
 subtitle rules should be, which is exactly when a rule turns out to be wrong on
