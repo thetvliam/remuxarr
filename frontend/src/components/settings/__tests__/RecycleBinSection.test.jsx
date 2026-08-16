@@ -33,6 +33,18 @@
  *   • An unmounted volume not reported                  → killed
  *   • Match offered for a point with no stored tracks   → killed
  *   • A backend refusal replaced with a generic error   → killed
+ *   • The running revert not held locally before the
+ *     request goes out                                  → killed
+ *   • Other entries still offering revert while one runs → killed
+ *   • A running revert still showing a REVERT button     → killed
+ *   • An in-flight revert not read back on load          → killed
+ *   • A refused start leaving the row stuck              → killed
+ *
+ * The first and last of those survived at first. Both concern the window
+ * between sending the request and hearing back from /status, and both
+ * tests waited it out with findByRole — which passes whether or not the
+ * row was ever marked, because the reload corrects it either way. They
+ * assert synchronously now, against a deliberately delayed /status.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -81,10 +93,34 @@ const mockFetch = (overrides = {}) => {
     nearby: [{ id: 10, path: "/media/tv/Show/Other.mkv", filename: "Other.mkv", size: 100 }],
   };
 
+  // Stateful, because the API is: starting a revert makes /status report
+  // it as running until it finishes. A mock that always answers "idle"
+  // contradicts the endpoint it stands in for, and the panel reads that
+  // answer back immediately after every POST.
+  let started = null;
+
   global.fetch = vi.fn(async (url, options = {}) => {
     calls.push({ url, method: options.method || "GET", body: options.body });
     if (String(url).includes("/candidates/")) {
       return { ok: true, json: async () => candidates };
+    }
+    if (String(url).endsWith("/status")) {
+      if (overrides.statusDelayMs) {
+        await new Promise(r => setTimeout(r, overrides.statusDelayMs));
+      }
+      if (overrides.status) return { ok: true, json: async () => overrides.status };
+      return {
+        ok: true,
+        json: async () => ({ running: started !== null, point_id: started }),
+      };
+    }
+    const restore = String(url).match(/\/api\/revert\/(\d+)\/restore\//);
+    if (restore && (options.method || "GET") === "POST") {
+      if (overrides.restoreFails) {
+        return { ok: false, json: async () => ({ detail: "A revert is already running" }) };
+      }
+      started = Number(restore[1]);
+      return { ok: true, json: async () => ({ status: "started" }) };
     }
     if ((options.method || "GET") !== "GET") {
       return { ok: true, json: async () => ({ status: "ok" }) };
@@ -197,6 +233,113 @@ describe("matching", () => {
     await user.click(await screen.findByRole("button", { name: "MATCH" }));
 
     expect(await screen.findByText(/No candidates found/i)).toBeTruthy();
+  });
+});
+
+/* ── One revert at a time ────────────────────────────────────────────────── */
+
+describe("concurrency", () => {
+  it("shows the running revert instead of offering it again", async () => {
+    // The POST returns as soon as the revert has STARTED, so the reload it
+    // triggers races the work. Without holding the state locally the row
+    // offers REVERT again on a file already being rewritten.
+    setup();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "REVERT" }));
+    await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
+
+    expect(await screen.findByRole("button", { name: "REVERTING…" })).toBeTruthy();
+  });
+
+  it("does not offer revert on other entries while one is running", async () => {
+    // Clicking them is what the user reported: only the first ran, the
+    // rest were refused with a toast that is easy to miss, and every entry
+    // stayed on screen looking untouched.
+    setup({
+      listing: {
+        attached: [ATTACHED, { ...ATTACHED, id: 3, file_id: 8,
+          current_filename: "S01E02.mkv" }],
+        detached: [],
+      },
+      status: { running: true, point_id: 1 },
+    });
+
+    await screen.findByRole("button", { name: "REVERTING…" });
+    const others = screen.getAllByRole("button", { name: "REVERT" });
+    expect(others).toHaveLength(1);
+    expect(others[0].disabled).toBe(true);
+  });
+
+  it("marks the row immediately, before the server has been asked", async () => {
+    /**
+     * The status endpoint is the source of truth, but reading it takes a
+     * round trip. In between, the row would still offer REVERT on a file
+     * already being rewritten — and clicking it earns a 409 and an error
+     * toast for doing exactly what the UI invited.
+     *
+     * The delay here is what makes that window visible at all: with an
+     * instantly-resolving mock the status read lands in the same tick and
+     * the local update looks redundant.
+     */
+    setup({ statusDelayMs: 200 });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "REVERT" }));
+    await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
+
+    // Synchronous on purpose. findByRole would wait out the delay and pass
+    // whether or not the row was marked before the request went out, which
+    // is precisely the window being tested.
+    expect(screen.getByRole("button", { name: "REVERTING…" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "REVERT" })).toBeNull();
+  });
+
+  it("clears the row when starting a revert is refused", async () => {
+    // The mark above is applied before the request is sent, so a refusal
+    // has to undo it — otherwise the row shows REVERTING… for a revert
+    // that never began, until something else reloads the panel.
+    setup({ restoreFails: true, statusDelayMs: 200 });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "REVERT" }));
+    await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
+
+    // Synchronous, for the same reason as the test above: the reload that
+    // follows would eventually correct the row on its own, so waiting for
+    // it proves nothing about the rollback.
+    expect(screen.getByRole("button", { name: "REVERT" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "REVERTING…" })).toBeNull();
+  });
+
+  it("picks up a revert already running when the panel opens", async () => {
+    // Opening Settings mid-revert, or reloading the page, must not show
+    // buttons the API will refuse.
+    setup({ status: { running: true, point_id: 1 } });
+
+    expect(await screen.findByRole("button", { name: "REVERTING…" })).toBeTruthy();
+  });
+
+  it("re-enables the button when starting a revert is refused", async () => {
+    const { toast } = setup();
+    global.fetch = vi.fn(async (url, options = {}) => {
+      calls.push({ url, method: options.method || "GET" });
+      if (String(url).endsWith("/status")) {
+        return { ok: true, json: async () => ({ running: false, point_id: null }) };
+      }
+      if ((options.method || "GET") !== "GET") {
+        return { ok: false, json: async () => ({ detail: "This file is processing in the queue." }) };
+      }
+      return { ok: true, json: async () => ({ recycle_bin_ready: true, attached: [ATTACHED], detached: [] }) };
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "REVERT" }));
+    await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    // A refusal must not leave the row stuck showing REVERTING… forever.
+    expect(await screen.findByRole("button", { name: "REVERT" })).toBeTruthy();
   });
 });
 

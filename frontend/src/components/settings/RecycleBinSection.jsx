@@ -33,6 +33,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
   const [error,   setError]   = useState(false);
   const [busy,    setBusy]    = useState(false);
   const [matching, setMatching] = useState(null);   // point being matched
+  const [running, setRunning] = useState(null);     // revert in flight
 
   const load = useCallback(async () => {
     try {
@@ -43,6 +44,19 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
     } catch (err) {
       console.error("Failed to load revert points", err);
       setError(true);
+    }
+    // One revert runs at a time server-side, and the POST returns as soon
+    // as it has STARTED. Asking who is running means a reload — or opening
+    // Settings mid-revert, or coming back after a page refresh — shows the
+    // truth rather than offering buttons that will be refused.
+    try {
+      const r = await fetch(`${api}/api/revert/status`);
+      if (r.ok) {
+        const body = await r.json();
+        setRunning(body.running ? body.point_id : null);
+      }
+    } catch (err) {
+      console.error("Failed to read revert status", err);
     }
   }, [api]);
 
@@ -128,8 +142,18 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
         key={point.id}
         point={point}
         busy={busy}
-        onRevert={() => act(`/api/revert/${point.id}/restore/`, { method: "POST" },
-          "Revert started")}
+        running={running === point.id}
+        blocked={running !== null && running !== point.id}
+        onRevert={async () => {
+          // Held locally as well as read back from the server: the reload
+          // inside act() races the revert it just started, and without
+          // this the row briefly offers REVERT again on a file that is
+          // already being rewritten.
+          setRunning(point.id);
+          const ok = await act(`/api/revert/${point.id}/restore/`,
+                               { method: "POST" }, "Revert started");
+          if (!ok) setRunning(null);
+        }}
         onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
           "Discarded")}
         />
@@ -205,7 +229,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 
 /* ── Rows ─────────────────────────────────────────────────────────────────── */
 
-const AttachedRow = ({ point, busy, onRevert, onDiscard }) => {
+const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => {
   const { palette, type, space } = useTheme();
   const movedTo = point.original_path && point.current_path
     && point.original_path !== point.current_path;
@@ -224,10 +248,18 @@ const AttachedRow = ({ point, busy, onRevert, onDiscard }) => {
     </div>
     </div>
     <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
-    <ConfirmBtn label="REVERT" confirmLabel="CONFIRM REVERT"
-    color={palette.amber} disabled={busy} onConfirm={onRevert} />
+    {/* Only one revert runs at a time, so a second click is refused by
+      * the API. Showing that state beats letting someone click and get an
+      * error toast they may not see — which reads as the button doing
+      * nothing at all. */}
+    {running ? (
+      <Btn label="REVERTING…" color={palette.cyan} disabled onClick={() => {}} />
+    ) : (
+      <ConfirmBtn label="REVERT" confirmLabel="CONFIRM REVERT"
+      color={palette.amber} disabled={busy || blocked} onConfirm={onRevert} />
+    )}
     <ConfirmBtn label="DISCARD" confirmLabel="CONFIRM"
-    color={palette.red} disabled={busy} onConfirm={onDiscard} />
+    color={palette.red} disabled={busy || running} onConfirm={onDiscard} />
     </div>
     </Row>
   );

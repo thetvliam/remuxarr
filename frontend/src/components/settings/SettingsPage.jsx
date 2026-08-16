@@ -453,7 +453,8 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
  ═ * ═*═════════════════════════════════════════════════════════════════════════ */
-export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange, liveToggles = {} }) => {
+export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
+                              liveToggles = {}, revertRefreshKey = 0 }) => {
   const { palette, type, space } = useTheme();
   const [schema,   setSchema]   = useState([]);
   const [values,   setValues]   = useState({});
@@ -696,7 +697,8 @@ export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange, live
       <>
       {cat.groups.map((g, i) => renderGroup(g, i === 0))}
       {cat.after === "recyclebin" && (
-        <RecycleBinSection api={api} toast={toast} reloadKey={reloadKey} />
+        <RecycleBinSection api={api} toast={toast}
+        reloadKey={`${reloadKey}:${revertRefreshKey}`} />
       )}
       </>
     );

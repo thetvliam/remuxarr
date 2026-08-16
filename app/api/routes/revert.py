@@ -172,7 +172,11 @@ def _run_revert(point_id: int, loop) -> None:
     try:
         outcome = asyncio.run(restore_revert_point(point_id))
         payload = {
-            "type": "revert_complete",
+            # "event", not "type" — that is the key the frontend switches
+            # on, and every other broadcast in this codebase uses it. A
+            # payload keyed "type" is delivered, matches nothing, and is
+            # dropped in silence.
+            "event": "revert_complete",
             "point_id": point_id,
             "success": outcome.success,
             "error": outcome.error,
@@ -180,7 +184,7 @@ def _run_revert(point_id: int, loop) -> None:
         }
     except Exception as exc:
         logger.exception("Revert of point %d raised", point_id)
-        payload = {"type": "revert_complete", "point_id": point_id,
+        payload = {"event": "revert_complete", "point_id": point_id,
                    "success": False, "error": str(exc)}
     finally:
         _revert_running = False

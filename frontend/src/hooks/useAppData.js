@@ -110,6 +110,7 @@ export function useAppData() {
   // Deliberately not bumped on job_progress or scan_progress — those fire
   // continuously and would refetch the list on every tick.
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+  const [revertRefreshKey, setRevertRefreshKey] = useState(0);
 
   // ── Forge tab state ──────────────────────────────────────────────────────
   const [forgeActive,    setForgeActive]    = useState(null);
@@ -385,6 +386,24 @@ export function useAppData() {
             );
             break;
 
+          case "revert_complete":
+            /* A revert returns from its POST as soon as it has STARTED, so
+             * the panel that requested it refreshes against a file that is
+             * still being rewritten and shows the entry as though nothing
+             * happened. This is the only signal that it finished.
+             *
+             * The key bump is what the Recycle Bin panel reloads on. The
+             * toast carries the outcome because the panel may not even be
+             * on screen by the time a large file finishes. */
+            setRevertRefreshKey(k => k + 1);
+            toast(
+              msg.success
+              ? `Reverted: ${basename(msg.restored_path || "")}`
+              : `Revert failed${msg.error ? `: ${String(msg.error).slice(0, 60)}` : ""}`,
+                  msg.success ? "success" : "error",
+            );
+            break;
+
           case "file_queued":
             toast(`Queued: ${basename(msg.file_path)}`, "info");
             fetchAll();
@@ -486,6 +505,7 @@ export function useAppData() {
         autoStart, setAutoStart,
         historyRefreshKey, invalidateHistory,
         reviewRefreshKey,
+        revertRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,

@@ -357,6 +357,84 @@ def test_confirm_mismatch_is_forwarded_when_given(client, monkeypatch):
     assert seen["confirm"] is True
 
 
+# ── The completion broadcast ─────────────────────────────────────────────────
+
+def test_the_completion_broadcast_uses_the_key_the_frontend_reads(client,
+                                                                  monkeypatch):
+    """
+    The frontend switches on msg.event. A payload keyed "type" is
+    delivered, matches nothing, and is dropped in silence — which is
+    exactly what shipped: the panel never learned a revert had finished,
+    so entries stayed on screen looking as though the button did nothing.
+
+    Asserted here rather than left to the UI, because nothing on either
+    side fails when the key is wrong. The message simply goes nowhere.
+    """
+    import app.api.routes.revert as revert_routes
+    from app.core.revert_restore import RestoreOutcome
+
+    api, db, recycle = client
+    _media, point, _sidecar = _seed(db, recycle)
+
+    sent = []
+    monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
+                        lambda coro, _loop: (coro.close(), sent.append("sent")))
+    monkeypatch.setattr(revert_routes.ws_manager, "broadcast_json",
+                        lambda payload: _capture(sent, payload))
+    # _run_revert wraps this in asyncio.run(), so the stub has to be a
+    # coroutine function — returning the outcome directly raises, and the
+    # test then passes or fails on the exception handler instead.
+    async def fake(_pid, **_k):
+        return RestoreOutcome(success=True, restored_path="/m/Show.mkv")
+
+    monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
+
+    revert_routes._run_revert(point.id, loop=None)
+
+    payload = next(p for p in sent if isinstance(p, dict))
+    assert payload["event"] == "revert_complete", (
+        "the frontend switches on 'event'; a payload keyed otherwise is "
+        "silently dropped"
+    )
+    assert payload["success"] is True
+    assert payload["restored_path"] == "/m/Show.mkv"
+
+
+def _capture(sink, payload):
+    """Stand-in for broadcast_json that records rather than sends."""
+    sink.append(payload)
+
+    async def _noop():
+        return None
+
+    return _noop()
+
+
+def test_a_failed_revert_broadcasts_the_reason(client, monkeypatch):
+    import app.api.routes.revert as revert_routes
+    from app.core.revert_restore import RestoreOutcome
+
+    api, db, recycle = client
+    _media, point, _sidecar = _seed(db, recycle)
+
+    sent = []
+    monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
+                        lambda coro, _loop: (coro.close(), None))
+    monkeypatch.setattr(revert_routes.ws_manager, "broadcast_json",
+                        lambda payload: _capture(sent, payload))
+    async def fake(_pid, **_k):
+        return RestoreOutcome(success=False, error="Show.mkv has changed size")
+
+    monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
+
+    revert_routes._run_revert(point.id, loop=None)
+
+    payload = next(p for p in sent if isinstance(p, dict))
+    assert payload["event"] == "revert_complete"
+    assert payload["success"] is False
+    assert "changed size" in payload["error"]
+
+
 # ── Candidates ───────────────────────────────────────────────────────────────
 
 def test_candidates_are_offered_for_a_detached_point(client):
