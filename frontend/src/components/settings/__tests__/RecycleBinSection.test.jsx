@@ -57,6 +57,8 @@ const API = "http://backend";
 
 const ATTACHED = {
   id: 1,
+  restorable: true,
+  blocked_reason: null,
   file_id: 7,
   current_path: "/media/tv/Show/S01E01.mkv",
   current_filename: "S01E01.mkv",
@@ -357,6 +359,29 @@ describe("presentation", () => {
     });
 
     expect(await screen.findByText(/does not appear to be mounted/i)).toBeTruthy();
+  });
+
+  it("explains why an entry cannot be reverted instead of offering it", async () => {
+    /**
+     * Sonarr upgrading the episode is the everyday case. The entry stays
+     * listed — its stored tracks are still on the volume and still taking
+     * up space, so it has to be visible to be discarded — but Revert on
+     * it produces a refusal the user has no way to explain.
+     */
+    setup({
+      listing: {
+        attached: [{ ...ATTACHED, restorable: false,
+          blocked_reason: "S01E01.mkv has changed size since it was processed." }],
+        detached: [],
+      },
+    });
+
+    expect(await screen.findByText(/has changed size since it was processed/i))
+      .toBeTruthy();
+    expect(screen.queryByRole("button", { name: "REVERT" })).toBeNull();
+    // Discard has to remain: the whole reason to show a dead entry is so
+    // the space it occupies can be reclaimed.
+    expect(screen.getByRole("button", { name: "DISCARD" })).toBeTruthy();
   });
 
   it("does not offer to match an entry whose stored tracks are gone", async () => {

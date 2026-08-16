@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.api.ws_manager import ws_manager
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
-from app.core.revert_restore import restore_revert_point
+from app.core.revert_restore import restore_revert_point, revert_blocked_reason
 from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_db
 
@@ -49,6 +49,14 @@ class AttachRequest(BaseModel):
 
 
 def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
+    # Whether this could actually be reverted RIGHT NOW, decided by the
+    # same function the revert itself uses. A list that offers Revert on
+    # an entry the revert then refuses makes the button look broken
+    # rather than the file look changed, and the user has no way to tell
+    # which — so the reason travels with the row.
+    problem = (revert_blocked_reason(point, media.path) if media else
+               "This revert point is not attached to a file.")
+
     return {
         "id": point.id,
         "file_id": point.file_id,
@@ -59,6 +67,8 @@ def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
         "sidecar_size": point.sidecar_size,
         "created_at": point.created_at,
         "detached_at": point.detached_at,
+        "restorable": problem is None,
+        "blocked_reason": problem,
     }
 
 

@@ -246,6 +246,16 @@ const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => 
       * not the one that will come back. Saying so prevents a surprise. */}
     {movedTo && <> · restores as {basename(point.original_path)}</>}
     </div>
+    {/* The entry stays listed even when it cannot be used — the stored
+      * tracks are still on the volume and still taking up space, so it
+      * has to be visible to be discarded. What it must not do is offer
+      * Revert: that produces a refusal the user has no way to explain. */}
+    {point.restorable === false && point.blocked_reason && (
+      <div style={{ color: palette.amber, fontSize: type.size.xs,
+        marginTop: space.hair }}>
+        {point.blocked_reason}
+        </div>
+    )}
     </div>
     <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
     {/* Only one revert runs at a time, so a second click is refused by
@@ -254,7 +264,7 @@ const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => 
       * nothing at all. */}
     {running ? (
       <Btn label="REVERTING…" color={palette.cyan} disabled onClick={() => {}} />
-    ) : (
+    ) : point.restorable === false ? null : (
       <ConfirmBtn label="REVERT" confirmLabel="CONFIRM REVERT"
       color={palette.amber} disabled={busy || blocked} onConfirm={onRevert} />
     )}

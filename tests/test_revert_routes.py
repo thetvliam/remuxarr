@@ -166,6 +166,109 @@ def test_listing_reports_whether_the_recycle_volume_is_mounted(client,
     assert "mounted" in body["recycle_bin_reason"]
 
 
+# ── Restorability in the listing ─────────────────────────────────────────────
+
+def test_a_usable_point_is_listed_as_restorable(client, tmp_path):
+    api, db, recycle = client
+    from app.database.models import MediaFile, RevertPoint
+
+    media_file = tmp_path / "Live.mkv"
+    media_file.write_bytes(b"processed output")
+    stat = media_file.stat()
+
+    media = MediaFile(path=str(media_file), filename="Live.mkv",
+                      directory=str(tmp_path), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv")
+    db.add(media)
+    db.commit()
+    sidecar = recycle / "live.remuxarr_revert"
+    sidecar.write_bytes(b"stored tracks")
+    db.add(RevertPoint(file_id=media.id, sidecar_path=str(sidecar),
+                       sidecar_size=1, manifest="{}", original_path=str(media_file),
+                       processed_size=stat.st_size, processed_mtime=stat.st_mtime))
+    db.commit()
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restorable"] is True
+    assert entry["blocked_reason"] is None
+
+
+def test_a_changed_file_is_listed_as_not_restorable(client, tmp_path):
+    """
+    Sonarr upgrading the episode is the everyday case. The entry stays —
+    the stored tracks are still there and still take up space, so it has
+    to be visible to be discarded — but offering Revert on it produces a
+    refusal the user cannot explain. The reason travels with the row.
+    """
+    api, db, recycle = client
+    from app.database.models import MediaFile, RevertPoint
+
+    media_file = tmp_path / "Upgraded.mkv"
+    media_file.write_bytes(b"a different release entirely")
+    stat = media_file.stat()
+
+    media = MediaFile(path=str(media_file), filename="Upgraded.mkv",
+                      directory=str(tmp_path), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv")
+    db.add(media)
+    db.commit()
+    sidecar = recycle / "upgraded.remuxarr_revert"
+    sidecar.write_bytes(b"stored tracks")
+    db.add(RevertPoint(file_id=media.id, sidecar_path=str(sidecar),
+                       sidecar_size=1, manifest="{}", original_path=str(media_file),
+                       processed_size=stat.st_size + 4096,
+                       processed_mtime=stat.st_mtime))
+    db.commit()
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restorable"] is False
+    assert "changed size" in entry["blocked_reason"]
+
+
+def test_the_listing_and_the_revert_agree(client, tmp_path):
+    """
+    Both call the same function, and this is what that buys. Written
+    twice they drift, and the drift is invisible in the direction that
+    matters: the list keeps offering Revert on entries the revert then
+    refuses, so the button looks broken rather than the file looking
+    changed.
+    """
+    api, db, recycle = client
+    from app.database.models import MediaFile, RevertPoint
+
+    media_file = tmp_path / "Upgraded.mkv"
+    media_file.write_bytes(b"a different release entirely")
+    stat = media_file.stat()
+
+    media = MediaFile(path=str(media_file), filename="Upgraded.mkv",
+                      directory=str(tmp_path), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv")
+    db.add(media)
+    db.commit()
+    sidecar = recycle / "agree.remuxarr_revert"
+    sidecar.write_bytes(b"stored tracks")
+    point = RevertPoint(file_id=media.id, sidecar_path=str(sidecar),
+                        sidecar_size=1, manifest="{}",
+                        original_path=str(media_file),
+                        processed_size=stat.st_size + 4096,
+                        processed_mtime=stat.st_mtime)
+    db.add(point)
+    db.commit()
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    from app.core.revert_restore import restore_revert_point
+    import asyncio
+
+    outcome = asyncio.run(restore_revert_point(point.id))
+
+    assert entry["restorable"] is False
+    assert outcome.success is False
+    assert entry["blocked_reason"] == outcome.error
+
+
 # ── Restore: what it refuses ─────────────────────────────────────────────────
 
 def test_restoring_a_detached_point_is_refused(client):

@@ -66,6 +66,52 @@ class RestoreOutcome:
     restored_path: str | None = None
 
 
+def revert_blocked_reason(point, path: str) -> str | None:
+    """
+    Why this revert point cannot be used on `path` right now, or None.
+
+    Every cheap precondition the revert checks, in the order it checks
+    them. Shared by the revert itself and by the listing the UI renders,
+    and that sharing is the point: written twice they drift, and the drift
+    is invisible in the direction that matters — the list keeps offering
+    Revert on entries the revert then refuses, so the button appears
+    broken rather than the file appearing changed.
+
+    Deliberately covers ALL of them, not just the fingerprint. A missing
+    sidecar is the likelier reason on a bin that retention has been
+    through, and a version checking only the fingerprint reports those as
+    restorable and is wrong in exactly the way this is meant to prevent.
+
+    Cheap enough to run per row: two stats, no probing.
+    """
+    if not os.path.exists(point.sidecar_path or ""):
+        return ("The stored tracks for this revert point are missing from the "
+                "recycle volume.")
+
+    if not os.path.exists(path):
+        return f"{path} is no longer on disk."
+
+    try:
+        stat = os.stat(path)
+    except OSError as exc:
+        return f"{path} cannot be read: {exc}"
+
+    name = os.path.basename(path)
+    if point.processed_size is not None and stat.st_size != point.processed_size:
+        return (
+            f"{name} has changed size since it was processed "
+            f"({point.processed_size} → {stat.st_size} bytes). It has probably "
+            f"been replaced or upgraded, and these stored tracks belong to the "
+            f"previous version."
+        )
+    if point.processed_mtime is not None and stat.st_mtime != point.processed_mtime:
+        return (
+            f"{name} has been modified since it was processed. These stored "
+            f"tracks belong to the previous version."
+        )
+    return None
+
+
 @dataclass
 class _Plan:
     """Everything needed to run a restore, read out of the database once."""
@@ -89,29 +135,10 @@ def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
     if media is None:
         return None, "The file this revert point belongs to is no longer tracked."
 
-    if not os.path.exists(point.sidecar_path):
-        return None, (
-            "The stored tracks for this revert point are missing from the "
-            "recycle volume."
-        )
-
-    if not os.path.exists(media.path):
-        return None, f"{media.path} is no longer on disk."
-
-    # ── Sentinel ────────────────────────────────────────────────────────
-    stat = os.stat(media.path)
-    if point.processed_size is not None and stat.st_size != point.processed_size:
-        return None, (
-            f"{os.path.basename(media.path)} has changed size since it was "
-            f"processed ({point.processed_size} → {stat.st_size} bytes). It "
-            f"has probably been replaced or upgraded, and these stored tracks "
-            f"belong to the previous version."
-        )
-    if point.processed_mtime is not None and stat.st_mtime != point.processed_mtime:
-        return None, (
-            f"{os.path.basename(media.path)} has been modified since it was "
-            f"processed. These stored tracks belong to the previous version."
-        )
+    # ── Preconditions ───────────────────────────────────────────────────
+    problem = revert_blocked_reason(point, media.path)
+    if problem:
+        return None, problem
 
     try:
         manifest = json.loads(point.manifest)
