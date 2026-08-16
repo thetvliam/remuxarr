@@ -103,3 +103,66 @@ def test_unraid_template_still_parses():
 
 def test_env_example_documents_the_recycle_dir():
     assert "REMUXARR_RECYCLE_DIR" in _read(".env.example")
+
+
+# ── Documentation ────────────────────────────────────────────────────────────
+
+def test_the_readme_describes_reverting():
+    """
+    A feature that needs a volume mounted and is off by default is one
+    nobody discovers on their own. The volume was documented from the
+    start; the behaviour was not, for a dozen commits.
+    """
+    readme = _read("README.md")
+
+    assert "## Reverting a processed file" in readme
+    # The parts someone has to know before turning it on: what it costs,
+    # and that it needs a mount.
+    assert "/recycle" in readme
+    assert "Settings → Recycle Bin" in readme
+
+
+def test_the_readme_records_the_known_limitations():
+    """
+    Both are cases where a revert produces a valid file that differs from
+    the original. Left undocumented, each looks like a bug to whoever
+    hits it first.
+    """
+    readme = _read("README.md")
+
+    assert "cover art" in readme.lower()
+    assert "attachment" in readme.lower()
+
+
+def test_the_documented_test_counts_are_current():
+    """
+    Both READMEs quote a test count, and both had drifted by more than
+    two hundred before anyone looked — which makes every other number on
+    the page worth less. Counting them here is cheap and the failure
+    message says what to write.
+
+    Deliberately tolerant: this fails when a number is stale by enough to
+    mislead, not when a single test is added.
+    """
+    import re
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    collected = subprocess.run(
+        ["python3", "-m", "pytest", "--collect-only", "-q",
+         "-p", "no:cacheprovider"],
+        cwd=root, capture_output=True, text=True,
+    )
+    match = re.search(r"(\d+) tests? collected", collected.stdout)
+    if not match:
+        pytest.skip("could not determine the collected test count")
+    actual = int(match.group(1))
+
+    for name in ("README.md", "tests/README.md"):
+        text = _read(name)
+        quoted = re.search(r"(\d[\d,]*) tests across", text)
+        assert quoted, f"{name} no longer quotes a backend test count"
+        claimed = int(quoted.group(1).replace(",", ""))
+        assert abs(claimed - actual) <= 25, (
+            f"{name} claims {claimed} backend tests; there are {actual}"
+        )

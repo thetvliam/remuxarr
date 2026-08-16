@@ -59,6 +59,7 @@ This application was generated entirely using Claude. I acted as the architect, 
 - **Manual review, with bulk resolution** - files with genuinely ambiguous tracks (several undefined-language audio tracks, or image-based subtitles that can't be converted to SRT) are held for a human decision rather than guessed at. A settable policy (Settings → Library & Processing → Subtitles) can auto-resolve the subtitle case going forward, with a one-click bulk action for anything already sitting in review.
 - **Audio Language Review** - search-and-bulk-correct tool for tracks that have a *wrong* language tag rather than a missing one (common with some release groups) - confirm it's actually correct, or apply the right tag to every matching file at once.
 - **Dry run mode** - see every planned action across your whole library before anything real is touched. **On by default** for a fresh install - see First-time configuration below.
+- **Revert to original** - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
 - **Email notifications** - on job failure, with a circuit breaker so a bad setting doesn't flood your inbox.
 - **Scheduled scans**, **manual and orphaned-file cleanup**, **abort/pause controls**, and a live log viewer, all from the web UI.
 
@@ -190,16 +191,61 @@ Everything from here happens in the web UI, not in any config file:
 5. **Auto-start is on by default**, meaning the queue processes itself once dry run is off. If you'd rather review the queue manually before anything runs, turn this off in **Settings → Worker**.
 6. Sonarr, Radarr, Plex, and email integrations are all off until you provide real connection details - nothing is assumed enabled.
 
+## Reverting a processed file
+
+Remuxarr can keep whatever a job removed, so a file can be put back the way it
+was. It is off by default and needs the `/recycle` volume mounted - see
+Installation above.
+
+It exists for the period while you are still working out what your language and
+subtitle rules should be, which is exactly when a rule turns out to be wrong on
+a few hundred files. It is not meant to be a permanent archive, and the
+retention limits are set accordingly.
+
+**What is kept.** Only the tracks a job actually removed - never the video. A
+job that drops three foreign-language audio tracks and twenty subtitles stores
+those and nothing else, so what it costs is a fraction of the file rather than a
+second copy. A job that removes nothing stores nothing.
+
+**What it costs.** Bounded twice, in **Settings → Recycle Bin**: 7 days and
+20GB by default. Both apply - whichever is reached first. Set either to 0 to
+disable that limit.
+
+**Reverting.** Each entry in **Settings → Recycle Bin** restores the file to its
+exact original state: every track back, in the original order, with the original
+language tags, titles, default/forced flags and attachments, in the original
+container. If the job converted MKV to MP4, reverting converts it back and
+restores the original filename.
+
+**When it will refuse.** A revert point records the file as the job left it. If
+something else has written to that file since - Sonarr upgrading the episode is
+the usual case - the stored tracks belong to a different release, and muxing
+them in would produce a file that plays and is quietly wrong. Those entries stay
+listed with the reason shown, so you can discard them, but they will not offer
+to revert.
+
+**If a file is renamed**, Remuxarr loses track of which file the entry belongs
+to - a rename looks the same as a deletion from the outside. The entry moves to
+**Unmatched** rather than being thrown away, and can be matched back: a renamed
+file is byte-for-byte identical, so it is identified by its fingerprint rather
+than guessed at.
+
+**Two limitations worth knowing.** A job whose only casualty is an attachment -
+a font, say - stores nothing, because Matroska cannot hold a file with no
+tracks. And Matroska cover art comes back as a still-image video track rather
+than an attachment, with its filename and mimetype intact; nothing is lost, but
+a player may list it as a second video stream.
+
 ## Development
 
-The backend has a real test suite - 807 tests across 35 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1046 tests across 50 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r tests/requirements-test.txt
 pytest
 ```
 
-The frontend has its own suite - 137 tests covering the app's central state
+The frontend has its own suite - 166 tests covering the app's central state
 hook (routing, toasts, history invalidation), every mutating user action,
 paginated and history data fetching, the settings save path, and integer input
 handling:

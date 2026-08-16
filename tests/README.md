@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-807 tests across 35 files, plus 137 frontend tests under
+1046 tests across 50 files, plus 166 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
 number below matters more than that one.
 
@@ -40,6 +40,18 @@ absent (CI installs them, so they always run there).
 
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`.
+
+**Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
+`test_revert_restore.py`, `test_revert_execution.py`,
+`test_revert_multiple_jobs.py`, `test_revert_match.py`, `test_revert_routes.py`,
+`test_recycle_bin.py`, `test_retention_sweep.py`, `test_staging_hook.py`,
+`test_schema_migration.py`, `test_deployment_config.py`. The failure this
+feature has to avoid is not a crash: it is a revert that succeeds and quietly
+rebuilds the file wrong. Several of these therefore run real ffmpeg end to end —
+capture from a real file, revert from the result, compare stream by stream —
+because the bugs found here (the wrong audio track stored, stream indices off by
+one past the first attachment, MP4 metadata residue) all produced valid,
+playable files and argv-level assertions saw nothing amiss.
 
 **Sample library** — `test_sample_library.py` runs the real pipeline against a
 fixed set of probed media files (`tests/sample_library/`) and compares against
