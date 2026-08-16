@@ -152,6 +152,7 @@ export default function App() {
       toast, fetchAll,
       pendingQueue, wsConnected, historyRefreshKey, invalidateHistory,
       reviewRefreshKey,
+      revertRefreshKey,
   } = data;
 
   const {
@@ -337,6 +338,7 @@ export default function App() {
             api={api}
             toast={toast}
             isMobile={isMobile}
+            revertRefreshKey={revertRefreshKey}
             onDirtyChange={setSettingsDirty}
             /* dry_run_mode and auto_start_jobs are rendered from the app-level
                state rather than the page's own loaded snapshot, and applied on

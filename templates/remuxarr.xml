@@ -37,4 +37,15 @@
   <!-- FFmpeg staging. Keep this under /tmp so it stays RAM-backed on Unraid
   instead of writing intermediate files to the array during processing. -->
   <Config Name="Temp" Target="/tmp/remuxarr" Default="/tmp/remuxarr-temp" Mode="rw" Description="FFmpeg staging directory. Keep under /tmp so it stays RAM-backed." Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <!-- Recycle bin for "revert to original". Holds only the tracks a job
+  removed, never the video, so it is normally a small fraction of each file
+  — but size it for the retention window (7 days / 20GB by default, both
+  changeable in Settings).
+
+  Required="false" deliberately: leaving it unmapped turns the recycle bin
+  off and the app says so, which is the correct outcome for anyone who does
+  not want it. Do NOT give this a default under /tmp — that is RAM-backed on
+  Unraid and the retention window would not survive a reboot. -->
+  <Config Name="Recycle Bin" Target="/recycle" Default="/mnt/user/appdata/remuxarr-recycle" Mode="rw" Description="Holds revert-to-original data: the audio and subtitle tracks removed by a job, so files can be put back. Leave empty to disable. Must NOT be under /tmp — that is RAM-backed and would be lost on reboot." Type="Path" Display="always" Required="false" Mask="false"/>
 </Container>

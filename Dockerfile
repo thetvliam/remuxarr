@@ -125,12 +125,22 @@ COPY app/ ./app/
 COPY --from=ui-builder /ui/dist ./frontend/dist
 
 # Persistent volumes
+#
+# /recycle is deliberately NOT listed here, and must not be added. Docker
+# creates an anonymous volume for any declared VOLUME the user did not map,
+# which would make /recycle exist inside the container whether or not anyone
+# chose where it lives. The app treats that directory's presence as proof the
+# recycle volume was mounted, so an anonymous one would send revert sidecars
+# to storage nobody sized, monitors, or knows to back up — and they would
+# look fine right up until the volume was pruned. Leaving it undeclared is
+# what lets a missing mount be reported instead of silently invented.
 VOLUME ["/config", "/media"]
 
 EXPOSE 9191
 
 ENV REMUXARR_DATABASE_PATH=/config/remuxarr.db \
-    REMUXARR_TEMP_DIR=/tmp/remuxarr
+    REMUXARR_TEMP_DIR=/tmp/remuxarr \
+    REMUXARR_RECYCLE_DIR=/recycle
 
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \

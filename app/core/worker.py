@@ -22,11 +22,14 @@ from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.recycle import delete_sidecar
+from app.core import revert_capture
+from app.core.revert_capture import CapturedRevertPoint
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr
-from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, Track
+from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -844,6 +847,35 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     ]
     use_combined = bool(extract_actions) and bool(non_extract_actions)
 
+    # ── Revert point capture ───────────────────────────────────────────────
+    # The hook fires inside run_staged_subprocess, after FFmpeg has
+    # succeeded and before anything on disk is replaced — the only window
+    # where the source and the result both exist. See revert_capture.py.
+    #
+    # The captured sidecar is held here rather than recorded immediately:
+    # the run can still fail after the hook (staging can hit ENOSPC), and a
+    # revert point for a job that never happened is worse than none. Every
+    # exit below either records it or deletes it.
+    captured: list[CapturedRevertPoint] = []
+
+    async def on_before_staging(produced_path: str) -> str | None:
+        result, error = await revert_capture.capture(
+            input_path    = input_path,
+            produced_path = produced_path,
+            file_id       = file_dict["id"],
+            job_id        = job_id,
+            app_cfg       = app_cfg,
+        )
+        # The corrupt-audio path re-runs the whole command, so the hook can
+        # fire more than once per job. Drop anything a previous attempt
+        # left behind rather than accumulate sidecars nothing will record.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        captured.clear()
+        if result:
+            captured.append(result)
+        return error
+
     try:
         if use_combined:
             subtitle_pairs = [
@@ -858,6 +890,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 job_id              = job_id,
                 progress_callback   = on_progress,
                 timeout_seconds     = timeout_seconds,
+                before_staging      = on_before_staging,
             )
 
             if not result.success and _is_subtitle_encoding_failure(result.error):
@@ -910,6 +943,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id               = job_id,
                     progress_callback    = on_progress,
                     timeout_seconds      = timeout_seconds,
+                    before_staging       = on_before_staging,
                 )
 
             # All-or-nothing staging: result.success now guarantees every
@@ -1013,6 +1047,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 job_id            = job_id,
                 progress_callback = on_progress,
                 timeout_seconds   = timeout_seconds,
+                before_staging    = on_before_staging,
             )
 
             if _needs_audio_transcode_retry(result):
@@ -1031,10 +1066,13 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id            = job_id,
                     progress_callback = on_progress,
                     timeout_seconds   = timeout_seconds,
+                    before_staging    = on_before_staging,
                 )
 
     except Exception as exc:
         logger.exception("FFmpeg raised an exception for job %d", job_id)
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, str(exc)
         )
@@ -1049,6 +1087,18 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             except OSError as exc:
                 logger.warning("Could not remove original %s: %s", input_path, exc)
 
+        # Recorded BEFORE the job is marked finished. The swap has already
+        # happened by this point, so the sidecar genuinely describes what is
+        # now on disk; writing the row first means a crash in between leaves
+        # a usable revert point and a job that recover_interrupted_jobs will
+        # sort out, rather than a sidecar on the volume that nothing
+        # references and nothing will ever collect.
+        if captured:
+            await loop.run_in_executor(
+                None, _record_revert_point,
+                file_dict["id"], captured[0], result.output_path,
+            )
+
         await loop.run_in_executor(
             None, _finish_job, job_id, True, result.output_path, result.output_size, None
         )
@@ -1057,6 +1107,13 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         # disk. Leave the extracted .srt files in place — they're valid,
         # standalone sidecars and harmless next to the (unmodified) original.
         # A retry will simply re-extract (overwriting) and try the remux again.
+        #
+        # A captured sidecar does NOT get the same treatment: the file it
+        # describes was never written, so it documents a state that does not
+        # exist. Staging failing after the hook has run is the ordinary way
+        # to get here.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, result.error
         )
@@ -1215,7 +1272,8 @@ def _load_job_data(job_id: int):
 
         return (
             {"id": job.id, "is_dry_run": job.is_dry_run},
-            {"path": media.path, "filename": media.filename, "size": media.size},
+            {"id": media.id, "path": media.path, "filename": media.filename,
+             "size": media.size},
             tracks,
             app_cfg,
             decision,
@@ -1236,6 +1294,75 @@ def _update_progress(job_id: int, percent: float, current_action: str) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def _record_revert_point(
+    file_id:       int,
+    captured:      "CapturedRevertPoint",
+    produced_path: str | None,
+) -> None:
+    """
+    Persist a captured sidecar as a RevertPoint row.
+
+    Updates the file's existing revert point when there is one, rather
+    than inserting a second. A revert point describes the pristine
+    original and accumulates — see revert_capture.py for why one per job
+    is broken.
+
+    processed_size/processed_mtime fingerprint the file as this job left
+    it, stat'ed here rather than taken from the FFmpeg result because the
+    swap has already happened and what matters is what is on disk now. If
+    Sonarr later replaces the episode, those two stop matching and revert
+    refuses rather than muxing old tracks into a different release.
+    Refreshing them on every job is also what stops Remuxarr invalidating
+    its own revert points just by processing a file twice.
+
+    Deliberately not stored in MediaFile.size/mtime, which several routes
+    reset to the -1/-1.0 dismissal sentinels and so cannot be trusted for
+    this comparison.
+
+    A failure here deletes the sidecar. The alternative is a file on the
+    recycle volume with no row pointing at it, which nothing scans for and
+    nothing will ever collect — the job itself has already succeeded and
+    is not put at risk either way.
+    """
+    try:
+        size = mtime = None
+        if produced_path and os.path.exists(produced_path):
+            stat = os.stat(produced_path)
+            size, mtime = stat.st_size, stat.st_mtime
+
+        with SessionLocal() as db:
+            point = None
+            if captured.replaces_point_id is not None:
+                point = db.get(RevertPoint, captured.replaces_point_id)
+
+            if point is None:
+                point = RevertPoint(file_id=file_id)
+                db.add(point)
+
+            point.sidecar_path       = captured.sidecar_path
+            point.sidecar_size       = captured.sidecar_size
+            point.manifest           = captured.manifest_json
+            point.original_path      = captured.original_path
+            point.original_container = captured.original_container
+            point.processed_size     = size
+            point.processed_mtime    = mtime
+            db.commit()
+
+        # Only once the row is committed. The other order would leave a row
+        # pointing at a file that had already been deleted; this order, at
+        # worst, leaves a superseded sidecar that the retention sweep's
+        # orphan pass collects.
+        if captured.replaces_sidecar_path and \
+                captured.replaces_sidecar_path != captured.sidecar_path:
+            delete_sidecar(captured.replaces_sidecar_path)
+    except Exception:
+        logger.exception(
+            "Could not record revert point for file %d — discarding the sidecar",
+            file_id,
+        )
+        delete_sidecar(captured.sidecar_path)
 
 
 def _finish_job(

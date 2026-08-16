@@ -21,6 +21,7 @@ import os
 from datetime import datetime
 
 from app.core.plex import notify_plex_reprocessed_file
+from app.core.recycle import sweep_retention
 from app.database.models import PlexAnalyzeBacklog
 from app.database.session import SessionLocal, get_app_settings
 
@@ -62,6 +63,20 @@ async def run_scheduler(ws_manager) -> None:
             await _tick(ws_manager)
         except Exception:
             logger.exception("Scheduler tick raised an unexpected error")
+
+        # Retention runs from the loop rather than from _tick, which
+        # returns early whenever scheduled scans are switched off. Tucked
+        # in there, the recycle bin would grow without limit for every
+        # user who does not use scheduled scans — which is most of them.
+        #
+        # Off the event loop: the sweep unlinks files on what may be a
+        # spun-down array, and blocking here stalls every other background
+        # task including job progress.
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, sweep_retention)
+        except Exception:
+            logger.exception("Retention sweep raised an unexpected error")
+
         await asyncio.sleep(60)
 
 

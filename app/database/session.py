@@ -106,6 +106,35 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # configuration mistake (bad codec, bad path, etc.) causing every queued
     # file to fail and flooding the inbox with hundreds of identical emails.
     "email_failure_threshold":  5,
+    # ── Recycle bin (revert to original) ───────────────────────────────────
+    # Off by default, deliberately. Turning this on starts consuming a
+    # volume that an upgrading install has not mounted and has not sized —
+    # an existing user who pulls a new image should not discover the
+    # feature by running out of disk. A fresh install enables it in the
+    # same breath as mounting the volume, which is the point at which the
+    # size question has actually been answered.
+    "revert_enabled":            False,
+    # Retention is bounded twice, because either bound alone fails in a
+    # common case: a days-only window has no ceiling during a big library
+    # sweep, and a size-only cap keeps a single stale sidecar forever on a
+    # quiet library. Age is applied first, then oldest-first eviction until
+    # the total is under the cap.
+    "revert_retention_days":     7,
+    "revert_retention_max_gb":   20,
+    # What a job does when the recycle bin cannot provide a revert point —
+    # volume missing, disk full, FFmpeg failed. False = process anyway and
+    # record nothing; True = fail the job, leaving the file untouched.
+    #
+    # This governs UNAVAILABLE only. A job that destroyed nothing, or
+    # destroyed only attachments (which Matroska cannot store alone), has
+    # no revert point to record and never blocks — see revert_capture.py
+    # on why those two cases stay separate.
+    #
+    # Defaults to False so that a recycle bin problem degrades the revert
+    # feature rather than stopping the library being maintained. The
+    # opposite default reads as the safe one and is not: it converts a
+    # full disk into every subsequent job failing.
+    "revert_require_point":      False,
     # ── Maintenance ────────────────────────────────────────────────────────
     "auto_cleanup_on_scan":   True,   # remove deleted-file DB rows after each scan
     "scheduled_scan_enabled": False,  # run library scans automatically
@@ -194,10 +223,72 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db() -> None:
     """Create all tables, run lightweight migrations, and seed default settings."""
     Base.metadata.create_all(bind=engine)
+    _relax_revert_point_file_id()
     _migrate_schema()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
+
+
+def _relax_revert_point_file_id() -> None:
+    """
+    Drop the NOT NULL constraint on revert_points.file_id.
+
+    The column shipped NOT NULL and later had to become nullable: a revert
+    point outlives the media file row it was attached to, because the
+    scanner deletes a row whenever its path is gone and cannot tell a
+    deletion from a rename. Detaching sets file_id to NULL.
+
+    SQLite cannot ALTER a column's nullability, so this is the standard
+    rebuild — rename aside, recreate from the model, copy, drop. It runs
+    before _migrate_schema so the rebuilt table already has every current
+    column and the ADD COLUMN pass below finds nothing to do.
+
+    Without it the failure is quiet and late. Nothing breaks at startup;
+    the first symptom is an IntegrityError inside cleanup_deleted_files,
+    which runs unattended on every scan, on the first file a user renames.
+
+    No-op when the column is already nullable, so it is safe on every
+    startup and on fresh installs.
+    """
+    inspector = inspect(engine)
+    if "revert_points" not in set(inspector.get_table_names()):
+        return
+
+    columns = {c["name"]: c for c in inspector.get_columns("revert_points")}
+    file_id = columns.get("file_id")
+    if file_id is None or file_id.get("nullable", True):
+        return
+
+    logger.info("Migrating database: making revert_points.file_id nullable")
+
+    from app.database.models import RevertPoint
+
+    table = RevertPoint.__table__
+    # Only columns present in BOTH shapes are copied. Anything the old
+    # table lacks (detached_at, on the install this was written for) is
+    # left at its default, which for a still-attached point is correct.
+    carried = [name for name in table.columns.keys() if name in columns]
+    column_list = ", ".join(f'"{c}"' for c in carried)
+
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE revert_points RENAME TO _revert_points_old"))
+
+        # Indexes follow a renamed table and would collide with the ones
+        # the model is about to create under the same names.
+        stale = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND tbl_name='_revert_points_old' AND name NOT LIKE 'sqlite_%'"
+        )).fetchall()
+        for (name,) in stale:
+            conn.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+
+        table.create(conn)
+        conn.execute(text(
+            f"INSERT INTO revert_points ({column_list}) "
+            f"SELECT {column_list} FROM _revert_points_old"
+        ))
+        conn.execute(text("DROP TABLE _revert_points_old"))
 
 
 def _migrate_schema() -> None:
@@ -238,6 +329,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE planned_actions ADD COLUMN target_language TEXT"),
         ("plex_analyze_backlog", "expected_language",
          "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
+        ("revert_points", "detached_at",
+         "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
     ]
 
     inspector = inspect(engine)

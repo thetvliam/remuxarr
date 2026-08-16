@@ -57,6 +57,36 @@ class ExtractionResult:
 # ── Command builder — main remux ────────────────────────────────────────────────
 
 
+# Normalised container name (probe._normalise_container) → FFmpeg muxer.
+#
+# Module-level rather than function-local so build_restore_command shares
+# the one table: a revert writes the ORIGINAL container back, and a second
+# copy of this map is a second place for the mkv/webm trap below to be got
+# wrong.
+_CONTAINER_FORMAT = {
+    "mkv": "matroska",
+    "mp4": "mp4",
+    "avi": "avi",
+    # No "m2ts" entry — _normalise_container (probe.py) can never
+    # actually produce it: every real .m2ts file's ffprobe format_name
+    # contains "mpegts", which the "ts" branch there always matches
+    # first, before any fallback path could return "m2ts" literally.
+    # Confirmed directly, including during the real .m2ts investigation
+    # for F-B2 earlier — genuinely unreachable, not just unlikely.
+    "ts": "mpegts",
+    "wmv": "asf",
+    # "webm" and "mov" are unreachable defensive keys, kept for
+    # intent (matching probe.py's annotated copy): _normalise_container
+    # can never return "webm" (its format_name always contains
+    # "matroska", matched first) and maps "mov"→"mp4", and
+    # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
+    # either value. Nothing reaches these; they just document the
+    # intended format if that ever changes.
+    "webm": "webm",
+    "mov": "mov",
+}
+
+
 def build_ffmpeg_command(
     input_path: str,
     output_path: str,
@@ -157,28 +187,6 @@ def build_ffmpeg_command(
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which
     # FFmpeg doesn't recognise, so it would otherwise refuse to mux.
-    _CONTAINER_FORMAT = {
-        "mkv": "matroska",
-        "mp4": "mp4",
-        "avi": "avi",
-        # No "m2ts" entry — _normalise_container (probe.py) can never
-        # actually produce it: every real .m2ts file's ffprobe format_name
-        # contains "mpegts", which the "ts" branch there always matches
-        # first, before any fallback path could return "m2ts" literally.
-        # Confirmed directly, including during the real .m2ts investigation
-        # for F-B2 earlier — genuinely unreachable, not just unlikely.
-        "ts": "mpegts",
-        "wmv": "asf",
-        # "webm" and "mov" are unreachable defensive keys, kept for
-        # intent (matching probe.py's annotated copy): _normalise_container
-        # can never return "webm" (its format_name always contains
-        # "matroska", matched first) and maps "mov"→"mp4", and
-        # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
-        # either value. Nothing reaches these; they just document the
-        # intended format if that ever changes.
-        "webm": "webm",
-        "mov": "mov",
-    }
     # Hard-fail on any container this map doesn't know, rather than
     # silently defaulting to matroska. The old `.get(..., "matroska")`
     # default was a genuine file-corruption bug: MEDIA_EXTENSIONS accepts
@@ -204,6 +212,31 @@ def build_ffmpeg_command(
         decision.target_container, out_fmt, output_path,
     )
     cmd += ["-f", out_fmt]
+
+    # Attachments — fonts for styled subtitles, cover art, posters.
+    #
+    # Without this map they are silently destroyed on every single remux,
+    # including a pure metadata fix that changes nothing else. The maps
+    # above are built from extract_tracks(), which returns only video,
+    # audio and subtitle streams, so no attachment has ever been named in
+    # a -map argument; FFmpeg's default stream selection does not pick
+    # them up, and the operation reports success. A file loses its fonts
+    # and the only evidence is that styled subtitles start rendering in a
+    # fallback typeface some time later.
+    #
+    # The "?" makes the map optional: without it, FFmpeg exits non-zero
+    # on any file that has no attachments, which is most of them.
+    # Verified both branches directly — attachments preserved when
+    # present, exit 0 when absent.
+    #
+    # Gated on the output format, not skipped defensively. Mapping an
+    # attachment into MP4 is not a no-op, it is a hard failure at header
+    # write ("Could not find tag for codec ttf"), so this must fire only
+    # for containers that can hold one. An MKV → MP4 conversion therefore
+    # still loses attachments, which is a real property of MP4 rather
+    # than something to work around here.
+    if out_fmt in ("matroska", "webm"):
+        cmd += ["-map", "0:t?"]
 
     # Apply +faststart when the output is MP4 AND the add_faststart_to_mp4
     # setting is on. The setting is an absolute off switch: with it disabled
@@ -283,6 +316,228 @@ def build_extract_subtitle_command(
     ]
 
 
+# ── Command builder — revert sidecar ─────────────────────────────────────────────
+
+
+class SidecarUnsupported(Exception):
+    """Raised when the destroyed streams cannot be stored in a sidecar."""
+
+
+# Matroska cannot store MP4's mov_text. Copying one in fails at header
+# write with "Subtitle codec ... is not supported", so it is converted to
+# SubRip instead — verified to round-trip back to mov_text intact on
+# restore. Listed rather than hardcoded at the call site so anything else
+# found to need the same treatment lands in one place.
+_SUBTITLE_TRANSCODE = {"mov_text": "srt"}
+
+
+def build_sidecar_command(
+    inputs: list[str],
+    sidecar_path: str,
+    sources: list[tuple[dict, int, int]],
+) -> list[str]:
+    """
+    Return the FFmpeg argv to collect destroyed streams into a single
+    Matroska sidecar.
+
+    `sources` is (stream, input_number, stream_index) per stream, in the
+    order they should appear in the sidecar. Two inputs rather than one
+    because a revert point accumulates: a second job on the same file has
+    to produce a sidecar holding both what THIS job destroyed (still
+    present in the file it was handed) and what an earlier job destroyed
+    (only in the previous sidecar). Neither source alone has everything.
+
+    Matroska regardless of the source container: it is the only format
+    that will hold an arbitrary mix of dropped audio, subtitles and
+    attachments. Chapters are excluded — they survive a remux, so they
+    are still in the processed file and storing a second copy here would
+    only invite the two disagreeing.
+
+    Raises SidecarUnsupported if the only losses are attachments. That
+    is not a fussy guard: Matroska has no concept of a file with zero
+    tracks, and FFmpeg writes one anyway and EXITS ZERO. The result is a
+    file that looks written, has a plausible size, and cannot be opened —
+    verified directly, ffmpeg rc=0 and ffprobe rc=1 on the same file. A
+    revert point pointing at one of those is worse than no revert point,
+    because nothing discovers it until someone tries to use it.
+    """
+    real_tracks = [s for s, _i, _x in sources
+                   if s.get("type") in ("video", "audio", "subtitle")]
+    if not real_tracks:
+        raise SidecarUnsupported(
+            "Nothing but attachments was lost; Matroska cannot store a "
+            "file with no tracks."
+        )
+
+    cmd = [app_settings.FFMPEG_PATH]
+    for path in inputs:
+        cmd += ["-i", path]
+    cmd += ["-y", "-v", "error"]
+
+    # Output-side subtitle ordinal, which is what -c:s:N addresses. It
+    # counts only the subtitles going INTO the sidecar, so it is not the
+    # stream's index in any input.
+    subtitle_ordinal = 0
+    overrides: list[str] = []
+
+    for stream, input_number, stream_index in sources:
+        cmd += ["-map", f"{input_number}:{stream_index}"]
+        if stream.get("type") == "subtitle":
+            # Only streams coming from a real media file can still be
+            # mov_text; anything already in a previous sidecar was
+            # converted on its way in and is SubRip by now.
+            target = _SUBTITLE_TRANSCODE.get(stream.get("codec"))
+            if target and input_number == 0:
+                overrides += [f"-c:s:{subtitle_ordinal}", target]
+            subtitle_ordinal += 1
+
+    # Base codec first, per-stream overrides after — later options win,
+    # so the order here is what lets a single mov_text stream be
+    # converted while everything else is still copied.
+    cmd += ["-c", "copy"] + overrides
+    cmd += ["-map_chapters", "-1", "-f", "matroska", sidecar_path]
+    return cmd
+
+
+# ── Command builder — revert restore ─────────────────────────────────────────────
+
+
+class RestoreUnsupported(Exception):
+    """Raised when a manifest cannot be turned into a restore command."""
+
+
+def build_restore_command(
+    processed_path: str,
+    sidecar_path: str,
+    output_path: str,
+    manifest: dict,
+) -> list[str]:
+    """
+    Return the FFmpeg argv to rebuild the original file from the processed
+    one plus its sidecar.
+
+    Input 0 is the processed file, input 1 the sidecar. Every stream in
+    the manifest is mapped from whichever holds it, in the manifest's own
+    order — which is the ORIGINAL order, not the processed one. Getting
+    that wrong produces a file that plays but whose track order has
+    silently changed, which is the kind of difference nobody notices until
+    a player picks the wrong default.
+
+    Metadata is written back explicitly rather than left to stream copy.
+    Copying preserves whatever the processed file happens to carry, and
+    for any track a re-tagging job touched that is precisely the value
+    being reverted. Language, title and dispositions therefore all come
+    from the manifest, and are CLEARED where the manifest recorded none —
+    an absent tag is a value, and leaving the job's version in place would
+    make revert a partial undo that looks complete.
+
+    Raises RestoreUnsupported if the manifest predates the index
+    annotations or is internally inconsistent. Refusing is the only safe
+    response: a restore built on guesses would write a plausible file with
+    the wrong tracks in it.
+    """
+    streams = manifest.get("streams") or []
+    if not streams:
+        raise RestoreUnsupported("Manifest records no streams.")
+
+    container = manifest.get("container")
+    out_fmt = _CONTAINER_FORMAT.get(container)
+    if not out_fmt:
+        raise RestoreUnsupported(
+            f"No FFmpeg muxer known for original container {container!r}."
+        )
+
+    cmd = [
+        app_settings.FFMPEG_PATH,
+        "-i", processed_path,
+        "-i", sidecar_path,
+        "-y",
+        "-v", "error",
+        "-nostats",
+        "-progress", "pipe:1",
+    ]
+
+    maps: list[str] = []
+    meta: list[str] = []
+
+    for out_index, stream in enumerate(streams):
+        sidecar_index = stream.get("sidecar_index")
+        processed_index = stream.get("processed_index")
+
+        # The sidecar wins when a stream is somehow in both. Capture makes
+        # the two annotations mutually exclusive today, so this ordering
+        # costs nothing now — but it is stated rather than left to chance,
+        # because the direction matters the moment that changes. Matching
+        # errs towards "lost", so an over-captured stream is one the
+        # sidecar holds in its ORIGINAL codec and tagging while the
+        # processed file holds the job's rewritten version. Preferring the
+        # processed copy would quietly restore the very thing being
+        # reverted — a MKV → MP4 conversion, for instance, would put the
+        # mov_text subtitle back instead of the SubRip original.
+        if sidecar_index is not None:
+            maps += ["-map", f"1:{sidecar_index}"]
+        elif processed_index is not None:
+            maps += ["-map", f"0:{processed_index}"]
+        else:
+            # Neither annotation present. Either the manifest was written
+            # before capture recorded them, or the stream was lost and
+            # never made it into the sidecar. Both mean this file cannot
+            # be rebuilt faithfully, and a partial rebuild is worse than
+            # an honest refusal — it would report success while quietly
+            # dropping a track the user asked to get back.
+            raise RestoreUnsupported(
+                f"Stream {stream.get('index')} is in neither the processed "
+                f"file nor the sidecar."
+            )
+
+        # Clear this stream's metadata, then write back exactly what the
+        # original carried. Clearing first is what removes tags the
+        # ORIGINAL never had: a stream that survived the job arrives via
+        # the processed container, and an MP4 round trip strips mkvmerge's
+        # statistics tags and adds handler_name and vendor_id, which mean
+        # nothing in Matroska.
+        #
+        # EVERY stream is handled here, attachments included, and that is
+        # not tidiness. A single per-stream -map_metadata replaces FFmpeg's
+        # default "copy all stream metadata" for the WHOLE output, not just
+        # the stream named — verified directly. So the moment one stream is
+        # cleared, every other stream's tags have to be written back by
+        # hand or they are silently dropped. Attachments fail loudest,
+        # because Matroska refuses to mux one without a filename tag, but
+        # the quiet cases are worse: titles and languages would vanish from
+        # streams nothing appeared to touch.
+        meta += [f"-map_metadata:s:{out_index}", "-1"]
+        for key, value in (stream.get("tags") or {}).items():
+            meta += [f"-metadata:s:{out_index}", f"{key}={value}"]
+
+        # Language, title and disposition are not meaningful on an
+        # attachment, and its identity lives entirely in the tags above.
+        if stream.get("type") == "attachment":
+            continue
+
+        # Language and title are written last and unconditionally, so they
+        # win over anything in the recorded tag set. Empty values are
+        # deliberate: they clear a tag the job added, which is the one case
+        # the tag set cannot express — it records what WAS there, and what
+        # was there is nothing.
+        meta += [f"-metadata:s:{out_index}", f"language={stream.get('language') or ''}"]
+        meta += [f"-metadata:s:{out_index}", f"title={stream.get('title') or ''}"]
+
+        flags = stream.get("disposition") or []
+        # "0" is FFmpeg's spelling for "no flags at all". Omitting the
+        # option entirely would instead inherit whatever the copied stream
+        # carries, which is the job's version, not the original's.
+        meta += [f"-disposition:{out_index}", "+".join(flags) if flags else "0"]
+
+    cmd += maps
+    cmd += ["-c", "copy"]
+    cmd += meta
+    # Chapters survive a remux, so the processed file still has them.
+    cmd += ["-map_chapters", "0"]
+    cmd += ["-f", out_fmt, output_path]
+    return cmd
+
+
 # ── Executor — main remux ───────────────────────────────────────────────────────
 
 
@@ -294,6 +549,7 @@ async def execute_ffmpeg(
     job_id: int,
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds: float | None = None,
+    before_staging: Callable[[str], Awaitable[str | None]] | None = None,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
@@ -353,12 +609,18 @@ async def execute_ffmpeg(
             )
         )
 
+    # Handed temp_output, not output_path — see execute_ffmpeg_combined's
+    # identical wrapper for why the distinction matters on an in-place remux.
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_output)
+
     result = await run_staged_subprocess(
         cmd,
         [StagedOutput(temp_path=temp_output, final_path=output_path)],
         on_progress_line=on_progress_line,
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
     )
 
     if not result.success:
@@ -543,6 +805,7 @@ async def execute_ffmpeg_combined(
     job_id:               int,
     progress_callback:    Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds:      float | None = None,
+    before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
     Single-pass combined remux + subtitle extraction.
@@ -557,6 +820,12 @@ async def execute_ffmpeg_combined(
 
     Returns (FFmpegResult, [ExtractionResult, ...]) — one ExtractionResult
     per entry in subtitle_extractions, in the same order.
+
+    before_staging, if given, is awaited with the path of the finished main
+    output while it is still a temp file and every original is untouched —
+    the only point where the source and the result both exist. Returning an
+    error string from it aborts the whole run with nothing swapped into
+    place. See run_staged_subprocess for the full contract.
 
     Thin adapter over run_staged_subprocess(): the main output AND every
     SRT sidecar are passed to it as one staged set, so all outputs land
@@ -643,12 +912,21 @@ async def execute_ffmpeg_combined(
         for srt_tmp, (_, srt_dest) in zip(srt_temps, subtitle_extractions)
     ]
 
+    # The hook is handed temp_main — the finished output, still in the temp
+    # directory. The caller needs the produced file to compare against the
+    # source, and output_path does not exist yet at this point in the run
+    # (and for an in-place remux still holds the ORIGINAL, which is the
+    # opposite of what a caller asking for "the output" wants).
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_main)
+
     result = await run_staged_subprocess(
         main_cmd,
         staged_outputs,
         on_progress_line=on_progress_line,
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
     )
 
     if not result.success:

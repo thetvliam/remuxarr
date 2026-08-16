@@ -32,8 +32,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /* useAppData opens a WebSocket on mount. Stub it before importing the hook:
    the transport has its own surface and is not what these tests are about. */
+/* The handler itself is captured so the message cases can be driven
+   directly. vi.hoisted is required: a plain const would still be in its
+   temporal dead zone when vi.mock's factory is hoisted above the imports. */
+const ws = vi.hoisted(() => ({ onMessage: null }));
 vi.mock("../useWebSocket", () => ({
-  useWebSocket: () => true,
+  useWebSocket: (_url, onMessage) => { ws.onMessage = onMessage; return true; },
 }));
 
 const { useAppData } = await import("../useAppData");
@@ -306,5 +310,92 @@ describe("useAppData — popstate", () => {
     });
 
     expect(result.current.page).toBe("dashboard");
+  });
+});
+
+
+/* ── revert_complete ─────────────────────────────────────────────────────── */
+
+describe("useAppData — revert_complete", () => {
+  /**
+   * A revert's POST returns as soon as the work has STARTED, so the panel
+   * that requested it reloads against a file still being rewritten and
+   * shows the entry as though nothing happened. This event is the only
+   * signal that it finished.
+   *
+   * Reported: clicking revert on several entries in quick succession left
+   * every one of them on screen. Only the first actually ran — the rest
+   * were refused, one at a time being the server's rule — and nothing ever
+   * refreshed, so all of them looked broken rather than one running and
+   * the others declined.
+   */
+  it("bumps the revert refresh key so the panel reloads", () => {
+    const { result } = renderHook(() => useAppData());
+    const before = result.current.revertRefreshKey;
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: true,
+                     restored_path: "/media/tv/Show/S01E01.mkv" });
+    });
+
+    expect(result.current.revertRefreshKey).not.toBe(before);
+  });
+
+  it("reports the outcome, since the panel may not be on screen", () => {
+    const { result } = renderHook(() => useAppData());
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: true,
+                     restored_path: "/media/tv/Show/S01E01.mkv" });
+    });
+
+    expect(result.current.toasts.at(-1).msg).toContain("S01E01.mkv");
+    expect(result.current.toasts.at(-1).tone).toBe("success");
+  });
+
+  it("carries the reason when a revert fails", () => {
+    // "This file has changed size since it was processed" is actionable;
+    // a bare failure on a file sitting right there is not.
+    const { result } = renderHook(() => useAppData());
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: false,
+                     error: "Show.mkv has changed size since it was processed" });
+    });
+
+    const last = result.current.toasts.at(-1);
+    expect(last.tone).toBe("error");
+    expect(last.msg).toContain("changed size");
+  });
+
+  it("refreshes the panel when a job completes, not only when one reverts", () => {
+    /**
+     * Reported: the recycle bin updated when entries were removed but not
+     * when they were added. A completed job is the only thing that creates
+     * a revert point, and fetchAll does not cover the recycle bin — it has
+     * its own endpoint and its own key. So the panel only ever shrank, and
+     * new entries appeared out of nowhere on the next manual reload.
+     */
+    const { result } = renderHook(() => useAppData());
+    const before = result.current.revertRefreshKey;
+
+    act(() => {
+      ws.onMessage({ event: "job_completed", status: "success",
+                     filename: "S01E01.mkv" });
+    });
+
+    expect(result.current.revertRefreshKey).not.toBe(before);
+  });
+
+  it("does not throw on a message with nothing but a type", () => {
+    // useWebSocket invokes this callback inside a bare catch, so anything
+    // that throws here is swallowed and takes the refresh with it — the
+    // exact failure job_completed was already fixed for.
+    const { result } = renderHook(() => useAppData());
+    const before = result.current.revertRefreshKey;
+
+    act(() => { ws.onMessage({ event: "revert_complete" }); });
+
+    expect(result.current.revertRefreshKey).not.toBe(before);
   });
 });

@@ -31,7 +31,7 @@ from app.core.probe import (
     is_media_file,
     probe_file,
 )
-from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -275,6 +275,11 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     and was never updated when they were added. SubtitleLanguageFlag was
     added directly alongside this comment specifically to avoid
     repeating that exact mistake a third time.
+
+    RevertPoint is the fifth, and the deliberate exception: it is
+    DETACHED rather than deleted, and its sidecar is kept. See the
+    comment at that code for why, and test_media_file_deletion.py for
+    how the exemption is kept honest.
     """
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(
@@ -296,6 +301,35 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.query(SubtitleLanguageFlag).filter(
         SubtitleLanguageFlag.file_id == media.id
     ).delete(synchronize_session=False)
+    # RevertPoint is the one referencing table NOT cleared here. It is
+    # detached instead: file_id goes NULL, the sidecar stays on the recycle
+    # volume, and the point survives its file.
+    #
+    # This function runs for any file whose path is gone from disk, and it
+    # cannot tell a deletion from a RENAME. Sonarr changing a naming scheme
+    # moves an entire library in one pass, and every one of those files
+    # still exists — deleting their stored tracks would throw away the
+    # recycle bin for a library that was never deleted. A detached point
+    # can be matched back to its file by hand; a deleted one is gone.
+    #
+    # This is not a leak. Detached points still age out and still count
+    # against the size cap, so the volume stays bounded either way. What
+    # changes is that the bound is retention rather than a rename.
+    detached = (
+        db.query(RevertPoint)
+        .filter(RevertPoint.file_id == media.id)
+        .all()
+    )
+    for rp in detached:
+        # SQLAlchemy would clear file_id on its own here — deleting a
+        # parent nullifies the FK on loaded children by default, verified
+        # directly. It is written out anyway, because that default is a
+        # relationship-configuration detail: adding cascade="all,
+        # delete-orphan" to the backref would silently turn this back into
+        # a delete. The explicit assignment makes what happens to these
+        # rows a property of this function rather than of the model.
+        rp.file_id = None
+        rp.detached_at = utcnow()
     db.query(Track).filter(
         Track.file_id == media.id
     ).delete(synchronize_session=False)

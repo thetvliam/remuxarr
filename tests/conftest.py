@@ -19,7 +19,56 @@ import os
 # configured environment still wins.
 os.environ.setdefault("REMUXARR_DATABASE_PATH", "/tmp/remuxarr-test/remuxarr.db")
 
+# Start every run from an empty database, so a local run is the same run CI
+# gets.
+#
+# This is not tidiness. The shared sqlite file survives between local runs
+# and accumulates whatever tables and rows earlier runs created, so a test
+# that reaches the real SessionLocal instead of an isolated one PASSES
+# locally on state a previous run left behind, and fails on a clean
+# checkout. Ten tests shipped that way and were caught by CI rather than
+# here, having passed locally every time.
+#
+# Deleting it means such a test fails in both places, immediately and for
+# the same reason. Tests that genuinely want a database build their own
+# in-memory one; nothing legitimately depends on this file's contents
+# outliving a run.
+_db_path = os.environ["REMUXARR_DATABASE_PATH"]
+if os.path.exists(_db_path):
+    os.remove(_db_path)
+
 import pytest
+
+
+def memory_engine():
+    """
+    An in-memory SQLite engine that survives being used from more than one
+    thread.
+
+    Two defaults make the plain `create_engine("sqlite://")` unusable as
+    soon as anything leaves the calling thread, and both fail the same
+    confusing way — "no such table", as though the schema were never
+    created:
+
+      • Every new connection to ":memory:" gets its OWN empty database.
+        StaticPool keeps exactly one, so the tables created on it are the
+        tables everything sees.
+      • SQLite refuses a connection used from a thread other than the one
+        that opened it. Production sets check_same_thread=False for the
+        same reason — the worker does its database work on executor
+        threads — so the tests should match.
+
+    Any test touching code that awaits run_in_executor, or that goes
+    through TestClient, needs this rather than the bare call.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
+    return create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
 # Every settings key analyze_file() actually reads, confirmed directly
 # against app/core/decision.py rather than assumed — see the grep this was

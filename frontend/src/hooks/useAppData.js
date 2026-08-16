@@ -110,6 +110,7 @@ export function useAppData() {
   // Deliberately not bumped on job_progress or scan_progress — those fire
   // continuously and would refetch the list on every tick.
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
+  const [revertRefreshKey, setRevertRefreshKey] = useState(0);
 
   // ── Forge tab state ──────────────────────────────────────────────────────
   const [forgeActive,    setForgeActive]    = useState(null);
@@ -374,6 +375,16 @@ export function useAppData() {
             fetchAll();
             invalidateHistory(msg.status ?? null);
             setReviewRefreshKey(k => k + 1);
+            /* A successful job is the only thing that CREATES a revert
+             * point, and fetchAll does not cover the recycle bin — it has
+             * its own endpoint and its own key. Without this the panel
+             * only ever shrank: reverting refreshed it, processing did
+             * not, so entries appeared out of nowhere on the next manual
+             * reload. Bumped for every outcome rather than successes
+             * only, because a failed job can still have written and then
+             * discarded a sidecar, and the panel should reflect whatever
+             * is actually there. */
+            setRevertRefreshKey(k => k + 1);
             toast(
               msg.status === "dry_run"
               ? `${msg.filename || "File"} — DRY RUN PREVIEW READY`
@@ -382,6 +393,24 @@ export function useAppData() {
                   msg.status === "success" ? "success"
                   : msg.status === "dry_run" ? "preview"
                   : "error",
+            );
+            break;
+
+          case "revert_complete":
+            /* A revert returns from its POST as soon as it has STARTED, so
+             * the panel that requested it refreshes against a file that is
+             * still being rewritten and shows the entry as though nothing
+             * happened. This is the only signal that it finished.
+             *
+             * The key bump is what the Recycle Bin panel reloads on. The
+             * toast carries the outcome because the panel may not even be
+             * on screen by the time a large file finishes. */
+            setRevertRefreshKey(k => k + 1);
+            toast(
+              msg.success
+              ? `Reverted: ${basename(msg.restored_path || "")}`
+              : `Revert failed${msg.error ? `: ${String(msg.error).slice(0, 60)}` : ""}`,
+                  msg.success ? "success" : "error",
             );
             break;
 
@@ -486,6 +515,7 @@ export function useAppData() {
         autoStart, setAutoStart,
         historyRefreshKey, invalidateHistory,
         reviewRefreshKey,
+        revertRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge,
           pendingQueue, wsConnected, isMobile,
