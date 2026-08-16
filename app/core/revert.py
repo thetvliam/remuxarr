@@ -87,6 +87,21 @@ def build_manifest(probe_data: dict, *, original_path: str,
             # stream property.
             "filename": tags.get("filename") or tags.get("FILENAME"),
             "mimetype": tags.get("mimetype") or tags.get("MIMETYPE"),
+
+            # Every tag, verbatim, including the ones above. Language and
+            # title stay as their own fields because matching and display
+            # need them; this is what makes a RESTORE faithful.
+            #
+            # Without it a revert quietly changes metadata on exactly the
+            # streams it did not have to touch. A track that survived the
+            # job comes back through the processed container and arrives
+            # carrying whatever that container left on it — an MP4 round
+            # trip strips mkvmerge's BPS and NUMBER_OF_BYTES statistics and
+            # adds a handler_name that means nothing in Matroska. Streams
+            # restored from the sidecar keep theirs, so the result is a
+            # file whose streams disagree about which tags they carry,
+            # which the original never did.
+            "tags": dict(tags),
         })
 
     return {

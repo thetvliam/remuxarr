@@ -56,6 +56,19 @@ The rest, killed on the first run:
     processed file                                 → killed
   • Attachments given -metadata:s                  → killed
   • Sidecar and processed inputs swapped           → killed
+  • Stream tags not recorded in the manifest       → killed
+  • Metadata not cleared before restoring          → killed
+  • Recorded tags not written back                 → killed
+  • Attachments skipped before their tags restored → killed
+  • language/title written before the tag set      → killed
+
+The clearing mutant survived at first, because a same-container fixture
+never produces residue to clean up — the reported case was an MKV to MP4
+job, where the muxer adds handler_name and vendor_id to every surviving
+stream. test_real_round_trip_through_mp4_leaves_no_container_residue
+builds its original in one pass straight from lavfi for the same reason:
+routing the audio through an .m4a first, as the other fixtures here do,
+puts the residue on the original itself and the test proves nothing.
 
 No equivalent mutants.
 """
@@ -297,6 +310,11 @@ def _ffprobe(path):
     return json.loads(out.stdout)
 
 
+def _tags(path):
+    """Per-stream tag dictionaries, in order."""
+    return [dict(s.get("tags") or {}) for s in _ffprobe(path)["streams"]]
+
+
 def _summarise(path):
     """Everything a revert is supposed to put back, in order."""
     out = []
@@ -311,19 +329,18 @@ def _summarise(path):
     return out
 
 
-@ffmpeg_required
-def test_real_round_trip_restores_the_original(tmp_path):
+def _round_trip_fixture(tmp_path):
     """
-    Capture from a real file, then restore from the result, and compare
-    stream by stream. The only test here that can catch FFmpeg not doing
-    what the argv says.
-    """
-    from app.core.ffmpeg import build_restore_command
-    from app.core.revert import build_manifest, match_streams
-    from app.core.ffmpeg import build_sidecar_command
+    A real original, the file a job would leave behind, and the sidecar
+    holding what that job destroyed.
 
-    # An original with two audio languages, a subtitle, a font, and
-    # dispositions and titles worth losing.
+    The original has two audio languages, a subtitle, a font attachment,
+    and dispositions and titles worth losing. The job drops the French
+    audio and the attachment.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+    from app.core.revert import build_manifest, match_streams
+
     video = tmp_path / "v.mkv"
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
@@ -352,9 +369,6 @@ def test_real_round_trip_restores_the_original(tmp_path):
          "-metadata:s:t", "mimetype=application/x-truetype-font",
          "-f", "matroska", str(original)], check=True)
 
-    before = _summarise(original)
-
-    # A job that drops the French audio and loses the attachment.
     processed = tmp_path / "processed.mkv"
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-i", str(original),
@@ -379,16 +393,160 @@ def test_real_round_trip_restores_the_original(tmp_path):
         if id(stream) in sidecar_indices:
             stream["sidecar_index"] = sidecar_indices[id(stream)]
 
-    restored = tmp_path / "restored.mkv"
-    cmd = build_restore_command(str(processed), str(sidecar), str(restored),
-                                manifest)
+    return original, processed, sidecar, manifest
+
+
+def _run_restore(processed, sidecar, destination, manifest):
+    from app.core.ffmpeg import build_restore_command
+
+    cmd = build_restore_command(str(processed), str(sidecar),
+                                str(destination), manifest)
     # -progress writes to stdout; nothing is reading it here.
     subprocess.run([a for a in cmd if a not in ("-progress", "pipe:1")],
                    check=True, stdout=subprocess.DEVNULL)
 
+
+@ffmpeg_required
+def test_real_round_trip_restores_the_original(tmp_path):
+    """
+    Capture from a real file, then restore from the result, and compare
+    stream by stream. The only test here that can catch FFmpeg not doing
+    what the argv says.
+    """
+    original, processed, sidecar, manifest = _round_trip_fixture(tmp_path)
+    before = _summarise(original)
+
+    restored = tmp_path / "restored.mkv"
+    _run_restore(processed, sidecar, restored, manifest)
+
     assert _summarise(restored) == before, (
         "the restored file does not match the original stream for stream"
     )
+
+
+@ffmpeg_required
+def test_real_round_trip_restores_stream_tags(tmp_path):
+    """
+    Reported from a real library after a successful revert: the restored
+    file's content was perfect, but the two streams that had SURVIVED the
+    job came back missing mkvmerge's BPS and NUMBER_OF_BYTES statistics
+    and carrying an MP4 handler_name that means nothing in Matroska. The
+    streams restored from the sidecar kept theirs — so the result was a
+    file whose streams disagreed about which tags they carried, which the
+    original never did.
+
+    Cosmetic, and still wrong: a revert should not change metadata on the
+    streams it did not have to touch.
+    """
+    original, processed, sidecar, manifest = _round_trip_fixture(tmp_path)
+    before = _tags(original)
+
+    restored = tmp_path / "restored.mkv"
+    _run_restore(processed, sidecar, restored, manifest)
+
+    after = _tags(restored)
+    assert len(after) == len(before)
+    for i, (o, r) in enumerate(zip(before, after)):
+        # DURATION is written by the muxer from the actual stream, not
+        # carried, so it legitimately differs in precision.
+        o = {k: v for k, v in o.items() if k != "DURATION"}
+        r = {k: v for k, v in r.items() if k != "DURATION"}
+        assert o == r, f"stream {i} tags changed: {o} -> {r}"
+
+
+@ffmpeg_required
+def test_real_round_trip_through_mp4_leaves_no_container_residue(tmp_path):
+    """
+    The reported case, and the reason the metadata is CLEARED rather than
+    merely overwritten.
+
+    An MKV to MP4 job puts every surviving stream through the MP4 muxer,
+    which adds handler_name and vendor_id. Those mean nothing in Matroska
+    and the original never had them, so a revert that only sets the tags
+    it knows about leaves them behind — on precisely the streams it did
+    not need to touch. A same-container fixture cannot see this, because
+    nothing adds residue in the first place.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+    from app.core.revert import build_manifest, match_streams
+
+    # Built in ONE pass straight from lavfi, with no intermediate file.
+    # Routing the audio through an .m4a first — as the other fixtures here
+    # do — puts handler_name and vendor_id on the original itself, and
+    # then restoring them is correct and this test proves nothing.
+    original = tmp_path / "original.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+         "-map", "0:v", "-map", "1:a", "-map", "2:a",
+         "-metadata:s:a:0", "language=jpn", "-metadata:s:a:1", "language=eng",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-f", "matroska", str(original)], check=True)
+
+    assert not any(k in (s.get("tags") or {})
+                   for s in _ffprobe(original)["streams"]
+                   for k in ("handler_name", "HANDLER_NAME")), \
+        "the fixture original already carries residue; the test cannot see it"
+
+    # The job: convert to MP4, keeping only the English audio.
+    processed = tmp_path / "processed.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(original),
+         "-map", "0:0", "-map", "0:2", "-c", "copy",
+         "-f", "mp4", str(processed)], check=True)
+
+    residue = [k for s in _ffprobe(processed)["streams"]
+               for k in (s.get("tags") or {})
+               if k in ("handler_name", "vendor_id")]
+    assert residue, "fixture did not produce MP4 residue to clean up"
+
+    manifest = build_manifest(_ffprobe(original), original_path=str(original),
+                              original_container="mkv")
+    matches = match_streams(manifest, _ffprobe(processed))
+    lost = [s for s, i in matches if i is None]
+    sidecar = tmp_path / "1.remuxarr_revert"
+    subprocess.run(
+        build_sidecar_command([str(original)], str(sidecar),
+                              [(s, 0, s["index"]) for s in lost]), check=True)
+    sidecar_indices = {id(s): n for n, s in enumerate(lost)}
+    for stream, produced_index in matches:
+        stream["processed_index"] = produced_index
+        if id(stream) in sidecar_indices:
+            stream["sidecar_index"] = sidecar_indices[id(stream)]
+
+    restored = tmp_path / "restored.mkv"
+    _run_restore(processed, sidecar, restored, manifest)
+
+    for i, tags in enumerate(_tags(restored)):
+        leftover = {k for k in tags if k in ("handler_name", "vendor_id",
+                                             "HANDLER_NAME", "VENDOR_ID")}
+        assert not leftover, (
+            f"stream {i} came back carrying MP4 container residue: {leftover}"
+        )
+
+
+@ffmpeg_required
+def test_real_round_trip_keeps_attachments_muxable(tmp_path):
+    """
+    A single per-stream -map_metadata replaces FFmpeg's default "copy all
+    stream metadata" for the WHOLE output, not just the stream named. Any
+    version of this that clears one stream and hand-writes fewer tags than
+    the original had will drop the rest silently — and Matroska refuses
+    outright to mux an attachment with no filename tag, which is the one
+    case that fails loudly rather than quietly.
+    """
+    original, processed, sidecar, manifest = _round_trip_fixture(tmp_path)
+
+    restored = tmp_path / "restored.mkv"
+    _run_restore(processed, sidecar, restored, manifest)
+
+    attachments = [s for s in _ffprobe(restored)["streams"]
+                   if s["codec_type"] == "attachment"]
+    assert attachments, "the attachment did not survive the restore"
+    assert attachments[0]["tags"]["filename"] == "Roboto.ttf"
+    assert attachments[0]["tags"]["mimetype"] == "application/x-truetype-font"
 
 
 @ffmpeg_required

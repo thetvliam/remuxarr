@@ -490,12 +490,36 @@ def build_restore_command(
                 f"file nor the sidecar."
             )
 
-        # Attachments carry no language/title/disposition worth rewriting,
-        # and -metadata:s on an attachment stream is not meaningful.
+        # Clear this stream's metadata, then write back exactly what the
+        # original carried. Clearing first is what removes tags the
+        # ORIGINAL never had: a stream that survived the job arrives via
+        # the processed container, and an MP4 round trip strips mkvmerge's
+        # statistics tags and adds handler_name and vendor_id, which mean
+        # nothing in Matroska.
+        #
+        # EVERY stream is handled here, attachments included, and that is
+        # not tidiness. A single per-stream -map_metadata replaces FFmpeg's
+        # default "copy all stream metadata" for the WHOLE output, not just
+        # the stream named — verified directly. So the moment one stream is
+        # cleared, every other stream's tags have to be written back by
+        # hand or they are silently dropped. Attachments fail loudest,
+        # because Matroska refuses to mux one without a filename tag, but
+        # the quiet cases are worse: titles and languages would vanish from
+        # streams nothing appeared to touch.
+        meta += [f"-map_metadata:s:{out_index}", "-1"]
+        for key, value in (stream.get("tags") or {}).items():
+            meta += [f"-metadata:s:{out_index}", f"{key}={value}"]
+
+        # Language, title and disposition are not meaningful on an
+        # attachment, and its identity lives entirely in the tags above.
         if stream.get("type") == "attachment":
             continue
 
-        # Empty values are deliberate: they clear a tag the job added.
+        # Language and title are written last and unconditionally, so they
+        # win over anything in the recorded tag set. Empty values are
+        # deliberate: they clear a tag the job added, which is the one case
+        # the tag set cannot express — it records what WAS there, and what
+        # was there is nothing.
         meta += [f"-metadata:s:{out_index}", f"language={stream.get('language') or ''}"]
         meta += [f"-metadata:s:{out_index}", f"title={stream.get('title') or ''}"]
 
