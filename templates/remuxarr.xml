@@ -47,5 +47,5 @@
   off and the app says so, which is the correct outcome for anyone who does
   not want it. Do NOT give this a default under /tmp — that is RAM-backed on
   Unraid and the retention window would not survive a reboot. -->
-  <Config Name="Recycle Bin" Target="/recycle" Default="/mnt/user/appdata/remuxarr-recycle" Mode="rw" Description="Holds revert-to-original data: the audio and subtitle tracks removed by a job, so files can be put back. Leave empty to disable. Must NOT be under /tmp — that is RAM-backed and would be lost on reboot." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Recycle Bin" Target="/recycle" Default="/mnt/user/appdata/remuxarr/recycle" Mode="rw" Description="Holds revert-to-original data: the audio and subtitle tracks removed by a job, so files can be put back. Leave empty to disable. Must NOT be under /tmp — that is RAM-backed and would be lost on reboot." Type="Path" Display="always" Required="false" Mask="false"/>
 </Container>

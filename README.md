@@ -107,7 +107,7 @@ services:
       # and subtitle tracks a job removed - never the video - so a file
       # can be put back the way it was. Leave it out and the feature
       # stays off. Must survive restarts, so not under /tmp.
-      - /path/to/appdata/remuxarr-recycle:/recycle
+      - /path/to/appdata/remuxarr/recycle:/recycle
 
     environment:
       - TZ=America/New_York   # see "Setting your time zone" below

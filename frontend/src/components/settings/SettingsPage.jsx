@@ -452,287 +452,287 @@ const SaveBar = ({ status, dirty, dirtyCount, onSave }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SETTINGS PAGE
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═ * ═*═════════════════════════════════════════════════════════════════════════ */
 export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
-  liveToggles = {}, revertRefreshKey = 0 }) => {
-    const { palette, type, space } = useTheme();
-    const [schema,   setSchema]   = useState([]);
-    const [values,   setValues]   = useState({});
-    const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
-    const [status,   setStatus]   = useState("idle");
-    const [loadError, setLoadError] = useState(false);
+                              liveToggles = {}, revertRefreshKey = 0 }) => {
+  const { palette, type, space } = useTheme();
+  const [schema,   setSchema]   = useState([]);
+  const [values,   setValues]   = useState({});
+  const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
+  const [status,   setStatus]   = useState("idle");
+  const [loadError, setLoadError] = useState(false);
 
-    // Drop the "saved" confirmation back to idle after 2.5s. Same reason as
-    // above: the bare setTimeout it replaces could fire into a remounted
-    // Settings page and clear a confirmation the user had just triggered.
-    useEffect(() => {
-      if (status !== "saved") return;
-      const t = setTimeout(() => setStatus("idle"), 2500);
-      return () => clearTimeout(t);
-    }, [status]);
-    const [active,   setActive]   = useState(() => {
-      try {
-        const s = localStorage.getItem(STORAGE_KEY);
-        return s && CATEGORY_IDS.has(s) ? s : CATEGORIES[0].id;
-      } catch (_) { return CATEGORIES[0].id; }
+  // Drop the "saved" confirmation back to idle after 2.5s. Same reason as
+  // above: the bare setTimeout it replaces could fire into a remounted
+  // Settings page and clear a confirmation the user had just triggered.
+  useEffect(() => {
+    if (status !== "saved") return;
+    const t = setTimeout(() => setStatus("idle"), 2500);
+    return () => clearTimeout(t);
+  }, [status]);
+  const [active,   setActive]   = useState(() => {
+    try {
+      const s = localStorage.getItem(STORAGE_KEY);
+      return s && CATEGORY_IDS.has(s) ? s : CATEGORIES[0].id;
+    } catch (_) { return CATEGORIES[0].id; }
+  });
+
+  // Extracted from the mount effect so it can be re-run on demand. Anything
+  // that changes settings server-side WITHOUT going through this page's own
+  // save() has to call this, or the page keeps rendering pre-change values —
+  // see the reload prop passed to BackupRestoreSection below.
+  const loadSettings = useCallback(() => {
+    return Promise.all([
+      fetch(`${api}/api/settings/schema`).then(r => r.json()),
+                       fetch(`${api}/api/settings/`).then(r => r.json()),
+    ])
+    .then(([s, v]) => {
+      setSchema(s);
+      setValues(v);
+      // baseline must move with values. It is what isDirty compares against,
+      // so leaving it stale would leave the page looking clean while showing
+      // different data than it holds.
+      setBaseline(v);
+      setLoadError(false);
+    })
+    .catch((err) => {
+      // Not silent: this is a one-shot load, and on failure `schema` stays []
+      // so the entire settings page renders as an empty shell with no field,
+      // no error and nothing to retry — indistinguishable from "this app has
+      // no settings". The pollers above swallow deliberately (they retry every
+      // 10s and would flood the console); this one gets exactly one report.
+      console.error("Failed to load settings schema/values", err);
+      setLoadError(true);
     });
+  }, [api]);
 
-    // Extracted from the mount effect so it can be re-run on demand. Anything
-    // that changes settings server-side WITHOUT going through this page's own
-    // save() has to call this, or the page keeps rendering pre-change values —
-    // see the reload prop passed to BackupRestoreSection below.
-    const loadSettings = useCallback(() => {
-      return Promise.all([
-        fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                         fetch(`${api}/api/settings/`).then(r => r.json()),
-      ])
-      .then(([s, v]) => {
-        setSchema(s);
-        setValues(v);
-        // baseline must move with values. It is what isDirty compares against,
-        // so leaving it stale would leave the page looking clean while showing
-        // different data than it holds.
-        setBaseline(v);
-        setLoadError(false);
-      })
-      .catch((err) => {
-        // Not silent: this is a one-shot load, and on failure `schema` stays []
-        // so the entire settings page renders as an empty shell with no field,
-        // no error and nothing to retry — indistinguishable from "this app has
-        // no settings". The pollers above swallow deliberately (they retry every
-        // 10s and would flood the console); this one gets exactly one report.
-        console.error("Failed to load settings schema/values", err);
-        setLoadError(true);
+  useEffect(() => { loadSettings(); }, [loadSettings]);
+
+  // Bumped alongside loadSettings so sibling sections that fetch their own
+  // settings independently (MaintenanceSection reads three keys directly) also
+  // refetch. Without it the main fields would update after an import while
+  // those three toggles kept showing pre-import state.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const reloadAllSettings = useCallback(() => {
+    setReloadKey(k => k + 1);
+    return loadSettings();
+  }, [loadSettings]);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, active); } catch (_) { /* ignore */ }
+  }, [active]);
+
+  // Dirty = any schema field whose current value differs from the saved snapshot.
+  //
+  // Live-toggle keys are excluded by definition rather than by accident. Their
+  // onChange goes to the shared action instead of set(), so `values` never
+  // moves for them and they would not appear here anyway — but relying on that
+  // makes a real invariant look incidental. Being explicit also keeps the
+  // SaveBar count honest: toggling dry run must not make the page claim an
+  // unsaved change, since the change is already saved.
+  const dirtyKeys = schema
+  .map(f => f.key)
+  .filter(k => !liveToggles[k])
+  .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
+  const isDirty = dirtyKeys.length > 0;
+
+  // Report dirtiness up so the app can guard navigation, and reset on unmount.
+  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  // Warn on browser refresh / tab close while there are unsaved edits.
+  useEffect(() => {
+    if (!isDirty) return;
+    const h = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [isDirty]);
+
+  const save = async () => {
+    const snapshot = values;
+    setStatus("saving");
+    try {
+      // Only the keys the user actually changed on this page.
+      //
+      // This previously sent EVERY schema key from `values`, which is a
+      // snapshot taken at page load. Two schema fields — dry_run_mode and
+      // auto_start_jobs, both group "Worker" — are also written from outside
+      // this page: the header toggles both, and abort_job sets
+      // auto_start_jobs=False server-side as a safety stop. So:
+      //
+      //   1. open Settings
+      //   2. toggle DRY RUN in the header (backend now true, toast confirms)
+      //   3. change anything unrelated, press SAVE
+      //   4. the PUT carries dry_run_mode:false from step 1's snapshot
+      //
+      // Dry run silently switches off, and the same shape re-enables
+      // auto_start_jobs after an abort — undoing the stop the abort button
+      // exists to apply. BackupRestoreSection's comment already diagnosed
+      // this exact mechanism for the import trigger and fixed that one path
+      // with reloadAllSettings(); the header-toggle trigger has the same
+      // shape and was not covered. Sending dirtyKeys closes both, and is
+      // less code than the filter it replaces.
+      const payload = Object.fromEntries(dirtyKeys.map(k => [k, snapshot[k]]));
+
+      // Nothing to do — the SaveBar is disabled when clean, but a double
+      // click or an Enter keypress can still land here.
+      if (dirtyKeys.length === 0) {
+        setStatus("saved");
+        return;
+      }
+
+      const r = await fetch(`${api}/api/settings/`, {
+        method:  "PUT",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(payload),
       });
-    }, [api]);
-
-    useEffect(() => { loadSettings(); }, [loadSettings]);
-
-    // Bumped alongside loadSettings so sibling sections that fetch their own
-    // settings independently (MaintenanceSection reads three keys directly) also
-    // refetch. Without it the main fields would update after an import while
-    // those three toggles kept showing pre-import state.
-    const [reloadKey, setReloadKey] = useState(0);
-
-    const reloadAllSettings = useCallback(() => {
-      setReloadKey(k => k + 1);
-      return loadSettings();
-    }, [loadSettings]);
-
-    useEffect(() => {
-      try { localStorage.setItem(STORAGE_KEY, active); } catch (_) { /* ignore */ }
-    }, [active]);
-
-    // Dirty = any schema field whose current value differs from the saved snapshot.
-    //
-    // Live-toggle keys are excluded by definition rather than by accident. Their
-    // onChange goes to the shared action instead of set(), so `values` never
-    // moves for them and they would not appear here anyway — but relying on that
-    // makes a real invariant look incidental. Being explicit also keeps the
-    // SaveBar count honest: toggling dry run must not make the page claim an
-    // unsaved change, since the change is already saved.
-    const dirtyKeys = schema
-    .map(f => f.key)
-    .filter(k => !liveToggles[k])
-    .filter(k => JSON.stringify(values[k]) !== JSON.stringify(baseline[k]));
-    const isDirty = dirtyKeys.length > 0;
-
-    // Report dirtiness up so the app can guard navigation, and reset on unmount.
-    useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
-    useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
-
-    // Warn on browser refresh / tab close while there are unsaved edits.
-    useEffect(() => {
-      if (!isDirty) return;
-      const h = (e) => { e.preventDefault(); e.returnValue = ""; };
-      window.addEventListener("beforeunload", h);
-      return () => window.removeEventListener("beforeunload", h);
-    }, [isDirty]);
-
-    const save = async () => {
-      const snapshot = values;
-      setStatus("saving");
-      try {
-        // Only the keys the user actually changed on this page.
-        //
-        // This previously sent EVERY schema key from `values`, which is a
-        // snapshot taken at page load. Two schema fields — dry_run_mode and
-        // auto_start_jobs, both group "Worker" — are also written from outside
-        // this page: the header toggles both, and abort_job sets
-        // auto_start_jobs=False server-side as a safety stop. So:
-        //
-        //   1. open Settings
-        //   2. toggle DRY RUN in the header (backend now true, toast confirms)
-        //   3. change anything unrelated, press SAVE
-        //   4. the PUT carries dry_run_mode:false from step 1's snapshot
-        //
-        // Dry run silently switches off, and the same shape re-enables
-        // auto_start_jobs after an abort — undoing the stop the abort button
-        // exists to apply. BackupRestoreSection's comment already diagnosed
-        // this exact mechanism for the import trigger and fixed that one path
-        // with reloadAllSettings(); the header-toggle trigger has the same
-        // shape and was not covered. Sending dirtyKeys closes both, and is
-        // less code than the filter it replaces.
-        const payload = Object.fromEntries(dirtyKeys.map(k => [k, snapshot[k]]));
-
-        // Nothing to do — the SaveBar is disabled when clean, but a double
-        // click or an Enter keypress can still land here.
-        if (dirtyKeys.length === 0) {
-          setStatus("saved");
-          return;
-        }
-
-        const r = await fetch(`${api}/api/settings/`, {
-          method:  "PUT",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify(payload),
-        });
-        if (r.ok) {
-          setStatus("saved");
-          // Re-read rather than trusting the local snapshot. The unsent keys
-          // are exactly the ones that may have been changed elsewhere, so this
-          // is what makes the page agree with the backend again instead of
-          // continuing to render step 1's stale values.
-          await loadSettings();
-        } else {
-          setStatus("error");
-        }
-      } catch (err) {
-        console.error("Saving settings failed", err);
+      if (r.ok) {
+        setStatus("saved");
+        // Re-read rather than trusting the local snapshot. The unsent keys
+        // are exactly the ones that may have been changed elsewhere, so this
+        // is what makes the page agree with the backend again instead of
+        // continuing to render step 1's stale values.
+        await loadSettings();
+      } else {
         setStatus("error");
       }
-    };
+    } catch (err) {
+      console.error("Saving settings failed", err);
+      setStatus("error");
+    }
+  };
 
-    const set = (k, v) => setValues(prev => ({ ...prev, [k]: v }));
+  const set = (k, v) => setValues(prev => ({ ...prev, [k]: v }));
 
-    // schema grouped by declared group name
-    const groupsMap = schema.reduce((acc, field) => {
-      const g = field.group || "General";
-      acc[g] ??= [];
-      acc[g].push(field);
-      return acc;
-    }, {});
+  // schema grouped by declared group name
+  const groupsMap = schema.reduce((acc, field) => {
+    const g = field.group || "General";
+    acc[g] ??= [];
+    acc[g].push(field);
+    return acc;
+  }, {});
 
-    const renderGroup = (groupName, first) => {
-      const fields = groupsMap[groupName] || [];
-      if (fields.length === 0) return null;
-      return (
-        <div key={groupName}>
-        <SectionHeader label={groupName} first={first} />
-        {fields.map(field => {
-          // dry_run_mode and auto_start_jobs are owned by the app-level state
-          // that the header renders from, not by this page's loaded snapshot.
-          // Rendering them from `live` and committing through the SAME action
-          // the header calls means the two controls cannot disagree: there is
-          // one value, not two copies to keep in step.
-          //
-          // Previously they were ordinary staged fields, so changing one here
-          // updated the header only after a full page reload — the page
-          // remounts on every tab change and refetches, but useAppData sits
-          // above the page switch and never does.
-          const live = liveToggles[field.key];
-          return (
-            <FieldRow
-            key={field.key}
-            field={field}
-            value={live ? live.value : values[field.key]}
-            onChange={live ? live.onToggle : (v => set(field.key, v))}
-            isMobile={isMobile}
-            immediate={!!live}
-            />
-          );
-        })}
-        {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
-          <TestConnectionButton api={api} service={groupName.toLowerCase()} />
-        )}
-        {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
-        {groupName === "Email" && <EmailBreakerStatus api={api} />}
-        </div>
-      );
-    };
-
-    const cat = CATEGORIES.find(c => c.id === active) || CATEGORIES[0];
-
-    const renderCategory = () => {
-      if (cat.custom === "maintenance") {
+  const renderGroup = (groupName, first) => {
+    const fields = groupsMap[groupName] || [];
+    if (fields.length === 0) return null;
+    return (
+      <div key={groupName}>
+      <SectionHeader label={groupName} first={first} />
+      {fields.map(field => {
+        // dry_run_mode and auto_start_jobs are owned by the app-level state
+        // that the header renders from, not by this page's loaded snapshot.
+        // Rendering them from `live` and committing through the SAME action
+        // the header calls means the two controls cannot disagree: there is
+        // one value, not two copies to keep in step.
+        //
+        // Previously they were ordinary staged fields, so changing one here
+        // updated the header only after a full page reload — the page
+        // remounts on every tab change and refetches, but useAppData sits
+        // above the page switch and never does.
+        const live = liveToggles[field.key];
         return (
-          <>
-          <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
-          <LogViewer api={api} toast={toast} />
-          </>
+          <FieldRow
+          key={field.key}
+          field={field}
+          value={live ? live.value : values[field.key]}
+          onChange={live ? live.onToggle : (v => set(field.key, v))}
+          isMobile={isMobile}
+          immediate={!!live}
+          />
         );
-      }
-      if (cat.custom === "backup") {
-        return (
-          <>
-          <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
-          <FullBackupSection api={api} toast={toast} />
-          <DangerZone api={api} toast={toast} />
-          </>
-        );
-      }
-      if (cat.custom === "appearance") {
-        return <AppearanceSection />;
-      }
-      if (schema.length === 0) {
-        // Two different situations shared one message before. The fetch is a
-        // one-shot with no retry, so once it has failed this placeholder is
-        // permanent — telling the user to "connect to the backend" implies a
-        // wait that will never end. Reloading is the only actual recovery.
-        return (
-          <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: space.xxxl }}>
-          {loadError
-            ? "Couldn't load settings from the backend. Reload the page to try again."
-            : "Connect to the backend to load settings…"}
-            </div>
-        );
-      }
-      // `after` renders a component BELOW a category's saveable fields, for
-      // a category that is both configuration and a thing to act on. The
-      // recycle bin is the first: its retention limits are ordinary settings,
-      // and what those limits are currently holding belongs next to them
-      // rather than behind a separate nav item — this is a safety net for
-      // people still tuning their rules, not somewhere to visit regularly.
+      })}
+      {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (
+        <TestConnectionButton api={api} service={groupName.toLowerCase()} />
+      )}
+      {groupName === "Plex Analyze Backlog" && <PlexBacklogStatus api={api} />}
+      {groupName === "Email" && <EmailBreakerStatus api={api} />}
+      </div>
+    );
+  };
+
+  const cat = CATEGORIES.find(c => c.id === active) || CATEGORIES[0];
+
+  const renderCategory = () => {
+    if (cat.custom === "maintenance") {
       return (
         <>
-        {cat.groups.map((g, i) => renderGroup(g, i === 0))}
-        {cat.after === "recyclebin" && (
-          <RecycleBinSection api={api} toast={toast}
-          reloadKey={`${reloadKey}:${revertRefreshKey}`} />
-        )}
+        <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
+        <LogViewer api={api} toast={toast} />
         </>
       );
-    };
-
-    const saveBar = (
-      <SaveBar status={status} dirty={isDirty} dirtyCount={dirtyKeys.length} onSave={save} />
-    );
-
-    // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
-    if (isMobile) {
+    }
+    if (cat.custom === "backup") {
       return (
-        <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
-        <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickyNav, background: palette.bg }}>
-        <div style={{ padding: `${space.hair}px 0 ${space.sm}px` }}>
-        <NavDropdown active={active} onSelect={setActive} />
-        </div>
-        {saveBar}
-        </div>
-        <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
-        </div>
+        <>
+        <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
+        <FullBackupSection api={api} toast={toast} />
+        <DangerZone api={api} toast={toast} />
+        </>
       );
     }
-
-    // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
+    if (cat.custom === "appearance") {
+      return <AppearanceSection />;
+    }
+    if (schema.length === 0) {
+      // Two different situations shared one message before. The fetch is a
+      // one-shot with no retry, so once it has failed this placeholder is
+      // permanent — telling the user to "connect to the backend" implies a
+      // wait that will never end. Reloading is the only actual recovery.
+      return (
+        <div style={{ color: palette.muted, fontSize: type.size.md, textAlign: "center", padding: space.xxxl }}>
+        {loadError
+          ? "Couldn't load settings from the backend. Reload the page to try again."
+          : "Connect to the backend to load settings…"}
+          </div>
+      );
+    }
+    // `after` renders a component BELOW a category's saveable fields, for
+    // a category that is both configuration and a thing to act on. The
+    // recycle bin is the first: its retention limits are ordinary settings,
+    // and what those limits are currently holding belongs next to them
+    // rather than behind a separate nav item — this is a safety net for
+    // people still tuning their rules, not somewhere to visit regularly.
     return (
-      <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
-      <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickySaveBar }}>
+      <>
+      {cat.groups.map((g, i) => renderGroup(g, i === 0))}
+      {cat.after === "recyclebin" && (
+        <RecycleBinSection api={api} toast={toast}
+        reloadKey={`${reloadKey}:${revertRefreshKey}`} />
+      )}
+      </>
+    );
+  };
+
+  const saveBar = (
+    <SaveBar status={status} dirty={isDirty} dirtyCount={dirtyKeys.length} onSave={save} />
+  );
+
+  // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
+  if (isMobile) {
+    return (
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
+      <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickyNav, background: palette.bg }}>
+      <div style={{ padding: `${space.hair}px 0 ${space.sm}px` }}>
+      <NavDropdown active={active} onSelect={setActive} />
+      </div>
       {saveBar}
       </div>
       <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
       </div>
-      </div>
     );
-  };
+  }
+
+  // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
+  return (
+    <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
+    <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
+    <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickySaveBar }}>
+    {saveBar}
+    </div>
+    <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
+    </div>
+    </div>
+  );
+};
