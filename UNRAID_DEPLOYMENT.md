@@ -22,7 +22,7 @@
    | `/media/movies` | your movies share, e.g. `/mnt/user/Media/Movies` |
    | `/media/tv` | your TV share, e.g. `/mnt/user/Media/TV` |
    | `/tmp/remuxarr` | `/tmp/remuxarr-temp` (RAM-backed on Unraid — avoids writing FFmpeg's intermediate output to your array) |
-   | `/recycle` | `/mnt/user/appdata/remuxarr-recycle` — optional, see below |
+   | `/recycle` | `/mnt/user/appdata/remuxarr/recycle` — optional, see below |
 
    The last one is the recycle bin, which makes **revert to original**
    possible: it stores the audio and subtitle tracks a job removed, so a
@@ -95,5 +95,5 @@ Paths:
   <your movies share>                →  /media/movies    (rw)
   <your TV share>                    →  /media/tv        (rw)
   /tmp/remuxarr-temp                 →  /tmp/remuxarr    (rw)
-  /mnt/user/appdata/remuxarr-recycle →  /recycle         (rw, optional)
+  /mnt/user/appdata/remuxarr/recycle →  /recycle         (rw, optional)
 ```

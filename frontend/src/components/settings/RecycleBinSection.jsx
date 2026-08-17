@@ -76,7 +76,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
         // failed", which tells the user nothing they can act on.
         const detail = body?.detail;
         toast?.(typeof detail === "string" ? detail
-        : detail?.error || "Request failed", "error");
+          : detail?.error || "Request failed", "error");
       }
       return r.ok;
     } catch (err) {
@@ -109,121 +109,121 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 
   const { attached = [], detached = [] } = data;
   const totalBytes = [...attached, ...detached]
-  .reduce((sum, p) => sum + (p.sidecar_size || 0), 0);
+    .reduce((sum, p) => sum + (p.sidecar_size || 0), 0);
 
   return (
     <Panel title="RECYCLE BIN · BETA">
     {/* An empty bin means two different things and the difference matters:
       * nothing kept yet, or the volume was never mounted. */}
-      {!data.recycle_bin_ready && (
-        <Note tone="amber">
-        {data.recycle_bin_reason || "The recycle bin is not available."}
-        </Note>
-      )}
+    {!data.recycle_bin_ready && (
+      <Note tone="amber">
+      {data.recycle_bin_reason || "The recycle bin is not available."}
+      </Note>
+    )}
 
-      {data.recycle_bin_ready && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: space.md,
-          color: palette.muted, fontSize: type.size.sm,
-          marginBottom: space.lg,
-        }}>
-        <span>{attached.length + detached.length} stored</span>
-        <span style={{ color: palette.dim }}>·</span>
-        <span>{fmtSize(totalBytes)}</span>
-        </div>
-      )}
+    {data.recycle_bin_ready && (
+      <div style={{
+        display: "flex", alignItems: "center", gap: space.md,
+        color: palette.muted, fontSize: type.size.sm,
+        marginBottom: space.lg,
+      }}>
+      <span>{attached.length + detached.length} stored</span>
+      <span style={{ color: palette.dim }}>·</span>
+      <span>{fmtSize(totalBytes)}</span>
+      </div>
+    )}
 
-      <SubHeading label="RESTORABLE" count={attached.length} />
-      {attached.length === 0 ? (
-        <EmptyState msg="Nothing stored yet — process a file with the recycle bin on and its removed tracks are kept here" />
-      ) : (
-        attached.map(point => (
-          <AttachedRow
-          key={point.id}
-          point={point}
-          busy={busy}
-          running={running === point.id}
-          blocked={running !== null && running !== point.id}
-          onRevert={async () => {
-            // Held locally as well as read back from the server: the reload
-            // inside act() races the revert it just started, and without
-            // this the row briefly offers REVERT again on a file that is
-            // already being rewritten.
-            setRunning(point.id);
-            const ok = await act(`/api/revert/${point.id}/restore/`,
-                                 { method: "POST" }, "Revert started");
-            if (!ok) setRunning(null);
-          }}
-          onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
-                               "Discarded")}
-                               />
-        ))
-      )}
-
-      {detached.length > 0 && (
-        <>
-        <SubHeading label="UNMATCHED" count={detached.length} />
-        <Note tone="dim">
-        These lost track of their file — usually because it was renamed or
-        moved. Match one to a file to make it restorable again.
-        </Note>
-        {detached.map(point => (
-          <DetachedRow
-          key={point.id}
-          point={point}
-          busy={busy}
-          onMatch={() => setMatching(point)}
-          onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
-                               "Discarded")}
-                               />
-        ))}
-        </>
-      )}
-
-      {matching && (
-        <MatchPanel
-        api={api}
-        point={matching}
-        onClose={() => setMatching(null)}
-        onAttach={async (fileId, confirmMismatch) => {
-          const ok = await act(
-            `/api/revert/${matching.id}/attach/`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ file_id: fileId, confirm_mismatch: confirmMismatch }),
-            },
-            "Matched — this file can now be reverted",
-          );
-          if (ok) setMatching(null);
-          return ok;
+    <SubHeading label="RESTORABLE" count={attached.length} />
+    {attached.length === 0 ? (
+      <EmptyState msg="Nothing stored yet — process a file with the recycle bin on and its removed tracks are kept here" />
+    ) : (
+      attached.map(point => (
+        <AttachedRow
+        key={point.id}
+        point={point}
+        busy={busy}
+        running={running === point.id}
+        blocked={running !== null && running !== point.id}
+        onRevert={async () => {
+          // Held locally as well as read back from the server: the reload
+          // inside act() races the revert it just started, and without
+          // this the row briefly offers REVERT again on a file that is
+          // already being rewritten.
+          setRunning(point.id);
+          const ok = await act(`/api/revert/${point.id}/restore/`,
+                               { method: "POST" }, "Revert started");
+          if (!ok) setRunning(null);
         }}
+        onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
+          "Discarded")}
+        />
+      ))
+    )}
+
+    {detached.length > 0 && (
+      <>
+      <SubHeading label="UNMATCHED" count={detached.length} />
+      <Note tone="dim">
+      These lost track of their file — usually because it was renamed or
+      moved. Match one to a file to make it restorable again.
+      </Note>
+      {detached.map(point => (
+        <DetachedRow
+        key={point.id}
+        point={point}
+        busy={busy}
+        onMatch={() => setMatching(point)}
+        onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
+          "Discarded")}
+        />
+      ))}
+      </>
+    )}
+
+    {matching && (
+      <MatchPanel
+      api={api}
+      point={matching}
+      onClose={() => setMatching(null)}
+      onAttach={async (fileId, confirmMismatch) => {
+        const ok = await act(
+          `/api/revert/${matching.id}/attach/`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ file_id: fileId, confirm_mismatch: confirmMismatch }),
+          },
+          "Matched — this file can now be reverted",
+        );
+        if (ok) setMatching(null);
+        return ok;
+      }}
+      />
+    )}
+
+    {(attached.length > 0 || detached.length > 0) && (
+      <div style={{ display: "flex", gap: space.md, marginTop: space.xl }}>
+      {detached.length > 0 && (
+        <ConfirmBtn
+        label="DISCARD UNMATCHED"
+        confirmLabel="CONFIRM — DISCARD UNMATCHED"
+        color={palette.amber}
+        disabled={busy}
+        onConfirm={() => act("/api/revert/?detached_only=true", { method: "DELETE" },
+          "Unmatched entries discarded")}
         />
       )}
-
-      {(attached.length > 0 || detached.length > 0) && (
-        <div style={{ display: "flex", gap: space.md, marginTop: space.xl }}>
-        {detached.length > 0 && (
-          <ConfirmBtn
-          label="DISCARD UNMATCHED"
-          confirmLabel="CONFIRM — DISCARD UNMATCHED"
-          color={palette.amber}
-          disabled={busy}
-          onConfirm={() => act("/api/revert/?detached_only=true", { method: "DELETE" },
-                               "Unmatched entries discarded")}
-                               />
-        )}
-        <ConfirmBtn
-        label="EMPTY RECYCLE BIN"
-        confirmLabel="CONFIRM — EMPTY EVERYTHING"
-        color={palette.red}
-        disabled={busy}
-        onConfirm={() => act("/api/revert/", { method: "DELETE" },
-                             "Recycle bin emptied")}
-                             />
-                             </div>
-      )}
-      </Panel>
+      <ConfirmBtn
+      label="EMPTY RECYCLE BIN"
+      confirmLabel="CONFIRM — EMPTY EVERYTHING"
+      color={palette.red}
+      disabled={busy}
+      onConfirm={() => act("/api/revert/", { method: "DELETE" },
+        "Recycle bin emptied")}
+      />
+      </div>
+    )}
+    </Panel>
   );
 };
 
@@ -232,7 +232,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => {
   const { palette, type, space } = useTheme();
   const movedTo = point.original_path && point.current_path
-  && point.original_path !== point.current_path;
+    && point.original_path !== point.current_path;
 
   return (
     <Row>
@@ -244,34 +244,34 @@ const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => 
     {fmtSize(point.sidecar_size)} · kept {fmtRel(point.created_at)}
     {/* A container conversion renames the file, so the name on disk is
       * not the one that will come back. Saying so prevents a surprise. */}
-      {movedTo && <> · restores as {basename(point.original_path)}</>}
-      </div>
-      {/* The entry stays listed even when it cannot be used — the stored
-        * tracks are still on the volume and still taking up space, so it
-        * has to be visible to be discarded. What it must not do is offer
-        * Revert: that produces a refusal the user has no way to explain. */}
-        {point.restorable === false && point.blocked_reason && (
-          <div style={{ color: palette.amber, fontSize: type.size.xs,
-            marginTop: space.hair }}>
-            {point.blocked_reason}
-            </div>
-        )}
+    {movedTo && <> · restores as {basename(point.original_path)}</>}
+    </div>
+    {/* The entry stays listed even when it cannot be used — the stored
+      * tracks are still on the volume and still taking up space, so it
+      * has to be visible to be discarded. What it must not do is offer
+      * Revert: that produces a refusal the user has no way to explain. */}
+    {point.restorable === false && point.blocked_reason && (
+      <div style={{ color: palette.amber, fontSize: type.size.xs,
+        marginTop: space.hair }}>
+        {point.blocked_reason}
         </div>
-        <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
-        {/* Only one revert runs at a time, so a second click is refused by
-          * the API. Showing that state beats letting someone click and get an
-          * error toast they may not see — which reads as the button doing
-          * nothing at all. */}
-          {running ? (
-            <Btn label="REVERTING…" color={palette.cyan} disabled onClick={() => {}} />
-          ) : point.restorable === false ? null : (
-            <ConfirmBtn label="REVERT" confirmLabel="CONFIRM REVERT"
-            color={palette.amber} disabled={busy || blocked} onConfirm={onRevert} />
-          )}
-          <ConfirmBtn label="DISCARD" confirmLabel="CONFIRM"
-          color={palette.red} disabled={busy || running} onConfirm={onDiscard} />
-          </div>
-          </Row>
+    )}
+    </div>
+    <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
+    {/* Only one revert runs at a time, so a second click is refused by
+      * the API. Showing that state beats letting someone click and get an
+      * error toast they may not see — which reads as the button doing
+      * nothing at all. */}
+    {running ? (
+      <Btn label="REVERTING…" color={palette.cyan} disabled onClick={() => {}} />
+    ) : point.restorable === false ? null : (
+      <ConfirmBtn label="REVERT" confirmLabel="CONFIRM REVERT"
+      color={palette.amber} disabled={busy || blocked} onConfirm={onRevert} />
+    )}
+    <ConfirmBtn label="DISCARD" confirmLabel="CONFIRM"
+    color={palette.red} disabled={busy || running} onConfirm={onDiscard} />
+    </div>
+    </Row>
   );
 };
 
@@ -294,20 +294,20 @@ const DetachedRow = ({ point, busy, onMatch, onDiscard }) => {
     {/* Retention may have taken the sidecar while the row survived. Such
       * an entry can never restore anything, so offering Match would spend
       * the user's attention on a dead end. */}
-      {!point.sidecar_present && (
-        <div style={{ color: palette.red, fontSize: type.size.xs, marginTop: space.hair }}>
-        Stored tracks are missing from the recycle volume — this can no longer restore anything.
-        </div>
-      )}
+    {!point.sidecar_present && (
+      <div style={{ color: palette.red, fontSize: type.size.xs, marginTop: space.hair }}>
+      Stored tracks are missing from the recycle volume — this can no longer restore anything.
       </div>
-      <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
-      {point.sidecar_present && (
-        <Btn label="MATCH" color={palette.cyan} onClick={onMatch} disabled={busy} />
-      )}
-      <ConfirmBtn label="DISCARD" confirmLabel="CONFIRM"
-      color={palette.red} disabled={busy} onConfirm={onDiscard} />
-      </div>
-      </Row>
+    )}
+    </div>
+    <div style={{ display: "flex", gap: space.sm, flexShrink: 0 }}>
+    {point.sidecar_present && (
+      <Btn label="MATCH" color={palette.cyan} onClick={onMatch} disabled={busy} />
+    )}
+    <ConfirmBtn label="DISCARD" confirmLabel="CONFIRM"
+    color={palette.red} disabled={busy} onConfirm={onDiscard} />
+    </div>
+    </Row>
   );
 };
 
@@ -474,14 +474,14 @@ const Note = ({ tone, children }) => {
   const { palette, type, space } = useTheme();
   const color = { red: palette.red, amber: palette.amber,
     green: palette.green, dim: palette.dim }[tone] || palette.dim;
-    return (
-      <div style={{
-        color, fontSize: type.size.xs, lineHeight: 1.5,
-        margin: `${space.sm}px 0`,
-      }}>
-      {children}
-      </div>
-    );
+  return (
+    <div style={{
+      color, fontSize: type.size.xs, lineHeight: 1.5,
+      margin: `${space.sm}px 0`,
+    }}>
+    {children}
+    </div>
+  );
 };
 
 /* Two clicks with a 4s timeout, matching DangerZone. The cleanup on the
