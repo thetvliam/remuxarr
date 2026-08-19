@@ -1348,6 +1348,22 @@ def _record_revert_point(
             point.original_container = captured.original_container
             point.processed_size     = size
             point.processed_mtime    = mtime
+            # Refreshed on every capture, including an extend.
+            #
+            # created_at is what retention ages against, and leaving it at
+            # the first job's timestamp made a freshly written sidecar
+            # expire immediately: process a file today that was last
+            # processed more than revert_retention_days ago, and the sweep
+            # sixty seconds later deletes the entry as stale. The user gets
+            # no revert point for work they just did, with nothing in the
+            # UI to explain it.
+            #
+            # The point DESCRIBES the pristine original, which argues for
+            # the first date; but retention is answering "how long can I
+            # undo recent work", and a recycle bin's mental model is keyed
+            # to when the removal happened. The sidecar was in fact
+            # rewritten just now.
+            point.created_at         = utcnow()
             db.commit()
 
         # Only once the row is committed. The other order would leave a row

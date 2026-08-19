@@ -553,6 +553,39 @@ def test_the_metadata_change_itself_is_reverted(lib):
                          if kind == "audio"]
 
 
+def test_extending_a_point_refreshes_its_age(lib):
+    """
+    created_at is what retention ages against, and an extend rewrites the
+    sidecar entirely. Left at the first job's timestamp, a file last
+    processed more than revert_retention_days ago gets a fresh sidecar
+    that the very next sweep — sixty seconds later — deletes as expired.
+    The user has no revert point for work they just did, and nothing in
+    the UI says why.
+    """
+    from datetime import timedelta
+
+    from app.core.timeutil import utcnow_naive
+    from app.database.models import RevertPoint
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1)
+
+    # Age the point past any plausible retention window.
+    lib["db"].expire_all()
+    point = lib["db"].query(RevertPoint).one()
+    point.created_at = utcnow_naive() - timedelta(days=90)
+    lib["db"].commit()
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=2)
+
+    lib["db"].expire_all()
+    refreshed = lib["db"].query(RevertPoint).one().created_at
+    assert refreshed > utcnow_naive() - timedelta(minutes=5), (
+        f"the extended point still dates from the first job ({refreshed}); "
+        f"retention will delete it on the next sweep"
+    )
+
+
 def test_a_metadata_only_job_refreshes_the_fingerprint(lib):
     """
     The mechanism behind the test above. The point must end up describing
