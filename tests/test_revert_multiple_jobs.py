@@ -176,6 +176,80 @@ def _revert(lib):
 
 
 @pytest.fixture
+def mp4_with_text_subtitle(tmp_path, monkeypatch):
+    """
+    An MP4 carrying a mov_text subtitle — the shape that produced an
+    unusable revert point.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+    from tests.conftest import memory_engine
+
+    media_dir = tmp_path / "media"; media_dir.mkdir()
+    recycle = tmp_path / "recycle"; recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    subs = tmp_path / "s.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nbonjour\n\n")
+    path = media_dir / "Film.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-i", str(subs),
+         "-map", "0:v", "-map", "1:a", "-map", "2:s",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-c:s", "mov_text", "-metadata:s:s:0", "language=fre",
+         "-f", "mp4", str(path)], check=True)
+
+    engine = memory_engine(); Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    import app.core.worker as worker_mod
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Film.mp4",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mp4", status="processed")
+    db.add(media); db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path)}
+
+
+def test_an_mp4_subtitle_can_actually_be_restored(mp4_with_text_subtitle):
+    """
+    Matroska cannot hold mov_text, so capture converts it to SubRip on the
+    way into the sidecar. Restoring with a flat -c copy then tried to mux
+    SubRip back into MP4, which FFmpeg refuses at header write — so the
+    revert point existed, listed as restorable, and failed the moment
+    anyone used it. Permanently: the point is not consumed on failure, so
+    every retry failed identically.
+
+    Routine rather than exotic under shipped defaults.
+    keep_subtitle_languages is ["eng"], so any other language is dropped,
+    and extract_text_subtitles_to_srt removes every extracted text
+    subtitle from the mux.
+    """
+    _run_job(mp4_with_text_subtitle,
+             ["-map", "0:0", "-map", "0:1", "-c", "copy", "-f", "mp4"],
+             job_id=1)
+    kinds = [k for k, _c, _l in _summarise(mp4_with_text_subtitle["path"])]
+    assert "subtitle" not in kinds, "fixture did not drop the subtitle"
+
+    outcome = _revert(mp4_with_text_subtitle)
+
+    assert outcome.success is True, outcome.error
+    assert _summarise(mp4_with_text_subtitle["path"]) == \
+        mp4_with_text_subtitle["pristine"]
+
+
+@pytest.fixture
 def with_cover_art(tmp_path, monkeypatch):
     """
     An original whose LAST stream is not an attachment.

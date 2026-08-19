@@ -292,6 +292,61 @@ def test_chapters_come_from_the_processed_file():
     assert cmd[cmd.index("-map_chapters") + 1] == "0"
 
 
+def test_only_sidecar_sourced_subtitles_have_their_codec_forced():
+    """
+    The conversion is inverted for streams that went through the sidecar,
+    because that is where it was applied. A subtitle still in the
+    processed file was never converted, and forcing its codec would
+    re-encode it for nothing.
+
+    Pinned as a contract rather than reached through capture: matching
+    treats any codec change as a loss, so a surviving stream never carries
+    a converted codec today and the two branches are indistinguishable
+    end to end. build_restore_command takes a manifest as input, and its
+    behaviour on one should be defined rather than incidental.
+    """
+    cmd = _build(_manifest(
+        _entry(0, "video", "h264", processed=0),
+        # Still in the processed file, and still mov_text there.
+        _entry(1, "subtitle", "mov_text", processed=1, language="eng"),
+        container="mp4",
+    ))
+
+    assert not any(a.startswith("-c:s:") for a in cmd), (
+        "a stream that never entered the sidecar was re-encoded"
+    )
+
+
+def test_a_sidecar_sourced_subtitle_has_its_original_codec_restored():
+    cmd = _build(_manifest(
+        _entry(0, "video", "h264", processed=0),
+        _entry(1, "subtitle", "mov_text", sidecar=0, language="fre"),
+        container="mp4",
+    ))
+
+    assert cmd[cmd.index("-c:s:0") + 1] == "mov_text"
+    assert cmd.index("-c") < cmd.index("-c:s:0"), (
+        "the override must follow the base codec or -c copy wins"
+    )
+
+
+def test_the_subtitle_ordinal_counts_only_subtitles():
+    """
+    -c:s:N addresses the Nth SUBTITLE of the output, not the Nth stream.
+    Counting everything targets a stream that is not a subtitle at all.
+    """
+    cmd = _build(_manifest(
+        _entry(0, "video", "h264", processed=0),
+        _entry(1, "audio", "aac", processed=1),
+        _entry(2, "subtitle", "subrip", processed=2),
+        _entry(3, "subtitle", "mov_text", sidecar=0),
+        container="mp4",
+    ))
+
+    assert "-c:s:1" in cmd
+    assert cmd[cmd.index("-c:s:1") + 1] == "mov_text"
+
+
 def test_streams_are_copied_never_re_encoded():
     cmd = _build(_manifest(_entry(0, "video", "h264", processed=0)))
 
