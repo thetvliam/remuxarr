@@ -63,6 +63,7 @@ from app.core.ffmpeg import SidecarUnsupported, build_sidecar_command
 from app.core.probe import ProbeError, extract_format_info, probe_file
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams
+from app.core.revert_restore import revert_blocked_reason
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class _ExistingPoint:
         return self.manifest is not None
 
 
-def _load_existing_point(file_id: int) -> _ExistingPoint | None:
+def _load_existing_point(file_id: int, current_path: str) -> _ExistingPoint | None:
     """
     The revert point already held for this file, if any.
 
@@ -114,8 +115,25 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
     it rather than adding another — see the module docstring.
 
     A point that cannot be built on — older manifest layout, unreadable
-    JSON, sidecar gone from the volume — comes back with manifest=None
-    rather than as nothing at all. Capture then starts a fresh manifest
+    JSON, sidecar gone from the volume, or a fingerprint that no longer
+    matches the file — comes back with manifest=None rather than as
+    nothing at all.
+
+    The fingerprint check is the one that stops a point being extended
+    onto content it does not describe, and it covers two quite different
+    routes to the same corruption:
+
+      • Something replaced the file between jobs. A Sonarr upgrade is the
+        obvious one. The stored manifest describes the previous release
+        and its sidecar holds that release's tracks, so extending would
+        build a sidecar mixing two releases together.
+      • The row is a leftover pointing at a REUSED id. clear_database
+        wipes media_files without enforced foreign keys, so a surviving
+        revert point keeps a file_id that the next scanned file inherits.
+        Extending then reads another file's manifest entirely.
+
+    Either way the point describes a file that is not this one, so it is
+    superseded rather than built upon. Capture then starts a fresh manifest
     anchored to the current file but still SUPERSEDES that row, taking it
     over and unlinking its sidecar.
 
@@ -156,9 +174,14 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
             )
             return _ExistingPoint(point.id, point.sidecar_path)
 
-        if not os.path.exists(point.sidecar_path):
+        # The same rule the revert itself applies, for the same reason:
+        # this point is only usable if it still describes the file in
+        # front of us. Covers the missing sidecar too.
+        problem = revert_blocked_reason(point, current_path)
+        if problem:
             logger.warning(
-                "Revert point %d has no sidecar on disk; replacing it", point.id,
+                "Revert point %d no longer describes %s (%s); replacing it",
+                point.id, current_path, problem,
             )
             return _ExistingPoint(point.id, point.sidecar_path)
 
@@ -341,7 +364,7 @@ async def capture(
         except ProbeError as exc:
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
-        existing = await _off_loop(_load_existing_point, file_id)
+        existing = await _off_loop(_load_existing_point, file_id, input_path)
         # A row that exists but cannot be built on is superseded, not
         # ignored: `extend` decides what to build FROM, `existing` decides
         # which row to write back to.

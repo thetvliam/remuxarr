@@ -132,7 +132,7 @@ def _s(index, codec_type, codec, **kw):
     return out
 
 
-def _patch_probes(monkeypatch, original, produced):
+def _patch_probes(monkeypatch, original, produced, source_path="/m/Show.mkv"):
     """
     Return probe results keyed by PATH, not by call order.
 
@@ -151,7 +151,7 @@ def _patch_probes(monkeypatch, original, produced):
     """
     import app.core.revert_capture as rc
 
-    by_path = {"/m/Show.mkv": original, "/tmp/job_1.remuxarr_tmp": produced}
+    by_path = {source_path: original, "/tmp/job_1.remuxarr_tmp": produced}
     state = _MOCK_STATE
 
     def fake(path, *_a, **_k):
@@ -698,6 +698,65 @@ def test_reannotation_numbers_sidecar_slots_positionally():
     assert first["processed_index"] is None
 
 
+# ── A point must still describe the file in front of it ──────────────────────
+
+def test_a_point_whose_fingerprint_no_longer_matches_is_superseded(recycle,
+                                                                   monkeypatch):
+    """
+    Two routes reach this, and both end in a sidecar mixing content from
+    files that were never the same file.
+
+    A Sonarr upgrade replaces the media between jobs: the stored manifest
+    describes the previous release and the sidecar holds that release's
+    tracks. And clear_database wipes media_files without enforced foreign
+    keys, so a leftover revert point keeps a file_id the next scanned file
+    inherits — extending then reads a completely different file's
+    manifest.
+
+    Neither is detectable later. The sentinel gets re-established against
+    whatever was just produced, so it passes from then on.
+    """
+    from app.core.revert_capture import _load_existing_point
+
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"the file as it is now")
+
+    db, _sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source)}),
+        media_path=source)
+
+    # Something else rewrote the file after the point was recorded.
+    source.write_bytes(b"a different release entirely, of a different size")
+
+    existing = _load_existing_point(7, str(source))
+
+    assert existing is not None, "the row must come back so it can be replaced"
+    assert existing.usable is False
+
+
+def test_a_point_matching_the_file_is_usable(recycle, monkeypatch):
+    """
+    The other direction: the check must not reject the ordinary case, or
+    every second job silently starts a fresh point and reverting stops
+    reaching the pristine original.
+    """
+    from app.core.revert_capture import _load_existing_point
+
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"untouched since the last job")
+
+    db, _sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source)}),
+        media_path=source)
+
+    existing = _load_existing_point(7, str(source))
+
+    assert existing is not None
+    assert existing.usable is True
+
+
 # ── Manifest versioning ──────────────────────────────────────────────────────
 
 def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
@@ -733,14 +792,22 @@ def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    existing = _load_existing_point(7)
+    existing = _load_existing_point(7, "/m/Show.mkv")
     assert existing is not None, "the row must still be returned, to be replaced"
     assert existing.usable is False
     assert existing.manifest is None
 
 
-def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
-    """A revert point already on file that capture cannot build on."""
+def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True,
+                    media_path=None):
+    """
+    A revert point already on file that capture cannot build on.
+
+    media_path, when given, is a real file whose size and mtime the point
+    records — which is what makes it USABLE. Without it the fingerprint
+    check rejects the point regardless of its manifest, so a test meaning
+    to exercise the extend path would silently exercise the supersede one.
+    """
     from sqlalchemy.orm import sessionmaker
 
     from tests.conftest import memory_engine
@@ -757,9 +824,16 @@ def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
     if sidecar_exists:
         sidecar.write_bytes(b"tracks from an older build")
 
+    fingerprint = {}
+    if media_path is not None:
+        stat = os.stat(media_path)
+        fingerprint = {"processed_size": stat.st_size,
+                       "processed_mtime": stat.st_mtime}
+
     db = factory()
     db.add(RevertPoint(file_id=7, sidecar_path=str(sidecar), sidecar_size=26,
-                       manifest=manifest, original_path="/m/Show.mkv"))
+                       manifest=manifest, original_path="/m/Show.mkv",
+                       **fingerprint))
     db.commit()
     return db, sidecar
 
@@ -839,17 +913,25 @@ def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
     """
     from app.database.models import RevertPoint
 
+    # A real file, because a usable point is one whose recorded size and
+    # mtime still match the file being processed. Pointing at a path that
+    # does not exist would make this exercise the supersede path while
+    # claiming to test the extend one.
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"the file as the previous job left it")
+
     db, old_sidecar = _unusable_point(
         recycle, monkeypatch,
-        manifest=json.dumps({"version": 2, "streams": [], "path": "/m/Show.mkv",
-                             "container": "mkv", "duration": 60.0}))
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source),
+                             "container": "mkv", "duration": 60.0}),
+        media_path=source)
     # Make it usable: a current manifest describing the original.
     point = db.query(RevertPoint).one()
     manifest = json.loads(_capture_manifest())
     point.manifest = json.dumps(manifest)
     db.commit()
 
-    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED, source_path=str(source))
     commands = _patch_ffmpeg(monkeypatch)
     # The existing sidecar holds the one stream the earlier job destroyed.
     # Registered explicitly because nothing in this test wrote it through
@@ -859,10 +941,10 @@ def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
         "format": {"format_name": "matroska,webm"},
     }
 
-    _capture(app_cfg=enabled, file_id=7, job_id=2)
+    _capture(app_cfg=enabled, file_id=7, job_id=2, input_path=str(source))
 
     inputs = [commands[0][i + 1] for i, a in enumerate(commands[0]) if a == "-i"]
-    assert inputs == ["/m/Show.mkv", str(old_sidecar)]
+    assert inputs == [str(source), str(old_sidecar)]
 
 
 def _capture_manifest():
@@ -911,7 +993,7 @@ def test_a_point_whose_sidecar_is_gone_is_reported_as_unusable(recycle,
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    existing = _load_existing_point(7)
+    existing = _load_existing_point(7, "/m/Show.mkv")
     assert existing is not None
     assert existing.usable is False
 
