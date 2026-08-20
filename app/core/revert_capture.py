@@ -352,6 +352,14 @@ def _record_created_files(manifest: dict, created_files: list[str]) -> None:
     Merged rather than replaced. A later job that extracts to a path an
     earlier job already created does not "create" it, so the earlier
     record is the one that matters and must survive the extend.
+
+    Called by the worker AFTER the job's outputs are swapped into place,
+    not from capture. Capture runs inside the staging window, and the
+    extracted subtitles are staged outputs like everything else — at that
+    moment they exist only under temporary names in the temp directory,
+    so every stat here failed and the record came out empty. Which is
+    precisely the shape of the bug this function exists to fix, arrived
+    at from the other direction.
     """
     existing = {entry["path"]: entry for entry in manifest.get("created_files", [])}
 
@@ -377,7 +385,6 @@ async def capture(
     file_id: int,
     job_id: int,
     app_cfg: dict,
-    created_files: list[str] | None = None,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
@@ -530,7 +537,6 @@ async def capture(
             raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
 
         _reannotate(matches, sources)
-        await _off_loop(_record_created_files, manifest, created_files)
 
         try:
             size = await _off_loop(os.path.getsize, sidecar)

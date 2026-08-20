@@ -24,7 +24,7 @@ from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpe
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
-from app.core.revert_capture import CapturedRevertPoint
+from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
@@ -887,7 +887,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             file_id       = file_dict["id"],
             job_id        = job_id,
             app_cfg       = app_cfg,
-            created_files = will_create,
         )
         if result:
             captured.append(result)
@@ -1113,7 +1112,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         if captured:
             await loop.run_in_executor(
                 None, _record_revert_point,
-                file_dict["id"], captured[0], result.output_path,
+                file_dict["id"], captured[0], result.output_path, will_create,
             )
 
         await loop.run_in_executor(
@@ -1334,6 +1333,7 @@ def _record_revert_point(
     file_id:       int,
     captured:      "CapturedRevertPoint",
     produced_path: str | None,
+    created_files: list[str] | None = None,
 ) -> None:
     """
     Persist a captured sidecar as a RevertPoint row.
@@ -1366,6 +1366,18 @@ def _record_revert_point(
             stat = os.stat(produced_path)
             size, mtime = stat.st_size, stat.st_mtime
 
+        # The files the job created alongside the media are recorded HERE,
+        # not during capture. Capture runs inside the staging window and
+        # extracted subtitles are staged outputs like everything else, so
+        # at that point they exist only under temporary names in the temp
+        # directory — every stat failed and the record came out empty
+        # while looking like it had worked.
+        manifest_json = captured.manifest_json
+        if created_files:
+            manifest = json.loads(manifest_json)
+            _record_created_files(manifest, created_files)
+            manifest_json = json.dumps(manifest)
+
         with SessionLocal() as db:
             point = None
             if captured.replaces_point_id is not None:
@@ -1377,7 +1389,7 @@ def _record_revert_point(
 
             point.sidecar_path       = captured.sidecar_path
             point.sidecar_size       = captured.sidecar_size
-            point.manifest           = captured.manifest_json
+            point.manifest           = manifest_json
             point.original_path      = captured.original_path
             point.original_container = captured.original_container
             point.processed_size     = size

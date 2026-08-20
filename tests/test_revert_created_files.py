@@ -73,6 +73,13 @@ def test_a_file_the_job_did_not_actually_write_is_skipped(tmp_path):
     The worker predicts what the job will create. If FFmpeg then wrote
     nothing there, recording it would have a later revert try to delete a
     path it knows nothing about.
+
+    This branch is also what hid the bug that shipped: recording ran
+    during capture, when the extracted subtitles still existed only under
+    temporary names, so every path took this path and the record came out
+    empty while looking like it had worked. Recording now happens after
+    the swap — see test_revert_multiple_jobs.py, which mirrors that
+    ordering.
     """
     from app.core.revert_capture import _record_created_files
 

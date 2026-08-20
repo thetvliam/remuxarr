@@ -1136,8 +1136,23 @@ def job(tmp_path, recycle, monkeypatch):
     source.write_bytes(b"ORIGINAL")
     state = {"recorded": [], "finished": {}, "sidecars": []}
 
-    def build(*, success=True, raises=False, hook_calls=1, same_path=False):
-        decision = SimpleNamespace(actions=[], target_container=None)
+    def build(*, success=True, raises=False, hook_calls=1, same_path=False,
+              extracts=None):
+        # extract_subtitle actions are what the worker reads to decide
+        # which files the job will create.
+        actions = [
+            SimpleNamespace(action_type="extract_subtitle", external_path=path,
+                            stream_index=n)
+            for n, path in enumerate(extracts or [])
+        ]
+        if actions:
+            # use_combined needs BOTH kinds; an extraction-only job takes a
+            # different executor entirely, so a decision with nothing but
+            # extractions would silently test a path this fixture does not
+            # stub.
+            actions.append(SimpleNamespace(action_type="drop_track",
+                                           external_path=None, stream_index=9))
+        decision = SimpleNamespace(actions=actions, target_container=None)
 
         def fake_load(_job_id):
             return (
@@ -1202,6 +1217,12 @@ def job(tmp_path, recycle, monkeypatch):
 
         monkeypatch.setattr(worker, "_load_job_data", fake_load)
         monkeypatch.setattr(worker, "execute_ffmpeg", fake_execute)
+
+        async def fake_combined(**kwargs):
+            result = await fake_execute(**kwargs)
+            return result, []
+
+        monkeypatch.setattr(worker, "execute_ffmpeg_combined", fake_combined)
         monkeypatch.setattr(worker, "determine_output_path",
                             lambda _in, _dec: str(source))
         monkeypatch.setattr(
@@ -1210,7 +1231,8 @@ def job(tmp_path, recycle, monkeypatch):
         )
         monkeypatch.setattr(
             worker, "_record_revert_point",
-            lambda fid, cap, out: state["recorded"].append((fid, cap)),
+            lambda fid, cap, out, created=None:
+                state["recorded"].append((fid, cap, created)),
         )
 
         async def driver():
@@ -1222,12 +1244,30 @@ def job(tmp_path, recycle, monkeypatch):
     return build
 
 
+def test_the_job_reports_which_files_it_created(job):
+    """
+    The worker computes that list before the job runs and hands it to the
+    recorder afterwards, because the files only reach their final paths at
+    the swap — extracted subtitles are staged outputs like everything
+    else. Recording them during capture found nothing and looked like it
+    had worked.
+
+    Asserted at the call site rather than by calling the recorder
+    directly: the wiring is the part that was missing.
+    """
+    state = job(success=True, extracts=["/media/Show.eng.srt"])
+
+    assert state["recorded"], "no revert point was recorded"
+    _file_id, _captured, created = state["recorded"][0]
+    assert created == ["/media/Show.eng.srt"]
+
+
 def test_a_successful_job_records_the_revert_point(job):
     state = job(success=True)
 
     assert state["finished"]["ok"] is True
     assert len(state["recorded"]) == 1
-    file_id, captured = state["recorded"][0]
+    file_id, captured, _created = state["recorded"][0]
     assert file_id == 7
     assert captured.sidecar_size == 14
 

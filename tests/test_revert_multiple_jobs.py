@@ -139,7 +139,7 @@ def lib(tmp_path, monkeypatch):
             "tmp": tmp_path, "pristine": _summarise(path)}
 
 
-def _run_job(lib, ffmpeg_args, *, job_id, created_files=None):
+def _run_job(lib, ffmpeg_args, *, job_id, extracts=None):
     """
     Do to the file what a real job would, with capture in the same window:
     FFmpeg writes a temp output, capture runs while both files exist, then
@@ -153,17 +153,29 @@ def _run_job(lib, ffmpeg_args, *, job_id, created_files=None):
         ["ffmpeg", "-v", "error", "-y", "-i", str(lib["path"]),
          *ffmpeg_args, "-f", "matroska", str(produced)], check=True)
 
+    # Which extraction targets do NOT yet exist. Taken before the job, as
+    # the worker does, because afterwards every target exists.
+    will_create = [p for p in (extracts or []) if not os.path.exists(p)]
+
     captured, error = asyncio.run(capture(
         input_path=str(lib["path"]), produced_path=str(produced),
         file_id=lib["media"].id, job_id=job_id,
         app_cfg={"revert_enabled": True, "revert_require_point": False},
-        created_files=created_files,
     ))
     assert error is None, error
 
+    # The swap. Extracted subtitles are staged outputs too, so they reach
+    # their final paths HERE — after capture, not before. Writing them
+    # earlier is what made the first version of this test pass against
+    # code that recorded nothing.
     os.replace(produced, lib["path"])
+    for path in (extracts or []):
+        with open(path, "w") as f:
+            f.write("extracted by the job\n")
+
     if captured:
-        _record_revert_point(lib["media"].id, captured, str(lib["path"]))
+        _record_revert_point(lib["media"].id, captured, str(lib["path"]),
+                             will_create)
     return captured
 
 
@@ -598,13 +610,12 @@ def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
     in for one Bazarr put there first, which the job overwrote rather than
     created: deleting that would destroy something Remuxarr never made.
     """
-    mine = lib["path"].with_suffix(".ger.srt")
-    mine.write_text("extracted by the job")
-    theirs = lib["path"].with_suffix(".eng.srt")
+    mine = lib["path"].with_suffix(".ger.srt")      # the job will create this
+    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten
     theirs.write_text("downloaded by Bazarr")
 
     _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
-             job_id=1, created_files=[str(mine)])
+             job_id=1, extracts=[str(mine), str(theirs)])
 
     outcome = _revert(lib)
 
