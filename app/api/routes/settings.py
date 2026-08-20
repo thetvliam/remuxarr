@@ -262,11 +262,33 @@ def clear_database(db: Session = Depends(get_db)):
     problem _delete_media_file_and_related (scanner.py) was hardened
     against — that fix just never made it to this separate, independent
     deletion path until now.
+
+    RevertPoint is the fourth such table and the one where the same
+    omission is dangerous rather than cosmetic. Left behind, its rows keep
+    a non-NULL file_id that no media file answers to, which puts them in a
+    dead zone: the listing shows them as attached (so they are neither
+    revertable nor matchable), while capture will happily extend one once
+    id reuse hands the same id to an unrelated file — building a sidecar
+    from another file's manifest and re-establishing the sentinel against
+    the wrong content.
+
+    It is DELETED here rather than detached the way the scanner does it.
+    That difference is deliberate: the scanner cannot tell a rename from a
+    deletion and must assume the file may come back, whereas this endpoint
+    is an explicit "forget everything scanned" and carries no such
+    ambiguity. The sidecars go too — nothing else records their paths once
+    the rows are gone, so skipping that leaks the recycle volume until the
+    retention sweep's orphan pass ages them out.
     """
+    from app.core.recycle import delete_sidecar
     from app.database.models import (
         Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction,
-        PlexAnalyzeBacklog, QueueItem, SubtitleLanguageFlag, Track,
+        PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track,
     )
+
+    # Unlinked before the rows go, since the rows are what name the files.
+    for point in db.query(RevertPoint).all():
+        delete_sidecar(point.sidecar_path)
 
     # Delete in FK-dependency order — children before parents.
     deleted = {
@@ -276,6 +298,7 @@ def clear_database(db: Session = Depends(get_db)):
         "plex_analyze_backlog": db.query(PlexAnalyzeBacklog).delete(),
         "audio_language_flags": db.query(AudioLanguageFlag).delete(),
         "subtitle_language_flags": db.query(SubtitleLanguageFlag).delete(),
+        "revert_points":        db.query(RevertPoint).delete(),
         "tracks":               db.query(Track).delete(),
         "media_files":          db.query(MediaFile).delete(),
     }

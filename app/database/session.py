@@ -358,6 +358,15 @@ def _migrate_schema() -> None:
         ("subtitle_language_flags", "ix_subtitle_language_flags_detected_language",
          "CREATE INDEX IF NOT EXISTS ix_subtitle_language_flags_detected_language "
          "ON subtitle_language_flags (detected_language)"),
+        # detached_at is added by ALTER TABLE above on any install whose
+        # revert_points.file_id was ALREADY nullable, and ALTER TABLE ADD
+        # COLUMN never brings an index with it. Installs that took the
+        # table-rebuild path get it for free, which is why this was missed:
+        # the path that was tested was the one that worked. list_detached
+        # orders by this column, so without it that query table-scans.
+        ("revert_points", "ix_revert_points_detached_at",
+         "CREATE INDEX IF NOT EXISTS ix_revert_points_detached_at "
+         "ON revert_points (detached_at)"),
     ]
 
     with engine.begin() as conn:

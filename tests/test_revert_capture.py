@@ -132,7 +132,7 @@ def _s(index, codec_type, codec, **kw):
     return out
 
 
-def _patch_probes(monkeypatch, original, produced):
+def _patch_probes(monkeypatch, original, produced, source_path="/m/Show.mkv"):
     """
     Return probe results keyed by PATH, not by call order.
 
@@ -151,13 +151,15 @@ def _patch_probes(monkeypatch, original, produced):
     """
     import app.core.revert_capture as rc
 
-    by_path = {"/m/Show.mkv": original, "/tmp/job_1.remuxarr_tmp": produced}
+    by_path = {source_path: original, "/tmp/job_1.remuxarr_tmp": produced}
     state = _MOCK_STATE
 
     def fake(path, *_a, **_k):
         if path in by_path:
             return by_path[path]
-        if path.endswith(SIDECAR_SUFFIX) and state["commands"]:
+        # Matches the staged ".remuxarr_revert.part" as well as the final
+        # name: capture probes the staged file, before the rename.
+        if SIDECAR_SUFFIX in path and state["commands"]:
             return _sidecar_probe(state["commands"][-1], by_path, state)
         raise AssertionError(f"unexpected probe of {path!r}")
 
@@ -485,7 +487,7 @@ def _reorder_sidecar_probe(monkeypatch):
 
     def shuffled(path, *a, **k):
         probe = real(path, *a, **k)
-        if path.endswith(SIDECAR_SUFFIX):
+        if SIDECAR_SUFFIX in path:
             streams = list(reversed(probe["streams"]))
             return {**probe,
                     "streams": [{**st, "index": i}
@@ -528,6 +530,42 @@ def test_a_sidecar_written_in_a_different_order_is_refused(recycle, monkeypatch)
 
     assert captured is None
     assert error and "order" in error
+
+
+def test_a_rejected_sidecar_never_appears_at_the_real_path(recycle,
+                                                           monkeypatch):
+    """
+    Why the write is staged through a .part.
+
+    Written straight to its final name, a sidecar that fails the layout
+    check is still sitting there — a complete-looking file at the path a
+    revert point would name, which the startup sweep deliberately will not
+    touch and the retention orphan pass only collects an hour later. The
+    same applies to a crash mid-write, which leaves a truncated file
+    indistinguishable from a good one.
+
+    Staging means anything at the real path was written completely AND
+    verified.
+    """
+    original = _probe(
+        _s(0, "video", "h264"),
+        _s(1, "audio", "aac", channels=2, language="eng"),
+        _s(2, "audio", "ac3", channels=6, language="fre"),
+        _s(3, "subtitle", "subrip", language="ger"),
+    )
+    _patch_probes(monkeypatch, original, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+    _reorder_sidecar_probe(monkeypatch)
+
+    captured, _error = _capture(
+        app_cfg={"revert_enabled": True, "revert_require_point": True})
+
+    assert captured is None
+    finals = [f for f in os.listdir(recycle)
+              if f.endswith(SIDECAR_SUFFIX)]
+    assert not finals, (
+        f"a rejected sidecar was left at its final path: {finals}"
+    )
 
 
 def test_a_matching_sidecar_layout_is_accepted(recycle, enabled, monkeypatch):
@@ -698,6 +736,65 @@ def test_reannotation_numbers_sidecar_slots_positionally():
     assert first["processed_index"] is None
 
 
+# ── A point must still describe the file in front of it ──────────────────────
+
+def test_a_point_whose_fingerprint_no_longer_matches_is_superseded(recycle,
+                                                                   monkeypatch):
+    """
+    Two routes reach this, and both end in a sidecar mixing content from
+    files that were never the same file.
+
+    A Sonarr upgrade replaces the media between jobs: the stored manifest
+    describes the previous release and the sidecar holds that release's
+    tracks. And clear_database wipes media_files without enforced foreign
+    keys, so a leftover revert point keeps a file_id the next scanned file
+    inherits — extending then reads a completely different file's
+    manifest.
+
+    Neither is detectable later. The sentinel gets re-established against
+    whatever was just produced, so it passes from then on.
+    """
+    from app.core.revert_capture import _load_existing_point
+
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"the file as it is now")
+
+    db, _sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source)}),
+        media_path=source)
+
+    # Something else rewrote the file after the point was recorded.
+    source.write_bytes(b"a different release entirely, of a different size")
+
+    existing = _load_existing_point(7, str(source))
+
+    assert existing is not None, "the row must come back so it can be replaced"
+    assert existing.usable is False
+
+
+def test_a_point_matching_the_file_is_usable(recycle, monkeypatch):
+    """
+    The other direction: the check must not reject the ordinary case, or
+    every second job silently starts a fresh point and reverting stops
+    reaching the pristine original.
+    """
+    from app.core.revert_capture import _load_existing_point
+
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"untouched since the last job")
+
+    db, _sidecar = _unusable_point(
+        recycle, monkeypatch,
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source)}),
+        media_path=source)
+
+    existing = _load_existing_point(7, str(source))
+
+    assert existing is not None
+    assert existing.usable is True
+
+
 # ── Manifest versioning ──────────────────────────────────────────────────────
 
 def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
@@ -733,14 +830,22 @@ def test_an_older_manifest_layout_is_reported_as_unusable(recycle, monkeypatch,
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    existing = _load_existing_point(7)
+    existing = _load_existing_point(7, "/m/Show.mkv")
     assert existing is not None, "the row must still be returned, to be replaced"
     assert existing.usable is False
     assert existing.manifest is None
 
 
-def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
-    """A revert point already on file that capture cannot build on."""
+def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True,
+                    media_path=None):
+    """
+    A revert point already on file that capture cannot build on.
+
+    media_path, when given, is a real file whose size and mtime the point
+    records — which is what makes it USABLE. Without it the fingerprint
+    check rejects the point regardless of its manifest, so a test meaning
+    to exercise the extend path would silently exercise the supersede one.
+    """
     from sqlalchemy.orm import sessionmaker
 
     from tests.conftest import memory_engine
@@ -757,9 +862,16 @@ def _unusable_point(recycle, monkeypatch, *, manifest, sidecar_exists=True):
     if sidecar_exists:
         sidecar.write_bytes(b"tracks from an older build")
 
+    fingerprint = {}
+    if media_path is not None:
+        stat = os.stat(media_path)
+        fingerprint = {"processed_size": stat.st_size,
+                       "processed_mtime": stat.st_mtime}
+
     db = factory()
     db.add(RevertPoint(file_id=7, sidecar_path=str(sidecar), sidecar_size=26,
-                       manifest=manifest, original_path="/m/Show.mkv"))
+                       manifest=manifest, original_path="/m/Show.mkv",
+                       **fingerprint))
     db.commit()
     return db, sidecar
 
@@ -839,17 +951,25 @@ def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
     """
     from app.database.models import RevertPoint
 
+    # A real file, because a usable point is one whose recorded size and
+    # mtime still match the file being processed. Pointing at a path that
+    # does not exist would make this exercise the supersede path while
+    # claiming to test the extend one.
+    source = recycle.parent / "Show.mkv"
+    source.write_bytes(b"the file as the previous job left it")
+
     db, old_sidecar = _unusable_point(
         recycle, monkeypatch,
-        manifest=json.dumps({"version": 2, "streams": [], "path": "/m/Show.mkv",
-                             "container": "mkv", "duration": 60.0}))
+        manifest=json.dumps({"version": 2, "streams": [], "path": str(source),
+                             "container": "mkv", "duration": 60.0}),
+        media_path=source)
     # Make it usable: a current manifest describing the original.
     point = db.query(RevertPoint).one()
     manifest = json.loads(_capture_manifest())
     point.manifest = json.dumps(manifest)
     db.commit()
 
-    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED, source_path=str(source))
     commands = _patch_ffmpeg(monkeypatch)
     # The existing sidecar holds the one stream the earlier job destroyed.
     # Registered explicitly because nothing in this test wrote it through
@@ -859,10 +979,10 @@ def test_extending_a_usable_point_does_pass_its_sidecar(recycle, enabled,
         "format": {"format_name": "matroska,webm"},
     }
 
-    _capture(app_cfg=enabled, file_id=7, job_id=2)
+    _capture(app_cfg=enabled, file_id=7, job_id=2, input_path=str(source))
 
     inputs = [commands[0][i + 1] for i, a in enumerate(commands[0]) if a == "-i"]
-    assert inputs == ["/m/Show.mkv", str(old_sidecar)]
+    assert inputs == [str(source), str(old_sidecar)]
 
 
 def _capture_manifest():
@@ -911,7 +1031,7 @@ def test_a_point_whose_sidecar_is_gone_is_reported_as_unusable(recycle,
                        original_path="/m/Show.mkv"))
     db.commit()
 
-    existing = _load_existing_point(7)
+    existing = _load_existing_point(7, "/m/Show.mkv")
     assert existing is not None
     assert existing.usable is False
 
@@ -1016,8 +1136,23 @@ def job(tmp_path, recycle, monkeypatch):
     source.write_bytes(b"ORIGINAL")
     state = {"recorded": [], "finished": {}, "sidecars": []}
 
-    def build(*, success=True, raises=False, hook_calls=1):
-        decision = SimpleNamespace(actions=[], target_container=None)
+    def build(*, success=True, raises=False, hook_calls=1, same_path=False,
+              extracts=None):
+        # extract_subtitle actions are what the worker reads to decide
+        # which files the job will create.
+        actions = [
+            SimpleNamespace(action_type="extract_subtitle", external_path=path,
+                            stream_index=n)
+            for n, path in enumerate(extracts or [])
+        ]
+        if actions:
+            # use_combined needs BOTH kinds; an extraction-only job takes a
+            # different executor entirely, so a decision with nothing but
+            # extractions would silently test a path this fixture does not
+            # stub.
+            actions.append(SimpleNamespace(action_type="drop_track",
+                                           external_path=None, stream_index=9))
+        decision = SimpleNamespace(actions=actions, target_container=None)
 
         def fake_load(_job_id):
             return (
@@ -1039,13 +1174,23 @@ def job(tmp_path, recycle, monkeypatch):
             # re-runs the whole command and so fires the hook again. Each
             # firing produces its own sidecar, as a real capture would.
             for attempt in range(hook_calls if hook else 0):
-                sidecar = recycle / f"7_1_attempt{attempt}.remuxarr_revert"
-                sidecar.write_bytes(b"dropped tracks")
+                # same_path mirrors production, where sidecar_path_for is
+                # deterministic on (file_id, job_id) and a retry rewrites
+                # the same file.
+                name = ("7_1.remuxarr_revert" if same_path
+                        else f"7_1_attempt{attempt}.remuxarr_revert")
+                sidecar = recycle / name
                 state["sidecars"].append(sidecar)
 
                 from app.core.revert_capture import CapturedRevertPoint
 
                 async def fake_capture(_sidecar=sidecar, **_kw):
+                    # The file is written HERE, not before the hook is
+                    # called: capture is what creates a sidecar, and the
+                    # hook's stale-cleanup runs around it. Writing it
+                    # earlier reverses that ordering and the test then
+                    # measures the harness rather than the code.
+                    _sidecar.write_bytes(b"dropped tracks")
                     return CapturedRevertPoint(
                         sidecar_path=str(_sidecar), sidecar_size=14,
                         manifest_json="{}", original_path=str(source),
@@ -1072,6 +1217,12 @@ def job(tmp_path, recycle, monkeypatch):
 
         monkeypatch.setattr(worker, "_load_job_data", fake_load)
         monkeypatch.setattr(worker, "execute_ffmpeg", fake_execute)
+
+        async def fake_combined(**kwargs):
+            result = await fake_execute(**kwargs)
+            return result, []
+
+        monkeypatch.setattr(worker, "execute_ffmpeg_combined", fake_combined)
         monkeypatch.setattr(worker, "determine_output_path",
                             lambda _in, _dec: str(source))
         monkeypatch.setattr(
@@ -1080,7 +1231,8 @@ def job(tmp_path, recycle, monkeypatch):
         )
         monkeypatch.setattr(
             worker, "_record_revert_point",
-            lambda fid, cap, out: state["recorded"].append((fid, cap)),
+            lambda fid, cap, out, created=None:
+                state["recorded"].append((fid, cap, created)),
         )
 
         async def driver():
@@ -1092,12 +1244,30 @@ def job(tmp_path, recycle, monkeypatch):
     return build
 
 
+def test_the_job_reports_which_files_it_created(job):
+    """
+    The worker computes that list before the job runs and hands it to the
+    recorder afterwards, because the files only reach their final paths at
+    the swap — extracted subtitles are staged outputs like everything
+    else. Recording them during capture found nothing and looked like it
+    had worked.
+
+    Asserted at the call site rather than by calling the recorder
+    directly: the wiring is the part that was missing.
+    """
+    state = job(success=True, extracts=["/media/Show.eng.srt"])
+
+    assert state["recorded"], "no revert point was recorded"
+    _file_id, _captured, created = state["recorded"][0]
+    assert created == ["/media/Show.eng.srt"]
+
+
 def test_a_successful_job_records_the_revert_point(job):
     state = job(success=True)
 
     assert state["finished"]["ok"] is True
     assert len(state["recorded"]) == 1
-    file_id, captured = state["recorded"][0]
+    file_id, captured, _created = state["recorded"][0]
     assert file_id == 7
     assert captured.sidecar_size == 14
 
@@ -1120,6 +1290,29 @@ def test_an_exception_after_the_hook_deletes_the_sidecar(job):
 
     assert state["finished"]["ok"] is False
     assert not any(s.exists() for s in state["sidecars"]), "sidecar leaked"
+
+
+def test_a_retry_writing_the_same_path_keeps_the_sidecar(job):
+    """
+    The case the double-fire guard is actually for, and the one it got
+    wrong.
+
+    sidecar_path_for is deterministic on (file_id, job_id), and neither
+    changes across a retry — so a second firing writes to the SAME path
+    the first one did. Clearing stale captures after capturing therefore
+    deleted the sidecar that had just been written, leaving a recorded row
+    pointing at nothing.
+
+    The existing retry test gives each firing its own path, which is not
+    what production does, so it passed either way.
+    """
+    state = job(success=True, hook_calls=2, same_path=True)
+
+    assert len(state["recorded"]) == 1
+    recorded = state["recorded"][0][1].sidecar_path
+    assert os.path.exists(recorded), (
+        "the recorded revert point points at a sidecar that was deleted"
+    )
 
 
 def test_a_retry_does_not_leave_the_first_attempts_sidecar_behind(job):

@@ -63,6 +63,7 @@ from app.core.ffmpeg import SidecarUnsupported, build_sidecar_command
 from app.core.probe import ProbeError, extract_format_info, probe_file
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams
+from app.core.revert_restore import revert_blocked_reason
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class _ExistingPoint:
         return self.manifest is not None
 
 
-def _load_existing_point(file_id: int) -> _ExistingPoint | None:
+def _load_existing_point(file_id: int, current_path: str) -> _ExistingPoint | None:
     """
     The revert point already held for this file, if any.
 
@@ -114,8 +115,25 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
     it rather than adding another — see the module docstring.
 
     A point that cannot be built on — older manifest layout, unreadable
-    JSON, sidecar gone from the volume — comes back with manifest=None
-    rather than as nothing at all. Capture then starts a fresh manifest
+    JSON, sidecar gone from the volume, or a fingerprint that no longer
+    matches the file — comes back with manifest=None rather than as
+    nothing at all.
+
+    The fingerprint check is the one that stops a point being extended
+    onto content it does not describe, and it covers two quite different
+    routes to the same corruption:
+
+      • Something replaced the file between jobs. A Sonarr upgrade is the
+        obvious one. The stored manifest describes the previous release
+        and its sidecar holds that release's tracks, so extending would
+        build a sidecar mixing two releases together.
+      • The row is a leftover pointing at a REUSED id. clear_database
+        wipes media_files without enforced foreign keys, so a surviving
+        revert point keeps a file_id that the next scanned file inherits.
+        Extending then reads another file's manifest entirely.
+
+    Either way the point describes a file that is not this one, so it is
+    superseded rather than built upon. Capture then starts a fresh manifest
     anchored to the current file but still SUPERSEDES that row, taking it
     over and unlinking its sidecar.
 
@@ -156,9 +174,14 @@ def _load_existing_point(file_id: int) -> _ExistingPoint | None:
             )
             return _ExistingPoint(point.id, point.sidecar_path)
 
-        if not os.path.exists(point.sidecar_path):
+        # The same rule the revert itself applies, for the same reason:
+        # this point is only usable if it still describes the file in
+        # front of us. Covers the missing sidecar too.
+        problem = revert_blocked_reason(point, current_path)
+        if problem:
             logger.warning(
-                "Revert point %d has no sidecar on disk; replacing it", point.id,
+                "Revert point %d no longer describes %s (%s); replacing it",
+                point.id, current_path, problem,
             )
             return _ExistingPoint(point.id, point.sidecar_path)
 
@@ -311,6 +334,50 @@ def _reannotate(
             stream["sidecar_index"] = new_sidecar_indices[id(stream)]
 
 
+def _record_created_files(manifest: dict, created_files: list[str]) -> None:
+    """
+    Note the files this job created alongside the media, so a revert can
+    take them away again.
+
+    Only subtitle extraction does this today: it writes .srt files next to
+    the media AND removes those subtitles from the mux, so re-embedding
+    them on revert without removing the files leaves the user with each
+    subtitle twice.
+
+    Each entry carries a fingerprint as well as a path. A user who has
+    since edited or replaced an extracted .srt clearly wants it, and a
+    revert should not take it — the same reasoning as the sentinel on the
+    media file itself, applied to a much smaller thing.
+
+    Merged rather than replaced. A later job that extracts to a path an
+    earlier job already created does not "create" it, so the earlier
+    record is the one that matters and must survive the extend.
+
+    Called by the worker AFTER the job's outputs are swapped into place,
+    not from capture. Capture runs inside the staging window, and the
+    extracted subtitles are staged outputs like everything else — at that
+    moment they exist only under temporary names in the temp directory,
+    so every stat here failed and the record came out empty. Which is
+    precisely the shape of the bug this function exists to fix, arrived
+    at from the other direction.
+    """
+    existing = {entry["path"]: entry for entry in manifest.get("created_files", [])}
+
+    for path in created_files or []:
+        if path in existing:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            # The job said it would create this and did not, or something
+            # removed it again already. Nothing to clean up later.
+            continue
+        existing[path] = {"path": path, "size": stat.st_size,
+                          "mtime": stat.st_mtime}
+
+    manifest["created_files"] = list(existing.values())
+
+
 async def capture(
     *,
     input_path: str,
@@ -341,7 +408,7 @@ async def capture(
         except ProbeError as exc:
             raise _Unavailable(f"Could not probe for a revert point: {exc}") from exc
 
-        existing = await _off_loop(_load_existing_point, file_id)
+        existing = await _off_loop(_load_existing_point, file_id, input_path)
         # A row that exists but cannot be built on is superseded, not
         # ignored: `extend` decides what to build FROM, `existing` decides
         # which row to write back to.
@@ -401,8 +468,21 @@ async def capture(
         sources = _plan_sources(lost, has_previous_sidecar=extend)
 
         sidecar = sidecar_path_for(file_id, job_id)
+        # Staged through a .part like every other write in this codebase.
+        #
+        # It was not, and that made two things untrue at once. The startup
+        # orphan sweep claims to collect crashed sidecar writes from the
+        # recycle volume, but nothing ever put a .part there, so it swept
+        # a volume that could not contain what it was looking for. And a
+        # crash mid-write left a TRUNCATED file at the real sidecar path,
+        # which the sweep deliberately will not touch and the retention
+        # orphan pass only collects an hour later.
+        #
+        # Writing to .part and renaming means a partial sidecar is always
+        # named as one, and a complete sidecar appears atomically.
+        staged = sidecar + ".part"
         try:
-            cmd = build_sidecar_command(inputs, sidecar, sources)
+            cmd = build_sidecar_command(inputs, staged, sources)
         except SidecarUnsupported as exc:
             logger.info(
                 "Job %d: no revert point possible for %s — %s",
@@ -421,7 +501,7 @@ async def capture(
         # produces a revert that succeeds and rebuilds the file with tracks
         # and metadata shuffled. Refusing is the only safe answer.
         try:
-            written = await _off_loop(probe_file, sidecar)
+            written = await _off_loop(probe_file, staged)
         except ProbeError as exc:
             raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
 
@@ -448,6 +528,14 @@ async def capture(
         # in order, so the nth entry is output stream n. Stale annotations
         # from the previous capture are cleared rather than left to be
         # read as if they still pointed somewhere real.
+        # Renamed only once the layout check has passed, so a sidecar at
+        # the real path is always one that was written completely AND
+        # verified.
+        try:
+            await _off_loop(os.replace, staged, sidecar)
+        except OSError as exc:
+            raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+
         _reannotate(matches, sources)
 
         try:

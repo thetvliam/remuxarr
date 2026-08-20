@@ -30,6 +30,9 @@ Verified by mutation, 11 applied, 11 killed:
   • Age pass removed                          → killed
   • Size pass removed                         → killed
   • Eviction order reversed (oldest kept)     → killed
+  • Size cap back to a first-fit pack         → killed
+  • The `spent` latch set but never read      → killed
+  • Everything evicted once anything is       → killed
   • Age comparison flipped (> for <)          → killed
   • Size budget compared with >= not >        → killed (exact-fit evicted)
   • days=0 treated as "expire everything"     → killed
@@ -164,19 +167,47 @@ def test_the_cap_evicts_the_oldest_first(bin_):
     """
     A user reverting is almost always undoing something that just
     happened. Evicting newest-first would drop exactly those.
+
+    The sizes are DIFFERENT on purpose. With three equal points, a
+    first-fit pack and an oldest-first eviction produce identical results,
+    so the test passes under both and cannot see the difference — which is
+    how the shipped behaviour went unnoticed. Here the newest point alone
+    exhausts the budget, so a pack would skip it and let the two smaller
+    older ones through.
     """
     gb = 1024 * 1024 * 1024
-    bin_["cfg"]["revert_retention_max_gb"] = 2
+    bin_["cfg"]["revert_retention_max_gb"] = 20
 
-    oldest = _point(bin_, "oldest", age_days=3, size=gb)
-    middle = _point(bin_, "middle", age_days=2, size=gb)
-    newest = _point(bin_, "newest", age_days=1, size=gb)
+    oldest = _point(bin_, "oldest", age_days=3, size=1 * gb)
+    middle = _point(bin_, "middle", age_days=2, size=2 * gb)
+    newest = _point(bin_, "newest", age_days=1, size=19 * gb)
 
     _sweep()
 
-    assert newest.exists()
-    assert middle.exists()
-    assert not oldest.exists(), "the cap evicted the most recent point"
+    assert newest.exists(), "the cap evicted the most recent point"
+    assert not middle.exists()
+    assert not oldest.exists(), (
+        "an older point survived behind a newer one that did not fit — "
+        "this is a first-fit pack, not an eviction"
+    )
+
+
+def test_the_cap_keeps_as_many_recent_points_as_fit(bin_):
+    """
+    The other direction: evicting everything after the first point that
+    does not fit would be correct only if the budget were truly spent.
+    Several small recent points should all survive.
+    """
+    gb = 1024 * 1024 * 1024
+    bin_["cfg"]["revert_retention_max_gb"] = 5
+
+    kept = [_point(bin_, f"recent{n}", age_days=n, size=gb) for n in (1, 2, 3)]
+    evicted = _point(bin_, "ancient", age_days=9, size=10 * gb)
+
+    _sweep()
+
+    assert all(p.exists() for p in kept)
+    assert not evicted.exists()
 
 
 def test_a_bin_under_the_cap_is_untouched(bin_):

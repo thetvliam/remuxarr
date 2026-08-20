@@ -325,9 +325,22 @@ class SidecarUnsupported(Exception):
 
 # Matroska cannot store MP4's mov_text. Copying one in fails at header
 # write with "Subtitle codec ... is not supported", so it is converted to
-# SubRip instead — verified to round-trip back to mov_text intact on
-# restore. Listed rather than hardcoded at the call site so anything else
-# found to need the same treatment lands in one place.
+# SubRip instead.
+#
+# build_restore_command INVERTS this, and must: restoring the converted
+# stream with a plain copy tries to mux SubRip back into MP4, which
+# FFmpeg refuses at header write. That was shipped, and it made every
+# revert point for an MP4 whose job removed a text subtitle unusable —
+# listed as restorable, failing only at the moment of use, permanently,
+# since the point is not consumed on failure.
+#
+# The round trip is now exercised end to end rather than as two separate
+# FFmpeg commands, which is how the gap survived: each half worked, and
+# nothing ran them together.
+#
+# Listed rather than hardcoded at the call site so anything else found to
+# need the same treatment lands in one place — and so restore's inverse
+# stays keyed to the same table.
 _SUBTITLE_TRANSCODE = {"mov_text": "srt"}
 
 
@@ -459,6 +472,12 @@ def build_restore_command(
 
     maps: list[str] = []
     meta: list[str] = []
+    codecs: list[str] = []
+
+    # Output-side subtitle ordinal, which is what -c:s:N addresses. It
+    # counts subtitles in the OUTPUT, so it is not the stream's index in
+    # the manifest or in either input.
+    subtitle_ordinal = 0
 
     for out_index, stream in enumerate(streams):
         sidecar_index = stream.get("sidecar_index")
@@ -489,6 +508,30 @@ def build_restore_command(
                 f"Stream {stream.get('index')} is in neither the processed "
                 f"file nor the sidecar."
             )
+
+        # Undo any conversion capture applied on the way into the sidecar.
+        #
+        # Matroska cannot hold MP4's mov_text, so build_sidecar_command
+        # converts it to SubRip. Restoring with a flat -c copy then tries
+        # to mux SubRip into MP4, which FFmpeg refuses at header write —
+        # so an MP4 whose job removed a text subtitle produced a revert
+        # point that could never be used. That is close to routine under
+        # shipped defaults: keep_subtitle_languages is ["eng"], and
+        # extract_text_subtitles_to_srt removes every extracted text
+        # subtitle from the mux.
+        #
+        # The manifest records the ORIGINAL codec, so the inverse is
+        # available without probing the sidecar. Applied only to
+        # sidecar-sourced streams: one still in the processed file was
+        # never converted. It holds regardless of which capture did the
+        # converting — the manifest always describes the pristine
+        # original, so a stream carried through several sidecars still
+        # names the codec to restore.
+        if stream.get("type") == "subtitle":
+            if (sidecar_index is not None
+                    and stream.get("codec") in _SUBTITLE_TRANSCODE):
+                codecs += [f"-c:s:{subtitle_ordinal}", stream["codec"]]
+            subtitle_ordinal += 1
 
         # Clear this stream's metadata, then write back exactly what the
         # original carried. Clearing first is what removes tags the
@@ -530,7 +573,8 @@ def build_restore_command(
         meta += [f"-disposition:{out_index}", "+".join(flags) if flags else "0"]
 
     cmd += maps
-    cmd += ["-c", "copy"]
+    # Base codec first, per-stream overrides after — later options win.
+    cmd += ["-c", "copy"] + codecs
     cmd += meta
     # Chapters survive a remux, so the processed file still has them.
     cmd += ["-map_chapters", "0"]

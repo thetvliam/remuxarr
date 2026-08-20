@@ -674,3 +674,42 @@ def test_real_mov_text_sidecar_requires_the_conversion(tmp_path):
     rc, side = _ffprobe(sidecar)
     assert rc == 0
     assert side["streams"][0]["codec_name"] == "subrip"
+
+    # And back again. Without this the test confirmed one half of a claim
+    # whose other half was false: the conversion worked, and restoring
+    # what it produced could not. The comment above _SUBTITLE_TRANSCODE
+    # asserted a verified round trip, but the round trip had only ever
+    # been run as a standalone FFmpeg command — never through
+    # build_restore_command, which emitted a flat -c copy and so tried to
+    # mux SubRip into MP4. Every MP4 whose job removed a text subtitle got
+    # a revert point that could never be used, and nothing found out until
+    # someone needed it.
+    from app.core.ffmpeg import build_restore_command
+    from app.core.revert import match_streams
+    from app.core.revert_capture import _reannotate, _plan_sources
+
+    _rc, processed = _ffprobe(mp4)
+    processed = {"streams": [st for st in processed["streams"]
+                             if st["codec_type"] != "subtitle"],
+                 "format": processed.get("format", {})}
+    matches = match_streams(manifest, processed)
+    sources = _plan_sources([st for st, i in matches if i is None],
+                            has_previous_sidecar=False)
+    _reannotate(matches, sources)
+
+    restored = tmp_path / "restored.mp4"
+    cmd = build_restore_command(str(mp4), str(sidecar), str(restored), manifest)
+    result = subprocess.run(
+        [a for a in cmd if a not in ("-progress", "pipe:1")],
+        capture_output=True, text=True)
+
+    assert result.returncode == 0, (
+        f"the sidecar cannot be restored into its own container: "
+        f"{result.stderr.strip()[:200]}"
+    )
+    rc, back = _ffprobe(restored)
+    assert rc == 0
+    subtitles = [st for st in back["streams"] if st["codec_type"] == "subtitle"]
+    assert [st["codec_name"] for st in subtitles] == ["mov_text"], (
+        "the subtitle came back as SubRip; the conversion was not inverted"
+    )

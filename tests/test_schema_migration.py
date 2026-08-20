@@ -40,6 +40,7 @@ the intent, once every deployed install has started once.
 test_the_column_migration_stands_on_its_own pins it against the shape
 the world is in on that day.
 """
+import importlib
 import sqlite3
 
 import pytest
@@ -70,7 +71,6 @@ CREATE TABLE revert_points (
 @pytest.fixture
 def upgraded(tmp_path, monkeypatch):
     """A database carrying the previously-released revert_points table."""
-    import importlib
 
     path = tmp_path / "remuxarr.db"
     conn = sqlite3.connect(path)
@@ -85,18 +85,50 @@ def upgraded(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setenv("REMUXARR_DATABASE_PATH", str(path))
-    import app.config
-    importlib.reload(app.config)
-    import app.database.session as session_mod
-    importlib.reload(session_mod)
+    session_mod = _point_the_engine_at(path, monkeypatch)
     session_mod.init_db()
 
     yield path, session_mod
 
-    # Restore the module to the suite-wide database, or every test after
-    # this one talks to a tmp_path that no longer exists.
-    importlib.reload(app.config)
+    _restore_the_engine(session_mod)
+
+
+def _point_the_engine_at(path, monkeypatch):
+    """
+    Rebuild session.engine against `path`, without replacing the settings
+    OBJECT.
+
+    The obvious version of this reloads app.config, and that quietly
+    breaks other test files. Reloading a module rebinds its globals, so
+    app.config.settings becomes a NEW object — while every module that did
+    `from app.config import settings` still holds the old one. A later
+    test patching app.config.settings then patches something app.core.
+    recycle has never seen, and its assertions fail for reasons that have
+    nothing to do with what it is testing.
+
+    That is order-dependent, so the full suite passed and the breakage
+    only appeared when these files ran together in a different order.
+
+    Patching the attribute on the existing object and reloading only
+    session — which reads settings.DATABASE_PATH at import to build the
+    engine — keeps one settings object alive throughout.
+    """
+    import app.config
+    import app.database.session as session_mod
+
+    monkeypatch.setattr(app.config.settings, "DATABASE_PATH", str(path))
+    importlib.reload(session_mod)
+    return session_mod
+
+
+def _restore_the_engine(session_mod):
+    """
+    Rebuild the engine against the suite-wide database.
+
+    Runs before monkeypatch undoes DATABASE_PATH, so it is reloaded once
+    more by the caller's own teardown ordering — hence the explicit second
+    reload rather than relying on it.
+    """
     importlib.reload(session_mod)
 
 
@@ -210,7 +242,6 @@ def test_the_column_migration_stands_on_its_own(tmp_path, monkeypatch):
     still lacks the column — the exact shape the world is in the day the
     rebuild is removed.
     """
-    import importlib
 
     path = tmp_path / "half-migrated.db"
     conn = sqlite3.connect(path)
@@ -219,18 +250,53 @@ def test_the_column_migration_stands_on_its_own(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
 
-    monkeypatch.setenv("REMUXARR_DATABASE_PATH", str(path))
-    import app.config
-    importlib.reload(app.config)
-    import app.database.session as session_mod
-    importlib.reload(session_mod)
-
+    session_mod = _point_the_engine_at(path, monkeypatch)
     try:
         session_mod.init_db()
         assert "detached_at" in _columns(path)
     finally:
-        importlib.reload(app.config)
-        importlib.reload(session_mod)
+        _restore_the_engine(session_mod)
+
+
+def test_the_added_column_gets_its_index_on_every_path(tmp_path, monkeypatch):
+    """
+    ALTER TABLE ADD COLUMN never brings an index with it.
+
+    An install whose revert_points.file_id was ALREADY nullable skips the
+    table rebuild and takes the ADD COLUMN path, so detached_at arrived
+    without ix_revert_points_detached_at — and list_detached orders by
+    that column. The rebuild path got the index for free, which is exactly
+    why this was missed: the path that was tested was the path that
+    worked.
+
+    index_migrations exists for this and the new column was not added
+    to it.
+    """
+    path = tmp_path / "half-migrated.db"
+    conn = sqlite3.connect(path)
+    conn.execute(LEGACY_REVERT_POINTS.replace("file_id INTEGER NOT NULL",
+                                              "file_id INTEGER"))
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+
+        conn = sqlite3.connect(path)
+        try:
+            indexes = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='revert_points'")}
+        finally:
+            conn.close()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert "ix_revert_points_detached_at" in indexes, (
+        "detached_at was added without its index; list_detached will "
+        "table-scan"
+    )
 
 
 # ── The general check ────────────────────────────────────────────────────────
@@ -288,14 +354,9 @@ def test_a_fresh_database_needs_no_migration(tmp_path, monkeypatch):
     The rebuild must be a no-op when create_all already produced the right
     shape, or it runs on every startup and rewrites the table each time.
     """
-    import importlib
 
     path = tmp_path / "fresh.db"
-    monkeypatch.setenv("REMUXARR_DATABASE_PATH", str(path))
-    import app.config
-    importlib.reload(app.config)
-    import app.database.session as session_mod
-    importlib.reload(session_mod)
+    session_mod = _point_the_engine_at(path, monkeypatch)
 
     try:
         session_mod.init_db()
@@ -305,5 +366,4 @@ def test_a_fresh_database_needs_no_migration(tmp_path, monkeypatch):
         assert _columns(path) == before
         assert before["file_id"]["notnull"] == 0
     finally:
-        importlib.reload(app.config)
-        importlib.reload(session_mod)
+        _restore_the_engine(session_mod)

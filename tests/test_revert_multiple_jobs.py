@@ -139,7 +139,7 @@ def lib(tmp_path, monkeypatch):
             "tmp": tmp_path, "pristine": _summarise(path)}
 
 
-def _run_job(lib, ffmpeg_args, *, job_id):
+def _run_job(lib, ffmpeg_args, *, job_id, extracts=None):
     """
     Do to the file what a real job would, with capture in the same window:
     FFmpeg writes a temp output, capture runs while both files exist, then
@@ -153,6 +153,10 @@ def _run_job(lib, ffmpeg_args, *, job_id):
         ["ffmpeg", "-v", "error", "-y", "-i", str(lib["path"]),
          *ffmpeg_args, "-f", "matroska", str(produced)], check=True)
 
+    # Which extraction targets do NOT yet exist. Taken before the job, as
+    # the worker does, because afterwards every target exists.
+    will_create = [p for p in (extracts or []) if not os.path.exists(p)]
+
     captured, error = asyncio.run(capture(
         input_path=str(lib["path"]), produced_path=str(produced),
         file_id=lib["media"].id, job_id=job_id,
@@ -160,9 +164,18 @@ def _run_job(lib, ffmpeg_args, *, job_id):
     ))
     assert error is None, error
 
+    # The swap. Extracted subtitles are staged outputs too, so they reach
+    # their final paths HERE — after capture, not before. Writing them
+    # earlier is what made the first version of this test pass against
+    # code that recorded nothing.
     os.replace(produced, lib["path"])
+    for path in (extracts or []):
+        with open(path, "w") as f:
+            f.write("extracted by the job\n")
+
     if captured:
-        _record_revert_point(lib["media"].id, captured, str(lib["path"]))
+        _record_revert_point(lib["media"].id, captured, str(lib["path"]),
+                             will_create)
     return captured
 
 
@@ -173,6 +186,80 @@ def _revert(lib):
     lib["db"].expire_all()
     point = lib["db"].query(RevertPoint).one()
     return asyncio.run(restore_revert_point(point.id))
+
+
+@pytest.fixture
+def mp4_with_text_subtitle(tmp_path, monkeypatch):
+    """
+    An MP4 carrying a mov_text subtitle — the shape that produced an
+    unusable revert point.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+    from tests.conftest import memory_engine
+
+    media_dir = tmp_path / "media"; media_dir.mkdir()
+    recycle = tmp_path / "recycle"; recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    subs = tmp_path / "s.srt"
+    subs.write_text("1\n00:00:00,000 --> 00:00:01,000\nbonjour\n\n")
+    path = media_dir / "Film.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-i", str(subs),
+         "-map", "0:v", "-map", "1:a", "-map", "2:s",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         "-c:s", "mov_text", "-metadata:s:s:0", "language=fre",
+         "-f", "mp4", str(path)], check=True)
+
+    engine = memory_engine(); Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    import app.core.worker as worker_mod
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Film.mp4",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mp4", status="processed")
+    db.add(media); db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path)}
+
+
+def test_an_mp4_subtitle_can_actually_be_restored(mp4_with_text_subtitle):
+    """
+    Matroska cannot hold mov_text, so capture converts it to SubRip on the
+    way into the sidecar. Restoring with a flat -c copy then tried to mux
+    SubRip back into MP4, which FFmpeg refuses at header write — so the
+    revert point existed, listed as restorable, and failed the moment
+    anyone used it. Permanently: the point is not consumed on failure, so
+    every retry failed identically.
+
+    Routine rather than exotic under shipped defaults.
+    keep_subtitle_languages is ["eng"], so any other language is dropped,
+    and extract_text_subtitles_to_srt removes every extracted text
+    subtitle from the mux.
+    """
+    _run_job(mp4_with_text_subtitle,
+             ["-map", "0:0", "-map", "0:1", "-c", "copy", "-f", "mp4"],
+             job_id=1)
+    kinds = [k for k, _c, _l in _summarise(mp4_with_text_subtitle["path"])]
+    assert "subtitle" not in kinds, "fixture did not drop the subtitle"
+
+    outcome = _revert(mp4_with_text_subtitle)
+
+    assert outcome.success is True, outcome.error
+    assert _summarise(mp4_with_text_subtitle["path"]) == \
+        mp4_with_text_subtitle["pristine"]
 
 
 @pytest.fixture
@@ -477,6 +564,65 @@ def test_the_metadata_change_itself_is_reverted(lib):
     )
     assert languages == [lang for kind, _c, lang in lib["pristine"]
                          if kind == "audio"]
+
+
+def test_extending_a_point_refreshes_its_age(lib):
+    """
+    created_at is what retention ages against, and an extend rewrites the
+    sidecar entirely. Left at the first job's timestamp, a file last
+    processed more than revert_retention_days ago gets a fresh sidecar
+    that the very next sweep — sixty seconds later — deletes as expired.
+    The user has no revert point for work they just did, and nothing in
+    the UI says why.
+    """
+    from datetime import timedelta
+
+    from app.core.timeutil import utcnow_naive
+    from app.database.models import RevertPoint
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1)
+
+    # Age the point past any plausible retention window.
+    lib["db"].expire_all()
+    point = lib["db"].query(RevertPoint).one()
+    point.created_at = utcnow_naive() - timedelta(days=90)
+    lib["db"].commit()
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=2)
+
+    lib["db"].expire_all()
+    refreshed = lib["db"].query(RevertPoint).one().created_at
+    assert refreshed > utcnow_naive() - timedelta(minutes=5), (
+        f"the extended point still dates from the first job ({refreshed}); "
+        f"retention will delete it on the next sweep"
+    )
+
+
+def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
+    """
+    extract_text_subtitles_to_srt writes .srt files next to the media AND
+    removes those subtitles from the mux. A revert re-embeds them, so
+    leaving the files behind gives the user the same subtitle twice —
+    which players list as duplicate tracks.
+
+    Only the file the job created is removed. The other .srt here stands
+    in for one Bazarr put there first, which the job overwrote rather than
+    created: deleting that would destroy something Remuxarr never made.
+    """
+    mine = lib["path"].with_suffix(".ger.srt")      # the job will create this
+    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten
+    theirs.write_text("downloaded by Bazarr")
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1, extracts=[str(mine), str(theirs)])
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert not mine.exists(), "the extracted subtitle file was left behind"
+    assert theirs.exists(), "a subtitle file the job did not create was deleted"
+    assert _summarise(lib["path"]) == lib["pristine"]
 
 
 def test_a_metadata_only_job_refreshes_the_fingerprint(lib):

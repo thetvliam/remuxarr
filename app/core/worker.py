@@ -24,7 +24,7 @@ from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpe
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
-from app.core.revert_capture import CapturedRevertPoint
+from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.radarr import notify_radarr
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
@@ -858,7 +858,29 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     # exit below either records it or deletes it.
     captured: list[CapturedRevertPoint] = []
 
+    will_create = _files_the_job_will_create(extract_actions)
+
     async def on_before_staging(produced_path: str) -> str | None:
+        # Cleared BEFORE capturing, not after.
+        #
+        # The corrupt-audio path re-runs the whole command, so the hook can
+        # fire more than once per job, and anything an earlier attempt left
+        # behind has no row and must not accumulate. Doing that afterwards
+        # looked equivalent and was not: sidecar_path_for is deterministic
+        # on (file_id, job_id), both unchanged across a retry, so the
+        # "stale" path is the same path the capture above just wrote. It
+        # would have deleted the new sidecar and then recorded a row
+        # pointing at nothing.
+        #
+        # Unreachable as the retry conditions currently stand — the hook
+        # only runs after the subprocess exits 0, while the retry needs
+        # stderr that only appears on a non-zero exit — but this is
+        # defensive code for the double-fire case, and it did not work for
+        # the double-fire case.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        captured.clear()
+
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
@@ -866,12 +888,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             job_id        = job_id,
             app_cfg       = app_cfg,
         )
-        # The corrupt-audio path re-runs the whole command, so the hook can
-        # fire more than once per job. Drop anything a previous attempt
-        # left behind rather than accumulate sidecars nothing will record.
-        for stale in captured:
-            delete_sidecar(stale.sidecar_path)
-        captured.clear()
         if result:
             captured.append(result)
         return error
@@ -1096,7 +1112,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         if captured:
             await loop.run_in_executor(
                 None, _record_revert_point,
-                file_dict["id"], captured[0], result.output_path,
+                file_dict["id"], captured[0], result.output_path, will_create,
             )
 
         await loop.run_in_executor(
@@ -1296,10 +1312,28 @@ def _update_progress(job_id: int, percent: float, current_action: str) -> None:
         db.close()
 
 
+def _files_the_job_will_create(extract_actions) -> list[str]:
+    """
+    The subtitle files this job is about to CREATE, as opposed to
+    overwrite.
+
+    Only knowable BEFORE the job runs. Afterwards every extraction target
+    exists and nothing distinguishes one this job wrote from one Bazarr
+    put there months ago — which matters because a revert re-embeds the
+    subtitles and removes these files, and removing a file that predated
+    the job would destroy something Remuxarr never made.
+    """
+    return [
+        action.external_path for action in extract_actions
+        if action.external_path and not os.path.exists(action.external_path)
+    ]
+
+
 def _record_revert_point(
     file_id:       int,
     captured:      "CapturedRevertPoint",
     produced_path: str | None,
+    created_files: list[str] | None = None,
 ) -> None:
     """
     Persist a captured sidecar as a RevertPoint row.
@@ -1332,6 +1366,18 @@ def _record_revert_point(
             stat = os.stat(produced_path)
             size, mtime = stat.st_size, stat.st_mtime
 
+        # The files the job created alongside the media are recorded HERE,
+        # not during capture. Capture runs inside the staging window and
+        # extracted subtitles are staged outputs like everything else, so
+        # at that point they exist only under temporary names in the temp
+        # directory — every stat failed and the record came out empty
+        # while looking like it had worked.
+        manifest_json = captured.manifest_json
+        if created_files:
+            manifest = json.loads(manifest_json)
+            _record_created_files(manifest, created_files)
+            manifest_json = json.dumps(manifest)
+
         with SessionLocal() as db:
             point = None
             if captured.replaces_point_id is not None:
@@ -1343,11 +1389,27 @@ def _record_revert_point(
 
             point.sidecar_path       = captured.sidecar_path
             point.sidecar_size       = captured.sidecar_size
-            point.manifest           = captured.manifest_json
+            point.manifest           = manifest_json
             point.original_path      = captured.original_path
             point.original_container = captured.original_container
             point.processed_size     = size
             point.processed_mtime    = mtime
+            # Refreshed on every capture, including an extend.
+            #
+            # created_at is what retention ages against, and leaving it at
+            # the first job's timestamp made a freshly written sidecar
+            # expire immediately: process a file today that was last
+            # processed more than revert_retention_days ago, and the sweep
+            # sixty seconds later deletes the entry as stale. The user gets
+            # no revert point for work they just did, with nothing in the
+            # UI to explain it.
+            #
+            # The point DESCRIBES the pristine original, which argues for
+            # the first date; but retention is answering "how long can I
+            # undo recent work", and a recycle bin's mental model is keyed
+            # to when the removal happened. The sidecar was in fact
+            # rewritten just now.
+            point.created_at         = utcnow()
             db.commit()
 
         # Only once the row is committed. The other order would leave a row

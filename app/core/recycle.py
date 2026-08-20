@@ -203,12 +203,22 @@ def sweep_retention() -> tuple[int, int]:
             budget = max_gb * 1024 * 1024 * 1024
             running = 0
             survivors = []
-            # keep is newest-first, so this drops the oldest once the
-            # budget is spent — the most recent revert points are the ones
-            # a user is realistically about to need.
+            spent = False
+            # keep is newest-first, so once the budget is gone everything
+            # remaining is older than the point that exhausted it and goes
+            # too. The `spent` latch is what makes this an eviction rather
+            # than a pack: without it the loop keeps testing each point
+            # individually and lets smaller OLDER ones slip in behind a
+            # large recent one that did not fit.
+            #
+            # That was the shipped behaviour, and it made "which revert
+            # points do I still have" depend on file sizes rather than on
+            # age. With a 20GB cap and points of 19GB, 2GB and 1GB it kept
+            # the newest and the OLDEST and evicted the middle.
             for p in keep:
                 size = p.sidecar_size or 0
-                if running + size > budget:
+                if spent or running + size > budget:
+                    spent = True
                     doomed.append(p)
                 else:
                     running += size
