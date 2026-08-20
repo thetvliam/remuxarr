@@ -28,7 +28,83 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
 
 ## Screenshots
 
-![Remuxarr dashboard](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/screenshot.png)
+<table>
+  <tr>
+    <th width="33%">Screenshot</th>
+    <th width="67%">Feature</th>
+  </tr>
+  <tr>
+    <td width="33%">
+      <a href="images_and_demo/Screenshot_dashboard.png">
+        <img src="images_and_demo/Screenshot_dashboard.png" width="100%" alt="Dashboard showing a file mid-process with live progress, above the pending queue">
+      </a>
+    </td>
+    <td width="67%">
+      <strong>Dashboard</strong><br>
+      Everything in flight and everything waiting, in one place. Files arrive
+      from a library scan or straight from a Sonarr/Radarr webhook on import,
+      and each job shows live progress while it runs. Dry run is on by default,
+      so a fresh install shows you exactly what it <em>would</em> do to your
+      library before it is allowed to do any of it.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%">
+      <a href="images_and_demo/Screenshot_detail_panel.png">
+        <img src="images_and_demo/Screenshot_detail_panel.png" width="100%" alt="Detail panel listing every track in a file and the action planned for each">
+      </a>
+    </td>
+    <td width="67%">
+      <strong>Detail Panel</strong><br>
+      Every track in the file - codec, language, channel layout, default and
+      forced flags - next to exactly what is going to happen to it and why.
+      Nothing is inferred silently: if a track is being dropped, retagged or
+      left alone, the reason is on screen before the job runs.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%">
+      <a href="images_and_demo/Screenshot_review.png">
+        <img src="images_and_demo/Screenshot_review.png" width="100%" alt="Review page asking whether to remove image-based subtitles from a file">
+      </a>
+    </td>
+    <td width="67%">
+      <strong>Review</strong><br>
+      Genuinely ambiguous files are held for a person rather than guessed at -
+      several undefined-language audio tracks, or image-based subtitles (PGS,
+      VobSub) that cannot be converted to SRT. Decide once and apply it in bulk,
+      or set a policy so the same case resolves itself from then on.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%">
+      <a href="images_and_demo/Screenshot_forge.png">
+        <img src="images_and_demo/Screenshot_forge.png" width="100%" alt="AC3 Forge listing AAC 5.1 candidate files with convert and undo actions">
+      </a>
+    </td>
+    <td width="67%">
+      <strong>AC3 Forge</strong><br>
+      The one deliberate exception to never re-encoding. Older AV receivers need
+      AC3 to bitstream 5.1 over optical, so Forge finds AAC 5.1 files and
+      converts <em>just</em> the audio, on files you pick. It is separate from
+      the main pipeline, never automatic, and every conversion can be undone.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%">
+      <a href="images_and_demo/Screenshot_settings.png">
+        <img src="images_and_demo/Screenshot_settings.png" width="100%" alt="Settings page showing the language and subtitle rules for the library">
+      </a>
+    </td>
+    <td width="67%">
+      <strong>Settings</strong><br>
+      Which languages to keep, what to do with subtitles, which containers to
+      prefer, and how hard to work the machine. Integrations for Sonarr, Radarr
+      and Plex live here, as do notifications, scheduled scans, and the recycle
+      bin that lets a processed file be put back the way it was.
+    </td>
+  </tr>
+</table>
 
 <video src="https://github.com/user-attachments/assets/05affe2d-0b6d-4e00-9d7b-1ffb1b633bbe" aria-label="Demo video" title="Demo video">Demo video</video>
 
@@ -55,8 +131,8 @@ This application was generated entirely using Claude. I acted as the architect, 
 - **Automatic library scanning** - full probe on first sight, fast delta (size/mtime) scans afterward.
 - **Sonarr / Radarr webhook integration** - reacts to imports and upgrades directly, with automatic path translation between how each *arr sees files and how Remuxarr does.
 - **Plex integration** - refreshes affected library sections after every job. A separate, opt-in backlog can additionally verify Plex's own metadata and force an explicit re-analyze on the rare files Plex's own maintenance misses - most installs won't need this turned on; see Settings → Integrations → Plex Analyze Backlog for why.
-- **AC3 Forge** - a dedicated tool for finding AAC 5.1 files and converting just the audio to AC3, independent of the main processing pipeline, with the ability to undo.
-- **Manual review, with bulk resolution** - files with genuinely ambiguous tracks (several undefined-language audio tracks, or image-based subtitles that can't be converted to SRT) are held for a human decision rather than guessed at. A settable policy (Settings → Library & Processing → Subtitles) can auto-resolve the subtitle case going forward, with a one-click bulk action for anything already sitting in review.
+- **AC3 Forge** - AAC 5.1 → AC3 for older receivers, on files you pick, with an undo. Separate from the main pipeline and never automatic; see Screenshots above.
+- **Manual review, with bulk resolution** - ambiguous files are held for a human decision rather than guessed at, resolvable in bulk or by a standing policy (Settings → Library & Processing → Subtitles); see Screenshots above.
 - **Audio Language Review** - search-and-bulk-correct tool for tracks that have a *wrong* language tag rather than a missing one (common with some release groups) - confirm it's actually correct, or apply the right tag to every matching file at once.
 - **Dry run mode** - see every planned action across your whole library before anything real is touched. **On by default** for a fresh install - see First-time configuration below.
 - **Revert to original** (beta) - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
