@@ -157,7 +157,9 @@ def _patch_probes(monkeypatch, original, produced, source_path="/m/Show.mkv"):
     def fake(path, *_a, **_k):
         if path in by_path:
             return by_path[path]
-        if path.endswith(SIDECAR_SUFFIX) and state["commands"]:
+        # Matches the staged ".remuxarr_revert.part" as well as the final
+        # name: capture probes the staged file, before the rename.
+        if SIDECAR_SUFFIX in path and state["commands"]:
             return _sidecar_probe(state["commands"][-1], by_path, state)
         raise AssertionError(f"unexpected probe of {path!r}")
 
@@ -485,7 +487,7 @@ def _reorder_sidecar_probe(monkeypatch):
 
     def shuffled(path, *a, **k):
         probe = real(path, *a, **k)
-        if path.endswith(SIDECAR_SUFFIX):
+        if SIDECAR_SUFFIX in path:
             streams = list(reversed(probe["streams"]))
             return {**probe,
                     "streams": [{**st, "index": i}
@@ -528,6 +530,42 @@ def test_a_sidecar_written_in_a_different_order_is_refused(recycle, monkeypatch)
 
     assert captured is None
     assert error and "order" in error
+
+
+def test_a_rejected_sidecar_never_appears_at_the_real_path(recycle,
+                                                           monkeypatch):
+    """
+    Why the write is staged through a .part.
+
+    Written straight to its final name, a sidecar that fails the layout
+    check is still sitting there — a complete-looking file at the path a
+    revert point would name, which the startup sweep deliberately will not
+    touch and the retention orphan pass only collects an hour later. The
+    same applies to a crash mid-write, which leaves a truncated file
+    indistinguishable from a good one.
+
+    Staging means anything at the real path was written completely AND
+    verified.
+    """
+    original = _probe(
+        _s(0, "video", "h264"),
+        _s(1, "audio", "aac", channels=2, language="eng"),
+        _s(2, "audio", "ac3", channels=6, language="fre"),
+        _s(3, "subtitle", "subrip", language="ger"),
+    )
+    _patch_probes(monkeypatch, original, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+    _reorder_sidecar_probe(monkeypatch)
+
+    captured, _error = _capture(
+        app_cfg={"revert_enabled": True, "revert_require_point": True})
+
+    assert captured is None
+    finals = [f for f in os.listdir(recycle)
+              if f.endswith(SIDECAR_SUFFIX)]
+    assert not finals, (
+        f"a rejected sidecar was left at its final path: {finals}"
+    )
 
 
 def test_a_matching_sidecar_layout_is_accepted(recycle, enabled, monkeypatch):
@@ -1098,7 +1136,7 @@ def job(tmp_path, recycle, monkeypatch):
     source.write_bytes(b"ORIGINAL")
     state = {"recorded": [], "finished": {}, "sidecars": []}
 
-    def build(*, success=True, raises=False, hook_calls=1):
+    def build(*, success=True, raises=False, hook_calls=1, same_path=False):
         decision = SimpleNamespace(actions=[], target_container=None)
 
         def fake_load(_job_id):
@@ -1121,13 +1159,23 @@ def job(tmp_path, recycle, monkeypatch):
             # re-runs the whole command and so fires the hook again. Each
             # firing produces its own sidecar, as a real capture would.
             for attempt in range(hook_calls if hook else 0):
-                sidecar = recycle / f"7_1_attempt{attempt}.remuxarr_revert"
-                sidecar.write_bytes(b"dropped tracks")
+                # same_path mirrors production, where sidecar_path_for is
+                # deterministic on (file_id, job_id) and a retry rewrites
+                # the same file.
+                name = ("7_1.remuxarr_revert" if same_path
+                        else f"7_1_attempt{attempt}.remuxarr_revert")
+                sidecar = recycle / name
                 state["sidecars"].append(sidecar)
 
                 from app.core.revert_capture import CapturedRevertPoint
 
                 async def fake_capture(_sidecar=sidecar, **_kw):
+                    # The file is written HERE, not before the hook is
+                    # called: capture is what creates a sidecar, and the
+                    # hook's stale-cleanup runs around it. Writing it
+                    # earlier reverses that ordering and the test then
+                    # measures the harness rather than the code.
+                    _sidecar.write_bytes(b"dropped tracks")
                     return CapturedRevertPoint(
                         sidecar_path=str(_sidecar), sidecar_size=14,
                         manifest_json="{}", original_path=str(source),
@@ -1202,6 +1250,29 @@ def test_an_exception_after_the_hook_deletes_the_sidecar(job):
 
     assert state["finished"]["ok"] is False
     assert not any(s.exists() for s in state["sidecars"]), "sidecar leaked"
+
+
+def test_a_retry_writing_the_same_path_keeps_the_sidecar(job):
+    """
+    The case the double-fire guard is actually for, and the one it got
+    wrong.
+
+    sidecar_path_for is deterministic on (file_id, job_id), and neither
+    changes across a retry — so a second firing writes to the SAME path
+    the first one did. Clearing stale captures after capturing therefore
+    deleted the sidecar that had just been written, leaving a recorded row
+    pointing at nothing.
+
+    The existing retry test gives each firing its own path, which is not
+    what production does, so it passed either way.
+    """
+    state = job(success=True, hook_calls=2, same_path=True)
+
+    assert len(state["recorded"]) == 1
+    recorded = state["recorded"][0][1].sidecar_path
+    assert os.path.exists(recorded), (
+        "the recorded revert point points at a sidecar that was deleted"
+    )
 
 
 def test_a_retry_does_not_leave_the_first_attempts_sidecar_behind(job):

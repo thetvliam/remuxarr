@@ -424,8 +424,21 @@ async def capture(
         sources = _plan_sources(lost, has_previous_sidecar=extend)
 
         sidecar = sidecar_path_for(file_id, job_id)
+        # Staged through a .part like every other write in this codebase.
+        #
+        # It was not, and that made two things untrue at once. The startup
+        # orphan sweep claims to collect crashed sidecar writes from the
+        # recycle volume, but nothing ever put a .part there, so it swept
+        # a volume that could not contain what it was looking for. And a
+        # crash mid-write left a TRUNCATED file at the real sidecar path,
+        # which the sweep deliberately will not touch and the retention
+        # orphan pass only collects an hour later.
+        #
+        # Writing to .part and renaming means a partial sidecar is always
+        # named as one, and a complete sidecar appears atomically.
+        staged = sidecar + ".part"
         try:
-            cmd = build_sidecar_command(inputs, sidecar, sources)
+            cmd = build_sidecar_command(inputs, staged, sources)
         except SidecarUnsupported as exc:
             logger.info(
                 "Job %d: no revert point possible for %s — %s",
@@ -444,7 +457,7 @@ async def capture(
         # produces a revert that succeeds and rebuilds the file with tracks
         # and metadata shuffled. Refusing is the only safe answer.
         try:
-            written = await _off_loop(probe_file, sidecar)
+            written = await _off_loop(probe_file, staged)
         except ProbeError as exc:
             raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
 
@@ -471,6 +484,14 @@ async def capture(
         # in order, so the nth entry is output stream n. Stale annotations
         # from the previous capture are cleared rather than left to be
         # read as if they still pointed somewhere real.
+        # Renamed only once the layout check has passed, so a sidecar at
+        # the real path is always one that was written completely AND
+        # verified.
+        try:
+            await _off_loop(os.replace, staged, sidecar)
+        except OSError as exc:
+            raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+
         _reannotate(matches, sources)
 
         try:

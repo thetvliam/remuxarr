@@ -496,7 +496,16 @@ class RevertPoint(Base):
     # So the point is detached instead: file_id goes NULL, the sidecar
     # stays, and it can be matched back to a file by hand. Retention still
     # bounds it, so a detached point is not an unbounded leak.
-    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
+    #
+    # SET NULL, not CASCADE, and the difference is not academic even
+    # though SQLite does not enforce foreign keys today. CASCADE declares
+    # the exact behaviour the paragraph above exists to prevent, so the
+    # safety of this design would currently rest on a pragma nobody set —
+    # and the pragma listener that would set it is a few lines away in
+    # session.py. Turning enforcement on is an obvious future hardening
+    # step, and it would silently destroy every revert point for every
+    # renamed file. SET NULL is what the code already does by hand.
+    file_id = Column(Integer, ForeignKey("media_files.id", ondelete="SET NULL"),
                      nullable=True, index=True)
 
     # When the point lost its file, and NULL while it still has one. Both

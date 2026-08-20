@@ -859,6 +859,26 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     captured: list[CapturedRevertPoint] = []
 
     async def on_before_staging(produced_path: str) -> str | None:
+        # Cleared BEFORE capturing, not after.
+        #
+        # The corrupt-audio path re-runs the whole command, so the hook can
+        # fire more than once per job, and anything an earlier attempt left
+        # behind has no row and must not accumulate. Doing that afterwards
+        # looked equivalent and was not: sidecar_path_for is deterministic
+        # on (file_id, job_id), both unchanged across a retry, so the
+        # "stale" path is the same path the capture above just wrote. It
+        # would have deleted the new sidecar and then recorded a row
+        # pointing at nothing.
+        #
+        # Unreachable as the retry conditions currently stand — the hook
+        # only runs after the subprocess exits 0, while the retry needs
+        # stderr that only appears on a non-zero exit — but this is
+        # defensive code for the double-fire case, and it did not work for
+        # the double-fire case.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        captured.clear()
+
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
@@ -866,12 +886,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             job_id        = job_id,
             app_cfg       = app_cfg,
         )
-        # The corrupt-audio path re-runs the whole command, so the hook can
-        # fire more than once per job. Drop anything a previous attempt
-        # left behind rather than accumulate sidecars nothing will record.
-        for stale in captured:
-            delete_sidecar(stale.sidecar_path)
-        captured.clear()
         if result:
             captured.append(result)
         return error
