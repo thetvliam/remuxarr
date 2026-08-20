@@ -139,7 +139,7 @@ def lib(tmp_path, monkeypatch):
             "tmp": tmp_path, "pristine": _summarise(path)}
 
 
-def _run_job(lib, ffmpeg_args, *, job_id):
+def _run_job(lib, ffmpeg_args, *, job_id, created_files=None):
     """
     Do to the file what a real job would, with capture in the same window:
     FFmpeg writes a temp output, capture runs while both files exist, then
@@ -157,6 +157,7 @@ def _run_job(lib, ffmpeg_args, *, job_id):
         input_path=str(lib["path"]), produced_path=str(produced),
         file_id=lib["media"].id, job_id=job_id,
         app_cfg={"revert_enabled": True, "revert_require_point": False},
+        created_files=created_files,
     ))
     assert error is None, error
 
@@ -584,6 +585,33 @@ def test_extending_a_point_refreshes_its_age(lib):
         f"the extended point still dates from the first job ({refreshed}); "
         f"retention will delete it on the next sweep"
     )
+
+
+def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
+    """
+    extract_text_subtitles_to_srt writes .srt files next to the media AND
+    removes those subtitles from the mux. A revert re-embeds them, so
+    leaving the files behind gives the user the same subtitle twice —
+    which players list as duplicate tracks.
+
+    Only the file the job created is removed. The other .srt here stands
+    in for one Bazarr put there first, which the job overwrote rather than
+    created: deleting that would destroy something Remuxarr never made.
+    """
+    mine = lib["path"].with_suffix(".ger.srt")
+    mine.write_text("extracted by the job")
+    theirs = lib["path"].with_suffix(".eng.srt")
+    theirs.write_text("downloaded by Bazarr")
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1, created_files=[str(mine)])
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert not mine.exists(), "the extracted subtitle file was left behind"
+    assert theirs.exists(), "a subtitle file the job did not create was deleted"
+    assert _summarise(lib["path"]) == lib["pristine"]
 
 
 def test_a_metadata_only_job_refreshes_the_fingerprint(lib):

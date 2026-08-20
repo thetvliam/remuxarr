@@ -112,6 +112,51 @@ def revert_blocked_reason(point, path: str) -> str | None:
     return None
 
 
+def _remove_created_files(manifest: dict) -> None:
+    """
+    Take away the files the job put next to the media, now that their
+    content is back inside it.
+
+    Subtitle extraction writes .srt files AND removes those subtitles from
+    the mux. A revert re-embeds them, so leaving the files behind gives
+    the user every extracted subtitle twice — which players show as
+    duplicate tracks.
+
+    Only files this job CREATED are listed (the worker checks before
+    running), and each is removed only if it is still byte-for-byte what
+    the job wrote. Someone who has since edited or replaced an extracted
+    .srt clearly wants it, and a revert taking it would be destroying
+    something Remuxarr did not make.
+
+    Never raises. The media file is already restored at this point; a
+    subtitle file that cannot be removed is untidy, not a failure, and
+    reporting it as one would send the user to retry a revert that has
+    already happened.
+    """
+    for entry in manifest.get("created_files") or []:
+        path = entry.get("path")
+        if not path:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue    # already gone; nothing to do
+
+        if (entry.get("size") is not None and stat.st_size != entry["size"]) or \
+           (entry.get("mtime") is not None and stat.st_mtime != entry["mtime"]):
+            logger.info(
+                "Leaving %s alone: it has changed since the job wrote it",
+                path,
+            )
+            continue
+
+        try:
+            os.remove(path)
+            logger.info("Removed %s, extracted by the job being reverted", path)
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", path, exc)
+
+
 @dataclass
 class _Plan:
     """Everything needed to run a restore, read out of the database once."""
@@ -306,6 +351,11 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
                 "Could not remove the processed file %s after reverting: %s",
                 plan.current_path, exc,
             )
+
+    # After the swap, so a failed restore leaves the extracted files where
+    # they are — they are the user's only copy of those subtitles while
+    # the processed file still lacks them.
+    _remove_created_files(plan.manifest)
 
     try:
         with SessionLocal() as db:

@@ -235,6 +235,11 @@ to - a rename looks the same as a deletion from the outside. The entry moves to
 file is byte-for-byte identical, so it is identified by its fingerprint rather
 than guessed at.
 
+**Extracted subtitle files** are removed again when you revert, since their
+content goes back inside the file - but only the ones that job created. If you
+already had a `.srt` there (from Bazarr, say) it is left alone, as is one you
+have edited since.
+
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
 tracks. And Matroska cover art comes back as a still-image video track rather
@@ -243,7 +248,7 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1046 tests across 50 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1075 tests across 52 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r tests/requirements-test.txt

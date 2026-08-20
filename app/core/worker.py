@@ -858,6 +858,8 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     # exit below either records it or deletes it.
     captured: list[CapturedRevertPoint] = []
 
+    will_create = _files_the_job_will_create(extract_actions)
+
     async def on_before_staging(produced_path: str) -> str | None:
         # Cleared BEFORE capturing, not after.
         #
@@ -885,6 +887,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             file_id       = file_dict["id"],
             job_id        = job_id,
             app_cfg       = app_cfg,
+            created_files = will_create,
         )
         if result:
             captured.append(result)
@@ -1308,6 +1311,23 @@ def _update_progress(job_id: int, percent: float, current_action: str) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def _files_the_job_will_create(extract_actions) -> list[str]:
+    """
+    The subtitle files this job is about to CREATE, as opposed to
+    overwrite.
+
+    Only knowable BEFORE the job runs. Afterwards every extraction target
+    exists and nothing distinguishes one this job wrote from one Bazarr
+    put there months ago — which matters because a revert re-embeds the
+    subtitles and removes these files, and removing a file that predated
+    the job would destroy something Remuxarr never made.
+    """
+    return [
+        action.external_path for action in extract_actions
+        if action.external_path and not os.path.exists(action.external_path)
+    ]
 
 
 def _record_revert_point(

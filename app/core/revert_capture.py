@@ -334,6 +334,42 @@ def _reannotate(
             stream["sidecar_index"] = new_sidecar_indices[id(stream)]
 
 
+def _record_created_files(manifest: dict, created_files: list[str]) -> None:
+    """
+    Note the files this job created alongside the media, so a revert can
+    take them away again.
+
+    Only subtitle extraction does this today: it writes .srt files next to
+    the media AND removes those subtitles from the mux, so re-embedding
+    them on revert without removing the files leaves the user with each
+    subtitle twice.
+
+    Each entry carries a fingerprint as well as a path. A user who has
+    since edited or replaced an extracted .srt clearly wants it, and a
+    revert should not take it — the same reasoning as the sentinel on the
+    media file itself, applied to a much smaller thing.
+
+    Merged rather than replaced. A later job that extracts to a path an
+    earlier job already created does not "create" it, so the earlier
+    record is the one that matters and must survive the extend.
+    """
+    existing = {entry["path"]: entry for entry in manifest.get("created_files", [])}
+
+    for path in created_files or []:
+        if path in existing:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            # The job said it would create this and did not, or something
+            # removed it again already. Nothing to clean up later.
+            continue
+        existing[path] = {"path": path, "size": stat.st_size,
+                          "mtime": stat.st_mtime}
+
+    manifest["created_files"] = list(existing.values())
+
+
 async def capture(
     *,
     input_path: str,
@@ -341,6 +377,7 @@ async def capture(
     file_id: int,
     job_id: int,
     app_cfg: dict,
+    created_files: list[str] | None = None,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
@@ -493,6 +530,7 @@ async def capture(
             raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
 
         _reannotate(matches, sources)
+        await _off_loop(_record_created_files, manifest, created_files)
 
         try:
             size = await _off_loop(os.path.getsize, sidecar)
