@@ -39,7 +39,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file
-from app.database.models import MediaFile, QueueItem
+from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class LanguageReviewKind:
     ignore_description: str
 
 
-def _rename_extracted_subtitle(flag, lang: str) -> str | None:
+def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     """
     Rename a flagged track's extracted .srt to carry the chosen language.
 
@@ -130,7 +130,63 @@ def _rename_extracted_subtitle(flag, lang: str) -> str | None:
 
     flag.extracted_path = new_path
     logging.getLogger(__name__).info("Renamed %s → %s", old_path, new_path)
+
+    if db is not None:
+        _repoint_revert_points(db, flag.file_id, old_path, new_path)
     return new_path
+
+
+def _repoint_revert_points(db, file_id: int, old_path: str, new_path: str) -> None:
+    """
+    Follow the rename in any revert point that recorded this file.
+
+    A revert removes the subtitle files its job created, matching them by
+    the path recorded at capture. Rename one without telling the revert
+    point and the match fails, so reverting re-embeds the subtitle and
+    leaves the sidecar behind — the user ends up with it twice, which is
+    the exact duplication that cleanup exists to prevent.
+
+    Only the path is updated. os.rename preserves size and mtime, so the
+    fingerprint recorded alongside it is still accurate and still protects
+    a file the user has since edited.
+
+    Never raises. The rename has already happened and the language choice
+    is already committed; a manifest that cannot be updated means one
+    stale sidecar after a revert, which is untidy rather than harmful.
+    """
+    try:
+        # Filtered by file_id for cost, not for safety: the path match
+        # below is what prevents another file's records being touched, and
+        # extracted subtitle paths are derived from the media filename so
+        # two files cannot record the same one. Without the filter this
+        # would load and JSON-parse every revert point in the bin on every
+        # language correction.
+        points = (
+            db.query(RevertPoint)
+            .filter(RevertPoint.file_id == file_id)
+            .all()
+        )
+        for point in points:
+            try:
+                manifest = json.loads(point.manifest)
+            except (TypeError, ValueError):
+                continue
+
+            entries = manifest.get("created_files") or []
+            hits = [e for e in entries if e.get("path") == old_path]
+            if not hits:
+                continue
+            for entry in hits:
+                entry["path"] = new_path
+            point.manifest = json.dumps(manifest)
+            logging.getLogger(__name__).info(
+                "Revert point %d now tracks the renamed subtitle", point.id,
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not update revert points for the renamed subtitle %s",
+            new_path,
+        )
 
 
 def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
@@ -255,7 +311,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # file keeps "und" in its name permanently, which is what
             # Plex reads. Renaming here is the only point at which the
             # correction can reach it.
-            renamed = _rename_extracted_subtitle(flag, lang)
+            renamed = _rename_extracted_subtitle(flag, lang, db)
             if renamed:
                 results.setdefault("renamed", []).append(renamed)
 

@@ -38,6 +38,19 @@ Verified by mutation, 9 applied, 9 killed:
   • OSError propagated instead of logged            → killed
   • Rename attempted for an embedded track          → killed
   • A rescan blanking the recorded path             → killed
+  • Revert points never updated after a rename      → killed
+  • Every created-file entry rewritten, not the
+    renamed one                                      → killed
+  • The fingerprint rewritten along with the path   → killed
+  • The updated manifest not written back           → killed
+
+Dropping the file_id filter is equivalent and recorded rather than
+tested: the path match already prevents another file's records being
+touched, and extracted subtitle paths derive from the media filename so
+two files cannot record the same one. The filter is there to avoid
+JSON-parsing every revert point in the bin on every correction. Verified
+by applying it alone (passes) and together with a loosened path match
+(fails).
 
 One further mutant, dropping the existence check on the source, is
 observably identical: os.rename raises FileNotFoundError and the same
@@ -52,16 +65,17 @@ import os
 class _Flag:
     """Stands in for a SubtitleLanguageFlag row."""
 
-    def __init__(self, extracted_path, detected_language="und"):
+    def __init__(self, extracted_path, detected_language="und", file_id=1):
         self.extracted_path = extracted_path
         self.detected_language = detected_language
         self.stream_index = 2
+        self.file_id = file_id
 
 
-def _rename(flag, lang):
+def _rename(flag, lang, db=None):
     from app.api.routes._language_review import _rename_extracted_subtitle
 
-    return _rename_extracted_subtitle(flag, lang)
+    return _rename_extracted_subtitle(flag, lang, db)
 
 
 # ── The ordinary case ────────────────────────────────────────────────────────
@@ -121,6 +135,158 @@ def test_the_flag_is_updated_to_the_new_path(tmp_path):
     _rename(flag, "eng")
 
     assert flag.extracted_path == str(tmp_path / "Show.eng.srt")
+
+
+# ── Keeping the revert point in step ─────────────────────────────────────────
+
+def _revert_point(db, file_id, created_path):
+    """A revert point whose job created `created_path`."""
+    import json
+
+    from app.database.models import RevertPoint
+
+    point = RevertPoint(
+        file_id=file_id, sidecar_path="/recycle/1_1.remuxarr_revert",
+        sidecar_size=1, original_path="/m/Show.mkv",
+        manifest=json.dumps({
+            "version": 2, "streams": [],
+            "created_files": [{"path": created_path, "size": 13, "mtime": 1.0}],
+        }),
+    )
+    db.add(point)
+    db.commit()
+    return point
+
+
+def test_a_rename_is_followed_into_the_revert_point(tmp_path):
+    """
+    Reported after the rename shipped. A revert removes the subtitle files
+    its job created, matching them by the path recorded at capture — so
+    renaming one without telling the revert point means the match fails,
+    the revert re-embeds the subtitle, and the sidecar stays. The user
+    ends up with it twice, which is the exact duplication that cleanup
+    exists to prevent.
+    """
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, RevertPoint
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    srt = tmp_path / "Show.und.srt"
+    srt.write_text("subtitle text")
+    _revert_point(db, 1, str(srt))
+
+    new_path = _rename(_Flag(str(srt)), "eng", db)
+    db.commit()
+
+    manifest = json.loads(db.query(RevertPoint).one().manifest)
+    assert [e["path"] for e in manifest["created_files"]] == [new_path]
+
+
+def test_the_fingerprint_survives_the_rename(tmp_path):
+    """
+    os.rename preserves size and mtime, so the recorded fingerprint is
+    still accurate — and still protects a file the user has edited since.
+    Rewriting it here would adopt whatever the file looks like now and
+    quietly disarm that check.
+    """
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, RevertPoint
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    srt = tmp_path / "Show.und.srt"
+    srt.write_text("subtitle text")
+    _revert_point(db, 1, str(srt))
+
+    _rename(_Flag(str(srt)), "eng", db)
+    db.commit()
+
+    entry = json.loads(db.query(RevertPoint).one().manifest)["created_files"][0]
+    assert entry["size"] == 13
+    assert entry["mtime"] == 1.0
+
+
+def test_only_the_renamed_entry_is_rewritten(tmp_path):
+    """
+    A job that extracts three subtitles records three created files, and
+    review corrects them one at a time. Rewriting every entry to the path
+    of whichever was just renamed would collapse all three onto one name —
+    so a revert would remove that one and leave the other two behind, with
+    the manifest claiming otherwise.
+    """
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, RevertPoint
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    renaming = tmp_path / "Show.und.srt"
+    renaming.write_text("subtitle text")
+    other = tmp_path / "Show.ger.srt"
+    other.write_text("german subtitle")
+
+    point = RevertPoint(
+        file_id=1, sidecar_path="/recycle/1_1.remuxarr_revert", sidecar_size=1,
+        original_path="/m/Show.mkv",
+        manifest=json.dumps({"version": 2, "streams": [], "created_files": [
+            {"path": str(renaming), "size": 13, "mtime": 1.0},
+            {"path": str(other), "size": 15, "mtime": 2.0},
+        ]}))
+    db.add(point)
+    db.commit()
+
+    new_path = _rename(_Flag(str(renaming)), "eng", db)
+    db.commit()
+
+    paths = [e["path"] for e in
+             json.loads(db.query(RevertPoint).one().manifest)["created_files"]]
+    assert paths == [new_path, str(other)]
+
+
+def test_another_files_revert_point_is_not_touched(tmp_path):
+    """
+    Filtered by file_id. Without that, correcting one subtitle rewrites
+    the created-file records of every revert point in the bin.
+    """
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, RevertPoint
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    srt = tmp_path / "Show.und.srt"
+    srt.write_text("subtitle text")
+    _revert_point(db, 1, str(srt))
+    other = _revert_point(db, 2, "/m/Other.und.srt")
+
+    _rename(_Flag(str(srt), file_id=1), "eng", db)
+    db.commit()
+
+    untouched = json.loads(db.get(RevertPoint, other.id).manifest)
+    assert untouched["created_files"][0]["path"] == "/m/Other.und.srt"
 
 
 # ── Surviving a rescan ───────────────────────────────────────────────────────
