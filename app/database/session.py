@@ -339,6 +339,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
         ("revert_points", "detached_at",
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
+        ("subtitle_language_flags", "extracted_path",
+         "ALTER TABLE subtitle_language_flags ADD COLUMN extracted_path TEXT"),
     ]
 
     inspector = inspect(engine)

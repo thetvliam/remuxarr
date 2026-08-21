@@ -489,11 +489,19 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
         if existing_sub_flag:
             existing_sub_flag.stream_index      = mismatch["stream_index"]
             existing_sub_flag.detected_language = mismatch["language"]
+            # Only overwritten when this scan actually knows a path.
+            # Re-scanning a file whose subtitle has already been extracted
+            # produces no extract action for it — the track is no longer
+            # in the mux — so a plain assignment would blank the one
+            # record of where the sidecar went.
+            if mismatch.get("extracted_path"):
+                existing_sub_flag.extracted_path = mismatch["extracted_path"]
         else:
             db.add(SubtitleLanguageFlag(
                 file_id=media_file.id,
                 stream_index=mismatch["stream_index"],
                 detected_language=mismatch["language"],
+                extracted_path=mismatch.get("extracted_path"),
             ))
     elif existing_sub_flag:
         db.delete(existing_sub_flag)

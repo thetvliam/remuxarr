@@ -70,6 +70,69 @@ class LanguageReviewKind:
     ignore_description: str
 
 
+def _rename_extracted_subtitle(flag, lang: str) -> str | None:
+    """
+    Rename a flagged track's extracted .srt to carry the chosen language.
+
+    Returns the new path when a file was renamed, or None.
+
+    Only ever acts on the path recorded when the file was extracted. The
+    name cannot be reconstructed at this point: extraction removes the
+    track from the mux, so the forced / SDH / dub suffixes that shaped the
+    filename are gone from the file along with it, and guessing would
+    rename someone else's subtitle.
+
+    Never raises. The language override has already been committed and is
+    the part that matters; a sidecar that will not rename is a wrong
+    filename, not a lost choice, and failing the request would leave the
+    user unsure whether their answer was recorded at all.
+    """
+    old_path = getattr(flag, "extracted_path", None)
+    if not old_path or not os.path.exists(old_path):
+        return None
+
+    directory, name = os.path.split(old_path)
+    # The language sits between the base name and any suffixes the
+    # extraction added, so only that one component is replaced — a file
+    # named Show.und.forced.srt has to become Show.eng.forced.srt and keep
+    # being the forced one.
+    parts = name.split(".")
+    try:
+        index = len(parts) - 1 - parts[::-1].index(flag.detected_language or "und")
+    except ValueError:
+        logging.getLogger(__name__).info(
+            "Not renaming %s: its name does not carry the language it was "
+            "extracted under", old_path,
+        )
+        return None
+
+    parts[index] = lang
+    new_path = os.path.join(directory, ".".join(parts))
+    if new_path == old_path:
+        return None
+
+    if os.path.exists(new_path):
+        # Something is already there. Overwriting it would destroy a
+        # subtitle nobody asked to replace — quite possibly one the user
+        # downloaded for exactly this language.
+        logging.getLogger(__name__).warning(
+            "Not renaming %s: %s already exists", old_path, new_path,
+        )
+        return None
+
+    try:
+        os.rename(old_path, new_path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "Could not rename %s to %s: %s", old_path, new_path, exc,
+        )
+        return None
+
+    flag.extracted_path = new_path
+    logging.getLogger(__name__).info("Renamed %s → %s", old_path, new_path)
+    return new_path
+
+
 def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
     """Construct the review router for one flag type."""
     router = APIRouter(prefix=kind.prefix, tags=[kind.tag])
@@ -183,6 +246,18 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # chosen a language — that's a more specific, more recent decision.
             setattr(media, kind.ignored_attr, False)
             db.commit()
+
+            # Rename the extracted sidecar, if this track has one.
+            #
+            # The override alone cannot fix it. An extracted subtitle has
+            # been taken OUT of the mux, so the reprocess below has no
+            # track left to re-extract under the corrected name — the
+            # file keeps "und" in its name permanently, which is what
+            # Plex reads. Renaming here is the only point at which the
+            # correction can reach it.
+            renamed = _rename_extracted_subtitle(flag, lang)
+            if renamed:
+                results.setdefault("renamed", []).append(renamed)
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the

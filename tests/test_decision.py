@@ -738,11 +738,19 @@ def test_a_kept_undefined_subtitle_is_offered_for_review(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    assert decision.subtitle_language_mismatch == {
-        "stream_index": 2, "language": "und"}
+    mismatch = decision.subtitle_language_mismatch
+    assert mismatch["stream_index"] == 2
+    assert mismatch["language"] == "und"
+
     extracts = [a for a in decision.actions
                 if a.action_type == "extract_subtitle"]
     assert len(extracts) == 1, "kept for review but never extracted"
+
+    # The sidecar path travels with the flag, because by review time it
+    # cannot be worked out: extraction takes the track out of the mux, so
+    # the forced / SDH / dub suffixes that shaped the filename are no
+    # longer readable from the file.
+    assert mismatch["extracted_path"] == extracts[0].external_path
 
 
 def test_an_extracted_undefined_subtitle_is_named_by_its_resolved_language(settings):

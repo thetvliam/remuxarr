@@ -86,7 +86,8 @@ def test_subtitle_language_review_reachable_with_extraction_on():
         "no subtitle language flag raised under default (extraction-on) "
         "settings — Subtitle Language Review is dormant"
     )
-    assert d.subtitle_language_mismatch == {"stream_index": 2, "language": "und"}
+    assert d.subtitle_language_mismatch["stream_index"] == 2
+    assert d.subtitle_language_mismatch["language"] == "und"
 
 
 def test_extraction_off_still_flags():
@@ -94,7 +95,8 @@ def test_extraction_off_still_flags():
     cfg = _prod(fix_undefined_language="always_ask",
                 extract_text_subtitles_to_srt=False)
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
-    assert d.subtitle_language_mismatch == {"stream_index": 2, "language": "und"}
+    assert d.subtitle_language_mismatch["stream_index"] == 2
+    assert d.subtitle_language_mismatch["language"] == "und"
 
 
 def test_dropped_subtitle_is_not_flagged():
@@ -258,7 +260,8 @@ def test_mode_all_undefined_flags_every_und_track():
     d = analyze_file(_fmt(), tracks, cfg)
     # stream 3 is defined, so only 2 qualifies — and it is flagged even though
     # a defined sibling exists, which is what distinguishes this mode.
-    assert d.subtitle_language_mismatch == {"stream_index": 2, "language": "und"}
+    assert d.subtitle_language_mismatch["stream_index"] == 2
+    assert d.subtitle_language_mismatch["language"] == "und"
 
 
 def test_mode_single_per_type_requires_exactly_one_und_track():
@@ -284,7 +287,8 @@ def test_mode_all_undefined_per_type_requires_all_und():
     all_und = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, forced=True)], cfg
     )
-    assert all_und.subtitle_language_mismatch == {"stream_index": 2, "language": "und"}
+    assert all_und.subtitle_language_mismatch["stream_index"] == 2
+    assert all_und.subtitle_language_mismatch["language"] == "und"
 
     mixed = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, lang="eng")], cfg

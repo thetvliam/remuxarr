@@ -1122,7 +1122,19 @@ def analyze_file(
     subtitle_language_mismatch = None
     if und_flagged_subtitle:
         si = min(und_flagged_subtitle)      # see the min() note above
-        subtitle_language_mismatch = {"stream_index": si, "language": "und"}
+        # Carry the sidecar path when there is one, so review can rename
+        # the file rather than guess at its name later. By then the track
+        # has been extracted OUT of the mux, so the suffixes that shaped
+        # the filename are no longer readable from the file.
+        extracted_path = next(
+            (a.external_path for a in actions
+             if a.action_type == "extract_subtitle" and a.stream_index == si),
+            None,
+        )
+        subtitle_language_mismatch = {
+            "stream_index": si, "language": "und",
+            "extracted_path": extracted_path,
+        }
 
     # A persisted override (audio_language_overrides / subtitle_language_
     # overrides) never expires or gets cleared once applied — it's meant

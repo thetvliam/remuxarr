@@ -427,6 +427,19 @@ class SubtitleLanguageFlag(Base):
     stream_index = Column(Integer, nullable=False)
     detected_language = Column(String, index=True)
 
+    # Where this track was extracted to, when it was.
+    #
+    # Recorded rather than derived, because by review time it cannot be
+    # derived: extraction removes the subtitle from the mux, so the Track
+    # rows refreshed after the job no longer describe it and the forced /
+    # SDH / dub suffixes that shaped the filename are gone with them.
+    # Reconstructing the name from the stream index alone would rename the
+    # wrong file on any release that used those suffixes.
+    #
+    # NULL when the subtitle stayed embedded — there is no external file
+    # to rename, and correcting the tag is enough on its own.
+    extracted_path = Column(String)
+
     created_at = Column(DateTime, default=utcnow)
 
     media_file = relationship("MediaFile", backref="subtitle_language_flag")
