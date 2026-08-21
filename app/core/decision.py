@@ -222,6 +222,56 @@ class ProcessingDecision:
 
 # ── Main function ──────────────────────────────────────────────────────────────
 
+def _resolve_undefined_subtitle_language(
+    sub_tracks: list[dict], settings: dict,
+) -> dict[int, str]:
+    """
+    Map undefined subtitle streams to the language they will be retagged
+    to, or {} when none will be.
+
+    Mirrors the qualifying rules of the undefined-language fix pass that
+    runs later, with one deliberate difference: it evaluates them over ALL
+    subtitle tracks rather than the surviving ones. It has to — this runs
+    before anything has been dropped, and "all surviving tracks are
+    undefined" cannot be asked yet. For subtitles the two readings only
+    diverge when some subtitles are dropped for a reason unrelated to
+    their tag, which is the case where "all of them are untagged" is the
+    more honest question anyway.
+
+    Only always_fix produces a mapping. always_leave means the user has
+    asked for the documented default, where an undefined subtitle is
+    dropped unless forced. always_ask means they want to be asked, and
+    answering on their behalf here is the opposite of that.
+    """
+    und_mode = settings.get("fix_undefined_language", "always_leave")
+    # Same backward-compat mapping as the fix pass: this setting used to
+    # be a plain boolean.
+    if und_mode is True:
+        und_mode = "always_fix"
+    elif und_mode is False:
+        und_mode = "always_leave"
+    if und_mode != "always_fix":
+        return {}
+
+    lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
+    lang_mode  = settings.get("undefined_language_mode", "all_undefined_per_type")
+
+    und = [t for t in sub_tracks if (t.get("language") or "und") == "und"]
+    if not und:
+        return {}
+
+    if lang_mode == "all_undefined":
+        qualifying = und
+    elif lang_mode == "all_undefined_per_type":
+        qualifying = und if len(und) == len(sub_tracks) else []
+    elif lang_mode == "single_per_type":
+        qualifying = und if len(und) == 1 else []
+    else:
+        qualifying = []
+
+    return {t["stream_index"]: lang_value for t in qualifying}
+
+
 def analyze_file(
     file_info: dict,
     tracks:    list[dict],
@@ -439,8 +489,30 @@ def analyze_file(
     # below (in short: a wrong guess costs a silent, ruined output on
     # the audio side and merely a lost optional extra on this one, so
     # each side defaults to whichever mistake is cheaper).
+    # Which undefined subtitle streams the undefined-language fix is going
+    # to retag, and to what. Resolved BEFORE the keep/drop decision.
+    #
+    # It used to be resolved after, and that made two settings contradict
+    # each other. fix_undefined_language = always_fix with
+    # undefined_language_value = eng says "an untagged track is English";
+    # the keep/drop pass then dropped every und subtitle for not being in
+    # the keep list, and the fix pass — which only ever looks at surviving
+    # tracks — found nothing left to retag. The same file came out with
+    # its und AUDIO retagged to English and its und SUBTITLE deleted,
+    # which no setting asked for.
+    #
+    # "What language is this track" has to be answered before "do I want
+    # this language". Only always_fix is resolved here: always_leave keeps
+    # the documented default of dropping und subtitles, and always_ask is
+    # a question rather than an answer.
+    und_sub_language = _resolve_undefined_subtitle_language(sub_tracks, settings)
+
+    def _effective_sub_lang(track: dict) -> str:
+        return (und_sub_language.get(track["stream_index"])
+                or track["language"] or "und")
+
     def _sub_is_kept(track: dict) -> bool:
-        lang      = track["language"] or "und"
+        lang      = _effective_sub_lang(track)
         is_forced = track.get("is_forced", False)
         return lang in keep_sub_langs or (keep_forced_subs and is_forced)
 
@@ -723,12 +795,22 @@ def analyze_file(
             continue
 
         if not _sub_is_kept(track):
+            # "not in keep list" is accurate for a tagged track and
+            # misleading for an untagged one: "und" is not a language that
+            # failed to match, it is the absence of one. Saying so, and
+            # naming the setting that decides what happens to it, turns a
+            # decision that reads as arbitrary into one the user can change.
+            why = (
+                "undefined language — set Fix Undefined Language to resolve these"
+                if (track["language"] or "und") == "und"
+                else "not in keep list"
+            )
             actions.append(Action(
                 action_type="drop_track",
                 description=(
                     f"Drop subtitle [{lang}] {track.get('codec', '?')}"
                     f"{' (forced)' if is_forced else ''} "
-                    f"(stream {track['stream_index']}) — not in keep list"
+                    f"(stream {track['stream_index']}) — {why}"
                 ),
                 track_type="subtitle",
                 stream_index=track["stream_index"],
