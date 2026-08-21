@@ -313,6 +313,7 @@ KNOWN_KEYS = {
     "keep_audio_languages",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
+    "keep_undefined_subtitles",
     "keep_default_audio",
     "prefer_mp4_container",
     "dry_run_mode",
@@ -524,6 +525,19 @@ SETTINGS_SCHEMA = [
         "label":       "Always Keep Forced Subtitles",
         "type":        "boolean",
         "description": "Retain forced subtitle tracks regardless of language.",
+    },
+    {
+        "key":         "keep_undefined_subtitles",
+        "group":       "Subtitles",
+        "label":       "Always Keep Undefined-Language Subtitles",
+        "type":        "boolean",
+        "description": "Retain subtitle tracks that carry no language tag, "
+                       "which would otherwise be removed for not matching the "
+                       "keep list. An untagged track is often the one you want "
+                       "- it is the absence of a label, not a foreign "
+                       "language. Combine with Fix Undefined Language Tags set "
+                       "to Always Ask to keep them and be prompted to name them "
+                       "in Subtitle Language Review.",
     },
     {
         "key":         "extract_text_subtitles_to_srt",

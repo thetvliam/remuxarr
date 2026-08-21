@@ -336,6 +336,7 @@ def analyze_file(
     keep_audio_langs    = set(settings.get("keep_audio_languages",   ["eng"]))
     keep_sub_langs      = set(settings.get("keep_subtitle_languages", ["eng"]))
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
+    keep_und_subs       = settings.get("keep_undefined_subtitles", False)
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
@@ -514,7 +515,20 @@ def analyze_file(
     def _sub_is_kept(track: dict) -> bool:
         lang      = _effective_sub_lang(track)
         is_forced = track.get("is_forced", False)
-        return lang in keep_sub_langs or (keep_forced_subs and is_forced)
+        # The undefined exemption sits alongside the forced one and works
+        # the same way: a reason to keep a track that the keep list cannot
+        # express, because the list is about languages and this track has
+        # not claimed one.
+        #
+        # Checked against the EFFECTIVE language, so it only applies to a
+        # track still undefined after resolution. Under always_fix an
+        # untagged track has already become a real language and is judged
+        # on that, which is the point of resolving first.
+        return (
+            lang in keep_sub_langs
+            or (keep_forced_subs and is_forced)
+            or (keep_und_subs and lang == "und")
+        )
 
     # ── Manual-review gate: non-convertible kept subtitles ───────────────────
     # When SRT extraction is enabled, any KEPT subtitle track using an
@@ -801,7 +815,8 @@ def analyze_file(
             # naming the setting that decides what happens to it, turns a
             # decision that reads as arbitrary into one the user can change.
             why = (
-                "undefined language — set Fix Undefined Language to resolve these"
+                "undefined language — enable Always Keep Undefined-Language "
+                "Subtitles, or set Fix Undefined Language Tags to resolve them"
                 if (track["language"] or "und") == "und"
                 else "not in keep list"
             )

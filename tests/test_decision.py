@@ -661,6 +661,90 @@ def test_single_per_type_resolves_a_lone_undefined_subtitle(settings):
     assert [a.action_type for a in subtitle_actions] == ["copy_track"]
 
 
+def test_undefined_subtitles_can_be_kept_without_being_resolved(settings):
+    """
+    A user may know they want untagged subtitles without knowing what
+    language to call them. The keep list cannot express that — it is about
+    languages, and this track has not claimed one — so the exemption sits
+    alongside the forced-subtitle one and works the same way.
+    """
+    settings["keep_undefined_subtitles"] = True
+    settings["fix_undefined_language"] = "always_leave"
+    settings["keep_subtitle_languages"] = ["eng"]
+    settings["extract_text_subtitles_to_srt"] = False
+
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language=None),
+    ]
+    decision = analyze_file(
+        make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
+        tracks, settings)
+
+    dropped = [a for a in decision.actions
+               if a.track_type == "subtitle" and a.action_type == "drop_track"]
+    assert not dropped
+
+
+def test_keeping_undefined_subtitles_does_not_keep_unwanted_languages(settings):
+    """
+    The exemption is for the absence of a tag, not a way round the keep
+    list. A subtitle tagged German is still dropped.
+    """
+    settings["keep_undefined_subtitles"] = True
+    settings["keep_subtitle_languages"] = ["eng"]
+    settings["keep_forced_subtitles"] = False
+    settings["extract_text_subtitles_to_srt"] = False
+
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language="ger"),
+    ]
+    decision = analyze_file(
+        make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
+        tracks, settings)
+
+    dropped = [a for a in decision.actions
+               if a.track_type == "subtitle" and a.action_type == "drop_track"]
+    assert len(dropped) == 1
+
+
+def test_a_kept_undefined_subtitle_is_offered_for_review(settings):
+    """
+    The combination this exists to serve: keep the track, extract it, and
+    ask what it is. Previously the track was dropped before anything could
+    be asked about it, so always_ask never produced a subtitle review row
+    at all — the question was moot because the subject was already gone.
+    """
+    settings["keep_undefined_subtitles"] = True
+    settings["fix_undefined_language"] = "always_ask"
+    settings["keep_subtitle_languages"] = ["eng"]
+    settings["extract_text_subtitles_to_srt"] = True
+
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip",
+                   language=None),
+    ]
+    decision = analyze_file(
+        make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
+        tracks, settings)
+
+    assert decision.subtitle_language_mismatch == {
+        "stream_index": 2, "language": "und"}
+    extracts = [a for a in decision.actions
+                if a.action_type == "extract_subtitle"]
+    assert len(extracts) == 1, "kept for review but never extracted"
+
+
 def test_an_extracted_undefined_subtitle_is_named_by_its_resolved_language(settings):
     """
     The sidecar carries the language in its filename permanently, and that

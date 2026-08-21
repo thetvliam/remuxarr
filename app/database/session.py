@@ -23,6 +23,14 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_subtitle_languages": ["eng"],
     # Always keep forced subtitle tracks regardless of language
     "keep_forced_subtitles": True,
+    # Whether a subtitle with no language tag survives the keep list.
+    #
+    # Off, because that is what the feature has always done and turning it
+    # on for everyone would silently start retaining tracks on every
+    # library. "und" is not a language that failed to match the keep list,
+    # it is the absence of one, and which of those two a user means is
+    # genuinely their call rather than something to guess.
+    "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
     # Remux to MP4 when all tracks are container-compatible
