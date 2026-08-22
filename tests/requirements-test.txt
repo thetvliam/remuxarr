@@ -1,3 +1,12 @@
 pytest>=8.0
 pytest-cov>=7.0
-httpx>=0.27          # required by starlette.testclient (TestClient)
+# starlette.testclient's HTTP backend. httpx2, not httpx: current Starlette
+# imports httpx2 first and only falls back to httpx with a deprecation
+# warning, and pytest.ini sets filterwarnings=default so that warning is
+# printed on every single run. A permanent warning is the expensive kind —
+# it trains the reader to skim the summary, which is where a real new
+# warning would appear. Nothing in app/ or tests/ imports either name
+# directly, so this is purely TestClient's dependency and the swap is
+# invisible to the tests themselves (verified: full suite green with httpx
+# uninstalled entirely).
+httpx2>=2.12

@@ -384,10 +384,27 @@ class _DummyLoop:
 
 @pytest.fixture(autouse=True)
 def _no_broadcast(monkeypatch):
+    """
+    Swallow the completion broadcast, but close the coroutine while doing it.
+
+    The real run_coroutine_threadsafe() consumes the coroutine it is handed —
+    it schedules it on the loop and it eventually runs. A stub that merely
+    drops the argument does not, so the coroutine is collected un-awaited and
+    Python emits "coroutine 'broadcast_json' was never awaited" from whatever
+    unrelated test happens to trigger the GC. pytest.ini sets
+    filterwarnings=default precisely so a genuinely new warning is visible;
+    a stub manufacturing a permanent one spends that signal for nothing.
+    The two per-test stubs further down this file already close theirs — this
+    autouse one was the outlier.
+    """
     import app.api.routes.revert as revert_routes
 
+    def _swallow(coro, *_a, **_k):
+        coro.close()
+        return None
+
     monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
-                        lambda *_a, **_k: None)
+                        _swallow)
 
 
 # ── Attach ───────────────────────────────────────────────────────────────────

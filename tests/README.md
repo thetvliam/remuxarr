@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1117 tests across 53 files, plus 175 frontend tests under
+1120 tests across 53 files, plus 175 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
 number below matters more than that one.
 
@@ -120,9 +120,16 @@ image doesn't carry test tooling it never uses day to day.
   autouse fixture wherever it exists, since a leaked entry can make a broken
   lookup look like it works.
 - `pytest.ini` sets `filterwarnings = default`, so new warnings are visible
-  rather than swallowed. Two pre-existing ones remain: Pydantic's class-based
-  `Config` in `app/config.py`, and Starlette's `httpx` deprecation in
-  `test_spa_fallback_security.py`.
+  rather than swallowed. **A clean run now prints no warnings at all**, which
+  is what makes that setting worth having: anything in the summary is new and
+  worth reading. The three that used to be permanent are gone rather than
+  filtered — Pydantic's class-based `Config` (now `SettingsConfigDict`),
+  Starlette's `httpx` deprecation (the test extra now installs `httpx2`,
+  which is the backend it asks for), and an un-awaited `broadcast_json`
+  coroutine that a test double in `test_revert_routes.py` was dropping on the
+  floor. Suppressing any of them in `pytest.ini` would have been the wrong
+  fix: two were real deprecations with a real end date, and the third was a
+  mock that did not behave like the function it replaced.
 - Frontend tests wait on rendered state rather than on a spy's call count. The
   counter increments when a request is *issued*; the state lands later, and
   waiting on the counter produces a race that passes locally and fails on
