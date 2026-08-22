@@ -174,7 +174,13 @@ class ProcessingDecision:
     # language" detection built (wasn't asked for, and subtitle tracks
     # don't have the same safety-net-survivor scenario audio does that
     # motivated that case for audio in the first place).
-    subtitle_language_mismatch: dict | None = None
+    # A LIST, unlike its audio counterpart above, because every undefined
+    # subtitle can be extracted to its own .srt and each one carries the
+    # language in its filename. Reporting a single representative track
+    # meant a file with three of them offered one for review and left the
+    # other two named "und" with no way to correct them — audio has no
+    # equivalent problem, because its tracks stay in the file.
+    subtitle_language_mismatches: list[dict] = field(default_factory=list)
 
     # True specifically when the SOURCE file was already MP4 and already
     # faststart-optimised (i.e. has_faststart was True when this decision
@@ -1119,9 +1125,12 @@ def analyze_file(
     # see subtitle_language_mismatch's own docstring on ProcessingDecision
     # for why there's no defined-but-wrong-language case here the way
     # there is for audio.
-    subtitle_language_mismatch = None
-    if und_flagged_subtitle:
-        si = min(und_flagged_subtitle)      # see the min() note above
+    # Every flagged track, sorted — not one representative. Sorted because
+    # these are sets, so iteration follows hash-table slot order, and the
+    # review page would otherwise list a file's tracks in an order that
+    # changed between scans.
+    subtitle_language_mismatches = []
+    for si in sorted(und_flagged_subtitle):
         # Carry the sidecar path when there is one, so review can rename
         # the file rather than guess at its name later. By then the track
         # has been extracted OUT of the mux, so the suffixes that shaped
@@ -1131,10 +1140,10 @@ def analyze_file(
              if a.action_type == "extract_subtitle" and a.stream_index == si),
             None,
         )
-        subtitle_language_mismatch = {
+        subtitle_language_mismatches.append({
             "stream_index": si, "language": "und",
             "extracted_path": extracted_path,
-        }
+        })
 
     # A persisted override (audio_language_overrides / subtitle_language_
     # overrides) never expires or gets cleared once applied — it's meant
@@ -1191,7 +1200,7 @@ def analyze_file(
             reason="File already meets all configured criteria — no changes needed.",
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
-            subtitle_language_mismatch=subtitle_language_mismatch,
+            subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
             faststart_enabled=add_faststart,
         )
@@ -1234,7 +1243,7 @@ def analyze_file(
         actions=actions,
         target_container=target_container,
         audio_language_mismatch=audio_language_mismatch,
-        subtitle_language_mismatch=subtitle_language_mismatch,
+        subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,
     )

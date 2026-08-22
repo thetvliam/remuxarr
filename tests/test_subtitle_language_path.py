@@ -82,12 +82,12 @@ def test_subtitle_language_review_reachable_with_extraction_on():
 
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
 
-    assert d.subtitle_language_mismatch is not None, (
+    assert d.subtitle_language_mismatches != [], (
         "no subtitle language flag raised under default (extraction-on) "
         "settings — Subtitle Language Review is dormant"
     )
-    assert d.subtitle_language_mismatch["stream_index"] == 2
-    assert d.subtitle_language_mismatch["language"] == "und"
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2]
+    assert d.subtitle_language_mismatches[0]["language"] == "und"
 
 
 def test_extraction_off_still_flags():
@@ -95,8 +95,8 @@ def test_extraction_off_still_flags():
     cfg = _prod(fix_undefined_language="always_ask",
                 extract_text_subtitles_to_srt=False)
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
-    assert d.subtitle_language_mismatch["stream_index"] == 2
-    assert d.subtitle_language_mismatch["language"] == "und"
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2]
+    assert d.subtitle_language_mismatches[0]["language"] == "und"
 
 
 def test_dropped_subtitle_is_not_flagged():
@@ -108,16 +108,23 @@ def test_dropped_subtitle_is_not_flagged():
     cfg = _prod(fix_undefined_language="always_ask")
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, lang="spa")], cfg)
     assert _action_for(d, 2).action_type == "drop_track"
-    assert d.subtitle_language_mismatch is None
+    assert d.subtitle_language_mismatches == []
 
 
 # ── Flagged index ────────────────────────────────────────────────────────────
 
-def test_und_flag_targets_lowest_stream_index():
+def test_every_und_subtitle_is_flagged_in_a_stable_order():
     """
-    The flagged index is the track Apply writes the corrected language to, so
-    it must be predictable. next(iter(set)) follows hash-table slot order:
-    next(iter({18, 2, 10})) is 18, not 2.
+    All of them, not one representative. Each undefined subtitle can be
+    extracted to its own .srt carrying the language in its filename, so
+    each needs its own answer — reporting one meant a file with three of
+    them had two left named "und" with no way to correct them.
+
+    Ascending, because these come from a set and set iteration follows
+    hash-table slot order: iterating {18, 2, 10} yields 18 first. The
+    review page would otherwise list a file's tracks in an order that
+    changed between scans, and the index is what Apply writes the
+    corrected language to.
     """
     cfg = _prod(fix_undefined_language="always_ask",
                 undefined_language_mode="all_undefined")
@@ -126,10 +133,7 @@ def test_und_flag_targets_lowest_stream_index():
 
     d = analyze_file(_fmt(), tracks, cfg)
 
-    assert d.subtitle_language_mismatch["stream_index"] == 2, (
-        f"flagged stream {d.subtitle_language_mismatch['stream_index']} rather "
-        "than the lowest (2) — the index came from set iteration order"
-    )
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2, 10, 18]
 
 
 def test_und_audio_flag_targets_lowest_stream_index():
@@ -186,8 +190,8 @@ def test_resolved_override_clears_the_flag():
     before = analyze_file(_fmt(), tracks, cfg)
     after = analyze_file(_fmt(), tracks, cfg, subtitle_language_overrides={2: "eng"})
 
-    assert before.subtitle_language_mismatch is not None
-    assert after.subtitle_language_mismatch is None
+    assert before.subtitle_language_mismatches != []
+    assert after.subtitle_language_mismatches == []
     assert _action_for(after, 2).external_path.endswith(".en.forced.srt")
 
 
@@ -230,7 +234,7 @@ def test_always_fix_renames_the_sidecar():
     action = _action_for(d, 2)
     assert action.external_path.endswith("Movie.en.forced.srt"), action.external_path
     assert action.language == "eng"
-    assert d.subtitle_language_mismatch is None, "always_fix should not also flag"
+    assert d.subtitle_language_mismatches == [], "always_fix should not also flag"
 
 
 def test_always_fix_rename_does_not_collide_with_itself():
@@ -247,7 +251,7 @@ def test_always_fix_rename_does_not_collide_with_itself():
 def test_always_leave_touches_nothing():
     cfg = _prod(fix_undefined_language="always_leave")
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
-    assert d.subtitle_language_mismatch is None
+    assert d.subtitle_language_mismatches == []
     assert _action_for(d, 2).external_path.endswith("Movie.und.forced.srt")
 
 
@@ -260,8 +264,8 @@ def test_mode_all_undefined_flags_every_und_track():
     d = analyze_file(_fmt(), tracks, cfg)
     # stream 3 is defined, so only 2 qualifies — and it is flagged even though
     # a defined sibling exists, which is what distinguishes this mode.
-    assert d.subtitle_language_mismatch["stream_index"] == 2
-    assert d.subtitle_language_mismatch["language"] == "und"
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2]
+    assert d.subtitle_language_mismatches[0]["language"] == "und"
 
 
 def test_mode_single_per_type_requires_exactly_one_und_track():
@@ -269,12 +273,12 @@ def test_mode_single_per_type_requires_exactly_one_und_track():
                 undefined_language_mode="single_per_type")
 
     one = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
-    assert one.subtitle_language_mismatch is not None
+    assert one.subtitle_language_mismatches != []
 
     two = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, forced=True)], cfg
     )
-    assert two.subtitle_language_mismatch is None, (
+    assert two.subtitle_language_mismatches == [], (
         "single_per_type flagged a file with two und subtitle tracks"
     )
 
@@ -287,13 +291,13 @@ def test_mode_all_undefined_per_type_requires_all_und():
     all_und = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, forced=True)], cfg
     )
-    assert all_und.subtitle_language_mismatch["stream_index"] == 2
-    assert all_und.subtitle_language_mismatch["language"] == "und"
+    assert [m["stream_index"] for m in all_und.subtitle_language_mismatches] == [2, 3]
+    assert all_und.subtitle_language_mismatches[0]["language"] == "und"
 
     mixed = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, lang="eng")], cfg
     )
-    assert mixed.subtitle_language_mismatch is None
+    assert mixed.subtitle_language_mismatches == []
 
 
 # ── Config alignment guard ───────────────────────────────────────────────────

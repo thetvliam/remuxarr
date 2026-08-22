@@ -738,7 +738,8 @@ def test_a_kept_undefined_subtitle_is_offered_for_review(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    mismatch = decision.subtitle_language_mismatch
+    assert len(decision.subtitle_language_mismatches) == 1
+    mismatch = decision.subtitle_language_mismatches[0]
     assert mismatch["stream_index"] == 2
     assert mismatch["language"] == "und"
 

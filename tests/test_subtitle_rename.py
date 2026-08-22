@@ -137,6 +137,131 @@ def test_the_flag_is_updated_to_the_new_path(tmp_path):
     assert flag.extracted_path == str(tmp_path / "Show.eng.srt")
 
 
+# ── One row per track ────────────────────────────────────────────────────────
+
+def _flags_db():
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base, MediaFile
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    media = MediaFile(path="/m/Show.mkv", filename="Show.mkv", directory="/m",
+                      size=1, mtime=1.0)
+    db.add(media)
+    db.commit()
+    return db, media
+
+
+def _upsert(db, media, mismatches):
+    from types import SimpleNamespace
+
+    from app.core.scanner import _upsert_language_flags
+
+    _upsert_language_flags(db, media, SimpleNamespace(
+        audio_language_mismatch=None,
+        subtitle_language_mismatches=mismatches))
+    db.commit()
+
+
+def test_every_flagged_track_gets_its_own_row():
+    """
+    Reported from a real library: a file with three undefined subtitles
+    showed one in review. Extraction had written three .srt files, so the
+    other two kept "und" in their names with nothing offering to correct
+    them.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, media = _flags_db()
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und",
+         "extracted_path": "/m/Show.und.forced.srt"},
+        {"stream_index": 3, "language": "und",
+         "extracted_path": "/m/Show.und.dub.srt"},
+        {"stream_index": 4, "language": "und",
+         "extracted_path": "/m/Show.und.sdh.srt"},
+    ])
+
+    flags = db.query(SubtitleLanguageFlag).order_by(
+        SubtitleLanguageFlag.stream_index).all()
+    assert [f.stream_index for f in flags] == [2, 3, 4]
+    assert [f.extracted_path for f in flags] == [
+        "/m/Show.und.forced.srt", "/m/Show.und.dub.srt", "/m/Show.und.sdh.srt"]
+
+
+def test_rows_are_matched_by_track_not_replaced_wholesale():
+    """
+    A rescan updates each track's own row. Matching by file alone would
+    rewrite one row three times and leave two behind, or delete and
+    recreate them and lose the recorded sidecar paths.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, media = _flags_db()
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und",
+         "extracted_path": "/m/Show.und.forced.srt"},
+        {"stream_index": 3, "language": "und",
+         "extracted_path": "/m/Show.und.dub.srt"},
+    ])
+    first_ids = {f.stream_index: f.id
+                 for f in db.query(SubtitleLanguageFlag).all()}
+
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und"},
+        {"stream_index": 3, "language": "und"},
+    ])
+
+    flags = {f.stream_index: f for f in db.query(SubtitleLanguageFlag).all()}
+    assert {si: f.id for si, f in flags.items()} == first_ids
+    assert flags[2].extracted_path == "/m/Show.und.forced.srt"
+    assert flags[3].extracted_path == "/m/Show.und.dub.srt"
+
+
+def test_a_track_that_is_no_longer_flagged_loses_its_row():
+    """
+    Answering one track's language resolves it, and its row should go
+    while the others stay. Clearing all of them would take the remaining
+    questions away with the answer.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, media = _flags_db()
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und"},
+        {"stream_index": 3, "language": "und"},
+    ])
+
+    _upsert(db, media, [{"stream_index": 3, "language": "und"}])
+
+    assert [f.stream_index for f in db.query(SubtitleLanguageFlag).all()] == [3]
+
+
+def test_ignoring_a_file_clears_all_of_its_rows():
+    """
+    Ignore is a per-file decision — "stop asking me about this one" — so
+    it has to silence every track, not the first.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, media = _flags_db()
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und"},
+        {"stream_index": 3, "language": "und"},
+    ])
+
+    media.subtitle_language_ignored = True
+    _upsert(db, media, [
+        {"stream_index": 2, "language": "und"},
+        {"stream_index": 3, "language": "und"},
+    ])
+
+    assert db.query(SubtitleLanguageFlag).count() == 0
+
+
 # ── Keeping the revert point in step ─────────────────────────────────────────
 
 def _revert_point(db, file_id, created_path):
@@ -322,14 +447,14 @@ def test_a_rescan_does_not_blank_the_recorded_path(tmp_path, monkeypatch):
     # The scan that extracted it knows the path.
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=None,
-        subtitle_language_mismatch={"stream_index": 2, "language": "und",
-                                    "extracted_path": "/m/Show.und.srt"}))
+        subtitle_language_mismatches=[{"stream_index": 2, "language": "und",
+                                       "extracted_path": "/m/Show.und.srt"}]))
     db.commit()
 
     # A later scan: the track is gone from the mux, so no path this time.
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=None,
-        subtitle_language_mismatch={"stream_index": 2, "language": "und"}))
+        subtitle_language_mismatches=[{"stream_index": 2, "language": "und"}]))
     db.commit()
 
     flag = db.query(SubtitleLanguageFlag).one()
