@@ -122,6 +122,35 @@ def test_the_readme_describes_reverting():
     assert "Settings → Recycle Bin" in readme
 
 
+def test_readme_images_use_absolute_urls():
+    """
+    Relative paths work on GitHub and break everywhere else.
+
+    The README is also the Docker Hub description, and Docker Hub renders
+    it with no repository context — a relative src resolves against
+    docker.com and 404s. The failure is invisible from inside the repo,
+    because the same markup looks correct on GitHub, so nothing catches it
+    until someone looks at the other page.
+
+    Applies to href as much as src: a relative link on a screenshot is
+    just as dead there.
+    """
+    import re
+
+    readme = _read("README.md")
+    table = readme[readme.index("<table>"):readme.index("</table>")]
+
+    relative = [
+        m.group(2) for m in re.finditer(r'(src|href)="([^"]+)"', table)
+        if not m.group(2).startswith(("http://", "https://"))
+    ]
+
+    assert not relative, (
+        f"relative URLs in the screenshot table: {relative} — these break "
+        f"on Docker Hub, which renders this README without repo context"
+    )
+
+
 def test_the_readme_records_the_known_limitations():
     """
     Both are cases where a revert produces a valid file that differs from
