@@ -515,8 +515,26 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
                 extracted_path=mismatch.get("extracted_path"),
             ))
 
-    # Whatever is left in the map was flagged before and is not any more.
+    # Whatever is left in the map was flagged before and is not any more —
+    # except when its subtitle was extracted and the .srt is still there.
+    #
+    # That exception is what makes the question survive the job that
+    # raises it. Extraction removes the track from the mux, so the
+    # re-analysis _finish_job runs on the OUTPUT sees no subtitle tracks,
+    # reports no mismatches, and used to delete every row — the review
+    # page emptied itself the moment the work finished, and three files
+    # named "und" were left with nothing offering to correct them.
+    #
+    # "No such track any more" does not mean "no longer a problem" here.
+    # It means the tag can no longer be fixed in the file and only the
+    # filename is still correctable, which is exactly when the question
+    # matters most. The row goes when it is answered (apply deletes it),
+    # when the file is ignored, or when the sidecar itself is gone.
     for flag in existing_sub_flags.values():
+        if (not media_file.subtitle_language_ignored
+                and flag.extracted_path
+                and os.path.exists(flag.extracted_path)):
+            continue
         db.delete(flag)
 
 

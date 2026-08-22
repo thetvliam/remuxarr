@@ -262,6 +262,92 @@ def test_ignoring_a_file_clears_all_of_its_rows():
     assert db.query(SubtitleLanguageFlag).count() == 0
 
 
+# ── Surviving the job that raises it ─────────────────────────────────────────
+
+def test_a_row_survives_the_job_while_its_sidecar_exists(tmp_path):
+    """
+    The failure that made every other part of this unreachable.
+
+    Extraction removes the track from the mux, so the re-analysis
+    _finish_job runs on the OUTPUT sees no subtitle tracks and reports no
+    mismatches. Every row was then deleted — the review page emptied
+    itself the moment the work finished, and three files named "und" were
+    left with nothing offering to correct them.
+
+    "No such track any more" does not mean "no longer a problem" here. It
+    means the tag can no longer be fixed in the file and only the filename
+    is still correctable, which is when the question matters most.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    srt = tmp_path / "Show.und.forced.srt"
+    srt.write_text("extracted")
+
+    db, media = _flags_db()
+    _upsert(db, media, [{"stream_index": 2, "language": "und",
+                         "extracted_path": str(srt)}])
+
+    # The post-job re-analysis: no subtitle tracks left in the file.
+    _upsert(db, media, [])
+
+    assert db.query(SubtitleLanguageFlag).count() == 1
+
+
+def test_a_row_goes_once_its_sidecar_is_gone(tmp_path):
+    """
+    The other half. Nothing is left to correct once the file has been
+    deleted, so the question should stop being asked rather than sit there
+    permanently unanswerable.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    srt = tmp_path / "Show.und.forced.srt"
+    srt.write_text("extracted")
+
+    db, media = _flags_db()
+    _upsert(db, media, [{"stream_index": 2, "language": "und",
+                         "extracted_path": str(srt)}])
+    srt.unlink()
+    _upsert(db, media, [])
+
+    assert db.query(SubtitleLanguageFlag).count() == 0
+
+
+def test_an_embedded_track_that_is_resolved_still_loses_its_row(tmp_path):
+    """
+    A subtitle still in the mux has no sidecar, so the ordinary rule
+    applies: no longer flagged means no longer asked. The exception is
+    only for tracks that have left the file.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, media = _flags_db()
+    _upsert(db, media, [{"stream_index": 2, "language": "und"}])
+    _upsert(db, media, [])
+
+    assert db.query(SubtitleLanguageFlag).count() == 0
+
+
+def test_ignoring_a_file_clears_rows_even_with_sidecars(tmp_path):
+    """
+    Ignore has to win over the survival rule, or a file whose subtitles
+    were extracted could never be silenced.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    srt = tmp_path / "Show.und.forced.srt"
+    srt.write_text("extracted")
+
+    db, media = _flags_db()
+    _upsert(db, media, [{"stream_index": 2, "language": "und",
+                         "extracted_path": str(srt)}])
+
+    media.subtitle_language_ignored = True
+    _upsert(db, media, [])
+
+    assert db.query(SubtitleLanguageFlag).count() == 0
+
+
 # ── Keeping the revert point in step ─────────────────────────────────────────
 
 def _revert_point(db, file_id, created_path):

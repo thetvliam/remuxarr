@@ -46,7 +46,11 @@ logger = logging.getLogger(__name__)
 
 
 class ApplyRequest(BaseModel):
-    file_ids: list[int]
+    # Flags, not files. A file can have several undefined subtitle tracks
+    # and each needs its own answer, so a file id can no longer say which
+    # one is meant. Audio has one flag per file and is unaffected in
+    # practice, but shares this router.
+    flag_ids: list[int]
     target_language: str
 
 
@@ -236,7 +240,10 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         total = query.count()
         flags = (
             query
-            .order_by(MediaFile.filename.asc())
+            # By file first, then by track, so a file's rows arrive
+            # together and in a stable order — the page groups them, and
+            # they would otherwise be split or reshuffled between loads.
+            .order_by(MediaFile.filename.asc(), Flag.stream_index.asc())
             .offset(offset)
             .limit(limit)
             .all()
@@ -254,6 +261,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 "path":              media.path,
                 "stream_index":      flag.stream_index,
                 "detected_language": flag.detected_language,
+                # Present when this track was extracted. The UI shows it
+                # because it is the thing the answer will rename, and
+                # "which of these three is the forced one" is otherwise
+                # unanswerable from a stream index.
+                "extracted_path":    getattr(flag, "extracted_path", None),
             })
 
         return {"total": total, "items": items, "languages": languages}
@@ -268,22 +280,21 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         dry_run = app_cfg.get("dry_run_mode", False)
         results = {"applied": 0, "errors": []}
 
-        for file_id in body.file_ids:
+        for flag_id in body.flag_ids:
+            flag = db.get(Flag, flag_id)
+            if not flag:
+                # Already answered, or answered by another client. Not an
+                # error worth surfacing: the row is gone because the
+                # question it asked has been settled.
+                continue
+
+            file_id = flag.file_id
             media = db.get(MediaFile, file_id)
             if not media:
                 results["errors"].append({"file_id": file_id, "error": "File not found"})
                 continue
             if not os.path.exists(media.path):
                 results["errors"].append({"file_id": file_id, "error": "File no longer exists on disk"})
-                continue
-
-            flag = (
-                db.query(Flag)
-                .filter(Flag.file_id == file_id)
-                .first()
-            )
-            if not flag:
-                results["errors"].append({"file_id": file_id, "error": "No flag found for this file"})
                 continue
 
             # Persist the override and commit it on its own, separately from
@@ -314,6 +325,14 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             renamed = _rename_extracted_subtitle(flag, lang, db)
             if renamed:
                 results.setdefault("renamed", []).append(renamed)
+
+            # The question has been answered, so stop asking it. Left in
+            # place the row would survive every later scan — rows whose
+            # sidecar still exists are deliberately kept now, because the
+            # track itself is gone from the file and only the filename is
+            # still correctable.
+            db.delete(flag)
+            db.commit()
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the
