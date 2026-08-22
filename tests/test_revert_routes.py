@@ -385,26 +385,21 @@ class _DummyLoop:
 @pytest.fixture(autouse=True)
 def _no_broadcast(monkeypatch):
     """
-    Swallow the completion broadcast, but close the coroutine while doing it.
+    Swallow the completion broadcast.
 
-    The real run_coroutine_threadsafe() consumes the coroutine it is handed —
-    it schedules it on the loop and it eventually runs. A stub that merely
-    drops the argument does not, so the coroutine is collected un-awaited and
-    Python emits "coroutine 'broadcast_json' was never awaited" from whatever
-    unrelated test happens to trigger the GC. pytest.ini sets
-    filterwarnings=default precisely so a genuinely new warning is visible;
-    a stub manufacturing a permanent one spends that signal for nothing.
-    The two per-test stubs further down this file already close theirs — this
-    autouse one was the outlier.
+    Patches broadcast_threadsafe, the helper revert.py actually calls, and
+    not asyncio.run_coroutine_threadsafe underneath it. Patching the inner
+    call is what this used to do, and it left the stub responsible for
+    closing a coroutine it had been handed — a responsibility a stub kept
+    forgetting, and one it could not honour at all once a real worker
+    thread outlived the test and reached the unpatched original after
+    teardown. The helper's signature takes a plain dict, so there is no
+    coroutine here to leak.
     """
     import app.api.routes.revert as revert_routes
 
-    def _swallow(coro, *_a, **_k):
-        coro.close()
-        return None
-
-    monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
-                        _swallow)
+    monkeypatch.setattr(revert_routes, "broadcast_threadsafe",
+                        lambda _payload, _loop: None)
 
 
 # ── Attach ───────────────────────────────────────────────────────────────────
@@ -497,10 +492,12 @@ def test_the_completion_broadcast_uses_the_key_the_frontend_reads(client,
     _media, point, _sidecar = _seed(db, recycle)
 
     sent = []
-    monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
-                        lambda coro, _loop: (coro.close(), sent.append("sent")))
-    monkeypatch.setattr(revert_routes.ws_manager, "broadcast_json",
-                        lambda payload: _capture(sent, payload))
+    # One stub at the boundary revert.py calls, with the same signature it
+    # has. The previous pair — one on run_coroutine_threadsafe, one on
+    # broadcast_json returning a live coroutine — had to hand-close that
+    # coroutine to avoid leaking it.
+    monkeypatch.setattr(revert_routes, "broadcast_threadsafe",
+                        lambda payload, _loop: sent.append(payload))
     # _run_revert wraps this in asyncio.run(), so the stub has to be a
     # coroutine function — returning the outcome directly raises, and the
     # test then passes or fails on the exception handler instead.
@@ -520,16 +517,6 @@ def test_the_completion_broadcast_uses_the_key_the_frontend_reads(client,
     assert payload["restored_path"] == "/m/Show.mkv"
 
 
-def _capture(sink, payload):
-    """Stand-in for broadcast_json that records rather than sends."""
-    sink.append(payload)
-
-    async def _noop():
-        return None
-
-    return _noop()
-
-
 def test_a_failed_revert_broadcasts_the_reason(client, monkeypatch):
     import app.api.routes.revert as revert_routes
     from app.core.revert_restore import RestoreOutcome
@@ -538,10 +525,8 @@ def test_a_failed_revert_broadcasts_the_reason(client, monkeypatch):
     _media, point, _sidecar = _seed(db, recycle)
 
     sent = []
-    monkeypatch.setattr(revert_routes.asyncio, "run_coroutine_threadsafe",
-                        lambda coro, _loop: (coro.close(), None))
-    monkeypatch.setattr(revert_routes.ws_manager, "broadcast_json",
-                        lambda payload: _capture(sent, payload))
+    monkeypatch.setattr(revert_routes, "broadcast_threadsafe",
+                        lambda payload, _loop: sent.append(payload))
     async def fake(_pid, **_k):
         return RestoreOutcome(success=False, error="Show.mkv has changed size")
 

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.ws_manager import ws_manager
+from app.api.ws_manager import ws_manager, broadcast_threadsafe
 from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files, find_orphaned_media_files, remove_orphaned_media_files
 from app.core.worker import pause_worker
 from app.database.session import SessionLocal, get_app_settings, get_db
@@ -352,12 +352,10 @@ def _run_scan(
 
     def _broadcast(data: dict) -> None:
         """Fire-and-forget WebSocket broadcast from a sync thread."""
-        try:
-            asyncio.run_coroutine_threadsafe(
-                ws_manager.broadcast_json(data), loop
-            )
-        except Exception:
-            pass   # Never let a broadcast failure abort the scan
+        # Shared with revert.py. The local version caught the scheduling
+        # error but left the coroutine un-awaited, which is the half of the
+        # problem that shows up somewhere else entirely, at GC time.
+        broadcast_threadsafe(data, loop)
 
     _broadcast({"event": "scan_started"})
 
