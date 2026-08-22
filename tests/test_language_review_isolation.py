@@ -125,13 +125,64 @@ def test_apply_writes_only_its_own_override_column(db, flagged_file, monkeypatch
     monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
 
     from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag
 
-    apply_language(ApplyRequest(file_ids=[flagged_file.id], target_language="eng"), db)
+    # Apply targets a FLAG now, not a file: a file can have several
+    # undefined subtitle tracks and each needs its own answer, so a file
+    # id can no longer say which one is meant. Audio has one flag per
+    # file, so this is the same row either way.
+    flag = (db.query(AudioLanguageFlag)
+              .filter(AudioLanguageFlag.file_id == flagged_file.id).one())
+    apply_language(ApplyRequest(flag_ids=[flag.id], target_language="eng"), db)
     db.refresh(flagged_file)
 
     assert flagged_file.audio_language_overrides, "audio override not written"
     assert not flagged_file.subtitle_language_overrides, \
         "audio apply wrote the SUBTITLE override column"
+
+
+def test_applying_consumes_only_the_flag_it_answered(db, monkeypatch, tmp_path):
+    """
+    A file with three undefined subtitles raises three rows, and answering
+    one must leave the other two asking. The row also has to GO once
+    answered — rows whose sidecar still exists are deliberately kept
+    across a rescan now, so a row left in place would survive every later
+    scan and keep asking a question the user has already settled.
+    """
+    import app.api.routes._language_review as lr
+    from app.api.routes.subtitle_language import apply_language
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+
+    monkeypatch.setattr(lr, "get_app_settings", lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+
+    media_file = tmp_path / "Show.mkv"
+    media_file.write_bytes(b"video")
+    media = MediaFile(path=str(media_file), filename="Show.mkv",
+                      directory=str(tmp_path), size=5, mtime=1.0)
+    db.add(media)
+    db.commit()
+
+    for stream_index, suffix in ((2, "forced"), (3, "dub"), (4, "sdh")):
+        srt = tmp_path / f"Show.und.{suffix}.srt"
+        srt.write_text("subtitle")
+        db.add(SubtitleLanguageFlag(
+            file_id=media.id, stream_index=stream_index,
+            detected_language="und", extracted_path=str(srt)))
+    db.commit()
+
+    answered = (db.query(SubtitleLanguageFlag)
+                  .filter(SubtitleLanguageFlag.stream_index == 3).one())
+    apply_language(ApplyRequest(flag_ids=[answered.id], target_language="eng"), db)
+
+    remaining = sorted(f.stream_index for f in
+                       db.query(SubtitleLanguageFlag).all())
+    assert remaining == [2, 4], (
+        "answering one track either took the others' questions with it or "
+        "left its own behind"
+    )
+    assert (tmp_path / "Show.eng.dub.srt").exists()
+    assert (tmp_path / "Show.und.forced.srt").exists()
 
 
 def test_blank_target_language_is_rejected(db):
@@ -140,5 +191,5 @@ def test_blank_target_language_is_rejected(db):
     from app.api.routes.subtitle_language import apply_language
 
     with pytest.raises(HTTPException) as exc:
-        apply_language(ApplyRequest(file_ids=[1], target_language="   "), db)
+        apply_language(ApplyRequest(flag_ids=[1], target_language="   "), db)
     assert exc.value.status_code == 400

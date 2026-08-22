@@ -35,8 +35,8 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
   <tr>
     <td width="33%">
-      <a href="images_and_demo/Screenshot_dashboard.png">
-        <img src="images_and_demo/Screenshot_dashboard.png" width="100%" alt="Dashboard showing a file mid-process with live progress, above the pending queue">
+      <a href="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_dashboard.png">
+        <img src="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_dashboard.png" width="100%" alt="Dashboard showing a file mid-process with live progress, above the pending queue">
       </a>
     </td>
     <td width="67%">
@@ -50,8 +50,8 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
   <tr>
     <td width="33%">
-      <a href="images_and_demo/Screenshot_detail_panel.png">
-        <img src="images_and_demo/Screenshot_detail_panel.png" width="100%" alt="Detail panel listing every track in a file and the action planned for each">
+      <a href="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_detail_panel.png">
+        <img src="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_detail_panel.png" width="100%" alt="Detail panel listing every track in a file and the action planned for each">
       </a>
     </td>
     <td width="67%">
@@ -64,8 +64,8 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
   <tr>
     <td width="33%">
-      <a href="images_and_demo/Screenshot_review.png">
-        <img src="images_and_demo/Screenshot_review.png" width="100%" alt="Review page asking whether to remove image-based subtitles from a file">
+      <a href="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_review.png">
+        <img src="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_review.png" width="100%" alt="Review page asking whether to remove image-based subtitles from a file">
       </a>
     </td>
     <td width="67%">
@@ -78,8 +78,8 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
   <tr>
     <td width="33%">
-      <a href="images_and_demo/Screenshot_forge.png">
-        <img src="images_and_demo/Screenshot_forge.png" width="100%" alt="AC3 Forge listing AAC 5.1 candidate files with convert and undo actions">
+      <a href="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_forge.png">
+        <img src="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_forge.png" width="100%" alt="AC3 Forge listing AAC 5.1 candidate files with convert and undo actions">
       </a>
     </td>
     <td width="67%">
@@ -92,8 +92,8 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
   <tr>
     <td width="33%">
-      <a href="images_and_demo/Screenshot_settings.png">
-        <img src="images_and_demo/Screenshot_settings.png" width="100%" alt="Settings page showing the language and subtitle rules for the library">
+      <a href="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_settings.png">
+        <img src="https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_settings.png" width="100%" alt="Settings page showing the language and subtitle rules for the library">
       </a>
     </td>
     <td width="67%">
@@ -120,7 +120,7 @@ Remuxarr only ever touches what's cheap and lossless to touch:
 
 - **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
-- **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken).
+- **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
 
 Nothing is ever re-encoded - not video, not audio, under any setting, for any reason. That's not a preference here - it's the entire point of the project. (If you specifically need AAC 5.1 → AC3 for an older AV receiver's bitstream passthrough, that's a deliberate, reviewable, undoable operation in AC3 Forge - never something the main pipeline does automatically to every matching file.)
 
@@ -324,14 +324,14 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1076 tests across 52 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1127 tests across 54 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r tests/requirements-test.txt
 pytest
 ```
 
-The frontend has its own suite - 166 tests covering the app's central state
+The frontend has its own suite - 175 tests covering the app's central state
 hook (routing, toasts, history invalidation), every mutating user action,
 paginated and history data fetching, the settings save path, and integer input
 handling:

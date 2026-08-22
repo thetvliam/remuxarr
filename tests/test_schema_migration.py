@@ -299,6 +299,129 @@ def test_the_added_column_gets_its_index_on_every_path(tmp_path, monkeypatch):
     )
 
 
+# ── One subtitle flag per track ──────────────────────────────────────────────
+
+LEGACY_SUBTITLE_FLAGS = """
+CREATE TABLE subtitle_language_flags (
+    id INTEGER NOT NULL PRIMARY KEY,
+    file_id INTEGER NOT NULL,
+    stream_index INTEGER NOT NULL,
+    detected_language VARCHAR,
+    created_at DATETIME,
+    UNIQUE (file_id),
+    FOREIGN KEY(file_id) REFERENCES media_files (id) ON DELETE CASCADE
+)
+"""
+
+
+@pytest.fixture
+def legacy_flags(tmp_path, monkeypatch):
+    """A database whose subtitle flags are still one-per-file."""
+    path = tmp_path / "remuxarr.db"
+    conn = sqlite3.connect(path)
+    conn.execute(LEGACY_SUBTITLE_FLAGS)
+    conn.execute(
+        "INSERT INTO subtitle_language_flags "
+        "(file_id, stream_index, detected_language) VALUES (7, 2, 'und')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+    yield path
+    _restore_the_engine(session_mod)
+
+
+def test_a_second_track_of_the_same_file_can_be_flagged(legacy_flags):
+    """
+    The constraint that made the bug structural. One row per file meant a
+    file with three undefined subtitles could only ever offer one of them
+    for review, while extraction wrote a separate .srt for each — so the
+    other two kept "und" in their filenames with no way to correct them.
+    """
+    conn = sqlite3.connect(legacy_flags)
+    try:
+        conn.execute(
+            "INSERT INTO subtitle_language_flags "
+            "(file_id, stream_index, detected_language) VALUES (7, 3, 'und')")
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM subtitle_language_flags "
+            "WHERE file_id = 7").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 2
+
+
+def test_the_same_track_still_cannot_be_flagged_twice(legacy_flags):
+    """
+    Relaxing the constraint is not removing it. Without uniqueness per
+    (file, stream) every rescan would add another row for the same track.
+    """
+    conn = sqlite3.connect(legacy_flags)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO subtitle_language_flags "
+                "(file_id, stream_index) VALUES (7, 2)")
+    finally:
+        conn.close()
+
+
+def test_existing_flags_survive_the_rebuild(legacy_flags):
+    """
+    The table is recreated, not altered. Losing its rows would drop
+    everything currently waiting in review.
+    """
+    conn = sqlite3.connect(legacy_flags)
+    try:
+        rows = list(conn.execute(
+            "SELECT file_id, stream_index, detected_language "
+            "FROM subtitle_language_flags"))
+    finally:
+        conn.close()
+
+    assert rows == [(7, 2, "und")]
+
+
+def test_the_rebuild_does_not_repeat_on_later_startups(legacy_flags,
+                                                       monkeypatch, caplog):
+    """
+    Rebuilding a table means recreating and re-copying it. Done on every
+    startup that is pure waste, and on a large review backlog it is waste
+    that grows — and it is invisible, because the result is correct every
+    time.
+    """
+    import logging
+
+    session_mod = _point_the_engine_at(legacy_flags, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "subtitle language flag" in r.getMessage()], (
+        "the table was rebuilt again on a database that was already migrated"
+    )
+
+
+def test_the_audio_flags_are_left_one_per_file(legacy_flags):
+    """
+    Deliberately not migrated. The audio threshold picks a single
+    representative track, and audio tracks do not leave the file the way
+    extracted subtitles do — there is no second filename to correct.
+    """
+    from sqlalchemy import create_engine, inspect
+
+    inspector = inspect(create_engine(f"sqlite:///{legacy_flags}"))
+    uniques = inspector.get_unique_constraints("audio_language_flags")
+
+    assert any(u["column_names"] == ["file_id"] for u in uniques)
+
+
 # ── The general check ────────────────────────────────────────────────────────
 
 def test_the_live_schema_matches_the_models(upgraded):

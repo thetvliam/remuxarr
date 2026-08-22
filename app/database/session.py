@@ -23,6 +23,14 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_subtitle_languages": ["eng"],
     # Always keep forced subtitle tracks regardless of language
     "keep_forced_subtitles": True,
+    # Whether a subtitle with no language tag survives the keep list.
+    #
+    # Off, because that is what the feature has always done and turning it
+    # on for everyone would silently start retaining tracks on every
+    # library. "und" is not a language that failed to match the keep list,
+    # it is the absence of one, and which of those two a user means is
+    # genuinely their call rather than something to guess.
+    "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
     # Remux to MP4 when all tracks are container-compatible
@@ -66,9 +74,25 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # always_leave preserves today's default behavior exactly (was False) —
     # existing installs upgrading see no change until they deliberately
     # pick a different value.
+    # Subtitle side. Keeps the original key name on purpose: it is the value
+    # every existing install already has, and for subtitles always_leave is
+    # not a no-op — an untagged subtitle that is not retagged fails the
+    # keep_subtitle_languages test and is dropped. Renaming this to
+    # _subtitle for symmetry with the audio key below would hand every
+    # upgrading install a fresh always_leave and delete subtitle tracks from
+    # their library on the next run.
     "fix_undefined_language":   "always_leave",
+    # Audio side, split out from the above so the two types can differ (fix
+    # audio automatically, ask about subtitles, or the reverse). New key, so
+    # an upgrading install starts at always_leave regardless of what the
+    # combined setting said. The cost of that reset is a language tag that
+    # was not applied, which reprocessing puts back — chosen over touching
+    # the subtitle key, where the same reset costs tracks.
+    "fix_undefined_language_audio": "always_leave",
     "undefined_language_value": "eng",
+    # Apply To, per type, same key-naming logic as the pair above.
     "undefined_language_mode":  "all_undefined_per_type",
+    "undefined_language_mode_audio": "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
     "plex_enabled":        False,
     "plex_url":             "",
@@ -224,6 +248,10 @@ def init_db() -> None:
     """Create all tables, run lightweight migrations, and seed default settings."""
     Base.metadata.create_all(bind=engine)
     _relax_revert_point_file_id()
+    # Runs BEFORE _migrate_schema, like the rebuild above: a rebuilt table
+    # already has every current column, so the ADD COLUMN pass then finds
+    # nothing to do rather than failing on a column it just created.
+    _allow_one_subtitle_flag_per_track()
     _migrate_schema()
     with SessionLocal() as db:
         _seed_defaults(db)
@@ -264,31 +292,83 @@ def _relax_revert_point_file_id() -> None:
 
     from app.database.models import RevertPoint
 
-    table = RevertPoint.__table__
-    # Only columns present in BOTH shapes are copied. Anything the old
-    # table lacks (detached_at, on the install this was written for) is
-    # left at its default, which for a still-attached point is correct.
-    carried = [name for name in table.columns.keys() if name in columns]
+    _rebuild_table(RevertPoint.__table__, set(columns))
+
+
+def _rebuild_table(table, live_columns: set[str]) -> None:
+    """
+    Recreate `table` from the model, carrying its rows across.
+
+    SQLite cannot ALTER a column's nullability or drop a UNIQUE
+    constraint, so the only way to change either is the rename-recreate-
+    copy-drop dance. Shared by every migration that needs it, because
+    getting one of these steps wrong is silent: forget the index drop and
+    the rebuild fails on a name collision, forget the column intersection
+    and it fails on a column the old shape never had.
+
+    Only columns present in BOTH shapes are copied. Anything the new model
+    adds is left at its default, which is what an ADD COLUMN would have
+    produced anyway.
+    """
+    name = table.name
+    scratch = f"_{name}_old"
+    carried = [c for c in table.columns.keys() if c in live_columns]
     column_list = ", ".join(f'"{c}"' for c in carried)
 
     with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE revert_points RENAME TO _revert_points_old"))
+        conn.execute(text(f"ALTER TABLE {name} RENAME TO {scratch}"))
 
         # Indexes follow a renamed table and would collide with the ones
         # the model is about to create under the same names.
         stale = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='index' "
-            "AND tbl_name='_revert_points_old' AND name NOT LIKE 'sqlite_%'"
+            f"AND tbl_name='{scratch}' AND name NOT LIKE 'sqlite_%'"
         )).fetchall()
-        for (name,) in stale:
-            conn.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+        for (index_name,) in stale:
+            conn.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
 
         table.create(conn)
         conn.execute(text(
-            f"INSERT INTO revert_points ({column_list}) "
-            f"SELECT {column_list} FROM _revert_points_old"
+            f"INSERT INTO {name} ({column_list}) "
+            f"SELECT {column_list} FROM {scratch}"
         ))
-        conn.execute(text("DROP TABLE _revert_points_old"))
+        conn.execute(text(f"DROP TABLE {scratch}"))
+
+
+def _allow_one_subtitle_flag_per_track() -> None:
+    """
+    Move subtitle_language_flags off UNIQUE(file_id) onto
+    UNIQUE(file_id, stream_index).
+
+    One row per file meant a file with several undefined subtitle tracks
+    could only ever offer one of them for review, while extraction wrote a
+    separate .srt for each — so the rest kept "und" in their filenames
+    with no way to correct them.
+
+    SQLite cannot drop a UNIQUE constraint, so this is a table rebuild.
+    Existing rows carry over untouched: they are already unique per file
+    and therefore unique per (file, stream) too.
+
+    No-op once the constraint is right, so it is safe on every startup and
+    on fresh installs.
+    """
+    inspector = inspect(engine)
+    if "subtitle_language_flags" not in set(inspector.get_table_names()):
+        return
+
+    uniques = inspector.get_unique_constraints("subtitle_language_flags")
+    if not any(u["column_names"] == ["file_id"] for u in uniques):
+        return
+
+    logger.info(
+        "Migrating database: allowing one subtitle language flag per track"
+    )
+
+    from app.database.models import SubtitleLanguageFlag
+
+    columns = {c["name"] for c in
+               inspector.get_columns("subtitle_language_flags")}
+    _rebuild_table(SubtitleLanguageFlag.__table__, columns)
 
 
 def _migrate_schema() -> None:
@@ -331,6 +411,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
         ("revert_points", "detached_at",
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
+        ("subtitle_language_flags", "extracted_path",
+         "ALTER TABLE subtitle_language_flags ADD COLUMN extracted_path TEXT"),
     ]
 
     inspector = inspect(engine)

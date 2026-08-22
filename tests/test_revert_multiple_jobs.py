@@ -58,6 +58,7 @@ No equivalent mutants.
 """
 import asyncio
 import json
+import pathlib
 import os
 import shutil
 import subprocess
@@ -623,6 +624,46 @@ def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
     assert not mine.exists(), "the extracted subtitle file was left behind"
     assert theirs.exists(), "a subtitle file the job did not create was deleted"
     assert _summarise(lib["path"]) == lib["pristine"]
+
+
+def test_a_renamed_subtitle_is_still_removed_on_revert(lib):
+    """
+    Reported after the rename shipped. Subtitle Language Review renames an
+    extracted sidecar to carry the language the user chose; the revert
+    point still recorded the old name, so the match failed and the revert
+    re-embedded the subtitle while leaving the file on disk. The user got
+    it twice — the exact duplication that cleanup exists to prevent.
+
+    The rename now follows through into the manifest, keeping the
+    fingerprint, which os.rename does not change.
+    """
+    from app.api.routes._language_review import _rename_extracted_subtitle
+
+    extracted = lib["path"].with_suffix(".und.srt")
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
+             job_id=1, extracts=[str(extracted)])
+
+    class _Flag:
+        file_id = lib["media"].id
+        detected_language = "und"
+        extracted_path = str(extracted)
+
+    flag = _Flag()
+    renamed = _rename_extracted_subtitle(flag, "eng", lib["db"])
+    lib["db"].commit()
+
+    assert renamed and renamed.endswith(".eng.srt")
+    assert not extracted.exists()
+    assert pathlib.Path(renamed).exists()
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert not pathlib.Path(renamed).exists(), (
+        "the renamed subtitle was left behind, so it is now embedded AND "
+        "on disk"
+    )
 
 
 def test_a_metadata_only_job_refreshes_the_fingerprint(lib):

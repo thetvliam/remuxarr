@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.ws_manager import ws_manager
+from app.api.ws_manager import broadcast_threadsafe
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
 from app.core.revert_restore import restore_revert_point, revert_blocked_reason
@@ -200,7 +200,7 @@ def _run_revert(point_id: int, loop) -> None:
         _revert_running = False
         _revert_status.update(point_id=None, path=None)
 
-    asyncio.run_coroutine_threadsafe(ws_manager.broadcast_json(payload), loop)
+    broadcast_threadsafe(payload, loop)
 
 
 @router.get("/{point_id}/candidates/")

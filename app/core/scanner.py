@@ -479,24 +479,63 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
         # No longer mismatched (or now ignored) — clear any stale flag.
         db.delete(existing_flag)
 
-    existing_sub_flag = (
-        db.query(SubtitleLanguageFlag)
-        .filter(SubtitleLanguageFlag.file_id == media_file.id)
-        .first()
+    # Subtitles are handled per TRACK, not per file. A file can have
+    # several undefined subtitles, each extracted to its own .srt carrying
+    # the language in its filename, so each needs its own answer. Audio
+    # above stays one-per-file: its threshold picks a representative, and
+    # its tracks do not leave the file.
+    existing_sub_flags = {
+        flag.stream_index: flag
+        for flag in db.query(SubtitleLanguageFlag)
+                      .filter(SubtitleLanguageFlag.file_id == media_file.id)
+                      .all()
+    }
+    mismatches = (
+        [] if media_file.subtitle_language_ignored
+        else decision.subtitle_language_mismatches
     )
-    if decision.subtitle_language_mismatch and not media_file.subtitle_language_ignored:
-        mismatch = decision.subtitle_language_mismatch
-        if existing_sub_flag:
-            existing_sub_flag.stream_index      = mismatch["stream_index"]
-            existing_sub_flag.detected_language = mismatch["language"]
+
+    for mismatch in mismatches:
+        stream_index = mismatch["stream_index"]
+        flag = existing_sub_flags.pop(stream_index, None)
+        if flag:
+            flag.detected_language = mismatch["language"]
+            # Only overwritten when this scan actually knows a path.
+            # Re-scanning a file whose subtitle has already been extracted
+            # produces no extract action for it — the track is no longer
+            # in the mux — so a plain assignment would blank the one
+            # record of where the sidecar went.
+            if mismatch.get("extracted_path"):
+                flag.extracted_path = mismatch["extracted_path"]
         else:
             db.add(SubtitleLanguageFlag(
                 file_id=media_file.id,
-                stream_index=mismatch["stream_index"],
+                stream_index=stream_index,
                 detected_language=mismatch["language"],
+                extracted_path=mismatch.get("extracted_path"),
             ))
-    elif existing_sub_flag:
-        db.delete(existing_sub_flag)
+
+    # Whatever is left in the map was flagged before and is not any more —
+    # except when its subtitle was extracted and the .srt is still there.
+    #
+    # That exception is what makes the question survive the job that
+    # raises it. Extraction removes the track from the mux, so the
+    # re-analysis _finish_job runs on the OUTPUT sees no subtitle tracks,
+    # reports no mismatches, and used to delete every row — the review
+    # page emptied itself the moment the work finished, and three files
+    # named "und" were left with nothing offering to correct them.
+    #
+    # "No such track any more" does not mean "no longer a problem" here.
+    # It means the tag can no longer be fixed in the file and only the
+    # filename is still correctable, which is exactly when the question
+    # matters most. The row goes when it is answered (apply deletes it),
+    # when the file is ignored, or when the sidecar itself is gone.
+    for flag in existing_sub_flags.values():
+        if (not media_file.subtitle_language_ignored
+                and flag.extracted_path
+                and os.path.exists(flag.extracted_path)):
+            continue
+        db.delete(flag)
 
 
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:

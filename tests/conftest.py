@@ -103,9 +103,14 @@ BASE_SETTINGS = {
     "keep_subtitle_languages":      ["eng"],
     "keep_forced_subtitles":        True,
     "und_audio_threshold":          2,
-    "fix_undefined_language":       "always_leave",
-    "undefined_language_value":     "eng",
-    "undefined_language_mode":      "all_undefined_per_type",
+    # Unsuffixed = subtitles, _audio = audio. Both present and both at the
+    # production default, so a test that cares about one type has to say so
+    # rather than inheriting the other type's value by accident.
+    "fix_undefined_language":         "always_leave",
+    "fix_undefined_language_audio":   "always_leave",
+    "undefined_language_value":       "eng",
+    "undefined_language_mode":        "all_undefined_per_type",
+    "undefined_language_mode_audio":  "all_undefined_per_type",
     "prefer_mp4_container":         True,
     "extract_text_subtitles_to_srt": True,
     "add_faststart_to_mp4":         True,

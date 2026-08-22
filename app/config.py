@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
 
@@ -49,9 +49,18 @@ class Settings(BaseSettings):
     # processing (handles rapid season-pack renames from Sonarr).
     WEBHOOK_DEBOUNCE_SECONDS: float = 10.0
 
-    class Config:
-        env_prefix = "REMUXARR_"
-        env_file = ".env"
+    # SettingsConfigDict, not a nested `class Config`. The class-based form
+    # is a Pydantic v1 carry-over that v2 still honours but warns about, and
+    # v3 drops entirely — at which point the warning becomes silence rather
+    # than an error: an unread `class Config` leaves env_prefix unset, so
+    # every REMUXARR_* variable stops being matched and the container falls
+    # back to defaults without complaining. SettingsConfigDict (not plain
+    # ConfigDict, which the deprecation text suggests) is the one that
+    # carries env_prefix/env_file at all.
+    model_config = SettingsConfigDict(
+        env_prefix="REMUXARR_",
+        env_file=".env",
+    )
 
 
 settings = Settings()

@@ -39,14 +39,18 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file
-from app.database.models import MediaFile, QueueItem
+from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
 
 
 class ApplyRequest(BaseModel):
-    file_ids: list[int]
+    # Flags, not files. A file can have several undefined subtitle tracks
+    # and each needs its own answer, so a file id can no longer say which
+    # one is meant. Audio has one flag per file and is unaffected in
+    # practice, but shares this router.
+    flag_ids: list[int]
     target_language: str
 
 
@@ -68,6 +72,125 @@ class LanguageReviewKind:
     list_description: str
     apply_description: str
     ignore_description: str
+
+
+def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
+    """
+    Rename a flagged track's extracted .srt to carry the chosen language.
+
+    Returns the new path when a file was renamed, or None.
+
+    Only ever acts on the path recorded when the file was extracted. The
+    name cannot be reconstructed at this point: extraction removes the
+    track from the mux, so the forced / SDH / dub suffixes that shaped the
+    filename are gone from the file along with it, and guessing would
+    rename someone else's subtitle.
+
+    Never raises. The language override has already been committed and is
+    the part that matters; a sidecar that will not rename is a wrong
+    filename, not a lost choice, and failing the request would leave the
+    user unsure whether their answer was recorded at all.
+    """
+    old_path = getattr(flag, "extracted_path", None)
+    if not old_path or not os.path.exists(old_path):
+        return None
+
+    directory, name = os.path.split(old_path)
+    # The language sits between the base name and any suffixes the
+    # extraction added, so only that one component is replaced — a file
+    # named Show.und.forced.srt has to become Show.eng.forced.srt and keep
+    # being the forced one.
+    parts = name.split(".")
+    try:
+        index = len(parts) - 1 - parts[::-1].index(flag.detected_language or "und")
+    except ValueError:
+        logging.getLogger(__name__).info(
+            "Not renaming %s: its name does not carry the language it was "
+            "extracted under", old_path,
+        )
+        return None
+
+    parts[index] = lang
+    new_path = os.path.join(directory, ".".join(parts))
+    if new_path == old_path:
+        return None
+
+    if os.path.exists(new_path):
+        # Something is already there. Overwriting it would destroy a
+        # subtitle nobody asked to replace — quite possibly one the user
+        # downloaded for exactly this language.
+        logging.getLogger(__name__).warning(
+            "Not renaming %s: %s already exists", old_path, new_path,
+        )
+        return None
+
+    try:
+        os.rename(old_path, new_path)
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "Could not rename %s to %s: %s", old_path, new_path, exc,
+        )
+        return None
+
+    flag.extracted_path = new_path
+    logging.getLogger(__name__).info("Renamed %s → %s", old_path, new_path)
+
+    if db is not None:
+        _repoint_revert_points(db, flag.file_id, old_path, new_path)
+    return new_path
+
+
+def _repoint_revert_points(db, file_id: int, old_path: str, new_path: str) -> None:
+    """
+    Follow the rename in any revert point that recorded this file.
+
+    A revert removes the subtitle files its job created, matching them by
+    the path recorded at capture. Rename one without telling the revert
+    point and the match fails, so reverting re-embeds the subtitle and
+    leaves the sidecar behind — the user ends up with it twice, which is
+    the exact duplication that cleanup exists to prevent.
+
+    Only the path is updated. os.rename preserves size and mtime, so the
+    fingerprint recorded alongside it is still accurate and still protects
+    a file the user has since edited.
+
+    Never raises. The rename has already happened and the language choice
+    is already committed; a manifest that cannot be updated means one
+    stale sidecar after a revert, which is untidy rather than harmful.
+    """
+    try:
+        # Filtered by file_id for cost, not for safety: the path match
+        # below is what prevents another file's records being touched, and
+        # extracted subtitle paths are derived from the media filename so
+        # two files cannot record the same one. Without the filter this
+        # would load and JSON-parse every revert point in the bin on every
+        # language correction.
+        points = (
+            db.query(RevertPoint)
+            .filter(RevertPoint.file_id == file_id)
+            .all()
+        )
+        for point in points:
+            try:
+                manifest = json.loads(point.manifest)
+            except (TypeError, ValueError):
+                continue
+
+            entries = manifest.get("created_files") or []
+            hits = [e for e in entries if e.get("path") == old_path]
+            if not hits:
+                continue
+            for entry in hits:
+                entry["path"] = new_path
+            point.manifest = json.dumps(manifest)
+            logging.getLogger(__name__).info(
+                "Revert point %d now tracks the renamed subtitle", point.id,
+            )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not update revert points for the renamed subtitle %s",
+            new_path,
+        )
 
 
 def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
@@ -117,7 +240,10 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         total = query.count()
         flags = (
             query
-            .order_by(MediaFile.filename.asc())
+            # By file first, then by track, so a file's rows arrive
+            # together and in a stable order — the page groups them, and
+            # they would otherwise be split or reshuffled between loads.
+            .order_by(MediaFile.filename.asc(), Flag.stream_index.asc())
             .offset(offset)
             .limit(limit)
             .all()
@@ -135,6 +261,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 "path":              media.path,
                 "stream_index":      flag.stream_index,
                 "detected_language": flag.detected_language,
+                # Present when this track was extracted. The UI shows it
+                # because it is the thing the answer will rename, and
+                # "which of these three is the forced one" is otherwise
+                # unanswerable from a stream index.
+                "extracted_path":    getattr(flag, "extracted_path", None),
             })
 
         return {"total": total, "items": items, "languages": languages}
@@ -149,22 +280,21 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         dry_run = app_cfg.get("dry_run_mode", False)
         results = {"applied": 0, "errors": []}
 
-        for file_id in body.file_ids:
+        for flag_id in body.flag_ids:
+            flag = db.get(Flag, flag_id)
+            if not flag:
+                # Already answered, or answered by another client. Not an
+                # error worth surfacing: the row is gone because the
+                # question it asked has been settled.
+                continue
+
+            file_id = flag.file_id
             media = db.get(MediaFile, file_id)
             if not media:
                 results["errors"].append({"file_id": file_id, "error": "File not found"})
                 continue
             if not os.path.exists(media.path):
                 results["errors"].append({"file_id": file_id, "error": "File no longer exists on disk"})
-                continue
-
-            flag = (
-                db.query(Flag)
-                .filter(Flag.file_id == file_id)
-                .first()
-            )
-            if not flag:
-                results["errors"].append({"file_id": file_id, "error": "No flag found for this file"})
                 continue
 
             # Persist the override and commit it on its own, separately from
@@ -182,6 +312,26 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
             setattr(media, kind.ignored_attr, False)
+            db.commit()
+
+            # Rename the extracted sidecar, if this track has one.
+            #
+            # The override alone cannot fix it. An extracted subtitle has
+            # been taken OUT of the mux, so the reprocess below has no
+            # track left to re-extract under the corrected name — the
+            # file keeps "und" in its name permanently, which is what
+            # Plex reads. Renaming here is the only point at which the
+            # correction can reach it.
+            renamed = _rename_extracted_subtitle(flag, lang, db)
+            if renamed:
+                results.setdefault("renamed", []).append(renamed)
+
+            # The question has been answered, so stop asking it. Left in
+            # place the row would survive every later scan — rows whose
+            # sidecar still exists are deliberately kept now, because the
+            # track itself is gone from the file and only the filename is
+            # still correctable.
+            db.delete(flag)
             db.commit()
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
