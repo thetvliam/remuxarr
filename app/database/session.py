@@ -74,9 +74,25 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # always_leave preserves today's default behavior exactly (was False) —
     # existing installs upgrading see no change until they deliberately
     # pick a different value.
+    # Subtitle side. Keeps the original key name on purpose: it is the value
+    # every existing install already has, and for subtitles always_leave is
+    # not a no-op — an untagged subtitle that is not retagged fails the
+    # keep_subtitle_languages test and is dropped. Renaming this to
+    # _subtitle for symmetry with the audio key below would hand every
+    # upgrading install a fresh always_leave and delete subtitle tracks from
+    # their library on the next run.
     "fix_undefined_language":   "always_leave",
+    # Audio side, split out from the above so the two types can differ (fix
+    # audio automatically, ask about subtitles, or the reverse). New key, so
+    # an upgrading install starts at always_leave regardless of what the
+    # combined setting said. The cost of that reset is a language tag that
+    # was not applied, which reprocessing puts back — chosen over touching
+    # the subtitle key, where the same reset costs tracks.
+    "fix_undefined_language_audio": "always_leave",
     "undefined_language_value": "eng",
+    # Apply To, per type, same key-naming logic as the pair above.
     "undefined_language_mode":  "all_undefined_per_type",
+    "undefined_language_mode_audio": "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
     "plex_enabled":        False,
     "plex_url":             "",

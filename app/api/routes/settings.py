@@ -326,8 +326,10 @@ KNOWN_KEYS = {
     "auto_start_jobs",
     "job_timeout_minutes",
     "fix_undefined_language",
+    "fix_undefined_language_audio",
     "undefined_language_value",
     "undefined_language_mode",
+    "undefined_language_mode_audio",
     "plex_enabled",
     "plex_url",
     "plex_token",
@@ -409,9 +411,13 @@ SETTINGS_SCHEMA = [
     },
     # ── Metadata ───────────────────────────────────────────────────────────
     {
+        # Storage key is the original, unsuffixed one while the label says
+        # Subtitle. Deliberate: renaming the key would reset every existing
+        # install to always_leave, and on the subtitle side always_leave
+        # drops the track rather than merely leaving its tag alone.
         "key":     "fix_undefined_language",
         "group":   "Metadata",
-        "label":   "Fix Undefined Language Tags",
+        "label":   "Fix Undefined Subtitle Language Tags",
         "type":    "select",
         "options": [
             {
@@ -427,20 +433,55 @@ SETTINGS_SCHEMA = [
                 "label": "Always leave (do nothing)",
             },
         ],
-        "description": "What to do with audio and subtitle tracks whose "
-                       "language is undefined (und). Always Fix tags them "
-                       "automatically with the primary language below. "
-                       "Always Ask flags them for a human decision instead — "
-                       "audio tracks in Audio Language Review, subtitle "
-                       "tracks in Subtitle Language Review — without "
-                       "touching the file until resolved. Video tracks are "
-                       "never affected either way, and only tracks being "
-                       "kept in the output are considered — dropped and "
-                       "extracted tracks are ignored. Independent of the "
-                       "separate Undefined Audio Track Threshold below, "
-                       "which always sends a file to manual review when it "
-                       "has too many undefined audio tracks to safely guess "
-                       "between, regardless of this setting's value.",
+        "description": "What to do with SUBTITLE tracks whose language is "
+                       "undefined (und). Always Fix tags them automatically "
+                       "with the primary language below. Always Ask flags "
+                       "them for a human decision in Subtitle Language "
+                       "Review without touching the file until resolved. "
+                       "Note that Always Leave is not neutral for "
+                       "subtitles: an untagged track keeps its und tag, "
+                       "which matches nothing in Keep Subtitle Languages, "
+                       "so it is dropped unless Keep Undefined Subtitles is "
+                       "on or the track is forced. Only tracks being kept "
+                       "in the output are considered, and extracted "
+                       "subtitles count as kept — their language lives in "
+                       "the sidecar filename. Audio is controlled "
+                       "separately by the setting below.",
+    },
+    {
+        "key":     "fix_undefined_language_audio",
+        "group":   "Metadata",
+        "label":   "Fix Undefined Audio Language Tags",
+        "type":    "select",
+        "options": [
+            {
+                "value": "always_fix",
+                "label": "Always fix (tag with the primary language below)",
+            },
+            {
+                "value": "always_ask",
+                "label": "Always ask (flag for review)",
+            },
+            {
+                "value": "always_leave",
+                "label": "Always leave (do nothing)",
+            },
+        ],
+        "description": "What to do with AUDIO tracks whose language is "
+                       "undefined (und). Always Fix tags them automatically "
+                       "with the primary language below. Always Ask flags "
+                       "them for a human decision in Audio Language Review "
+                       "without touching the file until resolved. Unlike "
+                       "the subtitle setting above, Always Leave here is "
+                       "genuinely a no-op — an undefined audio track is "
+                       "kept either way, it simply stays untagged, because "
+                       "dropping audio on a guess is far more costly than "
+                       "dropping an optional subtitle. Video tracks are "
+                       "never affected. Independent of the separate "
+                       "Undefined Audio Track Threshold below, which always "
+                       "sends a file to manual review when it has too many "
+                       "undefined audio tracks to safely guess between, "
+                       "regardless of this setting's value.",
     },
     {
         "key":         "undefined_language_value",
@@ -453,9 +494,13 @@ SETTINGS_SCHEMA = [
                        "Keep Audio Languages and Keep Subtitle Languages.",
     },
     {
+        # Unsuffixed key = subtitles, matching fix_undefined_language above
+        # and for the same reason. This one also feeds the pre-pass that
+        # decides which undefined subtitles survive keep/drop, so a reset
+        # here costs tracks too, not just tags.
         "key":     "undefined_language_mode",
         "group":   "Metadata",
-        "label":   "Apply To",
+        "label":   "Apply To (Subtitles)",
         "type":    "select",
         "options": [
             {
@@ -464,20 +509,48 @@ SETTINGS_SCHEMA = [
             },
             {
                 "value": "all_undefined_per_type",
-                "label": "Only when all tracks of that type are undefined",
+                "label": "Only when all subtitle tracks are undefined",
             },
             {
                 "value": "single_per_type",
-                "label": "Only when there is exactly one undefined track of that type",
+                "label": "Only when there is exactly one undefined subtitle track",
             },
         ],
-        "description": "Controls which undefined tracks get language tags. "
-                       "'All undefined' tags every und track. "
-                       "'All of that type' is safer — it only tags audio tracks "
-                       "when every audio track is und (same rule for subtitles "
-                       "independently), avoiding guesses on mixed-language files. "
-                       "'Single per type' is most conservative — only tags when "
-                       "there is exactly one und track of that type.",
+        "description": "Which undefined subtitle tracks the setting above "
+                       "acts on. 'All undefined' tags every und subtitle. "
+                       "The middle option is safer — it acts only when "
+                       "every subtitle track is und, avoiding guesses on "
+                       "mixed-language files. 'Only when there is exactly "
+                       "one' is the most conservative. Audio has its own "
+                       "Apply To below and is unaffected by this.",
+    },
+    {
+        "key":     "undefined_language_mode_audio",
+        "group":   "Metadata",
+        "label":   "Apply To (Audio)",
+        "type":    "select",
+        "options": [
+            {
+                "value": "all_undefined",
+                "label": "All undefined tracks",
+            },
+            {
+                "value": "all_undefined_per_type",
+                "label": "Only when all audio tracks are undefined",
+            },
+            {
+                "value": "single_per_type",
+                "label": "Only when there is exactly one undefined audio track",
+            },
+        ],
+        "description": "Which undefined audio tracks the audio setting "
+                       "above acts on. 'All undefined' tags every und audio "
+                       "track. The middle option is safer — it acts only "
+                       "when every audio track is und, avoiding guesses on "
+                       "a file that has one tagged track and one untagged "
+                       "one. 'Only when there is exactly one' is the most "
+                       "conservative. Subtitles have their own Apply To "
+                       "above and are unaffected by this.",
     },
     # ── Audio ──────────────────────────────────────────────────────────────
     {

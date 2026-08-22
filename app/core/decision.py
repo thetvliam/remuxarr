@@ -228,6 +228,58 @@ class ProcessingDecision:
 
 # ── Main function ──────────────────────────────────────────────────────────────
 
+# The undefined-language settings are per track type, and the two types do
+# NOT share a storage key. Audio reads fix_undefined_language_audio;
+# subtitles read plain fix_undefined_language.
+#
+# That asymmetry is deliberate and is the whole reason the split is safe to
+# ship. The setting used to cover both types at once, so every existing
+# install has exactly one stored value. Whichever type inherits a fresh
+# default loses that value on upgrade — and the two types do not lose the
+# same thing:
+#
+#   always_fix → always_leave on AUDIO     copy_track, minus a language tag
+#   always_fix → always_leave on SUBTITLE  drop_track — the track is gone
+#
+# (Verified against analyze_file, not inferred: an und subtitle under
+# always_leave is judged on its unresolved "und" tag, matches no entry in
+# keep_subtitle_languages, and is dropped unless keep_undefined_subtitles or
+# forced. This is the same ordering bug _resolve_undefined_subtitle_language
+# exists to prevent, arriving by a different route.)
+#
+# So the subtitle side keeps the old key and every upgrading install keeps
+# its subtitles. Audio takes the new key and the fresh default, where the
+# cost of being wrong is a metadata tag that a reprocess puts back. Renaming
+# the subtitle key to match the audio one would read better and would mean a
+# silent one-way deletion of subtitle tracks on upgrade, with revert_enabled
+# defaulting off and no undo.
+_UND_MODE_KEYS = {
+    "audio":    "fix_undefined_language_audio",
+    "subtitle": "fix_undefined_language",
+}
+_UND_APPLY_KEYS = {
+    "audio":    "undefined_language_mode_audio",
+    "subtitle": "undefined_language_mode",
+}
+
+
+def _resolve_und_mode(settings: dict, track_type: str) -> str:
+    """
+    The undefined-language mode for one track type, as a three-state string.
+
+    Centralises the boolean back-compat that used to be inlined at both
+    read sites: this setting predates being three-state and a database
+    untouched since then still holds True/False. Two copies of that
+    coercion is how the two sites drift apart.
+    """
+    mode = settings.get(_UND_MODE_KEYS[track_type], "always_leave")
+    if mode is True:
+        return "always_fix"
+    if mode is False:
+        return "always_leave"
+    return mode
+
+
 def _resolve_undefined_subtitle_language(
     sub_tracks: list[dict], settings: dict,
 ) -> dict[int, str]:
@@ -249,18 +301,18 @@ def _resolve_undefined_subtitle_language(
     dropped unless forced. always_ask means they want to be asked, and
     answering on their behalf here is the opposite of that.
     """
-    und_mode = settings.get("fix_undefined_language", "always_leave")
-    # Same backward-compat mapping as the fix pass: this setting used to
-    # be a plain boolean.
-    if und_mode is True:
-        und_mode = "always_fix"
-    elif und_mode is False:
-        und_mode = "always_leave"
-    if und_mode != "always_fix":
+    # Subtitle mode, not the audio one — this pre-pass decides which
+    # subtitles survive the keep/drop filter, so reading the wrong type
+    # here would let an audio setting delete subtitle tracks.
+    if _resolve_und_mode(settings, "subtitle") != "always_fix":
         return {}
 
+    # Primary Language stays shared across both types; only the mode and
+    # the Apply To rule are per type.
     lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
-    lang_mode  = settings.get("undefined_language_mode", "all_undefined_per_type")
+    lang_mode  = settings.get(
+        _UND_APPLY_KEYS["subtitle"], "all_undefined_per_type",
+    )
 
     und = [t for t in sub_tracks if (t.get("language") or "und") == "und"]
     if not und:
@@ -976,24 +1028,33 @@ def analyze_file(
     und_flagged_audio:    set[int] = set()
     und_flagged_subtitle: set[int] = set()
 
-    und_mode = settings.get("fix_undefined_language", "always_leave")
-    # Backward compat: a database that still holds the raw boolean from
-    # before this setting became three-state (True/False rather than
-    # always_fix/always_ask/always_leave) — maps to the equivalent new
-    # value so an existing install's behavior doesn't silently change on
-    # upgrade just because the stored value hasn't been touched since.
-    if und_mode is True:
-        und_mode = "always_fix"
-    elif und_mode is False:
-        und_mode = "always_leave"
+    # Resolved per track type inside the loop rather than once outside it.
+    # The two types have independent modes now, so a single value here
+    # would make whichever type was not consulted follow the other's
+    # setting — the exact coupling this split exists to remove.
+    und_modes = {tt: _resolve_und_mode(settings, tt)
+                 for tt in ("audio", "subtitle")}
 
-    if und_mode in ("always_fix", "always_ask"):
+    if any(m in ("always_fix", "always_ask") for m in und_modes.values()):
+        # Primary Language is deliberately still shared: a file's untagged
+        # tracks are untagged for the same reason whatever their type, and
+        # two codes to keep in sync is a way to get them out of sync.
         lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
-        lang_mode  = settings.get("undefined_language_mode", "all_undefined_per_type")
 
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
 
         for track_type in ("audio", "subtitle"):
+            und_mode = und_modes[track_type]
+            if und_mode not in ("always_fix", "always_ask"):
+                # This type is always_leave. `continue`, not a narrower
+                # guard further down: falling through would compute
+                # qualifying sets for a type the user asked to leave alone,
+                # and the always_ask branch below would then flag them for
+                # review.
+                continue
+            lang_mode = settings.get(
+                _UND_APPLY_KEYS[track_type], "all_undefined_per_type",
+            )
             # Kept tracks of this type. "Kept" includes subtitles bound for
             # extraction: previously extracted_si was excluded here alongside
             # dropped_si, which — because extract_text_subtitles_to_srt

@@ -144,8 +144,8 @@ def test_und_audio_flag_targets_lowest_stream_index():
     first — at the default of 2, three und audio tracks return early as
     manual_review and never reach the flagging pass at all.
     """
-    cfg = _prod(fix_undefined_language="always_ask",
-                undefined_language_mode="all_undefined",
+    cfg = _prod(fix_undefined_language_audio="always_ask",
+                undefined_language_mode_audio="all_undefined",
                 und_audio_threshold=99)
     tracks = [VIDEO, _audio(si=18, lang="und"), _audio(si=3, lang="und"),
               _audio(si=11, lang="und")]
