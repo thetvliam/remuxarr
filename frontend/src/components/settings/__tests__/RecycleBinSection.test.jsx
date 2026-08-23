@@ -23,7 +23,7 @@
  * are pinned: an unmounted volume must not read as an empty bin, and a
  * revert point whose stored tracks are gone must not offer to match.
  *
- * Verified by mutation, 16 applied, 16 killed:
+ * Verified by mutation, 17 applied, 17 killed:
  *
  *   • Revert acting on the first click                  → killed
  *   • ConfirmBtn firing without confirming              → killed
@@ -41,6 +41,7 @@
  *   • Attach refusal reasons dropped, summary only        → killed
  *   • Structured refusals routed back to the toast        → killed
  *   • A string refusal swallowed by the panel             → killed
+ *   • Bulk discards left usable during a revert            → killed
  *
  * That last one survived at first. The panel's handler is only passed by
  * attach, so removing the "is this structured?" check left restore's
@@ -509,6 +510,27 @@ describe("presentation", () => {
     await waitFor(() =>
     expect(toast).toHaveBeenCalledWith("Revert point not found", "error"));
     expect(screen.queryByText(/That file was not accepted/)).toBeNull();
+  });
+
+  it("holds both bulk discards while a revert is running", async () => {
+    /* Both sweeps delete sidecars, including the one a running restore is
+     * reading from stream by stream. The per-row DISCARD was already held;
+     * these two were not, and DISCARD UNMATCHED looks safe only until a
+     * rescan detaches a point mid-revert. */
+    setup({ status: { running: true, point_id: 1 } });
+
+    const empty = await screen.findByRole("button", { name: "EMPTY RECYCLE BIN" });
+    expect(empty.disabled).toBe(true);
+
+    const unmatched = screen.getByRole("button", { name: "DISCARD UNMATCHED" });
+    expect(unmatched.disabled).toBe(true);
+  });
+
+  it("leaves the bulk discards usable when nothing is running", async () => {
+    setup({ status: { running: false, point_id: null } });
+
+    const empty = await screen.findByRole("button", { name: "EMPTY RECYCLE BIN" });
+    expect(empty.disabled).toBe(false);
   });
 
   it("keeps loading, empty and broken apart", async () => {

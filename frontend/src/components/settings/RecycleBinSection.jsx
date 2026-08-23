@@ -229,7 +229,13 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
           label="DISCARD UNMATCHED"
           confirmLabel="CONFIRM — DISCARD UNMATCHED"
           color={palette.amber}
-          disabled={busy}
+          /* Both bulk buttons delete sidecars, including the one a running
+           * restore is reading from, so both are held while a revert is in
+           * flight — the same reason the per-row DISCARD already is. This
+           * one looks safe because restore() only accepts an attached point
+           * and this sweep takes only detached ones, but a rescan can detach
+           * a point while its revert is still running. */
+          disabled={busy || running !== null}
           onConfirm={() => act("/api/revert/?detached_only=true", { method: "DELETE" },
                                "Unmatched entries discarded")}
                                />
@@ -238,7 +244,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
         label="EMPTY RECYCLE BIN"
         confirmLabel="CONFIRM — EMPTY EVERYTHING"
         color={palette.red}
-        disabled={busy}
+        disabled={busy || running !== null}
         onConfirm={() => act("/api/revert/", { method: "DELETE" },
                              "Recycle bin emptied")}
                              />

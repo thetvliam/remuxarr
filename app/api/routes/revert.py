@@ -250,6 +250,25 @@ def discard_point(point_id: int, db: Session = Depends(get_db)):
     if point is None:
         raise HTTPException(404, "No such revert point")
 
+    # Not while that point is being restored FROM.
+    #
+    # restore_revert_point reads the sidecar as it goes — the tracks are
+    # pulled back out of it stream by stream. Deleting it mid-restore does
+    # not abort anything cleanly: the revert fails partway with the media
+    # file already swapped out, and the sidecar that would have completed
+    # it is gone. The UI disables this button while a revert runs, but the
+    # button is not the guard; the endpoint is reachable directly and the
+    # UI cannot know about a revert another client started.
+    #
+    # Scoped to the running point, not to any discard: throwing away an
+    # unrelated point touches a different sidecar and is safe.
+    if revert_lock.status()["point_id"] == point_id:
+        raise HTTPException(
+            409,
+            "This revert point is being restored right now. Wait for it to "
+            "finish before discarding it.",
+        )
+
     delete_sidecar(point.sidecar_path)
     db.delete(point)
     db.commit()
@@ -272,6 +291,21 @@ def empty_bin(
     everything throws away the ability to undo every job that has run
     inside the retention window.
     """
+    # Refused outright while a revert runs, rather than skipping the one
+    # point in use. This deletes sidecars in bulk, including the one a
+    # running restore is reading from, and a partial "emptied" that
+    # silently leaves one behind is a worse answer than a clear refusal —
+    # the user would have to work out which one and why. detached_only
+    # cannot be trusted to exclude it either: restore() only accepts an
+    # ATTACHED point, so the narrower sweep looks safe, but a rescan can
+    # detach a point while its revert is in flight.
+    if revert_lock.is_running():
+        raise HTTPException(
+            409,
+            "A revert is running. Wait for it to finish before emptying the "
+            "recycle bin.",
+        )
+
     query = db.query(RevertPoint)
     if detached_only:
         query = query.filter(RevertPoint.file_id.is_(None))

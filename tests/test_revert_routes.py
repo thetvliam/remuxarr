@@ -777,3 +777,94 @@ class TestTheWorkerStaysOffAFileBeingReverted:
         revert_lock.release()
 
         assert _claim_next() == item_id
+
+
+# ── Discarding out from under a running restore ──────────────────────────────
+
+class TestTheBinCannotBeEmptiedDuringARevert:
+    """
+    restore_revert_point reads the sidecar as it runs — the tracks are
+    pulled back out of it stream by stream, not loaded up front. Deleting
+    it mid-restore does not cancel anything cleanly: the revert fails
+    partway with the media file already swapped out and the sidecar that
+    would have completed it gone.
+
+    The UI disables these buttons during a revert, but a disabled button
+    is not a guard. The endpoints are reachable directly, and a second
+    browser tab has no idea a revert was started in the first.
+    """
+
+    def test_the_point_being_restored_cannot_be_discarded(self, client):
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete(f"/api/revert/{point.id}/")
+
+        assert r.status_code == 409
+        assert "being restored" in r.json()["detail"]
+        assert sidecar.exists(), "the sidecar the restore is reading was deleted"
+
+    def test_an_unrelated_point_can_still_be_discarded(self, client):
+        """
+        Scoped to the point in use. A different point has a different
+        sidecar, and blocking every discard for the length of a revert
+        would be a stall with no safety behind it.
+        """
+        api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+        _other_media, other, other_sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete(f"/api/revert/{other.id}/")
+
+        assert r.status_code == 200
+        assert not other_sidecar.exists()
+
+    def test_emptying_the_bin_is_refused_outright(self, client):
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete("/api/revert/")
+
+        assert r.status_code == 409
+        assert sidecar.exists()
+
+    def test_the_detached_only_sweep_is_refused_too(self, client):
+        """
+        This one looks safe: restore() only accepts an attached point, so
+        a sweep of detached ones should not be able to touch it. It can —
+        a rescan that no longer finds the file detaches the point while
+        its revert is still in flight, and the sweep then deletes the
+        sidecar being read.
+        """
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+        point.file_id = None          # what a rescan does mid-revert
+        db.commit()
+
+        r = api.delete("/api/revert/?detached_only=true")
+
+        assert r.status_code == 409
+        assert sidecar.exists()
+
+    def test_the_bin_empties_normally_when_no_revert_is_running(self, client):
+        api, db, recycle = client
+        _media, _point, sidecar = _seed(db, recycle)
+
+        revert_lock.release()
+
+        r = api.delete("/api/revert/")
+
+        assert r.status_code == 200
+        assert not sidecar.exists()
