@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.ws_manager import broadcast_threadsafe
+from app.core import revert_lock
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
 from app.core.revert_restore import restore_revert_point, revert_blocked_reason
@@ -28,12 +29,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/revert", tags=["revert"])
 
 
-# A revert rewrites a media file, so exactly one runs at a time. Set and
-# read only from the event loop, and never across an await — the same
-# check-and-set discipline scan.py documents, and atomic for the same
-# reason: asyncio only switches coroutines at await points.
-_revert_running = False
-_revert_status: dict = {"point_id": None, "path": None}
+# A revert rewrites a media file, so exactly one runs at a time. The state
+# lives in app.core.revert_lock rather than here so the queue worker can
+# read it too — see that module for why it is in-process state and not a
+# database column.
 
 # Queue states that mean the worker is about to write, or is writing, this
 # file. Reverting underneath either produces two writers for one path.
@@ -104,7 +103,7 @@ def list_points(
 
 @router.get("/status")
 def revert_status():
-    return {"running": _revert_running, **_revert_status}
+    return {"running": revert_lock.is_running(), **revert_lock.status()}
 
 
 @router.post("/{point_id}/restore/")
@@ -117,9 +116,7 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
     looking for the failure of. The expensive checks — the sentinel, the
     sidecar — belong to restore_revert_point and report over the socket.
     """
-    global _revert_running
-
-    if _revert_running:
+    if revert_lock.is_running():
         raise HTTPException(409, "A revert is already running")
 
     point = db.get(RevertPoint, point_id)
@@ -149,9 +146,14 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
 
     media = db.get(MediaFile, point.file_id)
 
-    _revert_running = True
-    _revert_status.update(point_id=point_id,
-                          path=media.path if media else None)
+    # Acquired before the thread starts, and carrying the file id: from
+    # here until release() the worker will not claim a job for this file,
+    # which closes the half of the exclusion that did not exist. The check
+    # above only covers jobs queued BEFORE this point — a scan running
+    # during the revert would otherwise queue this same file and the
+    # worker would pick it straight up.
+    revert_lock.acquire(point.file_id, point_id,
+                        media.path if media else None)
     started = False
     try:
         loop = asyncio.get_running_loop()
@@ -170,15 +172,12 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
         # every other exit. Without this an exception between the two lines
         # above wedges every future revert behind a 409 until restart.
         if not started:
-            _revert_running = False
-            _revert_status.update(point_id=None, path=None)
+            revert_lock.release()
 
     return {"status": "started", "point_id": point_id}
 
 
 def _run_revert(point_id: int, loop) -> None:
-    global _revert_running
-
     try:
         outcome = asyncio.run(restore_revert_point(point_id))
         payload = {
@@ -197,8 +196,7 @@ def _run_revert(point_id: int, loop) -> None:
         payload = {"event": "revert_complete", "point_id": point_id,
                    "success": False, "error": str(exc)}
     finally:
-        _revert_running = False
-        _revert_status.update(point_id=None, path=None)
+        revert_lock.release()
 
     broadcast_threadsafe(payload, loop)
 

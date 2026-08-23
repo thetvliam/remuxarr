@@ -22,6 +22,7 @@ from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
@@ -1140,9 +1141,43 @@ def _claim_next() -> int | None:
     """Atomically claim the highest-priority pending job. Returns its ID or None."""
     db = SessionLocal()
     try:
-        job = (
+        query = (
             db.query(QueueItem)
             .filter(QueueItem.status == "pending")
+        )
+
+        # Never claim the file a revert is rewriting.
+        #
+        # restore() refuses to start while this file is pending or
+        # processing, but that check is a snapshot: a scan running during
+        # the revert queues the file again, and without this the worker
+        # takes it immediately. Both write through a staged swap, so the
+        # loser's output silently replaces the winner's and the result is
+        # whichever finished second — a file that plays, with a revert
+        # point and a queue item that both describe something that never
+        # existed. Refusing beats racing, in both directions.
+        #
+        # The job is skipped, not the whole queue: everything else keeps
+        # moving, and this file is claimed on a later pass once the revert
+        # has released.
+        #
+        # The `is not None` check is defensive rather than load-bearing,
+        # and the distinction is worth stating so nobody "simplifies" it
+        # on a wrong assumption in either direction. Filtering
+        # unconditionally would compare against None, which SQLAlchemy
+        # renders as `file_id IS NOT NULL` — not as "matches nothing" —
+        # and since QueueItem.file_id is nullable=False that matches every
+        # row and behaves identically today. Verified by mutation: the
+        # unconditional form passes the whole suite. It is kept explicit
+        # because it stops being equivalent the moment file_id becomes
+        # nullable, and the failure then is silent — those jobs would just
+        # stop being claimed.
+        reverting = revert_lock.reverting_file_id()
+        if reverting is not None:
+            query = query.filter(QueueItem.file_id != reverting)
+
+        job = (
+            query
             .order_by(QueueItem.priority.asc(), QueueItem.created_at.asc())
             .first()
         )
