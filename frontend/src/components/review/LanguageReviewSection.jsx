@@ -24,7 +24,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * unexplained in the other.
  *
  * Everything that genuinely differs between the two is a prop.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═ * *══════════════════════════════════════════════════════════════════════════ */
 export const LanguageReviewSection = ({
     api,
     onRefresh,
@@ -154,7 +154,7 @@ export const LanguageReviewSection = ({
             const last = groups[groups.length - 1];
             if (last && last.file_id === item.file_id) last.tracks.push(item);
             else groups.push({ file_id: item.file_id, filename: item.filename,
-                               path: item.path, tracks: [item] });
+                path: item.path, tracks: [item] });
         }
 
         const applyLanguage = async () => {
@@ -234,15 +234,21 @@ export const LanguageReviewSection = ({
             if (selected.size === 0) return;
             setBusy(true);
             try {
+                /* Ignore is a per-file decision, so the selected TRACKS are
+                 * reduced to the files they belong to. Sending flag ids here
+                 * would silence one track and leave the rest of the file
+                 * still asking.
+                 *
+                 * Computed once and reused for both the body and the check
+                 * below. Comparing the response against selected.size measured
+                 * flags against files and warned on requests that had fully
+                 * succeeded — visibly, in this component's own passing tests. */
+                const fileIds = Array.from(new Set(
+                    items.filter(i => selected.has(i.id)).map(i => i.file_id)));
                 const r = await fetch(`${api}${endpoint}ignore`, {
                     method:  "POST",
                     headers: { "Content-Type": "application/json" },
-                    /* Ignore is a per-file decision, so the selected TRACKS are
-                     * reduced to the files they belong to. Sending flag ids here
-                     * would silence one track and leave the rest of the file
-                     * still asking. */
-                    body:    JSON.stringify({ file_ids: Array.from(new Set(
-                        items.filter(i => selected.has(i.id)).map(i => i.file_id))) }),
+                    body:    JSON.stringify({ file_ids: fileIds }),
                 });
                 if (!r.ok) {
                     toast?.("Failed to ignore the selected files", "error");
@@ -252,10 +258,10 @@ export const LanguageReviewSection = ({
                 // cannot find and returns the number it actually acted on, so
                 // reporting selected.size overstated it.
                 const data    = await r.json().catch(() => ({}));
-                const ignored = typeof data.ignored === "number" ? data.ignored : selected.size;
-                if (ignored < selected.size) {
+                const ignored = typeof data.ignored === "number" ? data.ignored : fileIds.length;
+                if (ignored < fileIds.length) {
                     console.warn(
-                        `Language ignore: sent ${selected.size} file(s), backend ignored ${ignored}`,
+                        `Language ignore: sent ${fileIds.length} file(s), backend ignored ${ignored}`,
                     );
                 }
                 toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
@@ -425,83 +431,83 @@ export const LanguageReviewSection = ({
                     {groups.map(group => (
                         <div key={group.file_id}>
                         {/* The filename sits above its tracks rather than
-                          * repeating on each row. With three undefined
-                          * subtitles in one file, repeating it three times
-                          * buries the only thing that differs between them. */}
-                        <div
-                        title={group.path}
-                        style={{
-                            padding: `${space.sm}px ${space.lg}px ${space.hair}px`,
-                            color: palette.text,
-                            fontSize: type.size.md,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                        }}
-                        >
-                        {group.filename}
-                        </div>
-
-                        {group.tracks.map(item => (
-                            /* A <label> rather than a div with onClick. The row's only job is
-                             * to toggle the checkbox inside it, and a label does that
-                             * natively: the whole row becomes the click target, the row text
-                             * becomes the checkbox's accessible name, and there is exactly
-                             * one tab stop.
-                             *
-                             * role="button" plus tabIndex would have been worse — a second tab
-                             * stop per row doing the same thing as the checkbox beside it, and
-                             * a name that has to be written by hand and kept in step with the
-                             * text. */
-                            <label
-                            key={item.id}
+                            * repeating on each row. With three undefined
+                            * subtitles in one file, repeating it three times
+                            * buries the only thing that differs between them. */}
+                            <div
+                            title={group.path}
                             style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: space.md,
-                                padding: `${space.hair}px ${space.lg}px ${space.hair}px ${space.xl}px`,
-                                borderBottom: `1px solid ${palette.border}`,
-                                cursor: "pointer",
-                                background: selected.has(item.id) ? surface.rowSelectedBg : "transparent",
-                            }}
-                            >
-                            <input
-                            type="checkbox"
-                            checked={selected.has(item.id)}
-                            onChange={() => toggleOne(item.id)}
-                            />
-                            <span style={{
-                                flex: 1,
-                                minWidth: 0,
-                                color: palette.muted,
-                                fontSize: type.size.sm,
+                                padding: `${space.sm}px ${space.lg}px ${space.hair}px`,
+                                color: palette.text,
+                                fontSize: type.size.md,
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
                                 whiteSpace: "nowrap",
-                            }}>
-                            {/* The sidecar's name when there is one, because it
-                              * is what the answer will rename — and because
-                              * "which of these three is the forced one" cannot
-                              * be answered from a stream index. */}
-                            {item.extracted_path
-                                ? item.extracted_path.split("/").pop()
-                                : `Stream ${item.stream_index}`}
-                            </span>
-                            <span style={{
-                                flexShrink: 0,
-                                padding: `${space.hair}px ${space.xs}px`,
-                                background: alpha(palette.yellow, ALPHA.low),
-                                border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
-                                borderRadius: radius.sm,
-                                color: palette.yellow,
-                                fontSize: type.size.xs,
-                                letterSpacing: type.tracking.wide,
-                            }}>
-                            {(item.detected_language || "?").toUpperCase()}
-                            </span>
-                            </label>
-                        ))}
-                        </div>
+                            }}
+                            >
+                            {group.filename}
+                            </div>
+
+                            {group.tracks.map(item => (
+                                /* A <label> rather than a div with onClick. The row's only job is
+                                 * to toggle the checkbox inside it, and a label does that
+                                 * natively: the whole row becomes the click target, the row text
+                                 * becomes the checkbox's accessible name, and there is exactly
+                                 * one tab stop.
+                                 *
+                                 * role="button" plus tabIndex would have been worse — a second tab
+                                 * stop per row doing the same thing as the checkbox beside it, and
+                                 * a name that has to be written by hand and kept in step with the
+                                 * text. */
+                                <label
+                                key={item.id}
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: space.md,
+                                    padding: `${space.hair}px ${space.lg}px ${space.hair}px ${space.xl}px`,
+                                    borderBottom: `1px solid ${palette.border}`,
+                                    cursor: "pointer",
+                                    background: selected.has(item.id) ? surface.rowSelectedBg : "transparent",
+                                }}
+                                >
+                                <input
+                                type="checkbox"
+                                checked={selected.has(item.id)}
+                                onChange={() => toggleOne(item.id)}
+                                />
+                                <span style={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    color: palette.muted,
+                                    fontSize: type.size.sm,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}>
+                                {/* The sidecar's name when there is one, because it
+                                    * is what the answer will rename — and because
+                                    * "which of these three is the forced one" cannot
+                                    * be answered from a stream index. */}
+                                    {item.extracted_path
+                                        ? item.extracted_path.split("/").pop()
+                                        : `Stream ${item.stream_index}`}
+                                        </span>
+                                        <span style={{
+                                            flexShrink: 0,
+                                            padding: `${space.hair}px ${space.xs}px`,
+                                            background: alpha(palette.yellow, ALPHA.low),
+                                                       border: `1px solid ${alpha(palette.yellow, ALPHA.strong)}`,
+                                                       borderRadius: radius.sm,
+                                                       color: palette.yellow,
+                                                       fontSize: type.size.xs,
+                                                       letterSpacing: type.tracking.wide,
+                                        }}>
+                                        {(item.detected_language || "?").toUpperCase()}
+                                        </span>
+                                        </label>
+                            ))}
+                            </div>
                     ))}
 
                     {hasMore && (

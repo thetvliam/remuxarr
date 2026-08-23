@@ -87,14 +87,14 @@ def test_the_language_component_is_replaced(tmp_path):
 
     result = _rename(flag, "eng")
 
-    assert result == str(tmp_path / "Show.eng.srt")
-    assert (tmp_path / "Show.eng.srt").exists()
+    assert result == str(tmp_path / "Show.en.srt")
+    assert (tmp_path / "Show.en.srt").exists()
     assert not srt.exists()
 
 
 def test_suffixes_after_the_language_are_kept(tmp_path):
     """
-    Show.und.forced.srt has to become Show.eng.forced.srt and go on being
+    Show.und.forced.srt has to become Show.en.forced.srt and go on being
     the forced one. Rebuilding the name from the language alone loses the
     suffix, and Plex then stops treating it as forced — a subtitle that
     silently starts appearing over dialogue it should not.
@@ -105,14 +105,14 @@ def test_suffixes_after_the_language_are_kept(tmp_path):
 
     result = _rename(flag, "eng")
 
-    assert os.path.basename(result) == "Show.eng.forced.srt"
+    assert os.path.basename(result) == "Show.en.forced.srt"
 
 
 def test_only_the_language_component_is_touched(tmp_path):
     """
     A file whose title happens to contain the language code must not have
     the wrong part rewritten. Replacing the first match turns
-    und.Chronicles.und.srt into eng.Chronicles.und.srt.
+    und.Chronicles.und.srt into en.Chronicles.und.srt.
     """
     srt = tmp_path / "und.Chronicles.und.srt"
     srt.write_text("subtitle text")
@@ -120,7 +120,7 @@ def test_only_the_language_component_is_touched(tmp_path):
 
     result = _rename(flag, "eng")
 
-    assert os.path.basename(result) == "und.Chronicles.eng.srt"
+    assert os.path.basename(result) == "und.Chronicles.en.srt"
 
 
 def test_the_flag_is_updated_to_the_new_path(tmp_path):
@@ -134,7 +134,7 @@ def test_the_flag_is_updated_to_the_new_path(tmp_path):
 
     _rename(flag, "eng")
 
-    assert flag.extracted_path == str(tmp_path / "Show.eng.srt")
+    assert flag.extracted_path == str(tmp_path / "Show.en.srt")
 
 
 # ── One row per track ────────────────────────────────────────────────────────
@@ -593,13 +593,13 @@ def test_a_name_without_the_language_is_left_alone(tmp_path):
 
 def test_an_existing_target_is_never_overwritten(tmp_path):
     """
-    Something is already called Show.eng.srt — quite possibly a subtitle
+    Something is already called Show.en.srt — quite possibly a subtitle
     the user downloaded for exactly this language. Renaming over it would
     destroy a file nobody asked to replace, to fix a filename.
     """
     srt = tmp_path / "Show.und.srt"
     srt.write_text("extracted")
-    theirs = tmp_path / "Show.eng.srt"
+    theirs = tmp_path / "Show.en.srt"
     theirs.write_text("downloaded by Bazarr")
 
     assert _rename(_Flag(str(srt)), "eng") is None

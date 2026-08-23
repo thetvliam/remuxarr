@@ -68,9 +68,14 @@ current search instead of collapsing to the selected option.
 """.strip(),
 
     apply_description = """
-Set target_language on the flagged subtitle track for every file in
-file_ids, persist it as an override, and reprocess each file
+Set target_language on the flagged subtitle track for every flag in
+flag_ids, persist it as an override, and reprocess each affected file
 immediately so the correction actually gets written.
+
+Takes FLAG ids, not file ids: one file can have several undefined
+subtitle tracks and each needs its own answer. Flags belonging to the
+same file are applied together and that file is reprocessed once, so
+"applied" counts files, not flags.
 
 The override is committed separately from the reprocess attempt, so the
 user's choice sticks even if this particular attempt fails. Existing

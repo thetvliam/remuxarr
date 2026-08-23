@@ -39,6 +39,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file
+from app.core.decision import ISO_639_2_TO_1
 from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_app_settings, get_db
 
@@ -98,19 +99,40 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     directory, name = os.path.split(old_path)
     # The language sits between the base name and any suffixes the
     # extraction added, so only that one component is replaced — a file
-    # named Show.und.forced.srt has to become Show.eng.forced.srt and keep
+    # named Show.und.forced.srt has to become Show.en.forced.srt and keep
     # being the forced one.
+    #
+    # Written as the 2-letter ISO 639-1 code, via the same map
+    # _build_srt_path uses, NOT the 3-letter code the user picked. Both
+    # paths that can fix an extracted subtitle's language have to agree on
+    # the filename or the same track ends up named two different ways
+    # depending on which one got there — and this function exists solely to
+    # make Plex read the correction, so writing the form the other path
+    # deliberately avoids defeats its own purpose. "und" is unmapped and
+    # passes through, which is how it got into the name to begin with.
+    lang_tag = ISO_639_2_TO_1.get(lang, lang)
+
     parts = name.split(".")
-    try:
-        index = len(parts) - 1 - parts[::-1].index(flag.detected_language or "und")
-    except ValueError:
-        logging.getLogger(__name__).info(
+    # The extracted name may carry either form of the detected code, so try
+    # the raw one and its mapping before giving up. In practice subtitle
+    # flags are always "und" (unmapped, identical both ways); an audio-side
+    # caller with a real code would otherwise silently fail to find it.
+    detected = flag.detected_language or "und"
+    index = None
+    for needle in (detected, ISO_639_2_TO_1.get(detected, detected)):
+        try:
+            index = len(parts) - 1 - parts[::-1].index(needle)
+            break
+        except ValueError:
+            continue
+    if index is None:
+        logger.info(
             "Not renaming %s: its name does not carry the language it was "
             "extracted under", old_path,
         )
         return None
 
-    parts[index] = lang
+    parts[index] = lang_tag
     new_path = os.path.join(directory, ".".join(parts))
     if new_path == old_path:
         return None
@@ -119,7 +141,7 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
         # Something is already there. Overwriting it would destroy a
         # subtitle nobody asked to replace — quite possibly one the user
         # downloaded for exactly this language.
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Not renaming %s: %s already exists", old_path, new_path,
         )
         return None
@@ -127,13 +149,13 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     try:
         os.rename(old_path, new_path)
     except OSError as exc:
-        logging.getLogger(__name__).warning(
+        logger.warning(
             "Could not rename %s to %s: %s", old_path, new_path, exc,
         )
         return None
 
     flag.extracted_path = new_path
-    logging.getLogger(__name__).info("Renamed %s → %s", old_path, new_path)
+    logger.info("Renamed %s → %s", old_path, new_path)
 
     if db is not None:
         _repoint_revert_points(db, flag.file_id, old_path, new_path)
@@ -183,11 +205,11 @@ def _repoint_revert_points(db, file_id: int, old_path: str, new_path: str) -> No
             for entry in hits:
                 entry["path"] = new_path
             point.manifest = json.dumps(manifest)
-            logging.getLogger(__name__).info(
+            logger.info(
                 "Revert point %d now tracks the renamed subtitle", point.id,
             )
     except Exception:
-        logging.getLogger(__name__).exception(
+        logger.exception(
             "Could not update revert points for the renamed subtitle %s",
             new_path,
         )
@@ -280,6 +302,20 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         dry_run = app_cfg.get("dry_run_mode", False)
         results = {"applied": 0, "errors": []}
 
+        # Group the flags by file before doing anything.
+        #
+        # The request is a list of flags, but almost everything below is
+        # per-FILE work: one override blob, one queue-item cleanup, one
+        # reprocess. Iterating flags directly did all of it once per flag,
+        # so three undefined subtitles in one file meant three ffprobes and
+        # three queue-item churns to apply one file's worth of correction —
+        # each iteration deleting the pending item the previous one had just
+        # created. It also made "applied" count flags while the UI's toast
+        # says files, reporting "3 files" for one.
+        #
+        # Insertion order is preserved so errors still surface in the order
+        # the user's selection implied.
+        by_file: dict[int, list] = {}
         for flag_id in body.flag_ids:
             flag = db.get(Flag, flag_id)
             if not flag:
@@ -287,8 +323,9 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # error worth surfacing: the row is gone because the
                 # question it asked has been settled.
                 continue
+            by_file.setdefault(flag.file_id, []).append(flag)
 
-            file_id = flag.file_id
+        for file_id, flags in by_file.items():
             media = db.get(MediaFile, file_id)
             if not media:
                 results["errors"].append({"file_id": file_id, "error": "File not found"})
@@ -305,7 +342,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # then pick the override up automatically without the user
             # needing to re-select it.
             existing_overrides = kind.load_overrides(media)
-            existing_overrides[flag.stream_index] = lang
+            for flag in flags:
+                existing_overrides[flag.stream_index] = lang
             setattr(media, kind.overrides_attr, json.dumps(
                 {str(k): v for k, v in existing_overrides.items()}
             ))
@@ -314,7 +352,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             setattr(media, kind.ignored_attr, False)
             db.commit()
 
-            # Rename the extracted sidecar, if this track has one.
+            # Rename the extracted sidecars, if these tracks have any.
             #
             # The override alone cannot fix it. An extracted subtitle has
             # been taken OUT of the mux, so the reprocess below has no
@@ -322,16 +360,18 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # file keeps "und" in its name permanently, which is what
             # Plex reads. Renaming here is the only point at which the
             # correction can reach it.
-            renamed = _rename_extracted_subtitle(flag, lang, db)
-            if renamed:
-                results.setdefault("renamed", []).append(renamed)
+            for flag in flags:
+                renamed = _rename_extracted_subtitle(flag, lang, db)
+                if renamed:
+                    results.setdefault("renamed", []).append(renamed)
 
-            # The question has been answered, so stop asking it. Left in
-            # place the row would survive every later scan — rows whose
+            # The questions have been answered, so stop asking them. Left in
+            # place the rows would survive every later scan — rows whose
             # sidecar still exists are deliberately kept now, because the
             # track itself is gone from the file and only the filename is
             # still correctable.
-            db.delete(flag)
+            for flag in flags:
+                db.delete(flag)
             db.commit()
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
@@ -442,10 +482,20 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 continue
             setattr(media, kind.ignored_attr, True)
 
-            flag = (
+            # Every flag for this file, not the first one.
+            #
+            # SubtitleLanguageFlag is UNIQUE(file_id, stream_index), so a
+            # file with three undefined subtitles has three rows. Taking
+            # .first() cleared one and left the file sitting on the review
+            # page it had just been ignored from — and worse, applying a
+            # language to one of the survivors sets ignored back to False,
+            # silently undoing the ignore. The shared router was written
+            # against the audio table, which is one row per file and where
+            # .first() happened to be complete.
+            flags = (
                 db.query(Flag)
                 .filter(Flag.file_id == file_id)
-                .first()
+                .all()
             )
             # count only when a flag was actually cleared. It previously
             # incremented for any file that merely existed, so re-submitting a
@@ -453,8 +503,13 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # a page left open across a rescan — reported "Ignoring 12 files"
             # having ignored none of them. The count is the only feedback this
             # action gives, so an inflated one is the whole signal being wrong.
-            if flag:
-                db.delete(flag)
+            #
+            # Counts FILES, matching the file_ids this endpoint is given.
+            # Counting rows would report "ignored 3" for one ignored file and
+            # put the caller back in the units mismatch this is fixing.
+            if flags:
+                for flag in flags:
+                    db.delete(flag)
                 count += 1
 
         db.commit()
