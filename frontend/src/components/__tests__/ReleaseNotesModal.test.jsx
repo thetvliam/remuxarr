@@ -17,6 +17,7 @@
  *   • Shown when version is null (nothing to announce)        → killed
  *   • Any stored version treated as "seen", ignoring which    → killed
  *   • Sections rendered but their items dropped               → killed
+ *   • The panel background left unset, so it renders clear    → killed
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -44,7 +45,7 @@ const mockNotes = (body = NOTES, { ok = true } = {}) => {
 
 const renderModal = () => render(
   <ThemeProvider>
-    <ReleaseNotesModal api="" />
+  <ReleaseNotesModal api="" />
   </ThemeProvider>,
 );
 
@@ -113,6 +114,26 @@ describe("ReleaseNotesModal", () => {
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalled());
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("renders on an opaque panel, not over the page behind it", async () => {
+    /* This shipped broken and all seven tests above passed.
+     *
+     * The panel read surface.raised, which the theme does not define. An
+     * undefined value makes React omit the property entirely rather than
+     * complain, so the dialog rendered with no background and the queue and
+     * history text showed straight through the release notes.
+     *
+     * Asserting the key resolves, not that it is any particular colour —
+     * the theme owns the colour and has more than one palette. What must
+     * not happen is the property going missing because a name was wrong. */
+    mockNotes();
+    renderModal();
+
+    const dialog = await screen.findByRole("dialog");
+
+    expect(dialog.style.background).toBeTruthy();
+    expect(dialog.style.background).not.toBe("transparent");
   });
 
   it("closes on Escape", async () => {

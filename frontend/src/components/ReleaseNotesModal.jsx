@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useTheme, alpha, ALPHA, LAYER } from "../theme";
+import { useTheme, LAYER } from "../theme";
 import { Btn } from "./atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -19,7 +19,7 @@ import { Btn } from "./atoms/Btn";
  * the settings-tab memory: this is a per-person "I have read this", not
  * configuration. Storing it server-side would mark it read for everyone
  * because the first person to open the app did.
- ═══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 
 const STORAGE_KEY = "remuxarr.releaseNotesSeen";
 
@@ -93,7 +93,9 @@ export const ReleaseNotesModal = ({ api }) => {
     style={{
       position: "fixed",
       inset: 0,
-      background: alpha(palette.bg, ALPHA.heavy),
+      /* surface.modalScrimBg, the same scrim DetailModal and the
+       * unsaved-changes dialog use. */
+      background: surface.modalScrimBg,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -110,7 +112,14 @@ export const ReleaseNotesModal = ({ api }) => {
     tabIndex={-1}
     onClick={(e) => e.stopPropagation()}
     style={{
-      background: surface.raised,
+      /* palette.card, matching the app's other dialogs, and OPAQUE.
+       * This read surface.raised, which is not a key the theme defines —
+       * so it evaluated to undefined, React omitted the property, and the
+       * panel rendered with no background at all: the queue and history
+       * text behind it showed straight through the notes. An undefined
+       * theme key fails silently and looks deliberate, so it is worth
+       * naming rather than just correcting. */
+      background: palette.card,
       border: `1px solid ${palette.border}`,
       borderRadius: radius.md,
       padding: space.xxl,
