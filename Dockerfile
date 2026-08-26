@@ -121,6 +121,14 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY app/ ./app/
 
+# The pending release notes, served at /api/release-notes/ and shown to the
+# user once per change. It lands at /app/RELEASE_NOTES.md, which is where
+# the route resolves to from its own __file__ — four directories up from
+# app/api/routes/. Without this line the endpoint finds nothing and returns
+# "no notes", which is indistinguishable from a quiet release: the feature
+# would fail exactly as silently as the problem it exists to solve.
+COPY RELEASE_NOTES.md .
+
 # Copy built UI into the location FastAPI expects
 COPY --from=ui-builder /ui/dist ./frontend/dist
 

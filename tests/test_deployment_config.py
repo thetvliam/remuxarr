@@ -271,3 +271,18 @@ def test_the_documented_test_counts_are_current():
         assert abs(claimed - actual) <= 25, (
             f"{name} claims {claimed} backend tests; there are {actual}"
         )
+
+
+def test_the_release_notes_file_is_shipped_in_the_image():
+    """
+    The route resolves RELEASE_NOTES.md from its own __file__, four
+    directories up, which is /app in the container. The Dockerfile copies
+    app/ and the built UI and nothing else from the repo root, so without
+    an explicit COPY the file is simply absent.
+
+    The endpoint handles that by reporting no notes — deliberately, so a
+    source checkout without the file still runs. Which means the whole
+    feature would fail in exactly the way it exists to prevent: silently,
+    with users told nothing, and nothing in the logs to say why.
+    """
+    assert "COPY RELEASE_NOTES.md" in _read("Dockerfile")

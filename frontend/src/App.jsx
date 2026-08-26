@@ -11,6 +11,7 @@ import { ActivePanel } from "./components/dashboard/ActivePanel";
 import { QueuePanel } from "./components/dashboard/QueuePanel";
 import { HistoryPanel } from "./components/dashboard/HistoryPanel";
 import { DetailModal } from "./components/DetailModal";
+import { ReleaseNotesModal } from "./components/ReleaseNotesModal";
 
 /* ── Unsaved-changes navigation guard modal ─────────────────────────────── */
 const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
@@ -390,7 +391,8 @@ export default function App() {
                   ? () => dismissItem(modal) : null}
                   />
             )}
-            <Toasts items={toasts} isMobile={isMobile} />
+            <ReleaseNotesModal api={api} />
+    <Toasts items={toasts} isMobile={isMobile} />
             {pendingPage && (
               <UnsavedChangesModal
               onKeep={() => setPendingPage(null)}

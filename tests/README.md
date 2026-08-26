@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1140 tests across 55 files, plus 186 frontend tests under
+1151 tests across 56 files, plus 193 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
 number below matters more than that one.
 
@@ -112,6 +112,30 @@ pytest tests/ -v
 `pytest` and its dependencies aren't part of the production `requirements.txt`
 on purpose — they only get installed if you actually run this, so the deployed
 image doesn't carry test tooling it never uses day to day.
+
+## Release notes are part of the change, not a step after it
+
+`RELEASE_NOTES.md` in the repo root holds what has changed since the last
+merge to `main` that a **user** would notice. The app serves it at
+`/api/release-notes/` and shows it once, as a dialog, when the content
+changes.
+
+If a change alters what a user sees, add a line **in the same commit**. If
+it does not — refactors, tests, lint, internal fixes with no visible
+symptom — add nothing. The file's own header comment has the full test for
+what qualifies; the short version is that it is written for someone running
+the container, not for whoever reviewed the diff.
+
+The cycle has one ordering rule that is easy to get backwards:
+
+1. Entries accumulate on `testing`.
+2. `testing` merges to `main` **with the entries intact** — that is what
+   users pull, and what triggers the dialog.
+3. **Only then** is the file emptied, on `testing`, as the first commit of
+   the next cycle.
+
+Emptying it as part of the merge ships an empty file to `main`, and the
+release nobody was told about is the one that renamed their settings.
 
 ## Conventions
 
