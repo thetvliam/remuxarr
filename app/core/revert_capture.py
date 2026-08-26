@@ -515,19 +515,10 @@ async def capture(
             )
 
         # Re-resolve where every original stream lives, now that both the
-        # sidecar and the processed file have changed.
-        #
-        # Restore could re-derive this by matching the manifest against the
-        # processed file again, but it should not have to: that file may
-        # have been re-tagged, re-scanned or partially rewritten by then,
-        # and re-running fuzzy matching against a moved target is exactly
-        # how a revert puts the wrong track back. Resolved once, here,
-        # where both files are known-good and one line from being swapped.
-        #
-        # sidecar_index is positional: build_sidecar_command maps `sources`
-        # in order, so the nth entry is output stream n. Stale annotations
-        # from the previous capture are cleared rather than left to be
-        # read as if they still pointed somewhere real.
+        # sidecar and the processed file have changed. _reannotate's
+        # docstring covers why it happens here and not at restore time,
+        # and what sidecar_index means; that reasoning lived in both
+        # places and only one copy would get corrected.
         # Renamed only once the layout check has passed, so a sidecar at
         # the real path is always one that was written completely AND
         # verified.

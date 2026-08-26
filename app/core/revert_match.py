@@ -68,10 +68,6 @@ class MatchAssessment:
     # resolved against a file we can no longer assume this is.
     resolved: dict[int, int] = field(default_factory=dict)
 
-    @property
-    def attachable(self) -> bool:
-        return self.tier in (EXACT, COMPATIBLE)
-
 
 def assess(point, candidate_path: str, candidate_probe: dict) -> MatchAssessment:
     """

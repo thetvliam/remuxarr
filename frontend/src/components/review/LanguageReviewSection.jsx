@@ -148,13 +148,37 @@ export const LanguageReviewSection = ({
          * about this one" is a decision about the file rather than a track.
          *
          * The backend orders by (filename, stream_index), so a file's rows
-         * arrive together and this only has to preserve that order. */
+         * normally arrive together — but the grouping below does not rely
+         * on that, for the reason given at the Map. */
         const groups = [];
+        const byFileId = new Map();
         for (const item of items) {
-            const last = groups[groups.length - 1];
-            if (last && last.file_id === item.file_id) last.tracks.push(item);
-            else groups.push({ file_id: item.file_id, filename: item.filename,
-                path: item.path, tracks: [item] });
+            /* Keyed on file_id, not on "is this row next to the last one".
+             *
+             * The backend does order by (filename, stream_index), so rows
+             * for a file normally do arrive together — and appending a
+             * page preserves that, because the next page continues where
+             * the last one stopped. What breaks it is the list changing
+             * underneath the offset: a scan flagging files that sort
+             * earlier shifts everything back, so loadMore() returns rows
+             * already rendered above, and a file that was complete appears
+             * a second time.
+             *
+             * Adjacency grouping then emits two groups with the same
+             * file_id, React sees a duplicate key, and it reconciles the
+             * two as one element — the second group's checkbox state lands
+             * on the first, so ticking a track can select a different one.
+             * A Map cannot produce that: the row joins the group it
+             * belongs to wherever it turns up. */
+            const existing = byFileId.get(item.file_id);
+            if (existing) {
+                existing.tracks.push(item);
+            } else {
+                const group = { file_id: item.file_id, filename: item.filename,
+                    path: item.path, tracks: [item] };
+                    byFileId.set(item.file_id, group);
+                    groups.push(group);
+            }
         }
 
         const applyLanguage = async () => {

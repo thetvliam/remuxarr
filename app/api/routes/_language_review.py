@@ -154,6 +154,13 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
         )
         return None
 
+    # Kept even though the only production caller deletes this row moments
+    # later, so the value is never read back. It is not there for that
+    # caller: it keeps the in-memory object agreeing with the filesystem,
+    # so a future caller that renames WITHOUT answering the flag does not
+    # end up holding a row that points at a path no longer on disk. The
+    # cost is one assignment; the cost of it being absent is a bug that
+    # only appears once someone adds that caller.
     flag.extracted_path = new_path
     logger.info("Renamed %s → %s", old_path, new_path)
 
