@@ -633,7 +633,7 @@ const test = {
     },
 };
 
-export const themes = { terminal, soft };
+export const themes = { terminal, soft, test };
 export const DEFAULT_THEME_ID = "terminal";
 const STORAGE_KEY = "remuxarr.theme";
 
