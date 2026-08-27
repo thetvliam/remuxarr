@@ -58,6 +58,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Added
+
+- Two new themes in Settings > Appearance: **Midnight**, a cool dark theme, and **Dawn**, the first light theme. Your current theme is unchanged and neither is selected for you.
+
 ## Changed
 
 - Undefined-language handling is now set separately for audio and subtitles, so you can tag undefined audio automatically while holding undefined subtitles for review. **On upgrade the audio side starts at "Always leave" regardless of your previous setting** — if you had it on "Always fix", set the new "Fix Undefined Audio Language Tags" back to that. Your subtitle setting carries over untouched.
