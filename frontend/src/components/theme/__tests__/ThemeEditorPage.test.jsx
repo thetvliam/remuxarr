@@ -34,10 +34,11 @@
  * vitest also exits non-zero when it finds no test files at all.
  */
 import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeContext, themes } from "../../../theme";
+import { themeToInputs } from "../../../themeSource";
 import { ThemeEditorPage } from "../ThemeEditorPage";
 
 /* A stand-in for the previewed page. A real page is what App.jsx passes, but
@@ -55,6 +56,10 @@ const PreviewProbe = () => {
         borderColor: t.statusColor.success,
         outlineColor: t.toastTone.notice,
         borderRadius: t.radius.sm,
+        fontSize: t.type.size.h1,
+        letterSpacing: t.type.tracking.wide,
+        padding: t.space.md,
+        fontFamily: t.type.root,
       }}
     >
       previewed page
@@ -79,6 +84,17 @@ const renderEditor = (themeId = "terminal") =>
       </ThemeEditorPage>
     </ThemeContext.Provider>,
   );
+
+/* Only PALETTE is open on mount — 117 controls in one column is unusable
+ * otherwise. Anything reaching another group has to expand it first, so this
+ * clicks every collapsed header. Driven off aria-expanded rather than a list
+ * of group names, which would be the same hardcoded-list mistake the
+ * component itself avoids. */
+const openEveryGroup = async (user) => {
+  for (const header of screen.getAllByRole("button", { expanded: false })) {
+    await user.click(header);
+  }
+};
 
 const hexToRgb = (hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -127,7 +143,7 @@ describe("ThemeEditorPage — preview", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, "#123456");
 
@@ -140,7 +156,7 @@ describe("ThemeEditorPage — preview", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("green");
+    const field = screen.getByLabelText("palette.green");
     await user.clear(field);
     await user.type(field, "#00ff88");
 
@@ -155,7 +171,7 @@ describe("ThemeEditorPage — preview", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("amber");
+    const field = screen.getByLabelText("palette.amber");
     await user.clear(field);
     await user.type(field, "#ff0066");
 
@@ -169,7 +185,7 @@ describe("ThemeEditorPage — isolation", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, "#ffffff");
 
@@ -184,7 +200,7 @@ describe("ThemeEditorPage — isolation", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, themes.terminal.palette.text);
 
@@ -194,7 +210,7 @@ describe("ThemeEditorPage — isolation", () => {
 
     // ...and the control that caused it is still drawn against the ACTIVE
     // theme's background, so it can be undone.
-    expect(screen.getByLabelText("bg").style.background)
+    expect(screen.getByLabelText("palette.bg").style.background)
       .toBe(hexToRgb(themes.terminal.palette.bg));
   });
 });
@@ -204,7 +220,7 @@ describe("ThemeEditorPage — base theme selection", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, "#123456");
     expect(screen.getByTestId("probe").style.background).toBe("rgb(18, 52, 86)");
@@ -213,7 +229,7 @@ describe("ThemeEditorPage — base theme selection", () => {
 
     expect(screen.getByTestId("probe").style.background)
       .toBe(hexToRgb(themes.soft.palette.bg));
-    expect(screen.getByLabelText("bg")).toHaveValue(themes.soft.palette.bg);
+    expect(screen.getByLabelText("palette.bg")).toHaveValue(themes.soft.palette.bg);
   });
 
   it("marks the base theme currently loaded", async () => {
@@ -241,11 +257,11 @@ describe("ThemeEditorPage — colour field", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, "#abc");
 
-    expect(screen.getByLabelText("bg swatch")).toBeDisabled();
+    expect(screen.getByLabelText("palette.bg swatch")).toBeDisabled();
     expect(field).toHaveValue("#abc");
   });
 
@@ -253,21 +269,205 @@ describe("ThemeEditorPage — colour field", () => {
     const user = userEvent.setup();
     renderEditor("terminal");
 
-    const field = screen.getByLabelText("bg");
+    const field = screen.getByLabelText("palette.bg");
     await user.clear(field);
     await user.type(field, "#abc");
-    expect(screen.getByLabelText("bg swatch")).toBeDisabled();
+    expect(screen.getByLabelText("palette.bg swatch")).toBeDisabled();
 
     await user.type(field, "def");
-    expect(screen.getByLabelText("bg swatch")).toBeEnabled();
-    expect(screen.getByLabelText("bg swatch")).toHaveValue("#abcdef");
+    expect(screen.getByLabelText("palette.bg swatch")).toBeEnabled();
+    expect(screen.getByLabelText("palette.bg swatch")).toHaveValue("#abcdef");
   });
 
-  it("offers a control for every palette key", () => {
+  it("offers a control for every palette key", async () => {
+    const user = userEvent.setup();
     renderEditor("terminal");
-    const controls = screen.getByText("THEME EDITOR").parentElement;
+    await openEveryGroup(user);
     for (const key of Object.keys(themes.terminal.palette)) {
-      expect(within(controls).getByLabelText(key)).toBeInTheDocument();
+      expect(screen.getByLabelText(`palette.${key}`)).toBeInTheDocument();
     }
+  });
+});
+
+describe("ThemeEditorPage — coverage of every input", () => {
+  /* The one assertion that makes the derived-control approach worth
+   * anything. Fields are generated by walking the draft's inputs, and this
+   * walks the same inputs independently and demands a control for each leaf.
+   *
+   * A hardcoded field list would fail here the moment theme.jsx gained a
+   * token, which is the point: without this, a group added to a theme simply
+   * has no control, the editor writes whatever the base theme carried for
+   * it, and the only symptom is a value nobody can change. */
+  const leafPaths = (value, path = []) =>
+    value && typeof value === "object"
+      ? Object.entries(value).flatMap(([k, v]) => leafPaths(v, [...path, k]))
+      : [path.join(".")];
+
+  it("offers a control for all 117 editable inputs", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const paths = leafPaths(themeToInputs(themes.terminal));
+
+    // Counted, not estimated: 4 identity, 13 palette, 14 tint, 15 surface,
+    // 31 type, 5 radius, 14 space, 21 size.
+    expect(paths).toHaveLength(117);
+
+    const missing = paths.filter((p) => screen.queryByLabelText(p) === null);
+    expect(missing).toEqual([]);
+  });
+
+  it("writes to the token the control is named after", async () => {
+    // The path is both the accessible name and the argument to setAt, so
+    // this pins that they cannot drift: editing type.size.h1 must move
+    // type.size.h1 in the preview and nothing else.
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const before = themes.terminal.type.size.xs;
+    const field = screen.getByLabelText("type.size.h1");
+    await user.clear(field);
+    await user.type(field, "40");
+
+    const probe = screen.getByTestId("probe");
+    expect(probe.style.fontSize).toBe("40px");
+    expect(probe.style.letterSpacing).toBe(themes.terminal.type.tracking.wide);
+    expect(before).toBe(themes.terminal.type.size.xs);
+  });
+
+  it("keeps a number a number and a string a string", async () => {
+    /* radius mixes 999 with "50%", and the serialiser refuses a type change
+     * at save. A control that coerced everything to string would produce a
+     * theme that still rendered, since CSS accepts "999", and would fail
+     * only much later at the point of writing the file. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const num = screen.getByLabelText("space.md");
+    await user.clear(num);
+    await user.type(num, "18");
+    expect(screen.getByTestId("probe").style.padding).toBe("18px");
+
+    expect(screen.getByLabelText("radius.full")).toHaveValue("50%");
+    expect(screen.getByLabelText("radius.full").getAttribute("type")).toBe("text");
+    expect(screen.getByLabelText("radius.pill").getAttribute("type")).toBe("number");
+  });
+
+  it("does not turn a cleared number field into a silent zero", async () => {
+    /* Number("") is 0, so coercing every keystroke makes an empty box read
+     * as a real value. space.md becoming 0 collapses padding everywhere the
+     * token is used and looks like a layout regression rather than an empty
+     * input, and it would be written to the saved theme as a legitimate 0.
+     *
+     * Leaving the raw string means the preview goes visibly wrong and the
+     * serialiser refuses at save, naming the path. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    await user.clear(screen.getByLabelText("space.md"));
+
+    expect(screen.getByTestId("probe").style.padding).not.toBe("0px");
+    expect(screen.getByTestId("probe").style.padding).toBe("");
+  });
+
+  it("gives a shadow a text field, not a colour picker", async () => {
+    /* surface.drawerShadow is "0 4px 16px #00000066". A colour picker here
+     * would replace the whole declaration with a bare hex on first use,
+     * losing the offsets and the blur. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    expect(screen.getByLabelText("surface.drawerShadow"))
+      .toHaveValue(themes.terminal.surface.drawerShadow);
+    expect(screen.queryByLabelText("surface.drawerShadow swatch")).toBeNull();
+    expect(screen.getByLabelText("surface.rowHoverBg swatch")).toBeInTheDocument();
+  });
+
+  it("disables the swatch for the alpha and short hex forms surface uses", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    // #ffffff07 — 8-digit, carries alpha the 6-digit picker cannot hold.
+    expect(screen.getByLabelText("surface.rowHoverBg swatch")).toBeDisabled();
+    // #111 — 3-digit.
+    expect(screen.getByLabelText("surface.badgeFallbackBg swatch")).toBeDisabled();
+    // rgba().
+    expect(screen.getByLabelText("surface.guardScrimBg swatch")).toBeDisabled();
+    // A plain 6-digit value still gets a working swatch.
+    expect(screen.getByLabelText("surface.logBg swatch")).toBeEnabled();
+  });
+
+  it("offers dark and light for colorScheme rather than free text", async () => {
+    /* ThemeProvider writes this into ":root { color-scheme: ... }". CSS
+     * drops a declaration it cannot parse, so a typo stops the browser
+     * theming form controls and scrollbars with nothing to say why. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const select = screen.getByLabelText("colorScheme");
+    expect(select.tagName).toBe("SELECT");
+    expect([...select.options].map((o) => o.value)).toEqual(["dark", "light"]);
+  });
+});
+
+describe("ThemeEditorPage — font stacks", () => {
+  it("warns when a stack has no generic fallback", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    // Both shipped stacks end in a generic keyword, so neither warns.
+    expect(screen.queryByTestId("type.root warning")).toBeNull();
+    expect(screen.queryByTestId("type.mono warning")).toBeNull();
+
+    const field = screen.getByLabelText("type.root");
+    await user.clear(field);
+    await user.type(field, "'Comic Sans MS'");
+
+    expect(screen.getByTestId("type.root warning")).toBeInTheDocument();
+  });
+
+  it("clears the warning once a generic fallback is added", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const field = screen.getByLabelText("type.root");
+    await user.clear(field);
+    await user.type(field, "'Comic Sans MS'");
+    expect(screen.getByTestId("type.root warning")).toBeInTheDocument();
+
+    await user.type(field, ", monospace");
+    expect(screen.queryByTestId("type.root warning")).toBeNull();
+  });
+
+  it("renders the sample in the stack being edited", async () => {
+    /* The sample is the only thing that can show a family failed to load. A
+     * static check cannot; a stack that fell through to a system face looks
+     * nothing like the bundled ones. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    // Asserted by distinctive family rather than by exact string: jsdom
+    // normalises CSS font-family quoting from ' to ", so the serialised
+    // value never equals the theme's literal even when it is correct.
+    expect(screen.getByTestId("type.root sample").style.fontFamily)
+      .toContain("JetBrains Mono Variable");
+
+    await user.click(screen.getByRole("button", { name: "type.root INTER" }));
+
+    expect(screen.getByTestId("type.root sample").style.fontFamily)
+      .toContain("Inter Variable");
+    expect(screen.getByLabelText("type.root")).toHaveValue(
+      "'Inter Variable', 'Inter', system-ui, sans-serif",
+    );
   });
 });
