@@ -7,6 +7,7 @@ import { AppHeader } from "./components/header/AppHeader";
 import { SettingsPage } from "./components/settings/SettingsPage";
 import { ReviewPage } from "./components/review/ReviewPage";
 import { ForgePage } from "./components/forge/ForgePage";
+import { ThemeEditorPage } from "./components/theme/ThemeEditorPage";
 import { ActivePanel } from "./components/dashboard/ActivePanel";
 import { QueuePanel } from "./components/dashboard/QueuePanel";
 import { HistoryPanel } from "./components/dashboard/HistoryPanel";
@@ -374,6 +375,35 @@ export default function App() {
             isMobile={isMobile}
             />
             </div>
+          )}
+
+          {page === "themes" && (
+            <ThemeEditorPage isMobile={isMobile}>
+              {/* SettingsPage is the preview subject because it is the
+                * densest page for theming: headers, inputs, selects,
+                * toggles, buttons, borders and badges all on one screen.
+                *
+                * onDirtyChange is a no-op rather than setSettingsDirty. The
+                * unsaved-changes guard keys off `page === "settings"`, so a
+                * preview instance reporting dirty would arm a guard that
+                * this route can never disarm, and leaving the editor would
+                * prompt about settings the user never opened.
+                *
+                * It loads real settings from the API. Without a backend
+                * running it renders its own error state, which is still
+                * drawn from the draft, so the preview stays useful. */}
+              <SettingsPage
+                api={api}
+                toast={toast}
+                isMobile={isMobile}
+                revertRefreshKey={revertRefreshKey}
+                onDirtyChange={() => {}}
+                liveToggles={{
+                  dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
+                  auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },
+                }}
+              />
+            </ThemeEditorPage>
           )}
 
           {/* ╔══════════════════════════════════════════════╗
