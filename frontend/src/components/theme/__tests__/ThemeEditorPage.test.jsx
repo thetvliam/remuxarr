@@ -33,12 +33,15 @@
  * checked for named failing tests rather than a bare non-zero exit, since
  * vitest also exits non-zero when it finds no test files at all.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { ThemeContext, themes } from "../../../theme";
-import { themeToInputs } from "../../../themeSource";
+import {
+  ThemeContext, themes,
+  buildStatusColor, buildLevelColor, buildToastTone, buildActionCfg,
+} from "../../../theme";
+import { themeToInputs, THEME_KEY_ORDER } from "../../../themeSource";
 import { ThemeEditorPage } from "../ThemeEditorPage";
 
 /* A stand-in for the previewed page. A real page is what App.jsx passes, but
@@ -49,20 +52,20 @@ const PreviewProbe = () => {
   const t = ThemeContextProbe();
   return (
     <div
-      data-testid="probe"
-      style={{
-        background: t.palette.bg,
-        color: t.palette.text,
-        borderColor: t.statusColor.success,
-        outlineColor: t.toastTone.notice,
-        borderRadius: t.radius.sm,
-        fontSize: t.type.size.h1,
-        letterSpacing: t.type.tracking.wide,
-        padding: t.space.md,
-        fontFamily: t.type.root,
-      }}
+    data-testid="probe"
+    style={{
+      background: t.palette.bg,
+      color: t.palette.text,
+      borderColor: t.statusColor.success,
+      outlineColor: t.toastTone.notice,
+      borderRadius: t.radius.sm,
+      fontSize: t.type.size.h1,
+      letterSpacing: t.type.tracking.wide,
+      padding: t.space.md,
+      fontFamily: t.type.root,
+    }}
     >
-      previewed page
+    previewed page
     </div>
   );
 };
@@ -75,15 +78,15 @@ function ThemeContextProbe() {
 }
 
 const renderEditor = (themeId = "terminal") =>
-  render(
-    <ThemeContext.Provider
-      value={{ ...themes[themeId], themeId, setThemeId: () => {} }}
-    >
-      <ThemeEditorPage>
-        <PreviewProbe />
-      </ThemeEditorPage>
-    </ThemeContext.Provider>,
-  );
+render(
+  <ThemeContext.Provider
+  value={{ ...themes[themeId], themeId, setThemeId: () => {} }}
+  >
+  <ThemeEditorPage>
+  <PreviewProbe />
+  </ThemeEditorPage>
+  </ThemeContext.Provider>,
+);
 
 /* Only PALETTE is open on mount — 117 controls in one column is unusable
  * otherwise. Anything reaching another group has to expand it first, so this
@@ -119,11 +122,11 @@ describe("ThemeEditorPage — preview", () => {
      * terminal's background where soft's was expected. */
     render(
       <ThemeContext.Provider
-        value={{ ...themes.terminal, themeId: "soft", setThemeId: () => {} }}
+      value={{ ...themes.terminal, themeId: "soft", setThemeId: () => {} }}
       >
-        <ThemeEditorPage>
-          <PreviewProbe />
-        </ThemeEditorPage>
+      <ThemeEditorPage>
+      <PreviewProbe />
+      </ThemeEditorPage>
       </ThemeContext.Provider>,
     );
 
@@ -206,12 +209,12 @@ describe("ThemeEditorPage — isolation", () => {
 
     // The preview follows the draft into the unreadable state...
     expect(screen.getByTestId("probe").style.background)
-      .toBe(hexToRgb(themes.terminal.palette.text));
+    .toBe(hexToRgb(themes.terminal.palette.text));
 
     // ...and the control that caused it is still drawn against the ACTIVE
     // theme's background, so it can be undone.
     expect(screen.getByLabelText("palette.bg").style.background)
-      .toBe(hexToRgb(themes.terminal.palette.bg));
+    .toBe(hexToRgb(themes.terminal.palette.bg));
   });
 });
 
@@ -228,7 +231,7 @@ describe("ThemeEditorPage — base theme selection", () => {
     await user.click(screen.getByRole("button", { name: "SOFT" }));
 
     expect(screen.getByTestId("probe").style.background)
-      .toBe(hexToRgb(themes.soft.palette.bg));
+    .toBe(hexToRgb(themes.soft.palette.bg));
     expect(screen.getByLabelText("palette.bg")).toHaveValue(themes.soft.palette.bg);
   });
 
@@ -237,14 +240,14 @@ describe("ThemeEditorPage — base theme selection", () => {
     renderEditor("terminal");
 
     expect(screen.getByRole("button", { name: "TERMINAL" }))
-      .toHaveAttribute("aria-pressed", "true");
+    .toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "SOFT" }));
 
     expect(screen.getByRole("button", { name: "SOFT" }))
-      .toHaveAttribute("aria-pressed", "true");
+    .toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "TERMINAL" }))
-      .toHaveAttribute("aria-pressed", "false");
+    .toHaveAttribute("aria-pressed", "false");
   });
 });
 
@@ -299,9 +302,9 @@ describe("ThemeEditorPage — coverage of every input", () => {
    * has no control, the editor writes whatever the base theme carried for
    * it, and the only symptom is a value nobody can change. */
   const leafPaths = (value, path = []) =>
-    value && typeof value === "object"
-      ? Object.entries(value).flatMap(([k, v]) => leafPaths(v, [...path, k]))
-      : [path.join(".")];
+  value && typeof value === "object"
+  ? Object.entries(value).flatMap(([k, v]) => leafPaths(v, [...path, k]))
+  : [path.join(".")];
 
   it("offers a control for all 117 editable inputs", async () => {
     const user = userEvent.setup();
@@ -383,7 +386,7 @@ describe("ThemeEditorPage — coverage of every input", () => {
     await openEveryGroup(user);
 
     expect(screen.getByLabelText("surface.drawerShadow"))
-      .toHaveValue(themes.terminal.surface.drawerShadow);
+    .toHaveValue(themes.terminal.surface.drawerShadow);
     expect(screen.queryByLabelText("surface.drawerShadow swatch")).toBeNull();
     expect(screen.getByLabelText("surface.rowHoverBg swatch")).toBeInTheDocument();
   });
@@ -460,14 +463,145 @@ describe("ThemeEditorPage — font stacks", () => {
     // normalises CSS font-family quoting from ' to ", so the serialised
     // value never equals the theme's literal even when it is correct.
     expect(screen.getByTestId("type.root sample").style.fontFamily)
-      .toContain("JetBrains Mono Variable");
+    .toContain("JetBrains Mono Variable");
 
     await user.click(screen.getByRole("button", { name: "type.root INTER" }));
 
     expect(screen.getByTestId("type.root sample").style.fontFamily)
-      .toContain("Inter Variable");
+    .toContain("Inter Variable");
     expect(screen.getByLabelText("type.root")).toHaveValue(
       "'Inter Variable', 'Inter', system-ui, sans-serif",
     );
+  });
+});
+
+describe("ThemeEditorPage — export", () => {
+  /* Evaluate an emitted block the way theme.jsx would, by supplying the four
+   * builders it calls and handing back the const it declares. Matching the
+   * text against an expected string would pin formatting, which is not what
+   * has to be right, and would pass on a block that is not valid JavaScript. */
+  const evaluateBlock = (src, id) =>
+  new Function(
+    "buildStatusColor", "buildLevelColor", "buildToastTone", "buildActionCfg",
+    `${src}\nreturn ${id};`,
+  )(buildStatusColor, buildLevelColor, buildToastTone, buildActionCfg);
+
+  it("exports a block that evaluates to exactly what the preview is showing", async () => {
+    /* The assertion that closes the loop. Everything else checks the preview
+     * or the serialiser in isolation; this checks they agree. A theme that
+     * looks right on screen and exports as something else is the failure
+     * this whole feature would be worth nothing without, and it would show
+     * up only after the file was pasted in and the app reloaded. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    await user.clear(screen.getByLabelText("palette.green"));
+    await user.type(screen.getByLabelText("palette.green"), "#00ff88");
+    await user.clear(screen.getByLabelText("space.md"));
+    await user.type(screen.getByLabelText("space.md"), "18");
+
+    const probe = screen.getByTestId("probe");
+    expect(probe.style.borderColor).toBe("rgb(0, 255, 136)");
+    expect(probe.style.padding).toBe("18px");
+
+    const exported = evaluateBlock(
+      screen.getByTestId("export-source").value, "terminal",
+    );
+    expect(exported.palette.green).toBe("#00ff88");
+    expect(exported.space.md).toBe(18);
+    // Regenerated from the edited palette, not carried over from the base.
+    expect(exported.statusColor.success).toBe("#00ff88");
+    expect(exported.actionCfg.copy_track.text).toBe("#00ff88");
+  });
+
+  it("exports every one of the 14 top-level keys", async () => {
+    const user = userEvent.setup();
+    renderEditor("soft");
+    await openEveryGroup(user);
+
+    const exported = evaluateBlock(
+      screen.getByTestId("export-source").value, "soft",
+    );
+    expect(Object.keys(exported)).toEqual(THEME_KEY_ORDER);
+    expect(JSON.stringify(exported)).toBe(JSON.stringify(themes.soft));
+  });
+
+  it("shows the serialiser's own refusal instead of an export", async () => {
+    /* No second validator in the component. The message is the one
+     * themeSource.js raises, naming the token path, so the UI cannot say a
+     * theme is fine while the file it would write is not. */
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    await user.clear(screen.getByLabelText("space.md"));
+
+    expect(screen.getByTestId("export-error")).toHaveTextContent("space.md");
+    expect(screen.queryByTestId("export-source")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^DOWNLOAD/ })).toBeNull();
+  });
+
+  it("refuses an id that would not survive as a const declaration", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const field = screen.getByLabelText("id");
+    await user.clear(field);
+    await user.type(field, "my-theme");
+
+    expect(screen.getByTestId("export-error")).toHaveTextContent("my-theme");
+    expect(screen.queryByTestId("export-source")).toBeNull();
+  });
+
+  it("recovers once the draft is valid again", async () => {
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    await user.clear(screen.getByLabelText("space.md"));
+    expect(screen.getByTestId("export-error")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("space.md"), "10");
+    expect(screen.queryByTestId("export-error")).toBeNull();
+    expect(screen.getByTestId("export-source")).toBeInTheDocument();
+  });
+
+  it("downloads the block under the theme's own id", async () => {
+    const created = [];
+    vi.stubGlobal("URL", {
+      ...globalThis.URL,
+      createObjectURL: (blob) => { created.push(blob); return "blob:stub"; },
+                  revokeObjectURL: () => {},
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function () { clicked = this; });
+    let clicked = null;
+
+    const user = userEvent.setup();
+    renderEditor("terminal");
+    await openEveryGroup(user);
+
+    const field = screen.getByLabelText("id");
+    await user.clear(field);
+    await user.type(field, "aurora");
+
+    await user.click(screen.getByRole("button", { name: /^DOWNLOAD/ }));
+
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(clicked.download).toBe("aurora.theme.js");
+    expect(created).toHaveLength(1);
+    // Read through FileReader: jsdom's Blob implements neither text() nor
+    // arrayBuffer(), so the usual await blob.text() silently is not a
+    // function rather than returning the bytes.
+    const text = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsText(created[0]);
+    });
+    // What is downloaded is byte-identical to what is on screen.
+    expect(text).toBe(screen.getByTestId("export-source").value);
   });
 });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ThemeContext, useTheme, themes, alpha, ALPHA } from "../../theme";
-import { themeToInputs, inputsToTheme } from "../../themeSource";
+import { themeToInputs, inputsToTheme, themeToSource } from "../../themeSource";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * THEME EDITOR — developer tool, not a user feature
@@ -48,13 +48,33 @@ import { themeToInputs, inputsToTheme } from "../../themeSource";
  * so drift gets caught, display and validation are derived so they track the
  * real thing.
  *
+ * ── What "save" is, and why it is a download ──────────────────────────────
+ * theme.jsx is not in the shipped container. The Dockerfile's runtime stage
+ * copies app/, RELEASE_NOTES.md and the BUILT frontend/dist; frontend/src
+ * exists only inside the throwaway ui-builder stage. So a backend endpoint
+ * that writes the theme file would work in a dev checkout and could not work
+ * in the product, and the editor would behave differently depending on how
+ * it was being run.
+ *
+ * Export sidesteps that entirely: the editor emits the source text, the
+ * browser downloads it, and the developer pastes it into theme.jsx. It works
+ * identically everywhere, needs no endpoint, and is the reason the route can
+ * be merely undiscoverable rather than build-time excluded — there is
+ * nothing behind it to reach.
+ *
+ * The editor does not validate the draft itself. It calls themeToSource and
+ * renders whatever comes back, error included. A second set of rules here
+ * would be a copy of the ones in themeSource.js, and copies of validation
+ * drift in the direction where the UI says a theme is fine and the file it
+ * writes is not.
+ *
  * ── Accessible names are token paths ──────────────────────────────────────
  * Controls are named "palette.green", "tint.green", "type.size.xs" and so
  * on, not by bare key. Bare keys collide: palette and tint both carry green,
  * amber, red, blue, yellow, cyan and violet, and a label may name only one
  * control. Paths are also how a developer refers to these values when
  * reading a component, so a control is findable by the name it already has.
- ═══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 
 /* A value that IS a colour, not one that merely contains one. The distinction
  * earns its keep in surface: drawerShadow is "0 4px 16px #00000066", a box
@@ -92,8 +112,8 @@ const GENERIC_FAMILIES = new Set([
  * internet, so that is the normal case rather than an edge one. */
 const FONT_PRESETS = [
   { label: "JETBRAINS", value: "'JetBrains Mono Variable', 'JetBrains Mono', 'Courier New', monospace" },
-  { label: "INTER",     value: "'Inter Variable', 'Inter', system-ui, sans-serif" },
-  { label: "SYSTEM",    value: "system-ui, sans-serif" },
+{ label: "INTER",     value: "'Inter Variable', 'Inter', system-ui, sans-serif" },
+{ label: "SYSTEM",    value: "system-ui, sans-serif" },
 ];
 
 const lastFamily = (stack) => {
@@ -163,25 +183,25 @@ const ColourField = ({ path, value, onChange }) => {
 
   return (
     <div style={row}>
-      <label htmlFor={domId(path)} style={name}>{path}</label>
-      <input
-        type="color"
-        aria-label={`${path} swatch`}
-        value={usable ? value : "#000000"}
-        disabled={!usable}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          width: 34, height: 24, padding: 0, background: "transparent",
-          border: `1px solid ${t.palette.border}`,
-          borderRadius: t.radius.sm,
-          cursor: usable ? "pointer" : "not-allowed",
-        }}
-      />
-      <input
-        type="text" id={domId(path)} value={value} spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-        style={inputStyle(t)}
-      />
+    <label htmlFor={domId(path)} style={name}>{path}</label>
+    <input
+    type="color"
+    aria-label={`${path} swatch`}
+    value={usable ? value : "#000000"}
+    disabled={!usable}
+    onChange={(e) => onChange(e.target.value)}
+    style={{
+      width: 34, height: 24, padding: 0, background: "transparent",
+      border: `1px solid ${t.palette.border}`,
+      borderRadius: t.radius.sm,
+      cursor: usable ? "pointer" : "not-allowed",
+    }}
+    />
+    <input
+    type="text" id={domId(path)} value={value} spellCheck={false}
+    onChange={(e) => onChange(e.target.value)}
+    style={inputStyle(t)}
+    />
     </div>
   );
 };
@@ -192,22 +212,22 @@ const NumberField = ({ path, value, onChange }) => {
 
   return (
     <div style={row}>
-      <label htmlFor={domId(path)} style={name}>{path}</label>
-      <input
-        type="number" id={domId(path)} value={value}
-        onChange={(e) => {
-          /* Push a number when the field holds one, and the raw string when
-           * it does not. Number("") is 0, so coercing unconditionally turns
-           * a cleared field into a silent zero, and space.xl quietly
-           * becoming 0 collapses padding across the whole app — which reads
-           * as a layout bug, not as an empty input. Keeping the raw string
-           * makes the preview visibly wrong and makes save refuse by name. */
-          const raw = e.target.value;
-          const n = Number(raw);
-          onChange(raw.trim() !== "" && Number.isFinite(n) ? n : raw);
-        }}
-        style={inputStyle(t, typeof value === "number")}
-      />
+    <label htmlFor={domId(path)} style={name}>{path}</label>
+    <input
+    type="number" id={domId(path)} value={value}
+    onChange={(e) => {
+      /* Push a number when the field holds one, and the raw string when
+       * it does not. Number("") is 0, so coercing unconditionally turns
+       * a cleared field into a silent zero, and space.xl quietly
+       * becoming 0 collapses padding across the whole app — which reads
+       * as a layout bug, not as an empty input. Keeping the raw string
+       * makes the preview visibly wrong and makes save refuse by name. */
+      const raw = e.target.value;
+      const n = Number(raw);
+      onChange(raw.trim() !== "" && Number.isFinite(n) ? n : raw);
+    }}
+    style={inputStyle(t, typeof value === "number")}
+    />
     </div>
   );
 };
@@ -217,12 +237,12 @@ const TextField = ({ path, value, onChange }) => {
   const { row, name } = rowStyles(t);
   return (
     <div style={row}>
-      <label htmlFor={domId(path)} style={name}>{path}</label>
-      <input
-        type="text" id={domId(path)} value={value} spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-        style={inputStyle(t)}
-      />
+    <label htmlFor={domId(path)} style={name}>{path}</label>
+    <input
+    type="text" id={domId(path)} value={value} spellCheck={false}
+    onChange={(e) => onChange(e.target.value)}
+    style={inputStyle(t)}
+    />
     </div>
   );
 };
@@ -237,15 +257,15 @@ const SchemeField = ({ path, value, onChange }) => {
    * half-finished rather than as one bad value. */
   return (
     <div style={row}>
-      <label htmlFor={domId(path)} style={name}>{path}</label>
-      <select
-        id={domId(path)} value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={inputStyle(t)}
-      >
-        <option value="dark">dark</option>
-        <option value="light">light</option>
-      </select>
+    <label htmlFor={domId(path)} style={name}>{path}</label>
+    <select
+    id={domId(path)} value={value}
+    onChange={(e) => onChange(e.target.value)}
+    style={inputStyle(t)}
+    >
+    <option value="dark">dark</option>
+    <option value="light">light</option>
+    </select>
     </div>
   );
 };
@@ -258,68 +278,68 @@ const FontField = ({ path, value, onChange }) => {
 
   return (
     <div style={{ padding: `${t.space.xs}px 0` }}>
-      <div style={row}>
-        <label htmlFor={domId(path)} style={name}>{path}</label>
-        <input
-          type="text" id={domId(path)} value={value} spellCheck={false}
-          onChange={(e) => onChange(e.target.value)}
-          style={inputStyle(t, grounded)}
-        />
-      </div>
+    <div style={row}>
+    <label htmlFor={domId(path)} style={name}>{path}</label>
+    <input
+    type="text" id={domId(path)} value={value} spellCheck={false}
+    onChange={(e) => onChange(e.target.value)}
+    style={inputStyle(t, grounded)}
+    />
+    </div>
 
-      <div style={{ display: "flex", gap: t.space.xs, paddingLeft: indent }}>
-        {FONT_PRESETS.map((p) => (
-          <button
-            key={p.label}
-            onClick={() => onChange(p.value)}
-            /* Three FontFields render this same set, so the visible text
-             * alone names three different buttons. The path disambiguates
-             * them without widening the control. */
-            aria-label={`${path} ${p.label}`}
-            style={{
-              padding: `${t.space.hair}px ${t.space.xs}px`,
-              background: "transparent",
-              border: `1px solid ${t.palette.border}`,
-              borderRadius: t.radius.sm,
-              color: t.palette.dim,
-              fontSize: t.type.size.xs,
-              fontFamily: t.type.family,
-              cursor: "pointer",
-            }}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Rendered in the stack being edited. No static check can tell you a
-        * family failed to load; this can. A stack that fell through to a
-        * system face looks nothing like JetBrains Mono or Inter, and the
-        * difference is visible without knowing what went wrong. */}
-      <div
-        data-testid={`${path} sample`}
-        style={{
-          paddingLeft: indent, paddingTop: t.space.xxs,
-          fontFamily: value, fontSize: t.type.size.md,
-          color: t.palette.text,
-        }}
+    <div style={{ display: "flex", gap: t.space.xs, paddingLeft: indent }}>
+    {FONT_PRESETS.map((p) => (
+      <button
+      key={p.label}
+      onClick={() => onChange(p.value)}
+      /* Three FontFields render this same set, so the visible text
+       * alone names three different buttons. The path disambiguates
+       * them without widening the control. */
+      aria-label={`${path} ${p.label}`}
+      style={{
+        padding: `${t.space.hair}px ${t.space.xs}px`,
+        background: "transparent",
+        border: `1px solid ${t.palette.border}`,
+        borderRadius: t.radius.sm,
+        color: t.palette.dim,
+        fontSize: t.type.size.xs,
+        fontFamily: t.type.family,
+        cursor: "pointer",
+      }}
       >
-        Remuxarr 0123 handoff
+      {p.label}
+      </button>
+    ))}
+    </div>
+
+    {/* Rendered in the stack being edited. No static check can tell you a
+      * family failed to load; this can. A stack that fell through to a
+      * system face looks nothing like JetBrains Mono or Inter, and the
+      * difference is visible without knowing what went wrong. */}
+      <div
+      data-testid={`${path} sample`}
+      style={{
+        paddingLeft: indent, paddingTop: t.space.xxs,
+        fontFamily: value, fontSize: t.type.size.md,
+        color: t.palette.text,
+      }}
+      >
+      Remuxarr 0123 handoff
       </div>
 
       {!grounded && (
         <div
-          data-testid={`${path} warning`}
-          style={{
-            paddingLeft: indent, paddingTop: t.space.xxs,
-            color: t.palette.amber, fontSize: t.type.size.xs,
-            fontFamily: t.type.family,
-          }}
+        data-testid={`${path} warning`}
+        style={{
+          paddingLeft: indent, paddingTop: t.space.xxs,
+          color: t.palette.amber, fontSize: t.type.size.xs,
+          fontFamily: t.type.family,
+        }}
         >
-          No generic fallback, ends in {lastFamily(value) || "nothing"}
+        No generic fallback, ends in {lastFamily(value) || "nothing"}
         </div>
       )}
-    </div>
+      </div>
   );
 };
 
@@ -364,32 +384,32 @@ const Group = ({ label, count, open, onToggle, children }) => {
   const { palette, type, space } = useTheme();
   return (
     <div style={{ marginBottom: space.md }}>
-      <button
-        onClick={onToggle}
-        aria-expanded={open}
-        style={{
-          width: "100%", display: "flex", justifyContent: "space-between",
-          alignItems: "center", padding: `${space.xs}px 0`,
-          background: "transparent", border: "none",
-          borderBottom: `1px solid ${palette.border}`,
-          color: open ? palette.amber : palette.muted,
-          fontSize: type.size.xs, fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.widest, cursor: "pointer",
-        }}
-      >
-        <span>{label}</span>
-        <span style={{ color: palette.dim }}>{count}</span>
-      </button>
-      {open && <div style={{ paddingTop: space.sm }}>{children}</div>}
+    <button
+    onClick={onToggle}
+    aria-expanded={open}
+    style={{
+      width: "100%", display: "flex", justifyContent: "space-between",
+      alignItems: "center", padding: `${space.xs}px 0`,
+      background: "transparent", border: "none",
+      borderBottom: `1px solid ${palette.border}`,
+      color: open ? palette.amber : palette.muted,
+      fontSize: type.size.xs, fontFamily: type.family,
+      fontWeight: type.weight.bold,
+      letterSpacing: type.tracking.widest, cursor: "pointer",
+    }}
+    >
+    <span>{label}</span>
+    <span style={{ color: palette.dim }}>{count}</span>
+    </button>
+    {open && <div style={{ paddingTop: space.sm }}>{children}</div>}
     </div>
   );
 };
 
 const leafCount = (v) =>
-  v && typeof v === "object"
-    ? Object.values(v).reduce((n, x) => n + leafCount(x), 0)
-    : 1;
+v && typeof v === "object"
+? Object.values(v).reduce((n, x) => n + leafCount(x), 0)
+: 1;
 
 export const ThemeEditorPage = ({ children, isMobile = false }) => {
   const { palette, type, space, radius, themeId } = useTheme();
@@ -405,6 +425,30 @@ export const ThemeEditorPage = ({ children, isMobile = false }) => {
   const [open, setOpen] = useState(() => new Set(["palette"]));
 
   const draft = inputsToTheme(inputs);
+
+  /* Recomputed every render rather than on a button press, so the error is
+   * live feedback while typing rather than a surprise at the end. It is the
+   * serialiser's own message, naming the token path it refused. */
+  let source = null;
+  let sourceError = null;
+  try {
+    source = themeToSource(inputs);
+  } catch (err) {
+    sourceError = err.message;
+  }
+
+  const download = () => {
+    const blob = new Blob([source], { type: "text/javascript" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${inputs.id}.theme.js`;
+    a.click();
+    // The click starts the fetch synchronously, so the URL has served its
+    // purpose by the time this runs and leaving it alive leaks for the
+    // lifetime of the document.
+    URL.revokeObjectURL(url);
+  };
 
   /* Clone along the path being written, share everything else. Writing in
    * place would still repaint, because the top-level object is replaced
@@ -443,25 +487,25 @@ export const ThemeEditorPage = ({ children, isMobile = false }) => {
     if (value && typeof value === "object") {
       return (
         <div key={name} style={{ marginBottom: space.sm }}>
-          <div style={{
-            color: palette.dim, fontSize: type.size.xs,
-            fontFamily: type.mono, letterSpacing: type.tracking.wide,
-            paddingTop: space.xs,
-          }}>
-            {name}
-          </div>
-          {Object.entries(value).map(([k, v]) =>
-            renderValue([...path, k], v, baseValue?.[k]))}
+        <div style={{
+          color: palette.dim, fontSize: type.size.xs,
+          fontFamily: type.mono, letterSpacing: type.tracking.wide,
+          paddingTop: space.xs,
+        }}>
+        {name}
         </div>
+        {Object.entries(value).map(([k, v]) =>
+          renderValue([...path, k], v, baseValue?.[k]))}
+          </div>
       );
     }
     return (
       <TokenField
-        key={name}
-        path={name}
-        value={value}
-        baseValue={baseValue}
-        onChange={(v) => setAt(path, v)}
+      key={name}
+      path={name}
+      value={value}
+      baseValue={baseValue}
+      onChange={(v) => setAt(path, v)}
       />
     );
   };
@@ -472,93 +516,164 @@ export const ThemeEditorPage = ({ children, isMobile = false }) => {
       flexDirection: isMobile ? "column" : "row",
       overflow: "hidden", background: palette.bg,
     }}>
-      {/* ── Controls: ACTIVE theme, never the draft. See the header. ────── */}
-      <div style={{
-        flex: isMobile ? "none" : "0 0 380px",
-        overflowY: "auto", padding: space.xl,
-        borderRight: isMobile ? "none" : `1px solid ${palette.border}`,
-        borderBottom: isMobile ? `1px solid ${palette.border}` : "none",
-      }}>
-        <div style={{
-          color: palette.amber, fontSize: type.size.xs,
-          letterSpacing: type.tracking.max, fontWeight: type.weight.bold,
-          paddingBottom: space.sm,
-          borderBottom: `1px solid ${palette.border}`,
-          marginBottom: space.lg,
-        }}>
-          THEME EDITOR
-        </div>
+    {/* ── Controls: ACTIVE theme, never the draft. See the header. ────── */}
+    <div style={{
+      flex: isMobile ? "none" : "0 0 380px",
+      overflowY: "auto", padding: space.xl,
+      borderRight: isMobile ? "none" : `1px solid ${palette.border}`,
+      borderBottom: isMobile ? `1px solid ${palette.border}` : "none",
+    }}>
+    <div style={{
+      color: palette.amber, fontSize: type.size.xs,
+      letterSpacing: type.tracking.max, fontWeight: type.weight.bold,
+      paddingBottom: space.sm,
+      borderBottom: `1px solid ${palette.border}`,
+      marginBottom: space.lg,
+    }}>
+    THEME EDITOR
+    </div>
 
-        <div style={{
-          color: palette.muted, fontSize: type.size.sm,
-          lineHeight: type.leading.relaxed, marginBottom: space.xl,
-        }}>
-          Developer tool. Edits a draft in memory only — nothing is saved and
-          the selected theme is untouched.
-        </div>
+    <div style={{
+      color: palette.muted, fontSize: type.size.sm,
+      lineHeight: type.leading.relaxed, marginBottom: space.xl,
+    }}>
+    Developer tool. Edits a draft in memory only — nothing is saved and
+    the selected theme is untouched.
+    </div>
 
-        <div style={{ display: "flex", gap: space.sm, marginBottom: space.xl }}>
-          {Object.values(themes).map((t) => {
-            const on = t.id === baseId;
-            return (
-              <button
-                key={t.id}
-                onClick={() => resetTo(t.id)}
-                aria-pressed={on}
-                style={{
-                  flex: 1, padding: `${space.xs}px ${space.sm}px`,
-                  background: on ? alpha(palette.amber, ALPHA.low) : "transparent",
-                  border: `1px solid ${on ? palette.amber : palette.border}`,
-                  borderRadius: radius.sm,
-                  color: on ? palette.amber : palette.text,
-                  fontSize: type.size.xs, fontFamily: type.family,
-                  fontWeight: type.weight.bold,
-                  letterSpacing: type.tracking.wide, cursor: "pointer",
-                }}
-              >
-                {t.label.toUpperCase()}
-              </button>
-            );
-          })}
-        </div>
-
-        <Group
-          label="IDENTITY"
-          count={IDENTITY_KEYS.length}
-          open={open.has("identity")}
-          onToggle={() => toggle("identity")}
-        >
-          {IDENTITY_KEYS.map((k) => renderValue([k], inputs[k], base[k]))}
-        </Group>
-
-        {Object.entries(GROUP_LABELS).map(([key, label]) => (
-          <Group
-            key={key}
-            label={label}
-            count={leafCount(inputs[key])}
-            open={open.has(key)}
-            onToggle={() => toggle(key)}
-          >
-            {Object.entries(inputs[key]).map(([k, v]) =>
-              renderValue([key, k], v, base[key][k]))}
-          </Group>
-        ))}
-      </div>
-
-      {/* ── Preview: a real page under the draft ────────────────────────── */}
-      <div
-        data-testid="theme-preview"
+    <div style={{ display: "flex", gap: space.sm, marginBottom: space.xl }}>
+    {Object.values(themes).map((t) => {
+      const on = t.id === baseId;
+      return (
+        <button
+        key={t.id}
+        onClick={() => resetTo(t.id)}
+        aria-pressed={on}
         style={{
-          flex: 1, overflowY: "auto",
-          background: draft.palette.bg, color: draft.palette.text,
+          flex: 1, padding: `${space.xs}px ${space.sm}px`,
+          background: on ? alpha(palette.amber, ALPHA.low) : "transparent",
+              border: `1px solid ${on ? palette.amber : palette.border}`,
+              borderRadius: radius.sm,
+              color: on ? palette.amber : palette.text,
+              fontSize: type.size.xs, fontFamily: type.family,
+              fontWeight: type.weight.bold,
+              letterSpacing: type.tracking.wide, cursor: "pointer",
         }}
-      >
-        <ThemeContext.Provider
-          value={{ ...draft, themeId: draft.id, setThemeId: () => {} }}
         >
-          {children}
-        </ThemeContext.Provider>
+        {t.label.toUpperCase()}
+        </button>
+      );
+    })}
+    </div>
+
+    <Group
+    label="IDENTITY"
+    count={IDENTITY_KEYS.length}
+    open={open.has("identity")}
+    onToggle={() => toggle("identity")}
+    >
+    {IDENTITY_KEYS.map((k) => renderValue([k], inputs[k], base[k]))}
+    </Group>
+
+    {Object.entries(GROUP_LABELS).map(([key, label]) => (
+      <Group
+      key={key}
+      label={label}
+      count={leafCount(inputs[key])}
+      open={open.has(key)}
+      onToggle={() => toggle(key)}
+      >
+      {Object.entries(inputs[key]).map(([k, v]) =>
+        renderValue([key, k], v, base[key][k]))}
+        </Group>
+    ))}
+
+    <Group
+    label="EXPORT"
+    count={sourceError ? "!" : "ok"}
+    open={open.has("export")}
+    onToggle={() => toggle("export")}
+    >
+    {sourceError ? (
+      <div
+      data-testid="export-error"
+      style={{
+        color: palette.red, fontSize: type.size.sm,
+        fontFamily: type.mono, lineHeight: type.leading.relaxed,
+        padding: space.sm,
+        border: `1px solid ${palette.red}`,
+        borderRadius: radius.sm,
+      }}
+      >
+      {sourceError}
       </div>
+    ) : (
+      <>
+      <div style={{
+        color: palette.muted, fontSize: type.size.sm,
+        lineHeight: type.leading.relaxed, marginBottom: space.sm,
+      }}>
+      Paste into frontend/src/theme.jsx, then add{" "}
+      <span style={{ color: palette.amber, fontFamily: type.mono }}>
+      {inputs.id}
+      </span>{" "}
+      to the themes export at the bottom of that file.
+      </div>
+
+      {/* Shown as well as downloaded. Copying out of here is faster
+        * than a round trip through the filesystem for a one-line
+        * tweak, and what is on screen is byte-identical to what the
+        * button writes. */}
+        <textarea
+        data-testid="export-source"
+        aria-label="theme source"
+        readOnly
+        value={source}
+        rows={10}
+        style={{
+          ...inputStyle({ palette, type, space, radius }),
+         width: "100%", resize: "vertical",
+         whiteSpace: "pre", overflowWrap: "normal",
+         fontSize: type.size.xs,
+         lineHeight: type.leading.snug,
+        }}
+        />
+
+        <button
+        onClick={download}
+        style={{
+          marginTop: space.sm, width: "100%",
+          padding: `${space.xs}px ${space.sm}px`,
+          background: alpha(palette.amber, ALPHA.low),
+         border: `1px solid ${palette.amber}`,
+         borderRadius: radius.sm,
+         color: palette.amber,
+         fontSize: type.size.xs, fontFamily: type.family,
+         fontWeight: type.weight.bold,
+         letterSpacing: type.tracking.wide, cursor: "pointer",
+        }}
+        >
+        DOWNLOAD {inputs.id}.theme.js
+        </button>
+        </>
+    )}
+    </Group>
+    </div>
+
+    {/* ── Preview: a real page under the draft ────────────────────────── */}
+    <div
+    data-testid="theme-preview"
+    style={{
+      flex: 1, overflowY: "auto",
+      background: draft.palette.bg, color: draft.palette.text,
+    }}
+    >
+    <ThemeContext.Provider
+    value={{ ...draft, themeId: draft.id, setThemeId: () => {} }}
+    >
+    {children}
+    </ThemeContext.Provider>
+    </div>
     </div>
   );
 };

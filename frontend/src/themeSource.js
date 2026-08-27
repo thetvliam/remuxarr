@@ -44,7 +44,7 @@
  * theme. Both throw. Nothing here coerces, because a serialiser that
  * quietly wrote a bad value would turn a one-off mistake into a repeatable
  * one, and the mistake it would be repeating renders as nothing at all.
- ═══════════════════════════════════════════════════════════════════════════ */
+ ═ *══════════════════════════════════════════════════════════════════════════ */
 
 import {
   themes,
@@ -74,19 +74,19 @@ import {
  * disappears, with nothing anywhere saying why. */
 export const THEME_KEY_ORDER = [
   "id",
-  "label",
-  "colorScheme",
-  "blurb",
-  "palette",
-  "statusColor",
-  "levelColor",
-  "toastTone",
-  "actionCfg",
-  "type",
-  "radius",
-  "space",
-  "size",
-  "surface",
+"label",
+"colorScheme",
+"blurb",
+"palette",
+"statusColor",
+"levelColor",
+"toastTone",
+"actionCfg",
+"type",
+"radius",
+"space",
+"size",
+"surface",
 ];
 
 /* Which actionCfg entry each tint colour ended up in.
@@ -126,11 +126,11 @@ const DERIVED_CALL = {
   levelColor:  (pal) => `buildLevelColor(${pal})`,
   toastTone:   (pal) => `buildToastTone(${pal})`,
   actionCfg:   (pal, inputs) =>
-    `buildActionCfg(${pal}, ${emitObject(inputs.tint, 2, "tint")})`,
+  `buildActionCfg(${pal}, ${emitObject(inputs.tint, 2, "tint")})`,
 };
 
 const isPlainObject = (v) =>
-  v !== null && typeof v === "object" && !Array.isArray(v);
+v !== null && typeof v === "object" && !Array.isArray(v);
 
 const describe = (v) => {
   if (v === null) return "null";
@@ -148,7 +148,24 @@ const describe = (v) => {
  * A serialiser that quietly wrote `undefined` or `[object Object]` would
  * turn that one-off mistake into a repeatable one. */
 const assertLeaf = (v, path) => {
-  if (typeof v === "string") return;
+  if (typeof v === "string") {
+    /* An empty string is a string, and it is never a theme value. It emits
+     * as a perfectly valid literal, so nothing downstream objects: the theme
+     * loads, React sets padding to "" or background to "", the browser drops
+     * the declaration, and the result is a component with no spacing or no
+     * background and no error anywhere. That is the same silent failure as
+     * an undefined key, arriving by a different route — and an editor where
+     * clearing a field produces one makes it repeatable.
+     *
+     * Neither shipped theme has a blank leaf, so this rejects nothing that
+     * exists today. */
+    if (v.trim() === "") {
+      throw new Error(
+        `theme ${path}: empty, which renders as nothing rather than as an error`,
+      );
+    }
+    return;
+  }
   if (typeof v === "number" && Number.isFinite(v)) return;
   throw new Error(
     `theme ${path}: expected a string or a finite number, got ${describe(v)}`,
@@ -176,8 +193,8 @@ function emitObject(obj, indent, path) {
   const lines = Object.entries(obj).map(([k, v]) => {
     const at = `${path}.${k}`;
     const rendered = isPlainObject(v)
-      ? emitObject(v, indent + 2, at)
-      : emitScalar(v, at);
+    ? emitObject(v, indent + 2, at)
+    : emitScalar(v, at);
     return `${inner}${emitKey(k)}: ${rendered},`;
   });
   return `{\n${lines.join("\n")}\n${pad}}`;
@@ -254,7 +271,7 @@ const clonePlain = (value, path) => {
 const leafPaths = (value, path = "") => {
   if (!isPlainObject(value)) return [path];
   return Object.entries(value).flatMap(([k, v]) =>
-    leafPaths(v, path ? `${path}.${k}` : k),
+  leafPaths(v, path ? `${path}.${k}` : k),
   );
 };
 
@@ -381,8 +398,8 @@ export const themeToSource = (inputs) => {
     if (key in DERIVED_CALL) return `  ${key}: ${DERIVED_CALL[key](palette, inputs)},`;
     const v = inputs[key];
     const rendered = isPlainObject(v)
-      ? emitObject(v, 2, key)
-      : emitScalar(v, key);
+    ? emitObject(v, 2, key)
+    : emitScalar(v, key);
     return `  ${key}: ${rendered},`;
   });
 
@@ -390,8 +407,8 @@ export const themeToSource = (inputs) => {
     `const ${palette} = ${emitObject(inputs.palette, 0, "palette")};`,
     ``,
     `const ${inputs.id} = {`,
-    ...body,
-    `};`,
-    ``,
+      ...body,
+      `};`,
+      ``,
   ].join("\n");
 };

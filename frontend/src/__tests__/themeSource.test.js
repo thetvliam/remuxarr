@@ -82,12 +82,12 @@ const evaluateBlock = (source, id) => {
 const badLeaves = (value, path = "") => {
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     return Object.entries(value).flatMap(([k, v]) =>
-      badLeaves(v, path ? `${path}.${k}` : k),
+    badLeaves(v, path ? `${path}.${k}` : k),
     );
   }
   const ok =
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value));
+  typeof value === "string" ||
+  (typeof value === "number" && Number.isFinite(value));
   return ok ? [] : [`${path} = ${String(value)}`];
 };
 
@@ -238,7 +238,7 @@ describe("themeToSource", () => {
   it("keeps numbers as numbers and strings as strings through the source", () => {
     const evaluated = evaluateBlock(
       themeToSource(themeToInputs(themes.terminal)),
-      "terminal",
+                                    "terminal",
     );
     expect(evaluated.radius.pill).toBe(999);
     expect(evaluated.radius.full).toBe("50%");
@@ -253,7 +253,7 @@ describe("themeToSource", () => {
     // and produces a block that does not parse.
     const evaluated = evaluateBlock(
       themeToSource(themeToInputs(themes.terminal)),
-      "terminal",
+                                    "terminal",
     );
     expect(evaluated.type.root).toBe(themes.terminal.type.root);
     expect(evaluated.type.root).toContain("'JetBrains Mono Variable'");
@@ -299,6 +299,20 @@ describe("themeToSource", () => {
     ["an array", ["#fff"]],
     ["a group where a colour belongs", { hex: "#fff" }],
   ])("refuses %s in place of a palette colour", (why, value) => {
+    const inputs = themeToInputs(themes.terminal);
+    inputs.palette.amber = value;
+    expect(() => themeToSource(inputs)).toThrow(/palette\.amber/);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["only whitespace", "   "],
+  ])("refuses a leaf that is %s", (why, value) => {
+    /* Emits as a valid literal, so nothing downstream objects. The theme
+     * loads, the browser drops the declaration, and the element renders with
+     * no background and no error. An editor where clearing a field produces
+     * this makes it repeatable, which is the reason it is checked here
+     * rather than left to whoever notices the gap. */
     const inputs = themeToInputs(themes.terminal);
     inputs.palette.amber = value;
     expect(() => themeToSource(inputs)).toThrow(/palette\.amber/);
