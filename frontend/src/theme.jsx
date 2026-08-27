@@ -118,8 +118,19 @@ export const LAYER = {
 };
 
 /* Build the status/action colour maps from a palette. These are colour
- * lookups, so they must be rebuilt per theme rather than frozen at import. */
-const buildStatusColor = (p) => ({
+ * lookups, so they must be rebuilt per theme rather than frozen at import.
+ *
+ * All four are exported for themeSource.js, which regenerates them when a
+ * theme is written back out. It calls these rather than carrying its own
+ * copies, and the undo_pending/undone/undo_failed gap recorded below is
+ * exactly why: that is what a second, partial copy of one of these maps
+ * looks like after a few months. A serialiser that reimplemented them would
+ * drift the same way, and every theme it wrote from then on would differ
+ * from the ones already in this file in a way nothing on screen announces.
+ *
+ * Exporting them does not make them a public API. Nothing renders from
+ * these directly — components read the built maps off the theme. */
+export const buildStatusColor = (p) => ({
   pending:       p.dim,
   processing:    p.blue,
   success:       p.green,
@@ -154,7 +165,7 @@ const buildStatusColor = (p) => ({
  * The eight tones are the ones actually in use, not an invented taxonomy —
  * collapsing them further would silently merge distinctions the app already
  * makes, like the violet reserved for dry-run previews. */
-const buildToastTone = (p) => ({
+export const buildToastTone = (p) => ({
   success: p.green,   // completed, resumed
   error:   p.red,     // failed, rejected, unreachable
   warning: p.yellow,  // a mode is on that changes behaviour: dry run, paused
@@ -168,7 +179,7 @@ const buildToastTone = (p) => ({
 /* Log severity colours. Was a module-level const in LogViewer.jsx built from
  * the static palette, which froze the log output to the default theme even
  * once the surrounding page followed the switch. */
-const buildLevelColor = (p) => ({
+export const buildLevelColor = (p) => ({
   DEBUG:    p.dim,
   INFO:     p.muted,
   WARNING:  p.amber,
@@ -176,7 +187,7 @@ const buildLevelColor = (p) => ({
   CRITICAL: p.red,
 });
 
-const buildActionCfg = (p, tint) => ({
+export const buildActionCfg = (p, tint) => ({
   copy_track:         { bg: tint.green,  border: tint.greenB,  text: p.green,   label: "COPY"      },
   drop_track:         { bg: tint.red,    border: tint.redB,    text: p.red,     label: "DROP"      },
   transcode_track:    { bg: tint.amber,  border: tint.amberB,  text: p.amber,   label: "TRANSCODE" },
