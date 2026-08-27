@@ -87,10 +87,51 @@ describe("every shipped theme", () => {
     expect(away(t.palette.muted)).toBeLessThan(away(t.palette.text));
   });
 
-  it("ships exactly one light theme, which is the one that needs the light wordmark", () => {
-    /* AppHeader picks logo-name-light.svg purely from colorScheme, and that
-     * branch had no shipped theme exercising it until dawn existed. */
-    const light = SHIPPED.filter(([, t]) => t.colorScheme === "light").map(([id]) => id);
-    expect(light).toEqual(["dawn"]);
+  it("ships at least one light theme, so the light wordmark branch is exercised", () => {
+    /* AppHeader picks logo-name-light.svg purely from colorScheme, and no
+     * shipped theme reached that branch until dawn existed.
+     *
+     * This originally asserted the light themes were exactly ["dawn"], which
+     * passed for one commit and then failed the moment a second was added.
+     * That was pinning a fact rather than the invariant it was named for:
+     * what has to stay true is that the branch has a shipped theme behind
+     * it, not how many. */
+    const light = SHIPPED.filter(([, t]) => t.colorScheme === "light");
+    expect(light.length).toBeGreaterThan(0);
+  });
+});
+
+describe("light variants of a parent theme", () => {
+  /* The brief for these was explicit: colours only, everything else left
+   * alone. That is checkable rather than a matter of care, so it is checked.
+   *
+   * It is also the thing most likely to rot. Retuning a parent's spacing and
+   * forgetting its light variant leaves two themes that are supposed to be
+   * the same layout quietly drifting apart, and nothing about the result
+   * looks broken enough to investigate. */
+  const VARIANTS = [["paper", "terminal"], ["linen", "soft"]];
+  const STRUCTURAL = ["type", "radius", "space", "size"];
+
+  it.each(VARIANTS)("%s keeps every structural value of %s", (child, parent) => {
+    for (const group of STRUCTURAL) {
+      expect(themes[child][group]).toEqual(themes[parent][group]);
+      // toEqual ignores key order; the serialiser's output does not.
+      expect(JSON.stringify(themes[child][group]))
+      .toBe(JSON.stringify(themes[parent][group]));
+    }
+  });
+
+  it.each(VARIANTS)("%s changes the colours it is supposed to change", (child, parent) => {
+    // The other half of the pair. Without it, a variant that was an exact
+    // copy of its parent would satisfy the test above perfectly.
+    for (const group of ["palette", "tint", "surface"]) {
+      const a = group === "tint"
+      ? themes[child].actionCfg : themes[child][group];
+      const b = group === "tint"
+      ? themes[parent].actionCfg : themes[parent][group];
+      expect(JSON.stringify(a)).not.toBe(JSON.stringify(b));
+    }
+    expect(themes[child].colorScheme).toBe("light");
+    expect(themes[parent].colorScheme).toBe("dark");
   });
 });

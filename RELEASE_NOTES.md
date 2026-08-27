@@ -60,7 +60,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Added
 
-- Two new themes in Settings > Appearance: **Midnight**, a cool dark theme, and **Dawn**, the first light theme. Your current theme is unchanged and neither is selected for you.
+- Four new themes in Settings > Appearance: **Midnight** and **Dawn**, a new dark and light pair, plus **Paper** and **Linen**, light versions of Terminal and Soft that keep those themes' exact spacing and type and change only the colours. Your current theme is unchanged and none of them is selected for you.
 
 ## Changed
 
