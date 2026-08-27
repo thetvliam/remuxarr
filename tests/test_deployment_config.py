@@ -273,6 +273,40 @@ def test_the_documented_test_counts_are_current():
         )
 
 
+def test_the_documented_install_commands_include_the_app_dependencies():
+    """
+    Both READMEs tell a newcomer how to install before running the suite,
+    and both named only tests/requirements-test.txt. That file holds
+    pytest, pytest-cov and the TestClient HTTP backend — no fastapi, no
+    sqlalchemy, no pydantic-settings — so following the instructions
+    verbatim in a clean environment dies at collection on 29 of the 54
+    modules before a single test runs.
+
+    It survived precisely because nobody who could have noticed ever runs
+    it: anyone with a working checkout already has the app dependencies
+    installed, so the short form appears to work for every person in a
+    position to spot that it does not.
+
+    Asserted against every pip line in the file rather than one known
+    snippet, so the two-command form (requirements.txt on its own line)
+    passes too. Option B installs only the test extras on purpose — it
+    runs inside the container, where requirements.txt was installed at
+    build time — which is why this looks for one satisfying line rather
+    than requiring every line to qualify.
+    """
+    for name in ("README.md", "tests/README.md"):
+        installs = [
+            line for line in _read(name).splitlines() if "pip install" in line
+        ]
+        assert installs, f"{name} no longer documents an install command"
+        assert any("-r requirements.txt" in line for line in installs), (
+            f"{name} documents installing only the test extras. Without "
+            f"requirements.txt there is no fastapi, sqlalchemy or "
+            f"pydantic-settings, so pytest cannot import app/ and the run "
+            f"ends at collection."
+        )
+
+
 def test_the_release_notes_file_is_shipped_in_the_image():
     """
     The route resolves RELEASE_NOTES.md from its own __file__, four

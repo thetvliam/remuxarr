@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1151 tests across 56 files, plus 308 frontend tests under
+1152 tests across 56 files, plus 308 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
 number below matters more than that one.
 
@@ -92,7 +92,7 @@ Two failure modes this has caught, both of which read as coverage:
 **Option A — locally.**
 
 ```bash
-pip install -r tests/requirements-test.txt
+pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 
 cd frontend && npm install && npm test

@@ -1,17 +1,3 @@
-<!-- Single non-transparent banner, deliberately NOT a <picture> with
-     prefers-color-scheme sources. That media query reads the viewer's
-     OS/browser setting, not GitHub's own Appearance setting, so switching
-     GitHub to light while the OS stays dark left the banner on the wrong
-     variant. The GitHub-native mechanism that does follow the account theme
-     (#gh-dark-mode-only / #gh-light-mode-only) is deprecated in GitHub's own
-     docs and is GitHub-only — on Docker Hub, npm and VS Code it renders both
-     images stacked, and this README is published to Docker Hub.
-
-     banner_dark.png is fully opaque with square corners, so it carries its
-     own background and reads as a deliberate card on any canvas, in any
-     theme, in any renderer. Nothing to switch, nothing to get wrong. The
-     transparent variants remain in images_and_demo/ for use on surfaces
-     whose background is known. -->
 ![Remuxarr](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/banner_dark.png)
 
 # Remuxarr
@@ -324,10 +310,10 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1151 tests across 56 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1152 tests across 56 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
-pip install -r tests/requirements-test.txt
+pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 ```
 
