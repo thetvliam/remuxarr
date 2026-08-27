@@ -470,6 +470,169 @@ const soft = {
     },
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * THEME: soft (demonstration)
+ * Same skeleton, different clothes — rounded corners, slightly larger type,
+ * roomier padding, calmer palette. Included to prove the mechanism handles
+ * STRUCTURAL change, not just colour. Replace with your real mockups.
+ ═ * ═*══════════════════════════════════*════════════════════════════**═══════════ */
+const testPalette = {
+  bg: "#95979d",
+  card: "#4e5365",
+  border: "#ffffff",
+  text: "#000000",
+  dim: "#ffffff",
+  muted: "#000000",
+  amber: "#b30000",
+  green: "#3ecb7d",
+  red: "#e85555",
+  blue: "#000000",
+  yellow: "#e0a63a",
+  violet: "#af86f5",
+  cyan: "#4fdede",
+};
+
+const test = {
+  id: "test",
+  label: "test",
+  colorScheme: "light",
+  blurb: "Roomier and rounder. Larger type, tight tracking, generous padding.",
+  palette: testPalette,
+  statusColor: buildStatusColor(testPalette),
+  levelColor: buildLevelColor(testPalette),
+  toastTone: buildToastTone(testPalette),
+  actionCfg: buildActionCfg(testPalette, {
+    green: "#0e2417",
+    greenB: "#1a3a27",
+    red: "#241010",
+    redB: "#3a1c1c",
+    amber: "#241a06",
+    amberB: "#3a2c0c",
+    blue: "#101724",
+    blueB: "#1c273a",
+    yellow: "#241a06",
+    yellowB: "#3a2a0c",
+    cyan: "#062424",
+    cyanB: "#0c3a3a",
+    violet: "#160a24",
+    violetB: "#26143a",
+  }),
+  type: {
+    family: "inherit",
+    root: "'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    mono: "ui-monospace, 'SF Mono', Menlo, monospace",
+    size: {
+      xs: 10,
+      sm: 11,
+      md: 12,
+      base: 13,
+      lg: 14,
+      xl: 15,
+      xxl: 16,
+      h2: 17,
+      h1: 20,
+    },
+    weight: {
+      normal: 400,
+      medium: 500,
+      semibold: 600,
+      bold: 700,
+      black: 800,
+    },
+    tracking: {
+      tight: "0",
+      snug: "0.01em",
+      normal: "0.02em",
+      wide: "0.03em",
+      wider: "0.04em",
+      widest: "0.05em",
+      ultra: "0.06em",
+      max: "0.08em",
+    },
+    leading: {
+      none: 1,
+      tight: 1.55,
+      snug: 1.6,
+      normal: 1.65,
+      relaxed: 1.7,
+      loose: 1.75,
+    },
+  },
+  radius: {
+    none: 0,
+    sm: 6,
+    badge: 6,
+    pill: 999,
+    full: "50%",
+  },
+  space: {
+    none: 0,
+    hair: 3,
+    xxs: 5,
+    xs: 8,
+    sm: 10,
+    md: 13,
+    lg: 16,
+    xl: 20,
+    xxl: 26,
+    huge: 30,
+    max: 34,
+    xxxl: 38,
+    giant: 48,
+    mega: 58,
+  },
+  size: {
+    ledSize: 8,
+    ledGlow: 6,
+    ledGlowFar: 12,
+    barHeight: 4,
+    segBarHeight: 14,
+    toastOffset: 24,
+    toastAccent: 3,
+    toastMinW: 230,
+    toastMaxW: 380,
+    toastMobileInset: 32,
+    accentWidth: 3,
+    ledSizeLg: 9,
+    ledSizeSm: 7,
+    headerHeight: 52,
+    apiBarW: 230,
+    scrollbarW: 5,
+    focusRing: 2,
+    focusOffset: 2,
+    accentThin: 2,
+    closeGlyph: 22,
+    closeGlyphMobile: 26,
+  },
+
+    /* Per-theme surfaces — colours with no home in the palette. Overlays,
+     * scrims, shadows and one-off backgrounds, all of which sit ON something
+     * rather than being a colour in their own right.
+     *
+     * These are the entries a new theme genuinely has to think about, and the
+     * reason they cannot be derived with alpha(): every one of them darkens
+     * what is beneath it, because both current themes are dark. A light theme
+     * has to lighten instead, which is a different colour and not a different
+     * opacity of the same one. */
+    surface: {
+      badgeFallbackBg: "#1d2029",
+      dryRunBg: "#241d06",
+      rowHoverBg: "#ffffff0a",
+      drawerShadow: "0 6px 24px #0000004d",
+      logoInk: "#000",
+      reviewBorder: "#3a2c0c",
+      trackRowBg: "#00000033",
+      rowSelectedBg: "#ffffff0d",
+      logBg: "#1b1f2b",
+      logMeta: "#575f7d",
+      logText: "#dde0ec",
+      zebraBg: "#ffffff07",
+      modalScrimBg: "#000000cc",
+      errorBg: "#241010",
+      guardScrimBg: "rgba(0,0,0,0.72)",
+    },
+};
+
 export const themes = { terminal, soft };
 export const DEFAULT_THEME_ID = "terminal";
 const STORAGE_KEY = "remuxarr.theme";
