@@ -195,7 +195,11 @@ Then:
 
 ### Setting your time zone
 
-`TZ` controls the timestamps you see in the log viewer and in job history. It takes an **IANA time zone name**, which is an `Area/City` pair - not a country name, not an abbreviation like `EST`, and not an offset like `GMT+1`. Pick the listed city closest to you *within your own country*; large countries have several, because their regions follow different daylight-saving rules.
+`TZ` sets the container's own clock, and that clock is what decides **when scheduled work runs**: the scan times under **Settings → Maintenance & Logs → Scheduled Scans**, and the analyze window under **Settings → Integrations → Plex Analyze Backlog** (02:00-06:00 by default). Leave `TZ` unset and the container runs on UTC, so a window you meant for the small hours lands wherever UTC puts it - 02:00-06:00 UTC is 22:00-02:00 in New York and the middle of the afternoon in Sydney.
+
+The timestamps in the log viewer and in job history do **not** depend on this. Those are stored in UTC and converted by your browser, so they already read correctly in your own zone whether or not `TZ` is set. That is worth knowing because it removes the symptom you would otherwise notice: every clock in the UI looks right, and the only sign anything is wrong is a scan starting at the wrong end of the evening.
+
+It takes an **IANA time zone name**, which is an `Area/City` pair - not a country name, not an abbreviation like `EST`, and not an offset like `GMT+1`. Pick the listed city closest to you *within your own country*; large countries have several, because their regions follow different daylight-saving rules.
 
 | Country | Example values |
 | --- | --- |
@@ -223,7 +227,7 @@ A few things that trip people up:
 - **Daylight saving is automatic.** That is the whole reason to use a zone name instead of a fixed offset - the clock shifts itself on the right dates.
 - **Avoid `Etc/GMT±N` values.** Their signs are inverted from what you would expect (`Etc/GMT+5` is actually UTC−5), so they are an easy way to end up an hour or ten wrong.
 
-To find your own, run `timedatectl list-timezones` on a Linux host (or check Unraid's **Settings → Date & Time**, which already displays it). After starting the container, `docker exec remuxarr date` confirms the setting took effect.
+To find your own, run `timedatectl list-timezones` on a Linux host (or check Unraid's **Settings → Date & Time**, which already displays it). After starting the container, `docker exec remuxarr date` confirms the setting took effect - and that is the check worth doing, since nothing in the web UI will look wrong if you get it incorrect.
 
 > **SELinux hosts (Fedora, RHEL, some Synology setups):** append `:Z` to the `/config` mount and `:z` to each media mount - the media ones are shared with your Sonarr/Radarr/Plex containers, so they must use the lowercase shared label. Both are harmless no-ops on non-SELinux hosts like stock Unraid. See this repo's own `docker-compose.yml` for a fully annotated example.
 
@@ -310,7 +314,7 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1152 tests across 56 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1153 tests across 56 files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt

@@ -35,6 +35,7 @@ shifting every timestamp by the server's offset with nothing failing loudly.
 import datetime as dt
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -204,6 +205,68 @@ def test_naive_local_now_would_shift_timestamps(non_utc_host):
         f"expected a non-zero host offset under the forced timezone, got "
         f"{offset}s — the fixture is not taking effect and the checks below "
         "would be inert"
+    )
+
+
+# ── The invariant the TZ documentation rests on ──────────────────────────────
+
+def test_naive_local_time_is_confined_to_the_scheduler():
+    """
+    The README tells users that TZ decides when scheduled work runs and
+    does not affect any timestamp they read. Both halves rest on one
+    invariant: a bare `datetime.now()` appears in the scheduler, where
+    matching the user's wall clock is the entire point, and nowhere else.
+
+    timeutil.py states that rule in prose already - never call
+    `datetime.now()` for a value that lands in a DateTime column - and
+    nothing enforced it. The failure is silent by construction: a naive
+    local value stores its wall clock as though it were UTC, so the row
+    is wrong by the host offset with nothing raising, and on a UTC host
+    every other test still passes.
+
+    Scanning source rather than behaviour because source is where the
+    rule gets broken. A new write site is one line, and the value it
+    stores looks entirely plausible until someone outside UTC reads it -
+    which is exactly the drift this guards, in both directions: adding a
+    call elsewhere makes the "your browser decides" half wrong, removing
+    the scheduler's makes the "TZ decides when scans run" half wrong.
+
+    timeutil.py is exempt because it names `datetime.now()` in its own
+    docstring while calling only the timezone-aware form.
+
+    The pattern matches any no-argument `.now()` rather than the literal
+    `datetime.now()`, because `from datetime import datetime as dt`
+    defeats the narrower form - a surviving mutant when this was first
+    written. Today that broader pattern matches nothing in app/ except
+    the two scheduler lines, so it costs no false positives.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    exempt = {"app/core/timeutil.py"}
+    bare_now = re.compile(r"\.now\(\s*\)")
+
+    found = {}
+    for path in sorted((root / "app").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel in exempt:
+            continue
+        hits = [
+            n for n, line in enumerate(path.read_text().splitlines(), 1)
+            if bare_now.search(line)
+        ]
+        if hits:
+            found[rel] = hits
+
+    assert set(found) <= {"app/core/scheduler.py"}, (
+        f"bare datetime.now() outside the scheduler: "
+        f"{ {k: v for k, v in found.items() if k != 'app/core/scheduler.py'} } - "
+        f"that stores local wall-clock time into a UTC column silently. Use "
+        f"app.core.timeutil.utcnow()."
+    )
+    assert "app/core/scheduler.py" in found, (
+        "the scheduler no longer matches on local time, so TZ no longer "
+        "decides when scheduled scans run - the README says it does"
     )
 
 
