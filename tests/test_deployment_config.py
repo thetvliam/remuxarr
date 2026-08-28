@@ -337,6 +337,42 @@ def test_the_documented_install_commands_include_the_app_dependencies():
         )
 
 
+def test_ci_and_the_image_build_the_frontend_on_the_same_node_major():
+    """
+    The image moved to node:24-slim when Node 20 went end-of-life, and the
+    CI job stayed on 20, so for a while the frontend suite was verified on
+    one major and shipped on another. Nothing caught it because nothing
+    compared the two files.
+
+    That gap is worse than it sounds: a Node-major behaviour difference
+    shows up as a passing CI run and a broken image, which is the failure
+    mode with the longest feedback loop available - it reaches users
+    before it reaches anyone who could fix it.
+
+    Compares only the major. The Dockerfile pins a tag (node:24-slim) and
+    setup-node takes a major ("24") that resolves to whatever is current
+    at run time, so the patch versions legitimately differ and asserting
+    on them would fail constantly for no reason.
+    """
+    import re
+
+    dockerfile = _read("Dockerfile")
+    from_line = re.search(r"FROM node:(\d+)[.\-]", dockerfile)
+    assert from_line, "Dockerfile no longer pins a node: base image for the UI build"
+    image_major = from_line.group(1)
+
+    workflow = _read(".github/workflows/ci.yml")
+    pinned = re.search(r"node-version:\s*[\"']?(\d+)", workflow)
+    assert pinned, "ci.yml no longer pins a node-version"
+    ci_major = pinned.group(1)
+
+    assert image_major == ci_major, (
+        f"the image builds the frontend on Node {image_major} and CI tests "
+        f"it on Node {ci_major}. Bring them together, or the suite is not "
+        f"testing what ships."
+    )
+
+
 def test_the_release_notes_file_is_shipped_in_the_image():
     """
     The route resolves RELEASE_NOTES.md from its own __file__, four
