@@ -104,6 +104,63 @@ def test_unraid_recycle_path_is_optional():
     assert entry.get("Required") == "false"
 
 
+def test_unraid_config_and_recycle_defaults_are_siblings():
+    """
+    The template defaulted /config to the appdata root while the
+    deployment guide put it in an appdata/remuxarr/config subfolder, so
+    the two Unraid-facing documents disagreed about the same install.
+    With the template's value /recycle landed inside /config, which puts
+    the recycle bin's 20GB ceiling inside the directory CA Appdata Backup
+    takes wholesale.
+
+    Both are now subfolders and neither contains the other. The nesting
+    check is the part worth keeping: pointing /recycle back inside
+    /config would work perfectly, break nothing, and pass every other
+    test here, which is exactly why it needs saying out loud.
+
+    Compares the template against the guide rather than against a literal
+    so the two cannot drift apart again silently - the failure mode this
+    started as.
+    """
+    import re
+
+    root = ET.fromstring(_read("templates/remuxarr.xml"))
+
+    def default_for(target):
+        entry = next(
+            (c for c in root.findall("Config") if c.get("Target") == target), None
+        )
+        assert entry is not None, f"the Unraid template has no {target} mapping"
+        value = (entry.get("Default") or "").rstrip("/")
+        assert value, f"the Unraid template has no default host path for {target}"
+        return value
+
+    config = default_for("/config")
+    recycle = default_for("/recycle")
+
+    assert config != recycle, "/config and /recycle default to the same host path"
+    assert not recycle.startswith(config + "/"), (
+        f"the template nests /recycle ({recycle}) inside /config ({config}). "
+        f"The recycle bin is bounded at 20GB by default, and under /config it "
+        f"lands inside the appdata directory backup plugins take whole."
+    )
+    assert not config.startswith(recycle + "/"), (
+        f"the template nests /config ({config}) inside /recycle ({recycle})"
+    )
+
+    guide = _read("UNRAID_DEPLOYMENT.md")
+    for target, value in (("/config", config), ("/recycle", recycle)):
+        # Boundary-anchored rather than a substring test: plain `in` lets a
+        # truncated path pass by matching inside the longer correct one, so
+        # a template saying .../conf satisfied a guide saying .../config.
+        # Found by mutation; the substring form survived it.
+        assert re.search(re.escape(value) + r"(?![\w/-])", guide), (
+            f"the template defaults {target} to {value}, which does not appear "
+            f"in UNRAID_DEPLOYMENT.md. Both describe the same install to the "
+            f"same person, so they have to agree."
+        )
+
+
 def test_unraid_template_still_parses():
     """
     A malformed template is not rejected loudly by Unraid — it just fails

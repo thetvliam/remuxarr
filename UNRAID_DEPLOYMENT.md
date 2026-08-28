@@ -34,6 +34,13 @@
    Do **not** point it anywhere under `/tmp`: that is RAM-backed on Unraid,
    so the whole retention window would disappear on reboot.
 
+   **If you use the CA Appdata Backup plugin**, add `recycle` to its exclusion
+   list for this container. It sits under `appdata` so the plugin will take it
+   otherwise, and at the default 20GB ceiling that is 20GB of recoverable
+   track data in every backup. Nothing is lost by excluding it: the recycle
+   bin is a short retention window for undoing a rule you got wrong, not a
+   backup, and the files it protects are still in your library.
+
 5. Add one port mapping:
 
    | Container Port | Host Port |

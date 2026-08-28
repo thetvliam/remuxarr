@@ -28,7 +28,7 @@
   <Config Name="WebUI" Target="9191" Default="9191" Mode="tcp" Description="HTTP port for the web UI and API." Type="Port" Display="always" Required="true" Mask="false"/>
 
   <!-- Persistent config and database -->
-  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/remuxarr" Mode="rw" Description="Persistent settings and database. Must survive container updates." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/remuxarr/config" Mode="rw" Description="Persistent settings and database. Must survive container updates." Type="Path" Display="always" Required="true" Mask="false"/>
 
   <!-- Media library -->
   <Config Name="Movies" Target="/media/movies" Default="/mnt/user/media/movies" Mode="rw" Description="Your movies library." Type="Path" Display="always" Required="true" Mask="false"/>

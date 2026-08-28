@@ -64,6 +64,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
+- New Unraid installs now put `/config` at `/mnt/user/appdata/remuxarr/config` rather than at the appdata folder itself, so the recycle bin sits beside your settings instead of inside them. **Existing installs are unaffected and need no action** - Unraid keeps the paths you already chose. If you use the CA Appdata Backup plugin and have the recycle bin on, adding `recycle` to that container's exclusion list keeps up to 20GB of recoverable track data out of every backup; see UNRAID_DEPLOYMENT.md.
+
 - Undefined-language handling is now set separately for audio and subtitles, so you can tag undefined audio automatically while holding undefined subtitles for review. **On upgrade the audio side starts at "Always leave" regardless of your previous setting** — if you had it on "Always fix", set the new "Fix Undefined Audio Language Tags" back to that. Your subtitle setting carries over untouched.
 - Subtitles renamed through Subtitle Language Review now use the two-letter code (`Show.en.srt`) instead of the three-letter one (`Show.eng.srt`), matching what automatic extraction already produced. If you have scripts or Plex agents keyed on the old name, they will need updating.
 

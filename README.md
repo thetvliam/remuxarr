@@ -157,7 +157,7 @@ services:
     volumes:
       # Settings and database. Map this to a host path that survives
       # container updates - everything you configure lives here.
-      - /path/to/appdata/remuxarr:/config
+      - /path/to/appdata/remuxarr/config:/config
 
       # Your media library. Mount it at the same paths Sonarr/Radarr use
       # inside their own containers where you can - it makes the path
@@ -314,7 +314,7 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1154 tests across 54 test files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1155 tests across 54 test files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt
