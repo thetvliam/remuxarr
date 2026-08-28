@@ -75,10 +75,15 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --cov --cov-report=xml:coverage.xml --cov-report=term
 
-      # Uploaded rather than gated on a threshold. Coverage sits around 50%,
-      # concentrated in the decision engine, so a minimum would either be set
-      # so low it means nothing or would block unrelated work. The artifact
-      # makes the trend visible without turning it into a merge blocker.
+      # Uploaded rather than gated on a threshold. Coverage sits around 78%,
+      # unevenly: the decision engine is at 98% and the revert paths between
+      # 87 and 100, while the scan, settings and webhook routes are in the
+      # 40s and email_notify is at 16. A single global minimum would have to
+      # clear that floor to avoid blocking unrelated work, which puts it low
+      # enough to mean nothing. The artifact makes the trend visible without
+      # turning it into a merge blocker. The figure is not a target either -
+      # see tests/README.md on why mutation testing is the standard here
+      # rather than a percentage.
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

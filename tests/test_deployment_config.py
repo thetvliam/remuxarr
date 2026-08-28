@@ -246,8 +246,17 @@ def test_the_documented_test_counts_are_current():
     the page worth less. Counting them here is cheap and the failure
     message says what to write.
 
-    Deliberately tolerant: this fails when a number is stale by enough to
-    mislead, not when a single test is added.
+    Deliberately tolerant on the test count: this fails when a number is
+    stale by enough to mislead, not when a single test is added.
+
+    Exact on the file count, and the difference is the point. That number
+    drifted from 54 to 56 without two modules being added, because 56 is
+    what you get counting .py files under tests/ — conftest.py and
+    sample_library/parse_ffprobe_dump.py included, neither of which holds
+    a test. Both readings were defensible while neither was written down.
+    A tolerance of even two would have let exactly that drift through, so
+    there is none: the count is the modules pytest collects, and adding a
+    test file is a large enough event to update a number for.
     """
     import re
     import subprocess
@@ -263,6 +272,15 @@ def test_the_documented_test_counts_are_current():
         pytest.skip("could not determine the collected test count")
     actual = int(match.group(1))
 
+    modules = {
+        line.split("::", 1)[0]
+        for line in collected.stdout.splitlines()
+        if "::" in line and line.startswith("tests/")
+    }
+    if not modules:
+        pytest.skip("could not determine the collected module list")
+    actual_files = len(modules)
+
     for name in ("README.md", "tests/README.md"):
         text = _read(name)
         quoted = re.search(r"(\d[\d,]*) tests across", text)
@@ -270,6 +288,18 @@ def test_the_documented_test_counts_are_current():
         claimed = int(quoted.group(1).replace(",", ""))
         assert abs(claimed - actual) <= 25, (
             f"{name} claims {claimed} backend tests; there are {actual}"
+        )
+
+        quoted_files = re.search(r"tests across ([\d,]+) (?:test )?files", text)
+        assert quoted_files, (
+            f"{name} no longer quotes a backend test file count"
+        )
+        claimed_files = int(quoted_files.group(1).replace(",", ""))
+        assert claimed_files == actual_files, (
+            f"{name} claims {claimed_files} test files; pytest collects "
+            f"{actual_files}. Count collected modules, not .py files under "
+            f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
+            f"hold no tests and are not counted."
         )
 
 
