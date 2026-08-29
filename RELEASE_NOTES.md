@@ -71,7 +71,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- The README's time zone instructions described the wrong thing. `TZ` does not affect the timestamps you see - those are converted by your browser and have always been right - but it does decide when scheduled scans and the Plex analyze window actually run. If you never set `TZ` because the clocks in the UI looked correct, your container is on UTC and any overnight schedule is running at the wrong hour: a 02:00-06:00 window is 22:00-02:00 in New York. Set `TZ` and check it with `docker exec remuxarr date`.
+- The README's time zone instructions described the wrong thing. `TZ` does not affect the timestamps you see - those are converted by your browser and have always been right - but it does decide when scheduled scans and the Plex analyze window actually run. If you never set `TZ` because the clocks in the UI looked correct, your container is on UTC and any overnight schedule is running at the wrong hour: a 02:00-06:00 window is 22:00-02:00 in New York. Set `TZ` and check it with `docker exec remuxarr date`. **On Unraid there was no field for it** - Unraid does not pass a time zone to containers and the template never offered one - so edit the container and add a `TZ` variable, or reapply the updated template on a new install.
 
 - Ignoring a file in Audio or Subtitle Language Review now clears every flagged track on it. Previously it cleared one, so the file stayed on the review page it had just been ignored from.
 - Applying a language to several tracks of one file now reprocesses that file once instead of once per track, and the confirmation counts files rather than tracks.

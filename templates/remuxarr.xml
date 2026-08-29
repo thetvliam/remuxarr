@@ -48,4 +48,28 @@
   not want it. Do NOT give this a default under /tmp — that is RAM-backed on
   Unraid and the retention window would not survive a reboot. -->
   <Config Name="Recycle Bin" Target="/recycle" Default="/mnt/user/appdata/remuxarr/recycle" Mode="rw" Description="Holds revert-to-original data: the audio and subtitle tracks removed by a job, so files can be put back. Leave empty to disable. Must NOT be under /tmp — that is RAM-backed and would be lost on reboot." Type="Path" Display="always" Required="false" Mask="false"/>
+
+  <!-- Time zone. Unraid does not pass TZ to containers itself — its own
+  Date & Time setting governs the host, not what a container's clock reads —
+  so without this field a Community Apps install runs on UTC with no way to
+  change it short of adding the variable by hand.
+
+  That matters because TZ decides when scheduled work fires: scan times and
+  the Plex analyze window are matched against the container's local clock.
+  It does NOT affect displayed timestamps, which are stored in UTC and
+  converted by the browser. That asymmetry is the reason this needs saying
+  in the description rather than just existing as a field: leaving it empty
+  produces no visible symptom at all. Every clock in the UI reads correctly
+  and the only evidence is a scan starting at the wrong hour.
+
+  Default is deliberately empty. Seeding a city would be confidently wrong
+  for most people, which is worse than being plainly unset, and seeding
+  Etc/UTC would look configured while changing nothing. Required="false"
+  because an empty TZ is a working container, just one on UTC.
+
+  No Dockerfile change is needed to support this: python:3.12-slim installs
+  tzdata as a base runtime dependency, so /usr/share/zoneinfo is present.
+  Without it glibc would fall back to UTC and this field would silently do
+  nothing. -->
+  <Config Name="TZ" Target="TZ" Default="" Mode="" Description="Your IANA time zone, e.g. Europe/London or America/New_York. Leave empty and the container runs on UTC, which means scheduled scans and the Plex analyze window fire on UTC rather than your local time. Timestamps shown in the web UI are converted by your browser and are correct either way." Type="Variable" Display="always" Required="false" Mask="false"/>
 </Container>

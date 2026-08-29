@@ -229,6 +229,8 @@ A few things that trip people up:
 
 To find your own, run `timedatectl list-timezones` on a Linux host (or check Unraid's **Settings → Date & Time**, which already displays it). After starting the container, `docker exec remuxarr date` confirms the setting took effect - and that is the check worth doing, since nothing in the web UI will look wrong if you get it incorrect.
 
+On Unraid, set this in the container's **TZ** variable rather than here; Unraid's own Date & Time page governs the host, not the container, so the two are separate settings. See [`UNRAID_DEPLOYMENT.md`](UNRAID_DEPLOYMENT.md).
+
 > **SELinux hosts (Fedora, RHEL, some Synology setups):** append `:Z` to the `/config` mount and `:z` to each media mount - the media ones are shared with your Sonarr/Radarr/Plex containers, so they must use the lowercase shared label. Both are harmless no-ops on non-SELinux hosts like stock Unraid. See this repo's own `docker-compose.yml` for a fully annotated example.
 
 ### Building from source
@@ -314,7 +316,7 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1155 tests across 54 test files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite - 1156 tests across 54 test files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt

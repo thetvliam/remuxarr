@@ -161,6 +161,53 @@ def test_unraid_config_and_recycle_defaults_are_siblings():
         )
 
 
+def test_unraid_template_offers_a_timezone_variable():
+    """
+    Unraid does not pass TZ to containers - its own Date & Time setting
+    governs the host - so a template without this field leaves every
+    Community Apps install on UTC with no way to change it short of
+    adding the variable by hand.
+
+    TZ decides when scheduled scans and the Plex analyze window fire,
+    while displayed timestamps are stored in UTC and converted by the
+    browser. So an unset zone produces no visible symptom: every clock in
+    the UI reads correctly and the only evidence is a scan starting at
+    the wrong hour. That is why the field has to exist rather than being
+    left to the docs.
+
+    Asserts optional-and-visible rather than checking the default. An
+    empty default is deliberate, since seeding a city would be
+    confidently wrong for most people, but it is a judgement that could
+    reasonably be revisited; the field existing at all is not.
+    """
+    root = ET.fromstring(_read("templates/remuxarr.xml"))
+
+    entry = next(
+        (c for c in root.findall("Config") if c.get("Target") == "TZ"), None
+    )
+    assert entry is not None, (
+        "the Unraid template declares no TZ variable, so a Community Apps "
+        "install runs on UTC and scheduled scans fire at the wrong hour"
+    )
+    assert entry.get("Type") == "Variable", (
+        f"TZ is declared as {entry.get('Type')!r}, not a Variable"
+    )
+    assert entry.get("Required") == "false", (
+        "TZ is marked required, which blocks startup on a field that is "
+        "legitimately empty - an unset zone is a working container on UTC"
+    )
+    assert entry.get("Display") == "always", (
+        "TZ is hidden behind Unraid's Advanced view, where the people who "
+        "most need it will not find it"
+    )
+
+    guide = _read("UNRAID_DEPLOYMENT.md")
+    assert "TZ" in guide, (
+        "the template offers a TZ variable that UNRAID_DEPLOYMENT.md never "
+        "mentions; both describe the same install to the same person"
+    )
+
+
 def test_unraid_template_still_parses():
     """
     A malformed template is not rejected loudly by Unraid — it just fails

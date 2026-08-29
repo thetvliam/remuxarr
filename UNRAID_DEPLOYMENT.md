@@ -47,7 +47,23 @@
    |---|---|
    | `9191` | `9191` (or whichever host port you prefer) |
 
-6. Click **Apply**. Unraid pulls the image and starts the container — the
+6. Add one variable:
+
+   | Variable | Value |
+   |---|---|
+   | `TZ` | your IANA time zone, e.g. `Europe/London` |
+
+   Unraid does not pass a time zone to containers — its own **Settings →
+   Date & Time** governs the host, not the container — so without this the
+   container runs on UTC. That decides when **scheduled scans** and the
+   **Plex analyze window** fire, so an overnight window set to 02:00-06:00
+   would run 02:00-06:00 UTC. It does not affect the timestamps you see in
+   the app: those are converted by your browser and read correctly either
+   way, which is exactly why a wrong time zone here is easy to miss.
+
+   `docker exec remuxarr date` after starting confirms it took effect.
+
+7. Click **Apply**. Unraid pulls the image and starts the container — the
    first pull can take a minute or two.
 
 There's also a template at [`templates/remuxarr.xml`](templates/remuxarr.xml)
@@ -103,4 +119,9 @@ Paths:
   <your TV share>                    →  /media/tv        (rw)
   /tmp/remuxarr-temp                 →  /tmp/remuxarr    (rw)
   /mnt/user/appdata/remuxarr/recycle →  /recycle         (rw, optional)
+
+Variables:
+  TZ = <your IANA zone>              e.g. Europe/London
+                                     (empty means UTC, which changes when
+                                      scheduled scans run)
 ```
