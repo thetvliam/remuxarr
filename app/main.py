@@ -279,7 +279,7 @@ def _cleanup_orphaned_temp_files() -> None:
 app = FastAPI(
     title       = "Remuxarr",
     description = "Automatic media remuxer — strip tracks, fix audio, convert containers.",
-    version     = "0.1.0",
+    version     = settings.VERSION,
     lifespan    = lifespan,
 )
 
@@ -316,7 +316,17 @@ app.include_router(revert_routes.router)
 
 @app.get("/api/health", tags=["system"])
 def health():
-    return {"status": "ok", "app": settings.APP_NAME, "version": "0.1.0"}
+    # commit_short rather than making every caller slice it: the UI, the
+    # bug report template and anyone curling this all want the same seven
+    # characters, and the full SHA stays available for anyone who needs to
+    # check out exactly this build.
+    return {
+        "status":       "ok",
+        "app":          settings.APP_NAME,
+        "version":      settings.VERSION,
+        "commit":       settings.COMMIT,
+        "commit_short": settings.COMMIT[:7],
+    }
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────

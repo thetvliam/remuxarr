@@ -146,9 +146,27 @@ VOLUME ["/config", "/media"]
 
 EXPOSE 9191
 
+# Build identity. Passed by publish.yml; both have defaults so a plain
+# `docker build .` still produces a working image that is honest about not
+# knowing which build it is, rather than failing or claiming a version.
+#
+# ARG must be re-declared in this stage to be visible here — the ones at the
+# top of a multi-stage file do not carry across FROM lines, and getting that
+# wrong yields an empty string rather than an error.
+#
+# Declared here at the end rather than near the top on purpose. These values
+# change on every single build, and an ARG invalidates the layer cache from
+# its own line downwards, so hoisting them would rebuild the pip install and
+# the FFmpeg copy for every commit. Below the COPY layers there is nothing
+# left to invalidate but CMD.
+ARG VERSION=dev
+ARG COMMIT=unknown
+
 ENV REMUXARR_DATABASE_PATH=/config/remuxarr.db \
     REMUXARR_TEMP_DIR=/tmp/remuxarr \
-    REMUXARR_RECYCLE_DIR=/recycle
+    REMUXARR_RECYCLE_DIR=/recycle \
+    REMUXARR_VERSION=$VERSION \
+    REMUXARR_COMMIT=$COMMIT
 
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \

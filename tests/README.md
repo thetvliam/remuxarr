@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1156 tests across 54 test files, plus 308 frontend tests under
+1161 tests across 55 test files, plus 308 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
 number below matters more than that one.
 
@@ -63,10 +63,10 @@ fixed set of probed media files (`tests/sample_library/`) and compares against
 recorded golden decisions.
 
 **Cross-cutting regressions** — `test_assorted_regressions.py`,
-`test_robustness_fixes.py`, `test_timestamp_roundtrip.py`, and
-`test_spa_fallback_security.py`. These are grouped by the incident that
-prompted them rather than by the module they touch, so they span several areas
-each.
+`test_robustness_fixes.py`, `test_timestamp_roundtrip.py`,
+`test_spa_fallback_security.py`, and `test_health_build_identity.py`. These are
+grouped by the incident that prompted them rather than by the module they touch,
+so they span several areas each.
 
 ## How these tests are written
 

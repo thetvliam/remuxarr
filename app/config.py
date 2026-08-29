@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     # processing (handles rapid season-pack renames from Sonarr).
     WEBHOOK_DEBOUNCE_SECONDS: float = 10.0
 
+    # Build identity — stamped in by the Dockerfile from build args, so an
+    # image can say which build it is. Both default to the source-checkout
+    # answer rather than a plausible-looking version string: "0.1.0" was
+    # hardcoded in two places for the life of the project and never changed,
+    # which made every bug report's version field worthless while looking
+    # like it had been answered. "dev"/"unknown" are at least honest that
+    # nobody stamped them.
+    #
+    # VERSION is the git ref the image was built from: a release tag on a
+    # tagged build, otherwise the branch. COMMIT is the full SHA and is the
+    # part that actually identifies a build — the ref is there to make it
+    # readable. Displayed short; kept full so it can be pasted into a
+    # checkout without ambiguity.
+    VERSION: str = "dev"
+    COMMIT: str = "unknown"
+
     # SettingsConfigDict, not a nested `class Config`. The class-based form
     # is a Pydantic v1 carry-over that v2 still honours but warns about, and
     # v3 drops entirely — at which point the warning becomes silence rather

@@ -161,6 +161,61 @@ def test_unraid_config_and_recycle_defaults_are_siblings():
         )
 
 
+def test_the_build_stamps_its_identity_into_the_image():
+    """
+    /api/health reported a hardcoded "0.1.0" for the life of the project.
+    It never changed, appeared nowhere in the UI, and made the bug report
+    template's version field unanswerable while looking answered - the
+    worst shape for a diagnostic, since a filled-in field stops anyone
+    asking again.
+
+    The chain has four links and any one breaking returns it silently to
+    a default: publish.yml passes the args, the Dockerfile declares them
+    in the runtime stage, the Dockerfile maps them onto REMUXARR_ names,
+    and config.py reads them. A missing build-arg yields "dev"/"unknown",
+    which is a plausible-looking answer rather than an error, so nothing
+    downstream would notice.
+
+    Checks the wiring rather than the values. What VERSION resolves to is
+    a property of the ref being built and cannot be asserted from a
+    checkout; that the plumbing is connected can.
+    """
+    dockerfile = _read("Dockerfile")
+    runtime = dockerfile.split("FROM python:")[-1]
+
+    for arg in ("VERSION", "COMMIT"):
+        assert f"ARG {arg}" in runtime, (
+            f"the runtime stage does not declare ARG {arg}. ARGs do not "
+            f"cross FROM lines, so a build arg passed without this becomes "
+            f"an empty string rather than an error."
+        )
+        assert f"REMUXARR_{arg}=${arg}" in runtime, (
+            f"ARG {arg} is declared but never mapped onto REMUXARR_{arg}, "
+            f"so config.py will not see it"
+        )
+
+    workflow = _read(".github/workflows/publish.yml")
+    assert "build-args:" in workflow, (
+        "publish.yml passes no build-args, so every published image reports "
+        "the dev defaults"
+    )
+    for line in ("VERSION=${{ github.ref_name }}", "COMMIT=${{ github.sha }}"):
+        assert line in workflow, f"publish.yml no longer passes {line}"
+
+    from app.config import Settings
+
+    fields = Settings.model_fields
+    assert "VERSION" in fields and "COMMIT" in fields, (
+        "config.py has no VERSION/COMMIT fields, so the stamped environment "
+        "variables are read by nothing"
+    )
+
+    assert '"0.1.0"' not in _read("app/main.py"), (
+        "app/main.py still hardcodes a version string; it should come from "
+        "settings so the image reports the build it actually is"
+    )
+
+
 def test_unraid_template_offers_a_timezone_variable():
     """
     Unraid does not pass TZ to containers - its own Date & Time setting

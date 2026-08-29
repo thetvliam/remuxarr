@@ -121,6 +121,18 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamps the image with which build it is, so /api/health and the
+          # UI can answer the version question a bug report asks. ref_name
+          # is the tag on a tag build and the branch otherwise, so a release
+          # reads v1.4.0 and a dev image reads testing; github.sha is always
+          # present and is the part that actually identifies the build.
+          #
+          # Deliberately not derived from git describe: checkout runs at
+          # default depth here, so no tag history is fetched and describe
+          # would fail or lie. Build args need nothing from the clone.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # GitHub Actions' own build cache — meaningfully speeds up
