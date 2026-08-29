@@ -62,6 +62,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 - Four new themes in Settings > Appearance: **Midnight** and **Dawn**, a new dark and light pair, plus **Paper** and **Linen**, light versions of Terminal and Soft that keep those themes' exact spacing and type and change only the colours. Your current theme is unchanged and none of them is selected for you.
 
+- **Settings > Maintenance & Logs** now shows which build you are running, at the bottom below the log viewer, with a COPY button for the full commit. Until now the app reported a version number that had never changed and showed it nowhere, so the bug report template asked for something you could not find. If you are on a released tag it reads that; images built from a branch read the branch name and the commit.
+
 ## Changed
 
 - New Unraid installs now put `/config` at `/mnt/user/appdata/remuxarr/config` rather than at the appdata folder itself, so the recycle bin sits beside your settings instead of inside them. **Existing installs are unaffected and need no action** - Unraid keeps the paths you already chose. If you use the CA Appdata Backup plugin and have the recycle bin on, adding `recycle` to that container's exclusion list keeps up to 20GB of recoverable track data out of every backup; see UNRAID_DEPLOYMENT.md.

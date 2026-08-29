@@ -8,6 +8,7 @@ import { BackupRestoreSection } from "./BackupRestoreSection";
 import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
 import { RecycleBinSection } from "./RecycleBinSection";
+import { BuildInfoSection } from "./BuildInfoSection";
 import { LogViewer } from "./LogViewer";
 
 const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVED", error: "✗ ERROR" };
@@ -713,6 +714,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             <>
             <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
             <LogViewer api={api} toast={toast} />
+            <BuildInfoSection api={api} />
             </>
           );
         }
