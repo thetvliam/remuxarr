@@ -60,4 +60,6 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Leaving Settings with unsaved changes by pressing Back — the browser button, or the Android system one — now asks first, the same way clicking away to another tab already did. Previously only tab clicks were caught, so Back discarded the edits with no prompt.
+
 - A settings change typed while an earlier save was still going through is no longer discarded. Previously the page re-read the server's values when the save landed and wrote them over anything you had touched in the meantime: a text field silently reverted, and a number field kept showing what you typed while the page had already dropped it, so the next save sent nothing and the bar said there was nothing to save.

@@ -31,10 +31,10 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /* useAppData opens a WebSocket on mount. Stub it before importing the hook:
-   the transport has its own surface and is not what these tests are about. */
+ *the transport has its own surface and is not what these tests are about. */
 /* The handler itself is captured so the message cases can be driven
-   directly. vi.hoisted is required: a plain const would still be in its
-   temporal dead zone when vi.mock's factory is hoisted above the imports. */
+ * directly. vi.hoisted is required: a plain const would still be in its
+ * temporal dead zone when vi.mock's factory is hoisted above the imports. */
 const ws = vi.hoisted(() => ({ onMessage: null }));
 vi.mock("../useWebSocket", () => ({
   useWebSocket: (_url, onMessage) => { ws.onMessage = onMessage; return true; },
@@ -61,10 +61,10 @@ afterEach(() => {
 });
 
 /* Assigning window.location.hash fires a popstate whose event.state is null,
-   which the hook's popstate handler resolves to "dashboard" regardless of the
-   URL (see the routing finding in the Phase 3 report). replaceState sets the
-   fragment WITHOUT firing popstate, which is what a real page load looks
-   like — the fragment is already there and no navigation event has occurred. */
+ * which the hook's popstate handler resolves to "dashboard" regardless of the
+ * URL (see the routing finding in the Phase 3 report). replaceState sets the
+ * fragment WITHOUT firing popstate, which is what a real page load looks
+ * like — the fragment is already there and no navigation event has occurred. */
 function setHash(hash) {
   window.history.replaceState(null, "", hash);
 }
@@ -286,16 +286,16 @@ describe("useAppData — popstate", () => {
 
   it("a stateless popstate honours the URL instead of forcing dashboard", async () => {
     /* Was marked it.fails while the bug was live — it asserted the correct
-       behaviour and therefore passed only while the handler was wrong.
-
-       A history entry created by a hash change — a manually edited fragment,
-       or an in-page anchor — carries no state object. The handler read only
-       event.state, resolved the missing page to "dashboard", and navigated
-       the app away while the URL still said #settings. State and URL then
-       disagreed and every later Back press compounded it.
-
-       Fixed by falling back to _pageFromHash(), which already existed and
-       does exactly this on initial load. */
+     *    behaviour and therefore passed only while the handler was wrong.
+     *
+     *    A history entry created by a hash change — a manually edited fragment,
+     *    or an in-page anchor — carries no state object. The handler read only
+     *    event.state, resolved the missing page to "dashboard", and navigated
+     *    the app away while the URL still said #settings. State and URL then
+     *    disagreed and every later Back press compounded it.
+     *
+     *    Fixed by falling back to _pageFromHash(), which already existed and
+     *    does exactly this on initial load. */
     const { result } = await mount();
     act(() => { result.current.setPage("settings"); });
     setHash("#settings");
@@ -309,8 +309,8 @@ describe("useAppData — popstate", () => {
 
   it("a stateless popstate on an unknown fragment still lands on dashboard", async () => {
     /* The fallback must stay a fallback: _pageFromHash validates against
-       VALID_PAGES, so a stale bookmark or typo resolves to dashboard rather
-       than leaving App.jsx switching on a page it has no branch for. */
+     *    VALID_PAGES, so a stale bookmark or typo resolves to dashboard rather
+     *    than leaving App.jsx switching on a page it has no branch for. */
     const { result } = await mount();
     act(() => { result.current.setPage("settings"); });
     setHash("#nonsense");
@@ -320,6 +320,154 @@ describe("useAppData — popstate", () => {
     });
 
     expect(result.current.page).toBe("dashboard");
+  });
+});
+
+
+/* ── Navigation guard ────────────────────────────────────────────────────── */
+
+/**
+ * App.jsx can refuse a nav tab click by simply not calling setPage. Back
+ * offers no such point: by the time popstate fires the entry is already
+ * popped and the URL already updated, so refusing means putting it back.
+ *
+ * That gap was live. The unsaved-changes prompt covered tab clicks only, and
+ * the beforeunload handler it was said to be paired with fires on document
+ * unload — a refresh or a tab close — which hash and pushState routing never
+ * trigger. Pressing Back on a dirty Settings page therefore discarded the
+ * edits silently, and on Android that is the primary way out of a page.
+ */
+describe("useAppData — navigation guard", () => {
+  /* A real Back updates the URL and THEN fires popstate. Dispatching the
+   *  event alone leaves the address bar on the page being left, which would
+   *  make any assertion about the guard restoring the URL pass whether or not
+   *  it restores anything. replaceState rather than pushState: the browser is
+   *  moving between entries that already exist, not adding one. */
+  const back = (page = "dashboard") => act(() => {
+    window.history.replaceState({ page, modal: false }, "", `#${page}`);
+    window.dispatchEvent(new PopStateEvent("popstate", {
+      state: { page, modal: false },
+    }));
+  });
+
+  it("a guard that refuses leaves the page where it was", async () => {
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => true); });
+
+    await back();
+
+    expect(result.current.page).toBe("settings");
+  });
+
+  it("restores the URL it had already left, so the two cannot drift", async () => {
+    // Refusing in state alone leaves the address bar reading #dashboard on a
+    // page still showing Settings, and the next Back compounds it.
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => true); });
+
+    await back();
+
+    expect(window.location.hash).toBe("#settings");
+    expect(window.history.state).toEqual({ page: "settings", modal: false });
+  });
+
+  it("is told where the navigation was heading", async () => {
+    // The predicate takes a target because the guard only blocks leaving:
+    // a Back that lands on Settings again is not a departure.
+    const seen = [];
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard((t) => { seen.push(t); return true; }); });
+
+    await back("review");
+
+    expect(seen).toEqual(["review"]);
+  });
+
+  it("a guard that permits navigates normally", async () => {
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => false); });
+
+    await back("review");
+
+    expect(result.current.page).toBe("review");
+  });
+
+  it("navigates normally when no guard is registered", async () => {
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+
+    await back("review");
+
+    expect(result.current.page).toBe("review");
+  });
+
+  /* history.back() is asynchronous in jsdom, and this file already mocks it
+   *  rather than waiting on a real navigation (see setModal above). The
+   *  popstate is then dispatched by hand to stand in for the event the browser
+   *  fires once the entry is popped — which is the part under test here. */
+  it("leaveGuarded goes through, rather than being refused again", async () => {
+    // The guard is still registered and still says no — the user has said to
+    // go anyway, so this one Back has to be exempt or the prompt is a trap.
+    const backSpy = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => true); });
+    await back();
+
+    act(() => { result.current.leaveGuarded(); });
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    await back();
+
+    expect(result.current.page).toBe("dashboard");
+  });
+
+  it("leaveGuarded re-issues Back rather than pushing, leaving no dead entry", async () => {
+    /* The entry the user wanted is still behind the one pushed to cancel, so
+     *    going back reaches it AND removes that pushed entry. Pushing the target
+     *    instead would strand two dead Settings entries to press through. */
+    const backSpy = vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => true); });
+    await back();
+
+    const pushSpy = vi.spyOn(window.history, "pushState");
+    act(() => { result.current.leaveGuarded(); });
+
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  it("the exemption is one-shot, so a later Back is guarded again", async () => {
+    vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    act(() => { result.current.registerNavGuard(() => true); });
+    await back();
+    act(() => { result.current.leaveGuarded(); });
+    await back();
+
+    // Back on some later page, with the guard still refusing.
+    act(() => { result.current.setPage("settings"); });
+    await back();
+
+    expect(result.current.page).toBe("settings");
+  });
+
+  it("unregistering restores unguarded navigation", async () => {
+    const { result } = await mount();
+    act(() => { result.current.setPage("settings"); });
+    let unregister;
+    act(() => { unregister = result.current.registerNavGuard(() => true); });
+    act(() => { unregister(); });
+
+    await back("review");
+
+    expect(result.current.page).toBe("review");
   });
 });
 
@@ -345,7 +493,7 @@ describe("useAppData — revert_complete", () => {
 
     act(() => {
       ws.onMessage({ event: "revert_complete", success: true,
-                     restored_path: "/media/tv/Show/S01E01.mkv" });
+        restored_path: "/media/tv/Show/S01E01.mkv" });
     });
 
     expect(result.current.revertRefreshKey).not.toBe(before);
@@ -356,7 +504,7 @@ describe("useAppData — revert_complete", () => {
 
     act(() => {
       ws.onMessage({ event: "revert_complete", success: true,
-                     restored_path: "/media/tv/Show/S01E01.mkv" });
+        restored_path: "/media/tv/Show/S01E01.mkv" });
     });
 
     expect(result.current.toasts.at(-1).msg).toContain("S01E01.mkv");
@@ -370,7 +518,7 @@ describe("useAppData — revert_complete", () => {
 
     act(() => {
       ws.onMessage({ event: "revert_complete", success: false,
-                     error: "Show.mkv has changed size since it was processed" });
+        error: "Show.mkv has changed size since it was processed" });
     });
 
     const last = result.current.toasts.at(-1);
@@ -391,7 +539,7 @@ describe("useAppData — revert_complete", () => {
 
     act(() => {
       ws.onMessage({ event: "job_completed", status: "success",
-                     filename: "S01E01.mkv" });
+        filename: "S01E01.mkv" });
     });
 
     expect(result.current.revertRefreshKey).not.toBe(before);
