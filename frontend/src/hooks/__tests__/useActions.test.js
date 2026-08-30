@@ -60,15 +60,15 @@ beforeEach(() => {
   deps = {
     api: "",
     dryRun: false,          setDryRun:       vi.fn(),
-    workerPaused: false,    setWorkerPaused: vi.fn(),
-    autoStart: true,        setAutoStart:    vi.fn(),
-    setScanning:      vi.fn(),
-    setModal:         vi.fn(),
-    toast:            vi.fn(),
-    fetchAll:         vi.fn(),
-    fetchForge:       vi.fn(),
-    invalidateHistory: vi.fn(),
-    setForgeRefreshKey: vi.fn(),
+           workerPaused: false,    setWorkerPaused: vi.fn(),
+           autoStart: true,        setAutoStart:    vi.fn(),
+           setScanning:      vi.fn(),
+           setModal:         vi.fn(),
+           toast:            vi.fn(),
+           fetchAll:         vi.fn(),
+           fetchForge:       vi.fn(),
+           invalidateHistory: vi.fn(),
+           setForgeRefreshKey: vi.fn(),
   };
 });
 
@@ -148,6 +148,107 @@ describe("useActions — togglePause", () => {
   it("does not flip the UI when the request fails", async () => {
     mockFetch({ ok: false });
     await useSubject({ workerPaused: false }).togglePause();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+
+  /* Not flipping the UI was only half of it. The button is a toggle whose
+   *  label comes from workerPaused, so a refused POST left PAUSE reading
+   *  PAUSE with no toast — indistinguishable from a click that never
+   *  registered, which invites clicking again. abortJob and cancelScan both
+   *  report theirs; this one reported nothing. */
+  it("reports a refused pause rather than doing nothing at all", async () => {
+    mockFetch({ ok: false });
+    await useSubject({ workerPaused: false }).togglePause();
+
+    expect(deps.toast).toHaveBeenCalledWith(expect.any(String), "error");
+  });
+
+  it("reports a pause the network never delivered", async () => {
+    mockFetch({ throws: true });
+    await useSubject({ workerPaused: false }).togglePause();
+
+    expect(deps.toast).toHaveBeenCalledWith(expect.any(String), "error");
+  });
+
+  it("names the state the worker is still in, not the one that failed", async () => {
+    // Nothing changed, so what the user needs is which state still holds.
+    mockFetch({ ok: false });
+    await useSubject({ workerPaused: true }).togglePause();
+
+    expect(deps.toast.mock.calls[0][0]).toMatch(/still PAUSED/);
+  });
+
+  it("reports the other direction correctly", async () => {
+    mockFetch({ ok: false });
+    await useSubject({ workerPaused: false }).togglePause();
+
+    expect(deps.toast.mock.calls[0][0]).toMatch(/still RUNNING/);
+  });
+});
+
+describe("useActions — triggerScan", () => {
+  it("starts a scan and says so", async () => {
+    mockFetch({ ok: true });
+    await useSubject().triggerScan();
+
+    expect(fetchCalls[0].url).toContain("/api/scan/trigger");
+    expect(deps.setScanning).toHaveBeenCalledWith(true);
+    expect(deps.toast).toHaveBeenCalledWith(expect.any(String), "notice");
+  });
+
+  /* The failure branch existed only to undo the optimistic spinner. A SCAN
+   *  click that 500'd therefore flickered the button and stopped, which reads
+   *  as a scan that found nothing rather than one that never began — while
+   *  cancelScan, immediately below it in the source, reported its own failure
+   *  properly. */
+  it("reports a refused scan, not just an un-flickered button", async () => {
+    mockFetch({ ok: false });
+    await useSubject().triggerScan();
+
+    expect(deps.toast).toHaveBeenCalledWith(expect.any(String), "error");
+  });
+
+  it("reports a scan the network never delivered", async () => {
+    mockFetch({ throws: true });
+    await useSubject().triggerScan();
+
+    expect(deps.toast).toHaveBeenCalledWith(expect.any(String), "error");
+  });
+
+  it("still clears the optimistic spinner when it fails", async () => {
+    mockFetch({ ok: false });
+    await useSubject().triggerScan();
+
+    expect(deps.setScanning).toHaveBeenLastCalledWith(false);
+  });
+
+  it("does not claim a scan started when it did not", async () => {
+    mockFetch({ ok: false });
+    await useSubject().triggerScan();
+
+    expect(deps.toast).not.toHaveBeenCalledWith(expect.any(String), "notice");
+  });
+
+  it("shows the worker as paused when auto-start is off", async () => {
+    // The backend pauses the worker after a scan queued with auto-start off;
+    // the UI reflects it immediately rather than waiting for the event.
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: false }).triggerScan();
+
+    expect(deps.setWorkerPaused).toHaveBeenCalledWith(true);
+  });
+
+  it("leaves the worker alone when auto-start is on", async () => {
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: true }).triggerScan();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+
+  it("does not pause the worker on a failed scan", async () => {
+    mockFetch({ ok: false });
+    await useSubject({ autoStart: false }).triggerScan();
 
     expect(deps.setWorkerPaused).not.toHaveBeenCalled();
   });
