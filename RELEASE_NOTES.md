@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Adding a language code or path that is already in a list now says so instead of doing nothing. The box also accepts a comma to separate entries, and Escape to clear it, matching the schedule-times field.
+
 - Pause/Resume and Scan now tell you when they fail. Both used to do nothing visible if the request was refused or the backend was unreachable — the button simply stayed as it was, which looked exactly like a click that had not registered.
 
 - Clearing the database from Settings > Backup & Danger Zone now refreshes the rest of the app. Previously the queue, history, forge and revert panels kept showing rows the wipe had already deleted until you reloaded the page, and acting on one of those rows failed because the item no longer existed.
