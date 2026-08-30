@@ -542,6 +542,72 @@ describe("useAppData — refreshAllPanels", () => {
 });
 
 
+/* ── forge_job_completed ─────────────────────────────────────────────────── */
+
+/**
+ * The mirror of job_completed's ordering rule, whose comment reasons at
+ * length that state updates must not sit behind a cosmetic string operation
+ * that can throw — useWebSocket invokes this callback inside a bare catch, so
+ * a throw takes the whole branch with it silently.
+ *
+ * forge_job_completed guarded msg.status the way that comment credits it for,
+ * but ran the toast FIRST and left msg.error unguarded, so the lesson had
+ * been drawn and only half applied.
+ */
+describe("useAppData — forge_job_completed", () => {
+  const complete = (msg) => act(() => {
+    ws.onMessage({ event: "forge_job_completed", ...msg });
+  });
+
+  it("refreshes the forge panel when a job finishes", async () => {
+    const { result } = await mount();
+    const before = result.current.forgeRefreshKey;
+
+    complete({ status: "success", filename: "Movie.mkv" });
+
+    expect(result.current.forgeRefreshKey).toBe(before + 1);
+  });
+
+  it("refreshes even when the error field is not a string", async () => {
+    // .slice() on a non-string throws. With the toast first that threw before
+    // the refresh, so the panel kept showing a job that had already finished.
+    const { result } = await mount();
+    const before = result.current.forgeRefreshKey;
+
+    complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
+
+    expect(result.current.forgeRefreshKey).toBe(before + 1);
+  });
+
+  it("still reports an error that is not a string", async () => {
+    const { result } = await mount();
+
+    complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
+
+    expect(result.current.toasts).toHaveLength(1);
+    expect(result.current.toasts[0].tone).toBe("error");
+  });
+
+  it("survives a message with no status at all", async () => {
+    const { result } = await mount();
+    const before = result.current.forgeRefreshKey;
+
+    complete({ filename: "Movie.mkv" });
+
+    expect(result.current.forgeRefreshKey).toBe(before + 1);
+  });
+
+  it("tones a successful job differently from an undone one", async () => {
+    const { result } = await mount();
+
+    complete({ status: "success", filename: "A.mkv" });
+    complete({ status: "undone", filename: "B.mkv" });
+
+    expect(result.current.toasts.map(t => t.tone)).toEqual(["success", "info"]);
+  });
+});
+
+
 /* ── revert_complete ─────────────────────────────────────────────────────── */
 
 describe("useAppData — revert_complete", () => {

@@ -581,15 +581,27 @@ export function useAppData() {
             );
             break;
           case "forge_job_completed":
+            /* Refreshes first, for the reason job_completed sets out above:
+             * useWebSocket invokes this callback inside a bare catch, so
+             * anything that throws here is swallowed along with the rest of
+             * the branch. msg.status is guarded, but msg.error is not —
+             * .slice() on a non-string throws, and with the toast first that
+             * took fetchForge and the key bump with it, leaving the forge
+             * panel showing a job that had already finished.
+             *
+             * The backend only ever sends job.error_message, a string or
+             * None, so this is not currently reachable. It is ordered this
+             * way because the state updates are the part that has to survive,
+             * not because the throw is expected. */
+            fetchForge();
+            setForgeRefreshKey(k => k + 1);
             toast(
               `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
-              (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
+              (msg.error ? `: ${String(msg.error).slice(0, 50)}` : ""),
                   msg.status === "success" ? "success"
                   : msg.status === "undone" ? "info"
                   : "error",
             );
-            fetchForge();
-            setForgeRefreshKey(k => k + 1);
             break;
         }
         /* No theme value appears in this callback any more — the toasts it
