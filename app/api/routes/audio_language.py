@@ -60,9 +60,13 @@ dropdown keeps showing the alternatives within the current search.
 """.strip(),
 
     apply_description = """
-Set target_language on the flagged track for every file in file_ids,
-persist it as an override, and reprocess each file immediately so the
-correction actually gets written.
+Set target_language on the flagged track for every flag in flag_ids,
+persist it as an override, and reprocess each affected file immediately
+so the correction actually gets written.
+
+Takes FLAG ids, not file ids. Flags belonging to the same file are
+applied together and that file is reprocessed once, so "applied" counts
+files, not flags.
 
 Deletes any existing ACTIVE QueueItem for the file (pending or
 manual_review specifically — not any status) before re-running

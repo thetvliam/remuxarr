@@ -34,13 +34,36 @@
    Do **not** point it anywhere under `/tmp`: that is RAM-backed on Unraid,
    so the whole retention window would disappear on reboot.
 
+   **If you use the CA Appdata Backup plugin**, add `recycle` to its exclusion
+   list for this container. It sits under `appdata` so the plugin will take it
+   otherwise, and at the default 20GB ceiling that is 20GB of recoverable
+   track data in every backup. Nothing is lost by excluding it: the recycle
+   bin is a short retention window for undoing a rule you got wrong, not a
+   backup, and the files it protects are still in your library.
+
 5. Add one port mapping:
 
    | Container Port | Host Port |
    |---|---|
    | `9191` | `9191` (or whichever host port you prefer) |
 
-6. Click **Apply**. Unraid pulls the image and starts the container — the
+6. Add one variable:
+
+   | Variable | Value |
+   |---|---|
+   | `TZ` | your IANA time zone, e.g. `Europe/London` |
+
+   Unraid does not pass a time zone to containers — its own **Settings →
+   Date & Time** governs the host, not the container — so without this the
+   container runs on UTC. That decides when **scheduled scans** and the
+   **Plex analyze window** fire, so an overnight window set to 02:00-06:00
+   would run 02:00-06:00 UTC. It does not affect the timestamps you see in
+   the app: those are converted by your browser and read correctly either
+   way, which is exactly why a wrong time zone here is easy to miss.
+
+   `docker exec remuxarr date` after starting confirms it took effect.
+
+7. Click **Apply**. Unraid pulls the image and starts the container — the
    first pull can take a minute or two.
 
 There's also a template at [`templates/remuxarr.xml`](templates/remuxarr.xml)
@@ -96,4 +119,9 @@ Paths:
   <your TV share>                    →  /media/tv        (rw)
   /tmp/remuxarr-temp                 →  /tmp/remuxarr    (rw)
   /mnt/user/appdata/remuxarr/recycle →  /recycle         (rw, optional)
+
+Variables:
+  TZ = <your IANA zone>              e.g. Europe/London
+                                     (empty means UTC, which changes when
+                                      scheduled scans run)
 ```

@@ -22,6 +22,7 @@
  *     file could not be told apart                       → killed
  *   • Ignore sending flag ids, silencing one track       → killed
  *   • Grouping collapsing every file into one            → killed
+ *   • Grouping keyed on adjacency, so one file split in two → killed
  *
  * An earlier run of that same suite reported 4/4 against a component with
  * no tests: `vitest run <path>` exits non-zero when it finds no test
@@ -42,12 +43,12 @@ const ITEMS = [
   { id: 11, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
     stream_index: 2, detected_language: "und",
     extracted_path: "/m/Show.und.forced.srt" },
-  { id: 12, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
-    stream_index: 3, detected_language: "und",
-    extracted_path: "/m/Show.und.dub.srt" },
-  { id: 13, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
-    stream_index: 4, detected_language: "und",
-    extracted_path: "/m/Show.und.sdh.srt" },
+{ id: 12, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
+  stream_index: 3, detected_language: "und",
+  extracted_path: "/m/Show.und.dub.srt" },
+{ id: 13, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
+  stream_index: 4, detected_language: "und",
+  extracted_path: "/m/Show.und.sdh.srt" },
 ];
 
 let calls;
@@ -56,14 +57,14 @@ const setup = (items = ITEMS) => {
   calls = [];
   global.fetch = vi.fn(async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET",
-                 body: options.body });
+      body: options.body });
     if ((options.method || "GET") !== "GET") {
       return { ok: true, json: async () => ({ applied: 1, ignored: 1 }) };
     }
     return {
       ok: true,
       json: async () => ({ total: items.length, items,
-                           languages: [{ language: "und", count: items.length }] }),
+        languages: [{ language: "und", count: items.length }] }),
     };
   });
 
@@ -75,7 +76,7 @@ const setup = (items = ITEMS) => {
 };
 
 const bodyOf = (fragment) =>
-  JSON.parse(calls.find(c => c.url.includes(fragment) && c.method === "POST").body);
+JSON.parse(calls.find(c => c.url.includes(fragment) && c.method === "POST").body);
 
 beforeEach(() => { calls = []; });
 
@@ -198,5 +199,59 @@ describe("grouping", () => {
     setup([{ ...ITEMS[0], extracted_path: null }]);
 
     expect(await screen.findByText("Stream 2")).toBeTruthy();
+  });
+});
+
+
+describe("grouping", () => {
+  /* Rows for one file are not guaranteed to arrive next to each other.
+   *
+   * They normally do — the backend orders by (filename, stream_index), and
+   * appending a page keeps that intact because the next page continues
+   * where the last stopped. The list changing underneath the offset is
+   * what breaks it: a scan flagging files that sort earlier shifts
+   * everything back, loadMore() returns rows already rendered above, and a
+   * file that was complete shows up a second time.
+   *
+   * Grouping on adjacency then emits two groups with the same file_id.
+   * React sees a duplicate key and reconciles them as one element, so the
+   * second group's checkbox state lands on the first and ticking a track
+   * can select a different one. */
+  const SPLIT = [
+    { id: 11, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
+      stream_index: 2, detected_language: "und" },
+      { id: 21, file_id: 8, filename: "Other.mkv", path: "/m/Other.mkv",
+        stream_index: 2, detected_language: "und" },
+         // Same file as the first row, arriving after an unrelated one.
+         { id: 12, file_id: 7, filename: "Show.mkv", path: "/m/Show.mkv",
+           stream_index: 3, detected_language: "und" },
+  ];
+
+  it("puts non-adjacent rows of one file in a single group", async () => {
+    setup(SPLIT);
+
+    // Two files, so two filename headings — not three groups from three
+    // rows, and not two headings for Show.mkv.
+    await waitFor(() => expect(screen.getAllByText("Show.mkv").length).toBe(1));
+    expect(screen.getAllByText("Other.mkv").length).toBe(1);
+  });
+
+  it("keeps both of the split file's tracks selectable apart", async () => {
+    /* The consequence worth pinning, rather than the group count: under a
+     * duplicate key the second group's checkbox drives the first, so this
+     * selects the wrong track. */
+    setup(SPLIT);
+    const user = userEvent.setup();
+
+    const boxes = await screen.findAllByRole("checkbox");
+    /* boxes[0] is the header select-all. Grouped by file id, Show.mkv
+     * owns both its rows and renders first, so boxes[2] is its stream 3 —
+     * the row that arrived after an unrelated file. Grouped by adjacency
+     * the same index is Other.mkv's row instead, which is what makes this
+     * index the one worth asserting on. */
+    await user.click(boxes[2]);
+    await user.click(screen.getByRole("button", { name: /IGNORE/i }));
+
+    expect(bodyOf("ignore").file_ids).toEqual([7]);
   });
 });

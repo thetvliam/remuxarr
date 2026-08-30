@@ -104,6 +104,165 @@ def test_unraid_recycle_path_is_optional():
     assert entry.get("Required") == "false"
 
 
+def test_unraid_config_and_recycle_defaults_are_siblings():
+    """
+    The template defaulted /config to the appdata root while the
+    deployment guide put it in an appdata/remuxarr/config subfolder, so
+    the two Unraid-facing documents disagreed about the same install.
+    With the template's value /recycle landed inside /config, which puts
+    the recycle bin's 20GB ceiling inside the directory CA Appdata Backup
+    takes wholesale.
+
+    Both are now subfolders and neither contains the other. The nesting
+    check is the part worth keeping: pointing /recycle back inside
+    /config would work perfectly, break nothing, and pass every other
+    test here, which is exactly why it needs saying out loud.
+
+    Compares the template against the guide rather than against a literal
+    so the two cannot drift apart again silently - the failure mode this
+    started as.
+    """
+    import re
+
+    root = ET.fromstring(_read("templates/remuxarr.xml"))
+
+    def default_for(target):
+        entry = next(
+            (c for c in root.findall("Config") if c.get("Target") == target), None
+        )
+        assert entry is not None, f"the Unraid template has no {target} mapping"
+        value = (entry.get("Default") or "").rstrip("/")
+        assert value, f"the Unraid template has no default host path for {target}"
+        return value
+
+    config = default_for("/config")
+    recycle = default_for("/recycle")
+
+    assert config != recycle, "/config and /recycle default to the same host path"
+    assert not recycle.startswith(config + "/"), (
+        f"the template nests /recycle ({recycle}) inside /config ({config}). "
+        f"The recycle bin is bounded at 20GB by default, and under /config it "
+        f"lands inside the appdata directory backup plugins take whole."
+    )
+    assert not config.startswith(recycle + "/"), (
+        f"the template nests /config ({config}) inside /recycle ({recycle})"
+    )
+
+    guide = _read("UNRAID_DEPLOYMENT.md")
+    for target, value in (("/config", config), ("/recycle", recycle)):
+        # Boundary-anchored rather than a substring test: plain `in` lets a
+        # truncated path pass by matching inside the longer correct one, so
+        # a template saying .../conf satisfied a guide saying .../config.
+        # Found by mutation; the substring form survived it.
+        assert re.search(re.escape(value) + r"(?![\w/-])", guide), (
+            f"the template defaults {target} to {value}, which does not appear "
+            f"in UNRAID_DEPLOYMENT.md. Both describe the same install to the "
+            f"same person, so they have to agree."
+        )
+
+
+def test_the_build_stamps_its_identity_into_the_image():
+    """
+    /api/health reported a hardcoded "0.1.0" for the life of the project.
+    It never changed, appeared nowhere in the UI, and made the bug report
+    template's version field unanswerable while looking answered - the
+    worst shape for a diagnostic, since a filled-in field stops anyone
+    asking again.
+
+    The chain has four links and any one breaking returns it silently to
+    a default: publish.yml passes the args, the Dockerfile declares them
+    in the runtime stage, the Dockerfile maps them onto REMUXARR_ names,
+    and config.py reads them. A missing build-arg yields "dev"/"unknown",
+    which is a plausible-looking answer rather than an error, so nothing
+    downstream would notice.
+
+    Checks the wiring rather than the values. What VERSION resolves to is
+    a property of the ref being built and cannot be asserted from a
+    checkout; that the plumbing is connected can.
+    """
+    dockerfile = _read("Dockerfile")
+    runtime = dockerfile.split("FROM python:")[-1]
+
+    for arg in ("VERSION", "COMMIT"):
+        assert f"ARG {arg}" in runtime, (
+            f"the runtime stage does not declare ARG {arg}. ARGs do not "
+            f"cross FROM lines, so a build arg passed without this becomes "
+            f"an empty string rather than an error."
+        )
+        assert f"REMUXARR_{arg}=${arg}" in runtime, (
+            f"ARG {arg} is declared but never mapped onto REMUXARR_{arg}, "
+            f"so config.py will not see it"
+        )
+
+    workflow = _read(".github/workflows/publish.yml")
+    assert "build-args:" in workflow, (
+        "publish.yml passes no build-args, so every published image reports "
+        "the dev defaults"
+    )
+    for line in ("VERSION=${{ github.ref_name }}", "COMMIT=${{ github.sha }}"):
+        assert line in workflow, f"publish.yml no longer passes {line}"
+
+    from app.config import Settings
+
+    fields = Settings.model_fields
+    assert "VERSION" in fields and "COMMIT" in fields, (
+        "config.py has no VERSION/COMMIT fields, so the stamped environment "
+        "variables are read by nothing"
+    )
+
+    assert '"0.1.0"' not in _read("app/main.py"), (
+        "app/main.py still hardcodes a version string; it should come from "
+        "settings so the image reports the build it actually is"
+    )
+
+
+def test_unraid_template_offers_a_timezone_variable():
+    """
+    Unraid does not pass TZ to containers - its own Date & Time setting
+    governs the host - so a template without this field leaves every
+    Community Apps install on UTC with no way to change it short of
+    adding the variable by hand.
+
+    TZ decides when scheduled scans and the Plex analyze window fire,
+    while displayed timestamps are stored in UTC and converted by the
+    browser. So an unset zone produces no visible symptom: every clock in
+    the UI reads correctly and the only evidence is a scan starting at
+    the wrong hour. That is why the field has to exist rather than being
+    left to the docs.
+
+    Asserts optional-and-visible rather than checking the default. An
+    empty default is deliberate, since seeding a city would be
+    confidently wrong for most people, but it is a judgement that could
+    reasonably be revisited; the field existing at all is not.
+    """
+    root = ET.fromstring(_read("templates/remuxarr.xml"))
+
+    entry = next(
+        (c for c in root.findall("Config") if c.get("Target") == "TZ"), None
+    )
+    assert entry is not None, (
+        "the Unraid template declares no TZ variable, so a Community Apps "
+        "install runs on UTC and scheduled scans fire at the wrong hour"
+    )
+    assert entry.get("Type") == "Variable", (
+        f"TZ is declared as {entry.get('Type')!r}, not a Variable"
+    )
+    assert entry.get("Required") == "false", (
+        "TZ is marked required, which blocks startup on a field that is "
+        "legitimately empty - an unset zone is a working container on UTC"
+    )
+    assert entry.get("Display") == "always", (
+        "TZ is hidden behind Unraid's Advanced view, where the people who "
+        "most need it will not find it"
+    )
+
+    guide = _read("UNRAID_DEPLOYMENT.md")
+    assert "TZ" in guide, (
+        "the template offers a TZ variable that UNRAID_DEPLOYMENT.md never "
+        "mentions; both describe the same install to the same person"
+    )
+
+
 def test_unraid_template_still_parses():
     """
     A malformed template is not rejected loudly by Unraid — it just fails
@@ -246,8 +405,17 @@ def test_the_documented_test_counts_are_current():
     the page worth less. Counting them here is cheap and the failure
     message says what to write.
 
-    Deliberately tolerant: this fails when a number is stale by enough to
-    mislead, not when a single test is added.
+    Deliberately tolerant on the test count: this fails when a number is
+    stale by enough to mislead, not when a single test is added.
+
+    Exact on the file count, and the difference is the point. That number
+    drifted from 54 to 56 without two modules being added, because 56 is
+    what you get counting .py files under tests/ — conftest.py and
+    sample_library/parse_ffprobe_dump.py included, neither of which holds
+    a test. Both readings were defensible while neither was written down.
+    A tolerance of even two would have let exactly that drift through, so
+    there is none: the count is the modules pytest collects, and adding a
+    test file is a large enough event to update a number for.
     """
     import re
     import subprocess
@@ -263,6 +431,15 @@ def test_the_documented_test_counts_are_current():
         pytest.skip("could not determine the collected test count")
     actual = int(match.group(1))
 
+    modules = {
+        line.split("::", 1)[0]
+        for line in collected.stdout.splitlines()
+        if "::" in line and line.startswith("tests/")
+    }
+    if not modules:
+        pytest.skip("could not determine the collected module list")
+    actual_files = len(modules)
+
     for name in ("README.md", "tests/README.md"):
         text = _read(name)
         quoted = re.search(r"(\d[\d,]*) tests across", text)
@@ -271,3 +448,100 @@ def test_the_documented_test_counts_are_current():
         assert abs(claimed - actual) <= 25, (
             f"{name} claims {claimed} backend tests; there are {actual}"
         )
+
+        quoted_files = re.search(r"tests across ([\d,]+) (?:test )?files", text)
+        assert quoted_files, (
+            f"{name} no longer quotes a backend test file count"
+        )
+        claimed_files = int(quoted_files.group(1).replace(",", ""))
+        assert claimed_files == actual_files, (
+            f"{name} claims {claimed_files} test files; pytest collects "
+            f"{actual_files}. Count collected modules, not .py files under "
+            f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
+            f"hold no tests and are not counted."
+        )
+
+
+def test_the_documented_install_commands_include_the_app_dependencies():
+    """
+    Both READMEs tell a newcomer how to install before running the suite,
+    and both named only tests/requirements-test.txt. That file holds
+    pytest, pytest-cov and the TestClient HTTP backend — no fastapi, no
+    sqlalchemy, no pydantic-settings — so following the instructions
+    verbatim in a clean environment dies at collection on 29 of the 54
+    modules before a single test runs.
+
+    It survived precisely because nobody who could have noticed ever runs
+    it: anyone with a working checkout already has the app dependencies
+    installed, so the short form appears to work for every person in a
+    position to spot that it does not.
+
+    Asserted against every pip line in the file rather than one known
+    snippet, so the two-command form (requirements.txt on its own line)
+    passes too. Option B installs only the test extras on purpose — it
+    runs inside the container, where requirements.txt was installed at
+    build time — which is why this looks for one satisfying line rather
+    than requiring every line to qualify.
+    """
+    for name in ("README.md", "tests/README.md"):
+        installs = [
+            line for line in _read(name).splitlines() if "pip install" in line
+        ]
+        assert installs, f"{name} no longer documents an install command"
+        assert any("-r requirements.txt" in line for line in installs), (
+            f"{name} documents installing only the test extras. Without "
+            f"requirements.txt there is no fastapi, sqlalchemy or "
+            f"pydantic-settings, so pytest cannot import app/ and the run "
+            f"ends at collection."
+        )
+
+
+def test_ci_and_the_image_build_the_frontend_on_the_same_node_major():
+    """
+    The image moved to node:24-slim when Node 20 went end-of-life, and the
+    CI job stayed on 20, so for a while the frontend suite was verified on
+    one major and shipped on another. Nothing caught it because nothing
+    compared the two files.
+
+    That gap is worse than it sounds: a Node-major behaviour difference
+    shows up as a passing CI run and a broken image, which is the failure
+    mode with the longest feedback loop available - it reaches users
+    before it reaches anyone who could fix it.
+
+    Compares only the major. The Dockerfile pins a tag (node:24-slim) and
+    setup-node takes a major ("24") that resolves to whatever is current
+    at run time, so the patch versions legitimately differ and asserting
+    on them would fail constantly for no reason.
+    """
+    import re
+
+    dockerfile = _read("Dockerfile")
+    from_line = re.search(r"FROM node:(\d+)[.\-]", dockerfile)
+    assert from_line, "Dockerfile no longer pins a node: base image for the UI build"
+    image_major = from_line.group(1)
+
+    workflow = _read(".github/workflows/ci.yml")
+    pinned = re.search(r"node-version:\s*[\"']?(\d+)", workflow)
+    assert pinned, "ci.yml no longer pins a node-version"
+    ci_major = pinned.group(1)
+
+    assert image_major == ci_major, (
+        f"the image builds the frontend on Node {image_major} and CI tests "
+        f"it on Node {ci_major}. Bring them together, or the suite is not "
+        f"testing what ships."
+    )
+
+
+def test_the_release_notes_file_is_shipped_in_the_image():
+    """
+    The route resolves RELEASE_NOTES.md from its own __file__, four
+    directories up, which is /app in the container. The Dockerfile copies
+    app/ and the built UI and nothing else from the repo root, so without
+    an explicit COPY the file is simply absent.
+
+    The endpoint handles that by reporting no notes — deliberately, so a
+    source checkout without the file still runs. Which means the whole
+    feature would fail in exactly the way it exists to prevent: silently,
+    with users told nothing, and nothing in the logs to say why.
+    """
+    assert "COPY RELEASE_NOTES.md" in _read("Dockerfile")

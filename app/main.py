@@ -279,7 +279,7 @@ def _cleanup_orphaned_temp_files() -> None:
 app = FastAPI(
     title       = "Remuxarr",
     description = "Automatic media remuxer — strip tracks, fix audio, convert containers.",
-    version     = "0.1.0",
+    version     = settings.VERSION,
     lifespan    = lifespan,
 )
 
@@ -293,7 +293,7 @@ app.add_middleware(
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 
-from app.api.routes import queue, history, webhooks, settings as settings_routes, scan, forge, worker as worker_routes, logs as logs_routes, plex as plex_routes, notifications as notifications_routes, audio_language as audio_language_routes, backup as backup_routes, subtitle_language as subtitle_language_routes, revert as revert_routes
+from app.api.routes import queue, history, webhooks, settings as settings_routes, scan, forge, worker as worker_routes, logs as logs_routes, plex as plex_routes, notifications as notifications_routes, audio_language as audio_language_routes, backup as backup_routes, subtitle_language as subtitle_language_routes, revert as revert_routes, release_notes as release_notes_routes
 
 app.include_router(queue.router)
 app.include_router(history.router)
@@ -307,6 +307,7 @@ app.include_router(plex_routes.router)
 app.include_router(notifications_routes.router)
 app.include_router(audio_language_routes.router)
 app.include_router(backup_routes.router)
+app.include_router(release_notes_routes.router)
 app.include_router(subtitle_language_routes.router)
 app.include_router(revert_routes.router)
 
@@ -315,7 +316,17 @@ app.include_router(revert_routes.router)
 
 @app.get("/api/health", tags=["system"])
 def health():
-    return {"status": "ok", "app": settings.APP_NAME, "version": "0.1.0"}
+    # commit_short rather than making every caller slice it: the UI, the
+    # bug report template and anyone curling this all want the same seven
+    # characters, and the full SHA stays available for anyone who needs to
+    # check out exactly this build.
+    return {
+        "status":       "ok",
+        "app":          settings.APP_NAME,
+        "version":      settings.VERSION,
+        "commit":       settings.COMMIT,
+        "commit_short": settings.COMMIT[:7],
+    }
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────

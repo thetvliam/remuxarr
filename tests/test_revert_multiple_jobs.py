@@ -653,7 +653,9 @@ def test_a_renamed_subtitle_is_still_removed_on_revert(lib):
     renamed = _rename_extracted_subtitle(flag, "eng", lib["db"])
     lib["db"].commit()
 
-    assert renamed and renamed.endswith(".eng.srt")
+    # 2-letter, matching _build_srt_path — the manual rename and
+    # the automatic extraction path have to agree on the name.
+    assert renamed and renamed.endswith(".en.srt")
     assert not extracted.exists()
     assert pathlib.Path(renamed).exists()
 

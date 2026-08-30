@@ -93,6 +93,16 @@ describe("useAppData — initial page from hash", () => {
     expect(result.current.page).toBe("dashboard");
   });
 
+  it("lands on the developer theme editor when its fragment is used", async () => {
+    // #themes is absent from AppHeader's NAV_ITEMS by design, so this set is
+    // the only thing that makes the route reachable at all. Drop the entry
+    // and the editor does not 404 or warn — it silently resolves to the
+    // dashboard, which looks exactly like the route never existing.
+    setHash("#themes");
+    const { result } = await mount();
+    expect(result.current.page).toBe("themes");
+  });
+
   it("falls back to dashboard when there is no hash at all", async () => {
     const { result } = await mount();
     expect(result.current.page).toBe("dashboard");

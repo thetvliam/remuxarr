@@ -6,7 +6,19 @@ import { useBreakpoint } from "./useBreakpoint";
 
 /* ── Routing helpers ──────────────────────────────────────────────────────── */
 
-const VALID_PAGES = new Set(["dashboard", "settings", "review", "forge"]);
+/* "themes" is the developer theme editor. It is deliberately absent from
+ * AppHeader's NAV_ITEMS, so nothing in the UI links to it, but it IS listed
+ * here — a page id missing from this set resolves to "dashboard", so leaving
+ * it out would make the route unreachable even in a dev checkout.
+ *
+ * That makes it undiscoverable rather than unreachable: typing the fragment
+ * still gets there in a shipped container. Chosen knowingly over a
+ * build-time exclusion. The editor has no backend — saving is a download the
+ * developer pastes into theme.jsx by hand — so there is no endpoint behind
+ * this and nothing it can write to. Tightening it later means guarding this
+ * entry and the App.jsx branch behind import.meta.env.DEV, which would be
+ * the codebase's first use of that mechanism. */
+const VALID_PAGES = new Set(["dashboard", "settings", "review", "forge", "themes"]);
 
 // Read the current page from the URL hash.
 // Falls back to "dashboard" for any unknown or missing hash so the app

@@ -1,8 +1,13 @@
 # Remuxarr test suite
 
-1127 tests across 54 files, plus 175 frontend tests under
-`frontend/src/**/__tests__/`. Backend line coverage is around 70%, though the
+1161 tests across 55 test files, plus 314 frontend tests under
+`frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
 number below matters more than that one.
+
+The file count is the modules `pytest` collects. There are 56 `.py` files under
+`tests/`; `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
+and a helper script, contain no tests, and are not counted. Both readings were
+in use at once until this was written down.
 
 ## What's here
 
@@ -58,10 +63,10 @@ fixed set of probed media files (`tests/sample_library/`) and compares against
 recorded golden decisions.
 
 **Cross-cutting regressions** — `test_assorted_regressions.py`,
-`test_robustness_fixes.py`, `test_timestamp_roundtrip.py`, and
-`test_spa_fallback_security.py`. These are grouped by the incident that
-prompted them rather than by the module they touch, so they span several areas
-each.
+`test_robustness_fixes.py`, `test_timestamp_roundtrip.py`,
+`test_spa_fallback_security.py`, and `test_health_build_identity.py`. These are
+grouped by the incident that prompted them rather than by the module they touch,
+so they span several areas each.
 
 ## How these tests are written
 
@@ -92,7 +97,7 @@ Two failure modes this has caught, both of which read as coverage:
 **Option A — locally.**
 
 ```bash
-pip install -r tests/requirements-test.txt
+pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 
 cd frontend && npm install && npm test
@@ -112,6 +117,30 @@ pytest tests/ -v
 `pytest` and its dependencies aren't part of the production `requirements.txt`
 on purpose — they only get installed if you actually run this, so the deployed
 image doesn't carry test tooling it never uses day to day.
+
+## Release notes are part of the change, not a step after it
+
+`RELEASE_NOTES.md` in the repo root holds what has changed since the last
+merge to `main` that a **user** would notice. The app serves it at
+`/api/release-notes/` and shows it once, as a dialog, when the content
+changes.
+
+If a change alters what a user sees, add a line **in the same commit**. If
+it does not — refactors, tests, lint, internal fixes with no visible
+symptom — add nothing. The file's own header comment has the full test for
+what qualifies; the short version is that it is written for someone running
+the container, not for whoever reviewed the diff.
+
+The cycle has one ordering rule that is easy to get backwards:
+
+1. Entries accumulate on `testing`.
+2. `testing` merges to `main` **with the entries intact** — that is what
+   users pull, and what triggers the dialog.
+3. **Only then** is the file emptied, on `testing`, as the first commit of
+   the next cycle.
+
+Emptying it as part of the merge ships an empty file to `main`, and the
+release nobody was told about is the one that renamed their settings.
 
 ## Conventions
 

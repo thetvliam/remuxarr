@@ -40,6 +40,8 @@ No equivalent mutants.
 import json
 
 import pytest
+
+from app.core import revert_lock
 from fastapi.testclient import TestClient
 
 
@@ -53,7 +55,6 @@ def client(tmp_path, monkeypatch):
     from app.config import settings as app_settings
     from app.database.models import Base
     import app.database.session as session_mod
-    import app.api.routes.revert as revert_routes
 
     recycle = tmp_path / "recycle"
     recycle.mkdir()
@@ -72,9 +73,11 @@ def client(tmp_path, monkeypatch):
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
 
-    # Reset the module-level flag: it outlives any single test, and a test
-    # that left it set would 409 every test after it.
-    monkeypatch.setattr(revert_routes, "_revert_running", False, raising=False)
+    # Reset the revert lock: it is process-wide state that outlives any
+    # single test, and a test that left it held would 409 every test after
+    # it. release() rather than monkeypatch because acquire() mutates the
+    # module's own globals, which monkeypatch would not restore.
+    revert_lock.release()
 
     from app.main import app
 
@@ -325,10 +328,9 @@ def test_a_finished_queue_item_does_not_block_a_revert(client):
 
 def test_a_second_revert_is_refused_while_one_is_running(client, monkeypatch):
     api, db, recycle = client
-    import app.api.routes.revert as revert_routes
 
     _media, point, _sidecar = _seed(db, recycle)
-    monkeypatch.setattr(revert_routes, "_revert_running", True)
+    revert_lock.acquire(file_id=999, point_id=999, path="/media/other.mkv")
 
     r = api.post(f"/api/revert/{point.id}/restore/")
 
@@ -357,7 +359,7 @@ def test_the_running_flag_is_released_when_the_thread_cannot_start(client,
     with pytest.raises(RuntimeError):
         api.post(f"/api/revert/{point.id}/restore/")
 
-    assert revert_routes._revert_running is False
+    assert revert_lock.is_running() is False
 
 
 def test_a_completed_revert_releases_the_flag(client, monkeypatch):
@@ -369,10 +371,11 @@ def test_a_completed_revert_releases_the_flag(client, monkeypatch):
 
     # Drive the worker body directly: the thread is what clears the flag,
     # and a test that only calls the route races it.
-    revert_routes._revert_running = True
+    revert_lock.acquire(file_id=point.file_id, point_id=point.id, path="/m/a.mkv")
     revert_routes._run_revert(point.id, loop=_DummyLoop())
 
-    assert revert_routes._revert_running is False
+    assert revert_lock.is_running() is False
+    assert revert_lock.reverting_file_id() is None
 
 
 class _DummyLoop:
@@ -630,3 +633,238 @@ def test_emptying_only_the_detached_leaves_live_points_alone(client):
     remaining = db.query(RevertPoint).all()
     assert [p.id for p in remaining] == [live.id]
     assert live_sidecar.exists()
+
+
+# ── The other half of the exclusion ──────────────────────────────────────────
+
+class TestTheWorkerStaysOffAFileBeingReverted:
+    """
+    restore() refuses to start while the worker holds the file. Nothing
+    stopped the worker starting while restore() held it.
+
+    The refusal in restore() is a snapshot taken once, before the thread
+    starts. A scan running during the revert queues the same file again,
+    the worker claims it on its next pass, and both write through a staged
+    swap — so the loser's output silently replaces the winner's and the
+    file that survives is whichever finished second. It plays. The revert
+    point and the queue item both describe something that never existed.
+
+    _claim_next is where this has to be enforced, because it is the point
+    at which a job stops being pending and becomes this process's problem.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _worker_sees_the_test_db(self, client, monkeypatch):
+        """
+        worker.py does `from app.database.session import SessionLocal`, so
+        it holds its own reference and the client fixture's patch of the
+        session module does not reach it.
+
+        Without this, _claim_next() queries the real database, finds it
+        empty, and returns None — which is the answer the first test below
+        asserts. It passed for that reason before this fixture existed,
+        and would have gone on passing with the guard deleted.
+
+        Depends on `client` so it runs AFTER that fixture has installed
+        the test factory — taking the reference first copies the real one.
+        """
+        import app.core.worker as worker_mod
+        import app.database.session as session_mod
+
+        monkeypatch.setattr(worker_mod, "SessionLocal",
+                            session_mod.SessionLocal)
+
+    def _pending(self, db, file_id):
+        from app.database.models import MediaFile, QueueItem
+
+        media = MediaFile(path=f"/media/f{file_id}.mkv",
+                          filename=f"f{file_id}.mkv", directory="/media",
+                          size=1, mtime=1.0)
+        db.add(media)
+        db.commit()
+        item = QueueItem(file_id=media.id, status="pending", priority=1)
+        db.add(item)
+        db.commit()
+        return media.id, item.id
+
+    def test_a_queued_job_for_the_reverting_file_is_not_claimed(self, client):
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        file_id, _item_id = self._pending(db, 1)
+
+        revert_lock.acquire(file_id=file_id, point_id=1, path="/media/f1.mkv")
+
+        assert _claim_next() is None, (
+            "the worker claimed the file a revert is rewriting"
+        )
+
+    def test_other_files_keep_moving_while_a_revert_runs(self, client):
+        """
+        The guard skips a job, not the queue. A revert can take minutes on
+        a large file, and stalling every unrelated job for that long would
+        be a worse bug than the one being fixed — and a tempting thing to
+        'optimise' back out later without knowing why it was narrow.
+        """
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        reverting_id, _ = self._pending(db, 1)
+        _other_id, other_item = self._pending(db, 2)
+
+        revert_lock.acquire(file_id=reverting_id, point_id=1,
+                            path="/media/f1.mkv")
+
+        assert _claim_next() == other_item
+
+    def test_the_file_is_claimable_again_once_the_revert_releases(self, client):
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        file_id, item_id = self._pending(db, 1)
+
+        revert_lock.acquire(file_id=file_id, point_id=1, path="/media/f1.mkv")
+        revert_lock.release()
+
+        assert _claim_next() == item_id
+
+    def test_starting_a_revert_records_the_file_it_will_rewrite(self, client,
+                                                                monkeypatch):
+        """
+        The route has to hand acquire() the FILE id, not just the point id.
+
+        Passing None there leaves is_running() true — so a second revert is
+        still refused and the status endpoint still reports correctly —
+        while reverting_file_id() stays None and the worker sees nothing to
+        avoid. Every guard looks present and the exclusion silently does
+        not happen. The other tests in this class call acquire() directly
+        and cannot see that; this one goes through the route.
+        """
+        import app.api.routes.revert as revert_routes
+
+        api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+
+        # Hold the worker thread so the revert is still "running" when the
+        # assertion below reads the lock.
+        monkeypatch.setattr(revert_routes.threading, "Thread",
+                            lambda *a, **k: type("T", (), {"start": lambda s: None})())
+
+        r = api.post(f"/api/revert/{point.id}/restore/")
+
+        assert r.status_code == 200
+        assert revert_lock.reverting_file_id() == point.file_id
+
+    def test_an_idle_lock_claims_jobs_normally(self, client):
+        """
+        The guard must not cost anything when no revert is running, which
+        is nearly all the time.
+
+        Note what this does NOT pin: writing the filter unconditionally,
+        comparing file_id against None, passes too. SQLAlchemy renders
+        that as `file_id IS NOT NULL` rather than as a match on nothing,
+        and QueueItem.file_id is nullable=False, so it selects every row
+        and behaves identically. Recorded as an equivalent mutant rather
+        than covered by a test that could not tell the difference — the
+        explicit check in _claim_next is kept for the day file_id becomes
+        nullable, not for today.
+        """
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        _file_id, item_id = self._pending(db, 1)
+
+        revert_lock.release()
+
+        assert _claim_next() == item_id
+
+
+# ── Discarding out from under a running restore ──────────────────────────────
+
+class TestTheBinCannotBeEmptiedDuringARevert:
+    """
+    restore_revert_point reads the sidecar as it runs — the tracks are
+    pulled back out of it stream by stream, not loaded up front. Deleting
+    it mid-restore does not cancel anything cleanly: the revert fails
+    partway with the media file already swapped out and the sidecar that
+    would have completed it gone.
+
+    The UI disables these buttons during a revert, but a disabled button
+    is not a guard. The endpoints are reachable directly, and a second
+    browser tab has no idea a revert was started in the first.
+    """
+
+    def test_the_point_being_restored_cannot_be_discarded(self, client):
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete(f"/api/revert/{point.id}/")
+
+        assert r.status_code == 409
+        assert "being restored" in r.json()["detail"]
+        assert sidecar.exists(), "the sidecar the restore is reading was deleted"
+
+    def test_an_unrelated_point_can_still_be_discarded(self, client):
+        """
+        Scoped to the point in use. A different point has a different
+        sidecar, and blocking every discard for the length of a revert
+        would be a stall with no safety behind it.
+        """
+        api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+        _other_media, other, other_sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete(f"/api/revert/{other.id}/")
+
+        assert r.status_code == 200
+        assert not other_sidecar.exists()
+
+    def test_emptying_the_bin_is_refused_outright(self, client):
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+
+        r = api.delete("/api/revert/")
+
+        assert r.status_code == 409
+        assert sidecar.exists()
+
+    def test_the_detached_only_sweep_is_refused_too(self, client):
+        """
+        This one looks safe: restore() only accepts an attached point, so
+        a sweep of detached ones should not be able to touch it. It can —
+        a rescan that no longer finds the file detaches the point while
+        its revert is still in flight, and the sweep then deletes the
+        sidecar being read.
+        """
+        api, db, recycle = client
+        _media, point, sidecar = _seed(db, recycle)
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id,
+                            path="/media/a.mkv")
+        point.file_id = None          # what a rescan does mid-revert
+        db.commit()
+
+        r = api.delete("/api/revert/?detached_only=true")
+
+        assert r.status_code == 409
+        assert sidecar.exists()
+
+    def test_the_bin_empties_normally_when_no_revert_is_running(self, client):
+        api, db, recycle = client
+        _media, _point, sidecar = _seed(db, recycle)
+
+        revert_lock.release()
+
+        r = api.delete("/api/revert/")
+
+        assert r.status_code == 200
+        assert not sidecar.exists()

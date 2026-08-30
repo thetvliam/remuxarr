@@ -23,7 +23,7 @@
  * are pinned: an unmounted volume must not read as an empty bin, and a
  * revert point whose stored tracks are gone must not offer to match.
  *
- * Verified by mutation, 8 applied, 8 killed:
+ * Verified by mutation, 17 applied, 17 killed:
  *
  *   • Revert acting on the first click                  → killed
  *   • ConfirmBtn firing without confirming              → killed
@@ -38,6 +38,16 @@
  *   • Other entries still offering revert while one runs → killed
  *   • A running revert still showing a REVERT button     → killed
  *   • An in-flight revert not read back on load          → killed
+ *   • Attach refusal reasons dropped, summary only        → killed
+ *   • Structured refusals routed back to the toast        → killed
+ *   • A string refusal swallowed by the panel             → killed
+ *   • Bulk discards left usable during a revert            → killed
+ *
+ * That last one survived at first. The panel's handler is only passed by
+ * attach, so removing the "is this structured?" check left restore's
+ * string refusal toasting exactly as before and nothing failed — the gap
+ * was an attach that fails with a bare string, such as a 404 for a point
+ * another client already discarded.
  *   • A refused start leaving the row stuck              → killed
  *
  * The first and last of those survived at first. Both concern the window
@@ -124,6 +134,9 @@ const mockFetch = (overrides = {}) => {
       started = Number(restore[1]);
       return { ok: true, json: async () => ({ status: "started" }) };
     }
+    if (String(url).includes("/attach/") && overrides.attachRefusal) {
+      return { ok: false, json: async () => ({ detail: overrides.attachRefusal }) };
+    }
     if ((options.method || "GET") !== "GET") {
       return { ok: true, json: async () => ({ status: "ok" }) };
     }
@@ -143,7 +156,7 @@ const setup = (overrides) => {
 };
 
 const bodyOf = (fragment) =>
-  JSON.parse(calls.find(c => String(c.url).includes(fragment) && c.method === "POST").body);
+JSON.parse(calls.find(c => String(c.url).includes(fragment) && c.method === "POST").body);
 
 beforeEach(() => { calls = []; });
 
@@ -168,8 +181,8 @@ describe("confirmation", () => {
     await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
 
     await waitFor(() =>
-      expect(calls.some(c => c.url.includes("/api/revert/1/restore/")
-        && c.method === "POST")).toBe(true));
+    expect(calls.some(c => c.url.includes("/api/revert/1/restore/")
+    && c.method === "POST")).toBe(true));
   });
 
   it("does not discard on the first click", async () => {
@@ -262,7 +275,7 @@ describe("concurrency", () => {
       listing: {
         attached: [ATTACHED, { ...ATTACHED, id: 3, file_id: 8,
           current_filename: "S01E02.mkv" }],
-        detached: [],
+          detached: [],
       },
       status: { running: true, point_id: 1 },
     });
@@ -372,12 +385,12 @@ describe("presentation", () => {
       listing: {
         attached: [{ ...ATTACHED, restorable: false,
           blocked_reason: "S01E01.mkv has changed size since it was processed." }],
-        detached: [],
+          detached: [],
       },
     });
 
     expect(await screen.findByText(/has changed size since it was processed/i))
-      .toBeTruthy();
+    .toBeTruthy();
     expect(screen.queryByRole("button", { name: "REVERT" })).toBeNull();
     // Discard has to remain: the whole reason to show a dead entry is so
     // the space it occupies can be reclaimed.
@@ -403,7 +416,7 @@ describe("presentation", () => {
           current_filename: "S01E01.mp4",
           current_path: "/media/tv/Show/S01E01.mp4",
           original_path: "/media/tv/Show/S01E01.mkv" }],
-        detached: [],
+          detached: [],
       },
     });
 
@@ -432,7 +445,92 @@ describe("presentation", () => {
     await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
 
     await waitFor(() =>
-      expect(toast).toHaveBeenCalledWith("This file is processing in the queue.", "error"));
+    expect(toast).toHaveBeenCalledWith("This file is processing in the queue.", "error"));
+  });
+
+  it("shows every reason an attach was refused, not just the summary", async () => {
+    /* assess() builds these reasons deliberately — which streams are
+     * missing, with codecs and languages. The route docstring says a bare
+     * "no" just sends the user to try the next candidate at random, which
+     * is exactly what happened: the array reached the browser and act()
+     * rendered detail.error alone.
+     *
+     * The distinction being pinned is between the summary and the detail.
+     * "Does not belong to this file" is not actionable; "the commentary
+     * track is missing" tells the user whether to keep looking. */
+    const { toast } = setup({
+      attachRefusal: {
+        error: "This revert point does not belong to this file",
+        tier:  "incompatible",
+        reasons: [
+          "2 stream(s) the original still had are not in this file: " +
+          "audio ac3 [eng], subtitle subrip [dut]. This is not the same content.",
+          "Runtime differs by 214s.",
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "MATCH" }));
+    await user.click(await screen.findByRole("button", { name: "USE THIS FILE" }));
+
+    expect(await screen.findByText(/not the same content/)).toBeTruthy();
+    expect(screen.getByText(/Runtime differs by 214s/)).toBeTruthy();
+    // Shown in the panel, beside the list being chosen from — not as a
+    // toast that covers one line and then disappears.
+    expect(toast).not.toHaveBeenCalledWith(
+      "This revert point does not belong to this file", "error");
+  });
+
+  it("still toasts a refusal that carries no reasons to render", async () => {
+    /* Guards the fallback: restore refuses with a plain string, and that
+     * path must keep working rather than silently rendering nothing. */
+    const { toast } = setup({ restoreFails: true });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "REVERT" }));
+    await user.click(screen.getByRole("button", { name: "CONFIRM REVERT" }));
+
+    await waitFor(() =>
+    expect(toast).toHaveBeenCalledWith("A revert is already running", "error"));
+  });
+
+  it("toasts an attach refusal that is a plain string rather than swallowing it", async () => {
+    /* attach() itself always refuses with a structured detail, but the
+     * route can also fail in ways FastAPI describes with a bare string —
+     * a 404 for a point another client discarded, say. Handing that to
+     * the panel renders its fallback wording and loses what actually
+     * went wrong, so only structured refusals are taken in place. */
+    const { toast } = setup({ attachRefusal: "Revert point not found" });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "MATCH" }));
+    await user.click(await screen.findByRole("button", { name: "USE THIS FILE" }));
+
+    await waitFor(() =>
+    expect(toast).toHaveBeenCalledWith("Revert point not found", "error"));
+    expect(screen.queryByText(/That file was not accepted/)).toBeNull();
+  });
+
+  it("holds both bulk discards while a revert is running", async () => {
+    /* Both sweeps delete sidecars, including the one a running restore is
+     * reading from stream by stream. The per-row DISCARD was already held;
+     * these two were not, and DISCARD UNMATCHED looks safe only until a
+     * rescan detaches a point mid-revert. */
+    setup({ status: { running: true, point_id: 1 } });
+
+    const empty = await screen.findByRole("button", { name: "EMPTY RECYCLE BIN" });
+    expect(empty.disabled).toBe(true);
+
+    const unmatched = screen.getByRole("button", { name: "DISCARD UNMATCHED" });
+    expect(unmatched.disabled).toBe(true);
+  });
+
+  it("leaves the bulk discards usable when nothing is running", async () => {
+    setup({ status: { running: false, point_id: null } });
+
+    const empty = await screen.findByRole("button", { name: "EMPTY RECYCLE BIN" });
+    expect(empty.disabled).toBe(false);
   });
 
   it("keeps loading, empty and broken apart", async () => {

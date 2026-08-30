@@ -16,11 +16,11 @@ Steps to reproduce, including relevant settings (Settings → Library/Audio/Subt
 What you expected to happen instead.
 
 **Logs**
-Relevant output from the in-app Log Viewer (Settings → Logs) or `docker logs remuxarr`.
+Relevant output from the in-app Log Viewer (**Settings → Maintenance & Logs**) or `docker logs remuxarr`.
 
 **Environment**
-- Remuxarr version/commit:
-- Deployment: Docker / bare metal
+- Remuxarr build: the **Build** line at the bottom of **Settings → Maintenance & Logs**, below the log viewer. The COPY button there gives the full value. `curl http://<host>:9191/api/health` reports the same thing.
+- Image tag you pull (`latest`, `testing`, or a commit sha):
 - Sonarr/Radarr/Plex versions (if relevant):
 
 **Media file details (if relevant)**
