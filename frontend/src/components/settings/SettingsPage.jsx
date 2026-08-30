@@ -513,7 +513,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
    * SETTINGS PAGE
    ═ ** * ═*═════════════════════════════════════════════════════════════════════════ */
   export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
-    liveToggles = {}, revertRefreshKey = 0 }) => {
+    liveToggles = {}, revertRefreshKey = 0, onDatabaseCleared }) => {
       const { palette, type, space } = useTheme();
       const [schema,   setSchema]   = useState([]);
       const [values,   setValues]   = useState({});
@@ -761,7 +761,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             <>
             <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
             <FullBackupSection api={api} toast={toast} />
-            <DangerZone api={api} toast={toast} />
+            <DangerZone api={api} toast={toast} onCleared={onDatabaseCleared} />
             </>
           );
         }

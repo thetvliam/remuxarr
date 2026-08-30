@@ -152,7 +152,7 @@ export default function App() {
     workerPaused,
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
-      toast, fetchAll,
+      toast, fetchAll, refreshAllPanels,
       pendingQueue, wsConnected, historyRefreshKey, invalidateHistory,
       reviewRefreshKey,
       revertRefreshKey,
@@ -366,6 +366,10 @@ export default function App() {
             isMobile={isMobile}
             revertRefreshKey={revertRefreshKey}
             onDirtyChange={setSettingsDirty}
+            /* Clearing the database empties the queue, history, forge and
+             *              revert tables. The endpoint broadcasts nothing, so this is the
+             *              only thing that tells those panels. */
+            onDatabaseCleared={refreshAllPanels}
             /* dry_run_mode and auto_start_jobs are rendered from the app-level
              *              state rather than the page's own loaded snapshot, and applied on
              *              click. The header owns them: it toggles both, and abort_job
@@ -422,6 +426,10 @@ export default function App() {
               isMobile={isMobile}
               revertRefreshKey={revertRefreshKey}
               onDirtyChange={() => {}}
+              /* Passed here too, unlike onDirtyChange above: the Danger Zone
+               *                  in this preview is live and really does clear the database,
+               *                  and there is no equivalent reason to make it a no-op. */
+              onDatabaseCleared={refreshAllPanels}
               liveToggles={{
                 dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
                 auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },

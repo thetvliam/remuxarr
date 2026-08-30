@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Clearing the database from Settings > Backup & Danger Zone now refreshes the rest of the app. Previously the queue, history, forge and revert panels kept showing rows the wipe had already deleted until you reloaded the page, and acting on one of those rows failed because the item no longer existed.
+
 - Leaving Settings with unsaved changes by pressing Back — the browser button, or the Android system one — now asks first, the same way clicking away to another tab already did. Previously only tab clicks were caught, so Back discarded the edits with no prompt.
 
 - A settings change typed while an earlier save was still going through is no longer discarded. Previously the page re-read the server's values when the save landed and wrote them over anything you had touched in the meantime: a text field silently reverted, and a number field kept showing what you typed while the page had already dropped it, so the next save sent nothing and the bar said there was nothing to save.

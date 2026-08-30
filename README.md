@@ -323,7 +323,7 @@ pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 ```
 
-The frontend has its own suite - 327 tests covering the app's central state
+The frontend has its own suite - 338 tests covering the app's central state
 hook (routing, toasts, history invalidation), every mutating user action,
 paginated and history data fetching, the settings save path, integer input
 handling, the theme serialiser that round-trips a theme between its source

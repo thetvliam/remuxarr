@@ -472,6 +472,76 @@ describe("useAppData — navigation guard", () => {
 });
 
 
+/* ── refreshAllPanels ────────────────────────────────────────────────────── */
+
+/**
+ * Clearing the database empties nine tables spanning five separate refresh
+ * channels. The endpoint broadcasts nothing and DangerZone is reached from
+ * Settings, where the dashboard panels are unmounted, so nothing told them:
+ * returning to the dashboard left the queue listing rows the wipe had already
+ * deleted, because pendingQueue lives in this hook and survives the page
+ * switch.
+ *
+ * Two of the keys this bumps are not exposed from the hook at all, which is
+ * why this is a named helper rather than a caller assembling the same set —
+ * the same reasoning as invalidateHistory, whose incantation four call sites
+ * had already got wrong.
+ */
+describe("useAppData — refreshAllPanels", () => {
+  it("marks history stale for every tab, not just one", async () => {
+    const { result } = await mount();
+    const before = result.current.historyRefreshKey;
+
+    act(() => { result.current.refreshAllPanels(); });
+
+    expect(result.current.historyRefreshKey.key).toBe(before.key + 1);
+    // null, not a specific status: a wipe touches every tab, so none of them
+    // may decide this refresh is unrelated and skip it.
+    expect(result.current.historyRefreshKey.status).toBeNull();
+  });
+
+  it("bumps the review key, so the language sections refetch", async () => {
+    const { result } = await mount();
+    const before = result.current.reviewRefreshKey;
+
+    act(() => { result.current.refreshAllPanels(); });
+
+    expect(result.current.reviewRefreshKey).toBe(before + 1);
+  });
+
+  it("bumps the revert key, since revert points are wiped too", async () => {
+    const { result } = await mount();
+    const before = result.current.revertRefreshKey;
+
+    act(() => { result.current.refreshAllPanels(); });
+
+    expect(result.current.revertRefreshKey).toBe(before + 1);
+  });
+
+  it("bumps the forge key, since forge jobs are wiped too", async () => {
+    // The wider half: scan_completed and cleanup_completed refresh neither
+    // forge nor revert, so copying either of them would have missed both.
+    const { result } = await mount();
+    const before = result.current.forgeRefreshKey;
+
+    act(() => { result.current.refreshAllPanels(); });
+
+    expect(result.current.forgeRefreshKey).toBe(before + 1);
+  });
+
+  it("refetches the live lists, including the forge ones", async () => {
+    const { result } = await mount();
+    fetch.mockClear();
+
+    await act(async () => { result.current.refreshAllPanels(); });
+
+    const urls = fetch.mock.calls.map(c => String(c[0]));
+    expect(urls.some(u => u.includes("/api/queue"))).toBe(true);
+    expect(urls.some(u => u.includes("/api/forge/active"))).toBe(true);
+  });
+});
+
+
 /* ── revert_complete ─────────────────────────────────────────────────────── */
 
 describe("useAppData — revert_complete", () => {
