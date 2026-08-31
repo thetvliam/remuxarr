@@ -22,7 +22,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * Each toggle/tag saves immediately via PUT /api/settings/{key} so there's
  * no separate Save button needed. There is no PATCH route on that endpoint,
  * only GET and PUT.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {

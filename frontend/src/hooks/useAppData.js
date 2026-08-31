@@ -50,7 +50,7 @@ const _pageFromHash = () => {
  *  setPage; declining a Back means undoing one the browser has already
  *  performed, which is why that lives down here with the popstate listener
  *  rather than in the component that knows why it wants to refuse.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -399,33 +399,33 @@ export function useAppData() {
     if (p.status === "fulfilled") setForgeProcessed(Array.isArray(p.value) ? p.value : []);
   }, [api]);
 
-    /**
-     * Refresh every panel that reads scan state, for a change that invalidated
-     * all of them at once.
-     *
-     * Exists for the same reason invalidateHistory does. scan_completed and
-     * cleanup_completed each write out fetchAll + invalidateHistory(null) +
-     * setReviewRefreshKey by hand, and that is exactly the shape that goes
-     * wrong when it is copied to a new call site minus whichever line the
-     * author did not think about.
-     *
-     * Wider than either of those, because clearing the database also empties
-     * forge_jobs and revert_points — so the forge and revert panels have to be
-     * told too, and neither of their refresh keys is otherwise reachable from
-     * outside this hook.
-     *
-     * Deliberately NOT retrofitted onto scan_completed and cleanup_completed:
-     * they refresh less because they invalidate less, and widening them is a
-     * separate question from wiring up a caller that needs all of it.
-     */
-    const refreshAllPanels = useCallback(() => {
-      fetchAll();
-      fetchForge();
-      invalidateHistory(null);
-      setReviewRefreshKey(k => k + 1);
-      setRevertRefreshKey(k => k + 1);
-      setForgeRefreshKey(k => k + 1);
-    }, [fetchAll, fetchForge, invalidateHistory]);
+  /**
+   * Refresh every panel that reads scan state, for a change that invalidated
+   * all of them at once.
+   *
+   * Exists for the same reason invalidateHistory does. scan_completed and
+   * cleanup_completed each write out fetchAll + invalidateHistory(null) +
+   * setReviewRefreshKey by hand, and that is exactly the shape that goes
+   * wrong when it is copied to a new call site minus whichever line the
+   * author did not think about.
+   *
+   * Wider than either of those, because clearing the database also empties
+   * forge_jobs and revert_points — so the forge and revert panels have to be
+   * told too, and neither of their refresh keys is otherwise reachable from
+   * outside this hook.
+   *
+   * Deliberately NOT retrofitted onto scan_completed and cleanup_completed:
+   * they refresh less because they invalidate less, and widening them is a
+   * separate question from wiring up a caller that needs all of it.
+   */
+  const refreshAllPanels = useCallback(() => {
+    fetchAll();
+    fetchForge();
+    invalidateHistory(null);
+    setReviewRefreshKey(k => k + 1);
+    setRevertRefreshKey(k => k + 1);
+    setForgeRefreshKey(k => k + 1);
+  }, [fetchAll, fetchForge, invalidateHistory]);
 
     useEffect(() => {
       if (page === "forge") fetchForge();

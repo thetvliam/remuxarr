@@ -48,7 +48,7 @@ const PAGE_SIZE = 50;
  *  that clears loadingRef. Without this, the old finally block would reset
  *  loadingRef for the newer fetch, causing stale results or missing updates.
  *  This is the fix for the skipped tab not updating after a scan completes.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 // True if a change tagged with eventStatus should cause a tab showing
 // `tab` to refresh. Mirrors history.py's own status filter — the Failed

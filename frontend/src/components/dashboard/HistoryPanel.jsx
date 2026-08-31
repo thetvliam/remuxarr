@@ -8,7 +8,7 @@ import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * HISTORY ROW
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const HistoryRow = ({ item, onSelect }) => {
   const { palette, type, space, radius, size, surface, statusColor } = useTheme();
   const [hover, setHover] = useState(false);
@@ -117,7 +117,7 @@ const HistoryRow = ({ item, onSelect }) => {
  * Self-fetching: receives api + historyRefreshKey instead of a pre-loaded
  * items array.  useHistoryData handles pagination; IntersectionObserver
  * triggers loadMore when the scroll sentinel comes into view.
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onClearDryRun }) => {
   const { palette, type, space, radius } = useTheme();
   const [tab,            setTab]            = useState("success");

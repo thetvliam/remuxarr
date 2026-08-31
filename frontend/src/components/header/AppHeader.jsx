@@ -15,7 +15,7 @@ import { ApiBar } from "./ApiBar";
  *     rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
- ═ * * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
   { k: "dashboard", l: "DASHBOARD" },

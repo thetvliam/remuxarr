@@ -511,7 +511,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
 
   /* ═══════════════════════════════════════════════════════════════════════════
    * SETTINGS PAGE
-   ═ ** * ═*═════════════════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════════════ */
   export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
     liveToggles = {}, revertRefreshKey = 0, onDatabaseCleared }) => {
       const { palette, type, space } = useTheme();

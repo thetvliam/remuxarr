@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -201,7 +201,7 @@ export const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -346,7 +346,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",

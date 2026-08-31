@@ -23,7 +23,7 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  *    at the bottom: separately paginated, separately filtered lists of
  *    tracks whose language needs confirming. They fetch their own data and
  *    take reviewRefreshKey to know when to refetch.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");

@@ -3,7 +3,7 @@ import { useTheme } from "../../theme";
 /* ═══════════════════════════════════════════════════════════════════════════
  * SEGMENTED PROGRESS BAR  (VU-meter aesthetic)
  * Colour shifts green → amber → red as it fills up.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const SegBar = ({ value = 0, segments = 50, height }) => {
     const { palette, space, size } = useTheme();
     const px     = height ?? size.segBarHeight;

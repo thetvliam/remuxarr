@@ -19,7 +19,7 @@ import { Btn } from "./atoms/Btn";
  * the settings-tab memory: this is a per-person "I have read this", not
  * configuration. Storing it server-side would mark it read for everyone
  * because the first person to open the app did.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 const STORAGE_KEY = "remuxarr.releaseNotesSeen";
 

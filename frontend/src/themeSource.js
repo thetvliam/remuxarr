@@ -44,7 +44,7 @@
  * theme. Both throw. Nothing here coerces, because a serialiser that
  * quietly wrote a bad value would turn a one-off mistake into a repeatable
  * one, and the mistake it would be repeating renders as nothing at all.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 import {
   themes,

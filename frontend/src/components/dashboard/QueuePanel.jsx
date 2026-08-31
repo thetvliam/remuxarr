@@ -11,7 +11,7 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
@@ -153,7 +153,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
     // Resolved once here rather than per row: a long queue would otherwise

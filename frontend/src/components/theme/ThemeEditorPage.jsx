@@ -74,7 +74,7 @@ import { themeToInputs, inputsToTheme, themeToSource } from "../../themeSource";
  * amber, red, blue, yellow, cyan and violet, and a label may name only one
  * control. Paths are also how a developer refers to these values when
  * reading a component, so a control is findable by the name it already has.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 /* A value that IS a colour, not one that merely contains one. The distinction
  * earns its keep in surface: drawerShadow is "0 4px 16px #00000066", a box

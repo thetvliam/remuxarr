@@ -5,7 +5,7 @@ import { useTheme, LAYER } from "../../theme";
  * NOTE: the cap-at-8 logic and 5s auto-dismiss timer live in the parent's
  * `toast()` function (App.jsx / useAppData), not here — this component is a
  * pure renderer of whatever `items` array it is given.
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const Toasts = ({ items, isMobile = false }) => {
   const { palette, type, space, radius, size, toastTone } = useTheme();
 

@@ -16,7 +16,7 @@ import { fmtClock } from "../../utils";
  * Auto-scroll keeps the list pinned to the newest entry.  It disengages
  * automatically when the user scrolls up, and re-engages when they scroll
  * back to the bottom.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 // CRITICAL ranks above ERROR. It was equal, so the two were
 // indistinguishable to the filter: selecting ERROR included CRITICAL with
