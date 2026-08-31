@@ -1064,10 +1064,13 @@ const STORAGE_KEY = "remuxarr.theme";
 
 /* ── Context ──────────────────────────────────────────────────────────── */
 /* Exported alongside ThemeProvider so a caller can supply a theme object
- * directly. ThemeProvider only ever yields one of the themes this app ships,
- * and both of those are dark — so it cannot express a light colorScheme, and
- * anything whose behaviour depends on one (the header wordmark) would be
- * untestable through the provider alone. */
+ * directly. ThemeEditorPage needs that to preview a theme being edited, which
+ * is by definition not the active one; tests use it to pin behaviour against
+ * a colorScheme without coupling to which shipped themes happen to have it.
+ *
+ * It was originally justified on the grounds that every shipped theme was
+ * dark, so a light colorScheme could not be reached through the provider at
+ * all. That stopped being true when dawn, paper and linen were added. */
 export const ThemeContext = createContext({
   ...terminal,
   themeId: DEFAULT_THEME_ID,

@@ -34,12 +34,14 @@ const NAV_ITEMS = [
  * so the wrong file is invisible rather than merely off-brand.
  *
  * Keyed on the ACTIVE THEME's colorScheme, deliberately NOT on the system's
- * prefers-color-scheme. Remuxarr picks its own palette and both themes it
- * ships (terminal, soft) are dark, so a user whose OS is set to light would
- * otherwise get black lettering on Remuxarr's dark header — a system query
- * would be reading a signal this app does not follow. Adding a light theme
- * later needs no change here: set colorScheme: "light" on it and the light
- * wordmark is picked up automatically.
+ * prefers-color-scheme. Remuxarr picks its own palette, so a system query
+ * would be reading a signal this app does not follow: a user on terminal with
+ * their OS set to light would get black lettering on Remuxarr's dark header.
+ *
+ * Reading colorScheme off the theme is also what made the light themes free.
+ * When this was written every shipped theme was dark and the light branch was
+ * unreachable; dawn, paper and linen each set colorScheme: "light" and picked
+ * up the right wordmark without touching this file.
  *
  * Height is fixed and width follows the file's own aspect ratio, so the
  * lockup can be re-exported at a different ratio without touching this code.

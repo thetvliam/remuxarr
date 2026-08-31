@@ -157,8 +157,8 @@ const assertLeaf = (v, path) => {
      * an undefined key, arriving by a different route — and an editor where
      * clearing a field produces one makes it repeatable.
      *
-     * Neither shipped theme has a blank leaf, so this rejects nothing that
-     * exists today. */
+     * No shipped theme has a blank leaf — checked across all six — so this
+     * rejects nothing that exists today. */
     if (v.trim() === "") {
       throw new Error(
         `theme ${path}: empty, which renders as nothing rather than as an error`,

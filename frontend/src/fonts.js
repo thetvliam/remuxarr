@@ -41,9 +41,9 @@
  * the build output.
  */
 
-/* terminal — type.root. Axis spans 100-800, which is the full range
- * JetBrains Mono ships; terminal's black is 800 for that reason. */
+/* type.root for terminal and paper. Axis spans 100-800, which is the full
+ * range JetBrains Mono ships; terminal's black is 800 for that reason. */
 import "@fontsource-variable/jetbrains-mono/wght.css";
 
-/* soft — type.root. Axis spans 100-900. */
+/* type.root for soft, midnight, dawn and linen. Axis spans 100-900. */
 import "@fontsource-variable/inter/wght.css";
