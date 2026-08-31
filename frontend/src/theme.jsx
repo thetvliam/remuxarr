@@ -69,12 +69,12 @@ export const alpha = (color, amount) => {
  * alpha() reproduces that exact hex suffix, and they are how that stays
  * checkable.
  *
- * The four faintest rungs have no call sites today. They are kept because
+ * The three faintest rungs have no call sites today. They are kept because
  * this is a scale rather than a set of tokens — a theme wanting a barely
  * visible overlay should find a rung already named rather than invent one
  * and a naming convention with it. */
 export const ALPHA = {
-  faint:  0.016,  // was "04"  — unused
+  faint:  0.016,  // was "04"  — RecycleBinSection
   ghost:  0.027,  // was "07"  — unused
   hint:   0.031,  // was "08"  — unused
   subtle: 0.047,  // was "0c"  — unused
@@ -111,7 +111,7 @@ export const LAYER = {
   drawer:         500,   // mobile drawer panel, above its own scrim
   headerRow:      550,   // mobile header row, so the drawer slides beneath it
   header:         600,   // the header bar
-  modal:          1000,  // DetailModal
+  modal:          1000,  // DetailModal, ReleaseNotesModal
   guardModal:     1100,  // unsaved-changes prompt, above any modal it guards
   toast:          2000,  // always on top: a toast may report a failure in
   // whatever is underneath, so it can never be hidden

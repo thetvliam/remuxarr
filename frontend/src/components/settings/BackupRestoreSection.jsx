@@ -3,9 +3,10 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
- * current settings for whatever keys are present in the file, so it uses
- * the same 4-second auto-cancel confirm pattern as DangerZone's destructive
- * actions. Merge semantics, not replace: keys absent from the imported
+ * current settings for whatever keys are present in the file, so it uses the
+ * same two-click auto-cancel confirm pattern as DangerZone's destructive
+ * actions — but on a 10-second window rather than DangerZone's 4, for the
+ * reason given at CONFIRM_MS below. Merge semantics, not replace: keys absent from the imported
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
 export const BackupRestoreSection = ({ api, toast, onImported }) => {

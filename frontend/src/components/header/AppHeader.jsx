@@ -7,8 +7,12 @@ import { ApiBar } from "./ApiBar";
  * APP HEADER
  * Desktop: single bar — logo, nav, controls, WS indicator all inline.
  * Mobile:  two-row layout.
- *   Row 1 (always visible): logo, ⚙ button, WS indicator, ☰ hamburger.
- *   Drawer (toggled by ☰): nav links + action controls as full-width rows.
+ *   Row 1 (always visible): logo, current page label, SCAN, WS indicator,
+ *     ⚙ button, ☰ hamburger. SCAN is here rather than in the drawer
+ *     deliberately — see the comment at the button itself.
+ *   Drawer (toggled by ☰): nav links, plus the action controls that are NOT
+ *     in row 1 — dry run, auto/manual start, pause/resume — as full-width
+ *     rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
  ═ * * * * ═*═════════════════════════════════════════════════════════════════════════ */
