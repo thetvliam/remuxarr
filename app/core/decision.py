@@ -154,11 +154,17 @@ class ProcessingDecision:
     #   {stream_index, language, codec, is_forced, title}
     # The UI uses this to render per-track Keep/Remove choices.
     flagged_subtitles: list[dict] | None = None
-    # Set when the file's surviving (kept) audio track has a DEFINED but
-    # non-preferred language — e.g. "dut" on an English show. Shape:
-    # {"stream_index": int, "language": str}. None means either everything
-    # matched, or the surviving track is "und" (that case belongs to
-    # fix_undefined_language, not this). The scanner reads this to
+    # Set when the file's surviving (kept) audio track needs a human to look
+    # at its language tag. Two distinct causes, both landing here:
+    #   • a DEFINED but non-preferred language — e.g. "dut" on an English
+    #     show, gated on has_preferred_audio;
+    #   • an UNDEFINED tag under fix_undefined_language="always_ask", which
+    #     sets {"language": "und"} and is deliberately NOT gated that way
+    #     (see the und_flagged_audio branch below).
+    # Shape: {"stream_index": int, "language": str}. None means no audio
+    # track needs review. This comment used to say None also covered the
+    # "und" case, which stopped being true when always_ask started flagging
+    # audio. The scanner reads this to
     # upsert/clear an AudioLanguageFlag row — informational only, never
     # blocks should_process the way is_manual_review does. stream_index is
     # included (not just the language) because the Audio Language Review
@@ -403,7 +409,7 @@ def analyze_file(
     # manual review. 0 is never a meaningful value for a ">=" comparison
     # like this one; 1 is the lowest threshold that actually means
     # something. Same defensive pattern already used for
-    # max_concurrent_jobs elsewhere in this file.
+    # max_concurrent_jobs in worker.py's dispatch loop.
     und_threshold       = max(1, int(settings.get("und_audio_threshold", 2)))
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
@@ -1427,14 +1433,22 @@ def _relabel_extract_action(
         used_paths,
     )
     used_paths.add(new_path)
+    # The bracketed tag in the description is built from the same srt_lang
+    # that becomes action.language, so retagging the action has to retag the
+    # text as well. Rebuilding only the filename half left the row reading
+    # "Extract subtitle [und] ... to external SRT: Movie.en.srt" — a
+    # self-contradicting line in the one panel a user checks to see what is
+    # about to happen to a file, and the language shown there was the stale
+    # half. Replacing the old tag rather than reformatting the whole prefix
+    # keeps the codec and stream number exactly as the builder wrote them.
+    prefix = action.description.split(" to external SRT:")[0]
+    if action.language:
+        prefix = prefix.replace(f"[{action.language}]", f"[{new_lang}]", 1)
     return dc_replace(
         action,
         language=new_lang,
         external_path=new_path,
-        description=(
-            f"{action.description.split(' to external SRT:')[0]} "
-            f"to external SRT: {Path(new_path).name}"
-        ),
+        description=f"{prefix} to external SRT: {Path(new_path).name}",
     )
 
 

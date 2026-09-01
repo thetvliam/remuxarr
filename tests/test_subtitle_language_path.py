@@ -237,6 +237,28 @@ def test_always_fix_renames_the_sidecar():
     assert d.subtitle_language_mismatches == [], "always_fix should not also flag"
 
 
+def test_always_fix_retags_the_description_not_just_the_path():
+    """
+    The relabel rebuilt the filename half of the description but reused the
+    prefix verbatim, so the row read "[und] ... to external SRT: Movie.en.srt"
+    — the language and the file it names disagreeing in the one panel that
+    tells a user what is about to happen. action.language was already correct;
+    only the displayed text was stale.
+
+    Asserting on the tag rather than the whole string so the codec and stream
+    number stay free to change without dragging this test with them.
+    """
+    cfg = _prod(fix_undefined_language="always_fix", undefined_language_value="eng")
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
+
+    action = _action_for(d, 2)
+    assert "[eng]" in action.description, action.description
+    assert "[und]" not in action.description, action.description
+    # The two halves have to agree: the tag names the language the sidecar
+    # filename carries.
+    assert action.external_path.endswith("Movie.en.forced.srt"), action.external_path
+
+
 def test_always_fix_rename_does_not_collide_with_itself():
     """
     The relabel discharges the old path from used_paths first. Without that the

@@ -60,12 +60,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- Adding a language code or path that is already in a list now says so instead of doing nothing. The box also accepts a comma to separate entries, and Escape to clear it, matching the schedule-times field.
-
-- Pause/Resume and Scan now tell you when they fail. Both used to do nothing visible if the request was refused or the backend was unreachable — the button simply stayed as it was, which looked exactly like a click that had not registered.
-
-- Clearing the database from Settings > Backup & Danger Zone now refreshes the rest of the app. Previously the queue, history, forge and revert panels kept showing rows the wipe had already deleted until you reloaded the page, and acting on one of those rows failed because the item no longer existed.
-
-- Leaving Settings with unsaved changes by pressing Back — the browser button, or the Android system one — now asks first, the same way clicking away to another tab already did. Previously only tab clicks were caught, so Back discarded the edits with no prompt.
-
-- A settings change typed while an earlier save was still going through is no longer discarded. Previously the page re-read the server's values when the save landed and wrote them over anything you had touched in the meantime: a text field silently reverted, and a number field kept showing what you typed while the page had already dropped it, so the next save sent nothing and the bar said there was nothing to save.
+- The planned action for an extracted subtitle no longer shows the wrong language. With automatic tagging of undefined tracks turned on, the row named the corrected file but kept the old `[und]` tag beside it, so the tag and the filename disagreed. The file itself was always correct.
