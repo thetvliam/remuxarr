@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { IMPORT_CONFIRM_MS } from "../../constants";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -27,16 +28,17 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
    * choosing the same file did nothing at all, and the button looked broken
    * until the user happened to pick a different one.
    *
-   * The window is 10s rather than 4s: this asks the user to read a filename
-   * and decide whether to overwrite every setting they have, which is not a
-   * four-second decision. */
+   * IMPORT_CONFIRM_MS rather than the shared CONFIRM_MS: this asks the user
+   * to read a filename and decide whether to overwrite every setting they
+   * have, which is not a four-second decision. See constants.js for why that
+   * is the only action given a longer window. */
   useEffect(() => {
     if (!confirming) return;
     const t = setTimeout(() => {
       setConfirming(false);
       pendingFileRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
-    }, 10000);
+    }, IMPORT_CONFIRM_MS);
       return () => clearTimeout(t);
   }, [confirming]);
 

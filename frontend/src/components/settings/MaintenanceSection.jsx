@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { CONFIRM_MS } from "../../constants";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
@@ -216,7 +217,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const [orphanedRemoveArmed, setOrphanedRemoveArmed] = useState(false);
   useEffect(() => {
     if (!orphanedRemoveArmed) return;
-    const t = setTimeout(() => setOrphanedRemoveArmed(false), 3000);
+    const t = setTimeout(() => setOrphanedRemoveArmed(false), CONFIRM_MS);
     return () => clearTimeout(t);
   }, [orphanedRemoveArmed]);
 
@@ -224,7 +225,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const [forceScanArmed, setForceScanArmed] = useState(false);
   useEffect(() => {
     if (!forceScanArmed) return;
-    const t = setTimeout(() => setForceScanArmed(false), 3000);
+    const t = setTimeout(() => setForceScanArmed(false), CONFIRM_MS);
     return () => clearTimeout(t);
   }, [forceScanArmed]);
 

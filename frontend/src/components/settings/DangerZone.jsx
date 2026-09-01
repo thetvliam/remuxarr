@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { CONFIRM_MS } from "../../constants";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
@@ -23,7 +24,7 @@ export const DangerZone = ({ api, toast, onCleared }) => {
     // the user clicks rapidly. Do not remove or restructure this effect.
     useEffect(() => {
         if (!confirming) return;
-        const t = setTimeout(() => setConfirming(false), 4000);
+        const t = setTimeout(() => setConfirming(false), CONFIRM_MS);
         return () => clearTimeout(t);
     }, [confirming]);
 

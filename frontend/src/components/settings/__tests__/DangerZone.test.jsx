@@ -14,12 +14,13 @@
  * The two-click confirmation is covered here as well, since firing the wipe
  * on a single click is the failure that cannot be undone.
  */
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DangerZone } from "../DangerZone";
 import { ThemeProvider } from "../../../theme";
+import { CONFIRM_MS } from "../../../constants";
 
 const setup = (props = {}) => {
   const onCleared = vi.fn();
@@ -43,6 +44,48 @@ const confirmClear = async (user) => {
 describe("DangerZone", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({}) })));
+  });
+
+  /* The arming window disarms itself so a button left armed cannot be fired
+     by a stray click minutes later. Read from the shared constant rather than
+     written as a number: the five confirm sites had drifted to 3s and 4s with
+     nothing marking either as intended, which is what the constant exists to
+     stop. A literal here would let them drift again while still passing.
+
+     fireEvent rather than userEvent: userEvent schedules its own work on the
+     timers these tests replace, so the two deadlock. */
+  it("disarms itself once the confirmation window lapses", () => {
+    vi.useFakeTimers();
+    try {
+      setup();
+      fireEvent.click(button());
+      expect(button()).toHaveTextContent(/CONFIRM/i);
+
+      // Just short of the window: still armed.
+      act(() => { vi.advanceTimersByTime(CONFIRM_MS - 100); });
+      expect(button()).toHaveTextContent(/CONFIRM/i);
+
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(button()).not.toHaveTextContent(/CONFIRM/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a click after the window lapses re-arms rather than firing", () => {
+    vi.useFakeTimers();
+    try {
+      setup();
+      fireEvent.click(button());
+      act(() => { vi.advanceTimersByTime(CONFIRM_MS + 100); });
+
+      fireEvent.click(button());
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(button()).toHaveTextContent(/CONFIRM/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("sends nothing on the first click", async () => {

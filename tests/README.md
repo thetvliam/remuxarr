@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1161 tests across 55 test files, plus 367 frontend tests under
+1161 tests across 55 test files, plus 369 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
 number below matters more than that one.
 

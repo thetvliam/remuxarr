@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtRel, basename } from "../../utils";
+import { CONFIRM_MS } from "../../constants";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 
@@ -29,7 +30,6 @@ const COMPATIBLE_TIER = "compatible";
  * the only copy of the removed tracks; neither should be one stray click
  * away. ────────────────────────────────────────────────────────────────── */
 
-const CONFIRM_MS = 4000;
 
 export const RecycleBinSection = ({ api, toast, reloadKey }) => {
   const { palette, type, space } = useTheme();

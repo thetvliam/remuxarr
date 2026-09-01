@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
+import { CONFIRM_MS } from "../../constants";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
 import { PanelHeader } from "../layout/PanelHeader";
@@ -176,7 +177,7 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     // freshly armed button. Same pattern DangerZone's comment calls critical.
     useEffect(() => {
         if (!clearArmed) return;
-        const t = setTimeout(() => setClearArmed(false), 3000);
+        const t = setTimeout(() => setClearArmed(false), CONFIRM_MS);
         return () => clearTimeout(t);
     }, [clearArmed]);
 
