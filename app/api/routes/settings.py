@@ -752,9 +752,11 @@ SETTINGS_SCHEMA = [
         "group":       "Sonarr",
         "label":       "Enable Sonarr Integration",
         "type":        "boolean",
-        "description": "When enabled, Remuxarr accepts On Import / On Upgrade "
-                       "webhooks from Sonarr and calls Sonarr's RescanSeries "
-                       "after each job completes.",
+        "description": "Calls Sonarr's RescanSeries after each job completes, "
+                       "so Sonarr re-discovers the file at its new path or "
+                       "extension. Incoming webhooks are accepted whatever "
+                       "this is set to — to stop Remuxarr acting on them, "
+                       "remove the webhook in Sonarr itself.",
     },
     {
         "key":         "sonarr_url",
@@ -800,9 +802,11 @@ SETTINGS_SCHEMA = [
         "group":       "Radarr",
         "label":       "Enable Radarr Integration",
         "type":        "boolean",
-        "description": "When enabled, Remuxarr accepts On Import / On Upgrade "
-                       "webhooks from Radarr and calls Radarr's RescanMovie "
-                       "after each job completes.",
+        "description": "Calls Radarr's RescanMovie after each job completes, "
+                       "so Radarr re-discovers the file at its new path or "
+                       "extension. Incoming webhooks are accepted whatever "
+                       "this is set to — to stop Remuxarr acting on them, "
+                       "remove the webhook in Radarr itself.",
     },
     {
         "key":         "radarr_url",

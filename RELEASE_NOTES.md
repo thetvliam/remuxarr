@@ -61,3 +61,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - The planned action for an extracted subtitle no longer shows the wrong language. With automatic tagging of undefined tracks turned on, the row named the corrected file but kept the old `[und]` tag beside it, so the tag and the filename disagreed. The file itself was always correct.
+
+## Changed
+
+- The Sonarr and Radarr "Enable Integration" descriptions now say what those switches actually do. They control the rescan Remuxarr sends after a job finishes; they have never controlled whether incoming webhooks are acted on. If you want Remuxarr to stop processing webhooks, remove the webhook in Sonarr or Radarr itself. Nothing has changed about how your setup behaves.
