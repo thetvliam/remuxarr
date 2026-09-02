@@ -9,9 +9,21 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MANUAL REVIEW PAGE
- * Lists files that triggered the "multiple undefined audio tracks" gate.
- * User can approve (send to queue) or skip (dismiss).
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ * Everything the pipeline stopped on and wants a decision about. Three
+ * surfaces, each with its own backing list:
+ *
+ * 1. Files that triggered the "multiple undefined audio tracks" gate —
+ *    approve (send to queue) or skip (dismiss). The `items` prop.
+ *
+ * 2. Flagged image subtitles on those same files — resolve one track at a
+ *    time, or resolve all of a file's at once. Reads image_subtitle_handling
+ *    to phrase what resolving will do.
+ *
+ * 3. AudioLanguageReviewSection and SubtitleLanguageReviewSection, rendered
+ *    at the bottom: separately paginated, separately filtered lists of
+ *    tracks whose language needs confirming. They fetch their own data and
+ *    take reviewRefreshKey to know when to refetch.
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");

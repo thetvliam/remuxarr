@@ -8,10 +8,11 @@ POST /api/audio-language-review/ignore   — confirm selected files are already 
 Distinct from the existing /api/queue/manual-review workflow: a file
 flagged here is fully processed and playable the whole time — nothing is
 held back waiting for a decision. The flag is purely informational,
-surfaced so a human can optionally correct a wrong-but-defined audio
-language tag (e.g. an English show mistagged "dut") or confirm the
-existing tag is already correct (e.g. anime that's genuinely, correctly
-Japanese) at their own pace.
+surfaced so a human can optionally correct a wrong audio language tag — a
+defined but incorrect one (e.g. an English show mistagged "dut"), or an
+undefined one that fix_undefined_language's "always_ask" mode flagged rather
+than guessed — or confirm the existing tag is already correct (e.g. anime
+that's genuinely, correctly Japanese) at their own pace.
 
 The request handling lives in _language_review.py, shared with the subtitle
 counterpart: the two were separate 100-line implementations differing by one

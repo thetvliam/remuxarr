@@ -1,12 +1,19 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { CONFIRM_MS } from "../../constants";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
  * behaves like a first-run baseline scan. App settings are NOT touched —
  * the backend endpoint only deletes from the scan-state tables.
- * Requires a second click within 4 seconds to confirm. ──────────────────── */
-export const DangerZone = ({ api, toast }) => {
+ * Requires a second click within 4 seconds to confirm.
+ *
+ * onCleared fires after a successful wipe. The endpoint broadcasts nothing,
+ * and this component is reached from Settings while the dashboard panels are
+ * unmounted, so without it the queue kept listing rows the wipe had already
+ * deleted — clicking one opened a detail fetch that 404'd, and dismissing one
+ * addressed a dead id. ─────────────────────────────────────────────────────*/
+export const DangerZone = ({ api, toast, onCleared }) => {
     const { palette, type, space, radius } = useTheme();
     const [confirming, setConfirming] = useState(false);
     const [clearing,   setClearing]   = useState(false);
@@ -17,7 +24,7 @@ export const DangerZone = ({ api, toast }) => {
     // the user clicks rapidly. Do not remove or restructure this effect.
     useEffect(() => {
         if (!confirming) return;
-        const t = setTimeout(() => setConfirming(false), 4000);
+        const t = setTimeout(() => setConfirming(false), CONFIRM_MS);
         return () => clearTimeout(t);
     }, [confirming]);
 
@@ -31,6 +38,9 @@ export const DangerZone = ({ api, toast }) => {
         try {
             const r = await fetch(`${api}/api/settings/clear-database`, { method: "POST" });
             if (r.ok) {
+                // Before the toast, not after: a throw in the toast call must
+                // not be what stops the panels being told the data is gone.
+                onCleared?.();
                 toast?.("Database cleared — next scan will treat all files as new", "success");
             } else {
                 toast?.("Failed to clear database", "error");

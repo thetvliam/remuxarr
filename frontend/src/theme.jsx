@@ -24,7 +24,7 @@
  * Copy a block below, change the values, add it to `themes`. Keep every key
  * present — a missing key is a runtime undefined, not a fallback. Keep the
  * SHAPE identical; only values should differ.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
@@ -69,12 +69,12 @@ export const alpha = (color, amount) => {
  * alpha() reproduces that exact hex suffix, and they are how that stays
  * checkable.
  *
- * The four faintest rungs have no call sites today. They are kept because
+ * The three faintest rungs have no call sites today. They are kept because
  * this is a scale rather than a set of tokens — a theme wanting a barely
  * visible overlay should find a rung already named rather than invent one
  * and a naming convention with it. */
 export const ALPHA = {
-  faint:  0.016,  // was "04"  — unused
+  faint:  0.016,  // was "04"  — RecycleBinSection
   ghost:  0.027,  // was "07"  — unused
   hint:   0.031,  // was "08"  — unused
   subtle: 0.047,  // was "0c"  — unused
@@ -111,7 +111,7 @@ export const LAYER = {
   drawer:         500,   // mobile drawer panel, above its own scrim
   headerRow:      550,   // mobile header row, so the drawer slides beneath it
   header:         600,   // the header bar
-  modal:          1000,  // DetailModal
+  modal:          1000,  // DetailModal, ReleaseNotesModal
   guardModal:     1100,  // unsaved-changes prompt, above any modal it guards
   toast:          2000,  // always on top: a toast may report a failure in
   // whatever is underneath, so it can never be hidden
@@ -201,7 +201,7 @@ export const buildActionCfg = (p, tint) => ({
  * THEME: terminal (default)
  * The current look, value-for-value. Sharp corners, dense spacing, wide
  * letter-spacing, small type.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const terminalPalette = {
   bg:     "#07080b",
   card:   "#0d0f14",
@@ -346,7 +346,7 @@ const terminal = {
  * Same skeleton, different clothes — rounded corners, slightly larger type,
  * roomier padding, calmer palette. Included to prove the mechanism handles
  * STRUCTURAL change, not just colour. Replace with your real mockups.
- ═ ═*══════════════════════════════════*════════════════════════════***═══════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const softPalette = {
   bg:     "#12141a",
   card:   "#191c25",
@@ -1064,10 +1064,13 @@ const STORAGE_KEY = "remuxarr.theme";
 
 /* ── Context ──────────────────────────────────────────────────────────── */
 /* Exported alongside ThemeProvider so a caller can supply a theme object
- * directly. ThemeProvider only ever yields one of the themes this app ships,
- * and both of those are dark — so it cannot express a light colorScheme, and
- * anything whose behaviour depends on one (the header wordmark) would be
- * untestable through the provider alone. */
+ * directly. ThemeEditorPage needs that to preview a theme being edited, which
+ * is by definition not the active one; tests use it to pin behaviour against
+ * a colorScheme without coupling to which shipped themes happen to have it.
+ *
+ * It was originally justified on the grounds that every shipped theme was
+ * dark, so a light colorScheme could not be reached through the provider at
+ * all. That stopped being true when dawn, paper and linen were added. */
 export const ThemeContext = createContext({
   ...terminal,
   themeId: DEFAULT_THEME_ID,

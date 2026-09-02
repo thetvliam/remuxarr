@@ -24,7 +24,7 @@ import { usePaginatedFetch } from "../../hooks/usePaginatedFetch";
  * unexplained in the other.
  *
  * Everything that genuinely differs between the two is a prop.
- ═ * *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const LanguageReviewSection = ({
     api,
     onRefresh,

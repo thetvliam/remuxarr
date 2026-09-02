@@ -24,7 +24,7 @@ import { useState, useEffect } from "react";
  *  maintains its own listener but they all resolve to the same value.
  *  There's no SSR concern since this is a pure client-side SPA, but the
  *  guards below keep it renderable under a test renderer with no matchMedia.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const query = (q) =>
 typeof window !== "undefined" && typeof window.matchMedia === "function"
 ? window.matchMedia(q)

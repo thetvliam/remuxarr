@@ -7,8 +7,11 @@ Key differences from the main remux pipeline
 ---------------------------------------------
 • The original AAC 5.1 track is KEPT — not replaced.
 • A new AC3 5.1 track is APPENDED to the end of the audio stream list.
-• The operation is fully reversible: the AC3 track can be removed later
-  because its output audio index is stored at job-creation time.
+• The operation is reversible: the appended AC3 is always the LAST audio
+  track, and undo re-locates it by that property against a fresh probe.
+  The add-time index IS stored (Ac3ForgeJob.audio_track_count) but undo
+  does NOT use it — see resolve_forge_ac3_for_undo for the false "undone"
+  that trusting it produced.
 
 FFmpeg strategy
 ---------------
@@ -19,7 +22,8 @@ FFmpeg strategy
           -ac:{audio_track_count}  6
 
   Undo:  -map 0                                keep everything
-          -map -0:a:{audio_track_count}         REMOVE the AC3 we appended
+          -map -0:a:{ac3_audio_output_index}    REMOVE the AC3 we appended,
+                                                at its CURRENT position
           -c copy
 """
 import logging

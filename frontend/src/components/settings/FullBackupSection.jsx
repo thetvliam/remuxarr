@@ -101,8 +101,9 @@ export const FullBackupSection = ({ api, toast }) => {
     The entire database — every scanned file, track, queue item, history
     entry, and Forge job — not just settings. A restore on a different
     system assumes the same container-side media paths as the system it
-    was exported from; if they don't match, use Orphaned Files above
-    afterward to clean up anything that doesn't correspond to a real file.
+    was exported from; if they don't match, use Orphaned Files under
+    Maintenance &amp; Logs afterward to clean up anything that doesn't
+    correspond to a real file.
     </div>
 
     {/* Export */}

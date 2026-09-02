@@ -6,7 +6,7 @@ import { SegBar } from "../bars/SegBar";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ACTIVE WORKER PANEL  (top strip — always visible on dashboard)
- ═ * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const ActivePanel = ({ job, isMobile = false, onAbort, transitioning = false }) => {
   const { palette, type, space, radius, size, surface } = useTheme();
 

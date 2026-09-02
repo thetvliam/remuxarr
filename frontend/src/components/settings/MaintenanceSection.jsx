@@ -1,9 +1,13 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { CONFIRM_MS } from "../../constants";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
- * Two cards rendered below the main settings fields and above DangerZone:
+ * The four cards of the Maintenance & Logs category, above LogViewer and
+ * BuildInfoSection. This category has no schema-driven fields of its own, so
+ * there is no SaveBar here — DangerZone is not below this, it is in the
+ * separate Backup & Danger Zone category:
  *
  * 1. Scheduled Scans — enable/disable, configure HH:MM times, toggle
  *    whether automatic cleanup runs at the end of each scan.
@@ -11,9 +15,15 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  * 2. Manual Cleanup — run the deleted-file cleanup on demand, shows
  *    how many DB entries were removed.
  *
- * Each toggle/tag saves immediately via PATCH /api/settings/{key} so
- * there's no separate Save button needed (mirrors how DangerZone works).
- ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+ * 3. Force Full Rescan — clears the fingerprint cache so the next scan
+ *    re-probes every file rather than skipping unchanged ones.
+ *
+ * 4. Orphaned Files — find and remove DB rows whose file is gone.
+ *
+ * Each toggle/tag saves immediately via PUT /api/settings/{key} so there's
+ * no separate Save button needed. There is no PATCH route on that endpoint,
+ * only GET and PUT.
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
 const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
@@ -207,7 +217,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const [orphanedRemoveArmed, setOrphanedRemoveArmed] = useState(false);
   useEffect(() => {
     if (!orphanedRemoveArmed) return;
-    const t = setTimeout(() => setOrphanedRemoveArmed(false), 3000);
+    const t = setTimeout(() => setOrphanedRemoveArmed(false), CONFIRM_MS);
     return () => clearTimeout(t);
   }, [orphanedRemoveArmed]);
 
@@ -215,7 +225,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
   const [forceScanArmed, setForceScanArmed] = useState(false);
   useEffect(() => {
     if (!forceScanArmed) return;
-    const t = setTimeout(() => setForceScanArmed(false), 3000);
+    const t = setTimeout(() => setForceScanArmed(false), CONFIRM_MS);
     return () => clearTimeout(t);
   }, [forceScanArmed]);
 

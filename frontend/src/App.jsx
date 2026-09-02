@@ -131,7 +131,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  ROOT APP
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export default function App() {
   const { palette, type, space, size } = useTheme();
   const data = useAppData();
@@ -139,6 +139,7 @@ export default function App() {
   const [queueTab, setQueueTab] = useState("queue"); // mobile only
   const {
     api, setApi, page, setPage,
+    registerNavGuard, leaveGuarded,
     // `queue` is deliberately not taken: QueuePanel renders pendingQueue,
     // the same list with in-progress items filtered out. Destructuring the
     // raw one alongside it invited picking the wrong variable.
@@ -151,7 +152,7 @@ export default function App() {
     workerPaused,
     autoStart,
     forgeActive, forgeProcessed, forgeRefreshKey,
-      toast, fetchAll,
+      toast, fetchAll, refreshAllPanels,
       pendingQueue, wsConnected, historyRefreshKey, invalidateHistory,
       reviewRefreshKey,
       revertRefreshKey,
@@ -167,27 +168,50 @@ export default function App() {
 
   /* ── Unsaved-changes navigation guard ─────────────────────────────────────
    *  SettingsPage reports whether it has unsaved edits via onDirtyChange.
-   *  requestPage intercepts nav tab clicks: leaving Settings while dirty
-   *  opens a confirm modal instead of navigating. Switching CATEGORIES
-   *  inside Settings doesn't route (edits are kept in state), so it isn't
-   *  guarded. Browser back/refresh is covered separately by a beforeunload
-   *  handler inside SettingsPage. */
+   *  Two ways out of a dirty Settings page, both guarded:
+   *
+   *  • Nav tab click → requestPage declines to route and opens the confirm
+   *    modal instead.
+   *  • Back, browser or Android → the guard registered below refuses it, and
+   *    useAppData restores the entry it had already left.
+   *
+   *  Switching CATEGORIES inside Settings doesn't route (edits are kept in
+   *  state), so it isn't guarded. Refresh and tab close are a document unload,
+   *  which neither of these sees, and stay with the beforeunload handler
+   *  inside SettingsPage.
+   *
+   *  pendingNav records which kind is waiting, because discarding resolves
+   *  them differently: a tab click still has to be performed, whereas a Back
+   *  has to be re-issued so the entry it was heading for is the one reached. */
   const [settingsDirty, setSettingsDirty] = useState(false);
-  const [pendingPage,   setPendingPage]   = useState(null);
+  const [pendingNav,    setPendingNav]    = useState(null);
+
+  const wouldLoseEdits = (target) =>
+  page === "settings" && settingsDirty && target !== "settings";
 
   const requestPage = (target) => {
-    if (page === "settings" && settingsDirty && target !== "settings") {
-      setPendingPage(target);
+    if (wouldLoseEdits(target)) {
+      setPendingNav({ kind: "page", page: target });
     } else {
       setPage(target);
     }
   };
 
+  /* Registered as an effect, not called inline: the predicate closes over
+   * `page` and `settingsDirty`, so it has to be replaced whenever either
+   * changes or Back would be answered using a stale reading of both. */
+  useEffect(() => registerNavGuard((target) => {
+    if (!wouldLoseEdits(target)) return false;
+    setPendingNav({ kind: "back" });
+    return true;
+  }));
+
   const discardAndLeave = () => {
-    const target = pendingPage;
+    const nav = pendingNav;
     setSettingsDirty(false);
-    setPendingPage(null);
-    if (target) setPage(target);
+    setPendingNav(null);
+    if (nav?.kind === "page") setPage(nav.page);
+    else if (nav?.kind === "back") leaveGuarded();
   };
 
     /* ── Render ───────────────────────────────────────────────────────────── */
@@ -342,6 +366,10 @@ export default function App() {
             isMobile={isMobile}
             revertRefreshKey={revertRefreshKey}
             onDirtyChange={setSettingsDirty}
+            /* Clearing the database empties the queue, history, forge and
+               revert tables. The endpoint broadcasts nothing, so this is the
+               only thing that tells those panels. */
+            onDatabaseCleared={refreshAllPanels}
             /* dry_run_mode and auto_start_jobs are rendered from the app-level
                state rather than the page's own loaded snapshot, and applied on
                click. The header owns them: it toggles both, and abort_job
@@ -398,6 +426,10 @@ export default function App() {
                 isMobile={isMobile}
                 revertRefreshKey={revertRefreshKey}
                 onDirtyChange={() => {}}
+                /* Passed here too, unlike onDirtyChange above: the Danger Zone
+                   in this preview is live and really does clear the database,
+                   and there is no equivalent reason to make it a no-op. */
+                onDatabaseCleared={refreshAllPanels}
                 liveToggles={{
                   dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
                   auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },
@@ -423,9 +455,9 @@ export default function App() {
             )}
             <ReleaseNotesModal api={api} />
     <Toasts items={toasts} isMobile={isMobile} />
-            {pendingPage && (
+            {pendingNav && (
               <UnsavedChangesModal
-              onKeep={() => setPendingPage(null)}
+              onKeep={() => setPendingNav(null)}
               onDiscard={discardAndLeave}
               />
             )}

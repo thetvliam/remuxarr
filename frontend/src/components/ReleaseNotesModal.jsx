@@ -19,7 +19,7 @@ import { Btn } from "./atoms/Btn";
  * the settings-tab memory: this is a per-person "I have read this", not
  * configuration. Storing it server-side would mark it read for everyone
  * because the first person to open the app did.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 const STORAGE_KEY = "remuxarr.releaseNotesSeen";
 
@@ -55,9 +55,15 @@ export const ReleaseNotesModal = ({ api }) => {
     return () => { cancelled = true; };
   }, [api]);
 
-  /* Same treatment as the app's other dialogs: labelled, focus moved in,
-   * Escape closes, and the page behind is scroll-locked so a flick of the
-   * wheel does not scroll a list the dialog is covering. */
+  /* Labelled, focus moved in, Escape closes, and the page behind is
+   * scroll-locked so a flick of the wheel does not scroll a list the dialog
+   * is covering.
+   *
+   * Short of DetailModal and UnsavedChangesModal, which also trap Tab inside
+   * the dialog and restore focus to the trigger on close. This one has no
+   * trigger to restore to — it opens itself once per release — and its only
+   * focusable child is the dismiss button, so Tab has nowhere to escape to
+   * that matters. Worth knowing before copying this as the pattern. */
   useEffect(() => {
     if (!notes) return undefined;
 

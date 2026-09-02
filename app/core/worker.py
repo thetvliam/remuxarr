@@ -495,7 +495,7 @@ def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
     difficult-to-fix deficiency — which is why this goes straight to the
     transcode retry rather than trying a timestamp-generation flag first.
 
-    All three conditions must be present:
+    All four conditions must be present:
       "aost#"      — audio output stream (not vost# video, not sost# subtitle)
       "/copy"      — the codec was copy, not a transcoder like aac or ac3
       "error submitting a packet to the muxer" — the muxer rejected the packet

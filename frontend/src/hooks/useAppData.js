@@ -38,13 +38,19 @@ const _pageFromHash = () => {
  *  Client-side routing is implemented here via the browser History API.
  *  Two pieces of state contribute history entries:
  *
- *  • Page navigation  →  #dashboard, #settings, #review, #forge
+ *  • Page navigation  →  #dashboard, #settings, #review, #forge, #themes
  *  • Modal open/close →  same URL, different state object ({ modal: true })
  *
  *  Wrapping setPage and setModal here means every caller (AppHeader,
  *  useActions, App.jsx) gets correct back-button behaviour automatically —
- *  nothing else in the codebase needs to change.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ *  no caller needs to change.
+ *
+ *  Back can also be REFUSED, via the guard App.jsx registers with
+ *  registerNavGuard. Declining a nav tab click just means not calling
+ *  setPage; declining a Back means undoing one the browser has already
+ *  performed, which is why that lives down here with the popstate listener
+ *  rather than in the component that knows why it wants to refuse.
+ ═══════════════════════════════════════════════════════════════════════════ */
 export function useAppData() {
   // ── Routing refs ──────────────────────────────────────────────────────────
   // pageRef mirrors the `page` state value synchronously so setModal can
@@ -58,6 +64,16 @@ export function useAppData() {
   // history.back() programmatically so the resulting popstate event knows the
   // modal was already closed and doesn't try to close it a second time.
   const closedByUserRef = useRef(false);
+  // navGuardRef holds an optional (targetPage) => boolean set by App.jsx. It is
+  // consulted on Back, and returning true cancels that navigation. A ref rather
+  // than state because the popstate handler is registered once with [] deps and
+  // would otherwise read whichever guard existed at mount — permanently the
+  // no-op one, since the guard depends on state that only exists later.
+  const navGuardRef     = useRef(null);
+  // Companion one-shot to closedByUserRef, for the other direction: set when
+  // leaveGuarded() re-issues the Back the guard just cancelled, so the handler
+  // lets it through instead of asking again and blocking forever.
+  const skipGuardRef    = useRef(false);
 
   const [api,        setApi]        = useState(DEFAULT_API);
   // Initialize page from the URL hash so direct visits and refreshes land on
@@ -198,6 +214,33 @@ export function useAppData() {
         const target = VALID_PAGES.has(state.page)
         ? state.page
         : (hasState ? "dashboard" : _pageFromHash());
+
+        /* Ask before applying it. Nav tab clicks go through App's requestPage
+         * and can simply decline to call setPage, but Back has already
+         * happened by the time this fires — the entry is popped and the URL is
+         * updated — so declining means putting it back.
+         *
+         * pushState rather than forward(): forward() is asynchronous and only
+         * works if the popped entry is still ahead in the stack, which is not
+         * true once the user has navigated anywhere else. Pushing the page we
+         * are staying on restores both the URL and a matching state object
+         * synchronously, and leaves Back working normally afterwards.
+         *
+         * beforeunload does NOT cover this. It fires for a refresh or a tab
+         * close, which is a document unload; hash and pushState routing never
+         * unload the document, so pressing Back on a dirty Settings page
+         * discarded the edits with no prompt at all. */
+        if (skipGuardRef.current) {
+          skipGuardRef.current = false;
+        } else if (navGuardRef.current?.(target)) {
+          window.history.pushState(
+            { page: pageRef.current, modal: false },
+            "",
+            `#${pageRef.current}`,
+          );
+          return;
+        }
+
         pageRef.current = target;
         setPageState(target);
         // Also close any open modal — defensive, shouldn't normally be open
@@ -225,6 +268,31 @@ export function useAppData() {
       "",
       `#${newPage}`,
     );
+  }, []);
+
+  /* ── Routing: navigation guard ───────────────────────────────────────────
+   *    App.jsx registers a predicate here so Back can be refused the same way
+   *    a nav tab click can. Kept in this hook because the popstate listener
+   *    lives here and there is otherwise no path from it to App's state.
+   *
+   *    The guard is a predicate, not a handler: it answers "should this be
+   *    blocked", and opening whatever prompt explains why is the caller's
+   *    business. That keeps the routing here free of any knowledge of
+   *    Settings, dirty edits, or modals. */
+  const registerNavGuard = useCallback((fn) => {
+    navGuardRef.current = fn;
+    return () => { if (navGuardRef.current === fn) navGuardRef.current = null; };
+  }, []);
+
+  /* Re-issue the Back that the guard just cancelled, once the user has said to
+   * go anyway. Deliberately history.back() rather than setPage(target): the
+   * entry the user was heading for is still there behind the one pushed to
+   * cancel, so going back reaches it AND removes that pushed entry. Calling
+   * setPage would push a third entry instead, leaving two dead Settings
+   * entries to press Back through afterwards. */
+  const leaveGuarded = useCallback(() => {
+    skipGuardRef.current = true;
+    window.history.back();
   }, []);
 
   /* ── Routing: wrapped setModal ───────────────────────────────────────────
@@ -331,9 +399,38 @@ export function useAppData() {
     if (p.status === "fulfilled") setForgeProcessed(Array.isArray(p.value) ? p.value : []);
   }, [api]);
 
+  /**
+   * Refresh every panel that reads scan state, for a change that invalidated
+   * all of them at once.
+   *
+   * Exists for the same reason invalidateHistory does. scan_completed and
+   * cleanup_completed each write out fetchAll + invalidateHistory(null) +
+   * setReviewRefreshKey by hand, and that is exactly the shape that goes
+   * wrong when it is copied to a new call site minus whichever line the
+   * author did not think about.
+   *
+   * Wider than either of those, because clearing the database also empties
+   * forge_jobs and revert_points — so the forge and revert panels have to be
+   * told too, and neither of their refresh keys is otherwise reachable from
+   * outside this hook.
+   *
+   * Deliberately NOT retrofitted onto scan_completed and cleanup_completed:
+   * they refresh less because they invalidate less, and widening them is a
+   * separate question from wiring up a caller that needs all of it.
+   */
+  const refreshAllPanels = useCallback(() => {
+    fetchAll();
+    fetchForge();
+    invalidateHistory(null);
+    setReviewRefreshKey(k => k + 1);
+    setRevertRefreshKey(k => k + 1);
+    setForgeRefreshKey(k => k + 1);
+  }, [fetchAll, fetchForge, invalidateHistory]);
+
     useEffect(() => {
       if (page === "forge") fetchForge();
     }, [page, fetchForge]);
+
 
       useEffect(() => {
         if (!scanning) return;
@@ -484,15 +581,27 @@ export function useAppData() {
             );
             break;
           case "forge_job_completed":
+            /* Refreshes first, for the reason job_completed sets out above:
+             * useWebSocket invokes this callback inside a bare catch, so
+             * anything that throws here is swallowed along with the rest of
+             * the branch. msg.status is guarded, but msg.error is not —
+             * .slice() on a non-string throws, and with the toast first that
+             * took fetchForge and the key bump with it, leaving the forge
+             * panel showing a job that had already finished.
+             *
+             * The backend only ever sends job.error_message, a string or
+             * None, so this is not currently reachable. It is ordered this
+             * way because the state updates are the part that has to survive,
+             * not because the throw is expected. */
+            fetchForge();
+            setForgeRefreshKey(k => k + 1);
             toast(
               `Forge: ${msg.filename || "file"} — ${(msg.status || "").toUpperCase()}` +
-              (msg.error ? `: ${msg.error.slice(0, 50)}` : ""),
+              (msg.error ? `: ${String(msg.error).slice(0, 50)}` : ""),
                   msg.status === "success" ? "success"
                   : msg.status === "undone" ? "info"
                   : "error",
             );
-            fetchForge();
-            setForgeRefreshKey(k => k + 1);
             break;
         }
         /* No theme value appears in this callback any more — the toasts it
@@ -517,6 +626,7 @@ export function useAppData() {
 
       return {
         api, setApi, page, setPage,
+        registerNavGuard, leaveGuarded,
         activeJobs, queue, review,
         modal, setModal,
         toasts,
@@ -529,7 +639,7 @@ export function useAppData() {
         reviewRefreshKey,
         revertRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
-          toast, fetchAll, fetchForge,
+          toast, fetchAll, fetchForge, refreshAllPanels,
           pendingQueue, wsConnected, isMobile,
       };
 }

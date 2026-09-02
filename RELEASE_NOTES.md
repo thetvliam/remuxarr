@@ -58,25 +58,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Added
+## Fixed
 
-- Four new themes in Settings > Appearance: **Midnight** and **Dawn**, a new dark and light pair, plus **Paper** and **Linen**, light versions of Terminal and Soft that keep those themes' exact spacing and type and change only the colours. Your current theme is unchanged and none of them is selected for you.
-
-- **Settings > Maintenance & Logs** now shows which build you are running, at the bottom below the log viewer, with a COPY button for the full commit. Until now the app reported a version number that had never changed and showed it nowhere, so the bug report template asked for something you could not find. If you are on a released tag it reads that; images built from a branch read the branch name and the commit.
+- The planned action for an extracted subtitle no longer shows the wrong language. With automatic tagging of undefined tracks turned on, the row named the corrected file but kept the old `[und]` tag beside it, so the tag and the filename disagreed. The file itself was always correct.
 
 ## Changed
 
-- New Unraid installs now put `/config` at `/mnt/user/appdata/remuxarr/config` rather than at the appdata folder itself, so the recycle bin sits beside your settings instead of inside them. **Existing installs are unaffected and need no action** - Unraid keeps the paths you already chose. If you use the CA Appdata Backup plugin and have the recycle bin on, adding `recycle` to that container's exclusion list keeps up to 20GB of recoverable track data out of every backup; see UNRAID_DEPLOYMENT.md.
-
-- Undefined-language handling is now set separately for audio and subtitles, so you can tag undefined audio automatically while holding undefined subtitles for review. **On upgrade the audio side starts at "Always leave" regardless of your previous setting** — if you had it on "Always fix", set the new "Fix Undefined Audio Language Tags" back to that. Your subtitle setting carries over untouched.
-- Subtitles renamed through Subtitle Language Review now use the two-letter code (`Show.en.srt`) instead of the three-letter one (`Show.eng.srt`), matching what automatic extraction already produced. If you have scripts or Plex agents keyed on the old name, they will need updating.
-
-## Fixed
-
-- The README's time zone instructions described the wrong thing. `TZ` does not affect the timestamps you see - those are converted by your browser and have always been right - but it does decide when scheduled scans and the Plex analyze window actually run. If you never set `TZ` because the clocks in the UI looked correct, your container is on UTC and any overnight schedule is running at the wrong hour: a 02:00-06:00 window is 22:00-02:00 in New York. Set `TZ` and check it with `docker exec remuxarr date`. **On Unraid there was no field for it** - Unraid does not pass a time zone to containers and the template never offered one - so edit the container and add a `TZ` variable, or reapply the updated template on a new install.
-
-- Ignoring a file in Audio or Subtitle Language Review now clears every flagged track on it. Previously it cleared one, so the file stayed on the review page it had just been ignored from.
-- Applying a language to several tracks of one file now reprocesses that file once instead of once per track, and the confirmation counts files rather than tracks.
-- The queue no longer starts a job on a file while a revert is rewriting it. The two could previously both write the same file, leaving whichever finished last.
-- Emptying the recycle bin, or discarding a revert point, is now refused while a revert is running rather than deleting the sidecar being restored from.
-- When a candidate file is rejected while matching a revert point, the reason is now shown next to the list instead of a generic failure message.
+- The Sonarr and Radarr "Enable Integration" descriptions now say what those switches actually do. They control the rescan Remuxarr sends after a job finishes; they have never controlled whether incoming webhooks are acted on. If you want Remuxarr to stop processing webhooks, remove the webhook in Sonarr or Radarr itself. Nothing has changed about how your setup behaves.

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
+import { CONFIRM_MS } from "../../constants";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
 import { PanelHeader } from "../layout/PanelHeader";
@@ -11,7 +12,7 @@ import { PanelHeader } from "../layout/PanelHeader";
  * Shows per-item ↑ TOP and × buttons on hover. Only pending items reach
  * this component (the parent filters out processing items), so there's
  * no processing/progress state here.
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
     const { palette, type, space, radius, size, surface, statusColor } = useTheme();
     const [hover, setHover] = useState(false);
@@ -153,7 +154,7 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * QUEUE PANEL
- ═ * * * ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }) => {
     const { palette, type, space, radius } = useTheme();
     // Resolved once here rather than per row: a long queue would otherwise
@@ -176,7 +177,7 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     // freshly armed button. Same pattern DangerZone's comment calls critical.
     useEffect(() => {
         if (!clearArmed) return;
-        const t = setTimeout(() => setClearArmed(false), 3000);
+        const t = setTimeout(() => setClearArmed(false), CONFIRM_MS);
         return () => clearTimeout(t);
     }, [clearArmed]);
 

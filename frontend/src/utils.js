@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
  * UTILITIES
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 export const fmtSize = (bytes) => {
   // `== null` rather than a falsy check: 0 is a real size and should read
@@ -114,9 +114,14 @@ export const formatBytesSaved = (bytesSaved, bytesSavedPct) => {
     // 5 KB on 300 MB ≈ 0.002%) reaches here as exactly 0. A previous
     // check of `bytesSavedPct > 0` therefore let those through as "0%",
     // which read as "saved nothing" when bytes were in fact saved.
-    // `?? 0` because both call sites interpolate this straight into a
-    // template with a % sign after it — HistoryPanel and DetailModal — so a
-    // null from the backend rendered literally as "null%".
+    // `?? 0` is a backstop, not the null guard it reads as: a null pct with
+    // a real saving is already caught by the `< 1` branch above (null
+    // coerces to 0), so it renders "<1" and never reaches here. What does
+    // reach here is undefined, which fails `< 1` as NaN and prints "0%" —
+    // the same misreading the paragraph above describes fixing. Not
+    // currently possible: _history_serialize sets bytes_saved and
+    // bytes_saved_pct together, either both real or both null, and both
+    // call sites read pctDisplay only inside their isPositive branch.
     pctDisplay: (isPositive && bytesSavedPct < 1) ? "<1" : (bytesSavedPct ?? 0),
   };
 };

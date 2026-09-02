@@ -19,15 +19,26 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 export const TagInput = ({ values, onChange, normalize = true, placeholder = "", label }) => {
     const { palette, type, space, radius } = useTheme();
     const [draft, setDraft] = useState("");
+    const [error, setError] = useState("");
 
     const add = () => {
         // normalize=true for language codes (eng, fre…) — lowercase is correct.
         // normalize=false for filesystem paths — case must be preserved exactly.
         const v = normalize ? draft.trim().toLowerCase() : draft.trim();
-        if (v && !values.includes(v)) {
-            onChange([...values, v]);
-            setDraft("");
+        if (!v) return;
+        // Reported rather than ignored. Re-adding an existing entry did
+        // nothing at all and did not even clear the box, so the entry sat
+        // there looking unsubmitted — identical to a keypress that had not
+        // registered, and there is no way to tell from the chips above
+        // whether "ENG" and "eng" are the same one when normalize is on.
+        // TimeTagInput, the same control for schedule times, already says so.
+        if (values.includes(v)) {
+            setError(`"${v}" is already in the list`);
+            return;
         }
+        onChange([...values, v]);
+        setDraft("");
+        setError("");
     };
 
     return (
@@ -77,8 +88,14 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "",
         <input
         aria-label={label ? `Add to ${label}` : "Add"}
         value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onKeyDown={e => e.key === "Enter" && add()}
+        onChange={e => { setDraft(e.target.value); setError(""); }}
+        /* preventDefault so Enter cannot submit an enclosing form, and comma
+         *         as a second separator: both match TimeTagInput, and typing a list
+         *         of language codes with commas is the obvious thing to try. */
+        onKeyDown={e => {
+            if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(); }
+            if (e.key === "Escape") { setDraft(""); setError(""); }
+        }}
         placeholder={placeholder || "add an entry…"}
         style={{
             flex: 1,
@@ -107,6 +124,11 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "",
         +
         </button>
         </div>
+        {error && (
+            <div role="alert" style={{ color: palette.red, fontSize: type.size.sm, marginTop: space.xs }}>
+            {error}
+            </div>
+        )}
         </div>
     );
 };

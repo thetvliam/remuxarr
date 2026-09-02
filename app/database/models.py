@@ -159,13 +159,25 @@ class QueueItem(Base):
 
     # pending | processing | success | failed | manual_review | skipped | cancelled
     status     = Column(String, default="pending", nullable=False, index=True)
-    priority   = Column(Integer, default=5)   # 1 = highest, 10 = lowest
+    # Lower sorts first; 5 is the default every queued item gets.
+    # NOT bounded to 1..10: queue.prioritize_item sets one below the current
+    # minimum, so repeated "move to top" presses walk through 0 and negative.
+    # That is fine for ORDER BY priority ASC, but do not treat the column as
+    # a fixed 1..10 scale.
+    priority   = Column(Integer, default=5)
     is_dry_run = Column(Boolean, default=False)
 
-    reason         = Column(Text)    # human-readable: "Remove 2 French audio tracks; Convert to MP4"
+    # Human-readable, "; "-joined from _build_reason's parts, e.g.
+    # "Remove 2 audio tracks; Convert MKV → MP4". No language name ever
+    # appears here — the reason counts tracks, it does not name them.
+    reason         = Column(Text)
     error_message  = Column(Text)
     progress       = Column(Float, default=0.0)  # 0–100
-    current_action = Column(String)              # "Remuxing to MP4", "Transcoding AAC 5.1 → AC3"
+    # One of the four strings ffmpeg._describe_action returns, e.g.
+    # "Remuxing to MP4" or "Remuxing tracks". The old example here,
+    # "Transcoding AAC 5.1 → AC3", named the removed AAC 5.1 → AC3 setting
+    # and was never a value this column could hold.
+    current_action = Column(String)
 
     # JSON list of flagged subtitle tracks for manual_review items caused by
     # non-convertible (image-based) subtitles. Each entry:
@@ -223,7 +235,10 @@ class PlannedAction(Base):
                            nullable=False)
 
     order       = Column(Integer, default=0)
-    # copy_track | drop_track | transcode_track | change_container | flag_manual_review
+    # copy_track | drop_track | transcode_track | change_container |
+    # flag_manual_review | extract_subtitle | add_faststart
+    # The full ActionType literal in decision.py — scanner._queue_file writes
+    # every action the decision produced, so any type added there lands here.
     action_type = Column(String, nullable=False)
     description = Column(String, nullable=False)   # human-readable
     track_type  = Column(String)                   # audio | subtitle | video | None

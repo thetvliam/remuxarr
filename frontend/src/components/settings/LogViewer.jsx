@@ -4,9 +4,10 @@ import { fmtClock } from "../../utils";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * LOG VIEWER
- * Polls GET /api/logs every 3 seconds while mounted.  Mounted only when
- * the user navigates to Settings, so polling stops automatically on
- * navigation away.
+ * Polls GET /api/logs every 3 seconds while mounted. Mounted only by the
+ * Maintenance & Logs category of Settings, so polling starts and stops on
+ * category switch, not just on leaving the page — the other categories
+ * never start it. The theme editor's Settings preview mounts it too.
  *
  * Level filter is client-side — all 200 most recent records are fetched
  * and the selected minimum level is applied locally, so toggling is instant
@@ -15,7 +16,7 @@ import { fmtClock } from "../../utils";
  * Auto-scroll keeps the list pinned to the newest entry.  It disengages
  * automatically when the user scrolls up, and re-engages when they scroll
  * back to the bottom.
- ═ ═*═════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 // CRITICAL ranks above ERROR. It was equal, so the two were
 // indistinguishable to the filter: selecting ERROR included CRITICAL with

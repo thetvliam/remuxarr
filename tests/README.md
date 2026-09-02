@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1161 tests across 55 test files, plus 314 frontend tests under
+1165 tests across 56 test files, plus 369 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
 number below matters more than that one.
 
@@ -40,8 +40,8 @@ absent (CI installs them, so they always run there).
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
-**Integrations** — `test_webhook_paths.py`, `test_arr_notifications.py`,
-`test_plex_client.py`, `test_scheduler.py`.
+**Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
+`test_arr_notifications.py`, `test_plex_client.py`, `test_scheduler.py`.
 
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`.

@@ -44,7 +44,7 @@
  * theme. Both throw. Nothing here coerces, because a serialiser that
  * quietly wrote a bad value would turn a one-off mistake into a repeatable
  * one, and the mistake it would be repeating renders as nothing at all.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 
 import {
   themes,
@@ -157,8 +157,8 @@ const assertLeaf = (v, path) => {
      * an undefined key, arriving by a different route — and an editor where
      * clearing a field produces one makes it repeatable.
      *
-     * Neither shipped theme has a blank leaf, so this rejects nothing that
-     * exists today. */
+     * No shipped theme has a blank leaf — checked across all six — so this
+     * rejects nothing that exists today. */
     if (v.trim() === "") {
       throw new Error(
         `theme ${path}: empty, which renders as nothing rather than as an error`,

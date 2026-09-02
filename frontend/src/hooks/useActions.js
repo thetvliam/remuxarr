@@ -4,7 +4,7 @@
  *  the setters passed in from useAppData. Has no state of its own — accepts
  *  the full data bundle returned by useAppData() and destructures what it
  *  needs, so the call site can simply do `useActions(data)`.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export function useActions({
   api,
   dryRun, setDryRun,
@@ -40,14 +40,26 @@ export function useActions({
     toast(`Dry run ${next ? "enabled" : "disabled"}`, "warning");
   };
 
+  /* Reports the failure, like every other action here. It reported nothing:
+   * the button is a toggle whose label is driven by workerPaused, so a POST
+   * that 500'd left PAUSE reading PAUSE and produced no toast — identical in
+   * every respect to a click that had not registered. The natural response is
+   * to click again, which fails again, just as quietly. */
   const togglePause = async () => {
     const endpoint = workerPaused ? "resume" : "pause";
     const r = await fetch(`${api}/api/worker/${endpoint}`, { method: "POST" }).catch(() => null);
-    if (r?.ok) {
-      const next = !workerPaused;
-      setWorkerPaused(next);
-      toast(next ? "Processing paused" : "Processing resumed", next ? "warning" : "success");
+    if (!r?.ok) {
+      // Says what is still true rather than what failed. Nothing was changed,
+      // so the useful half is which state the worker remains in.
+      toast(
+        `Could not ${endpoint} processing — still ${workerPaused ? "PAUSED" : "RUNNING"}`,
+        "error",
+      );
+      return;
     }
+    const next = !workerPaused;
+    setWorkerPaused(next);
+    toast(next ? "Processing paused" : "Processing resumed", next ? "warning" : "success");
   };
 
   // Cancels the currently-processing job AND disables auto-start in the
@@ -109,6 +121,10 @@ export function useActions({
     toast(`Auto-start ${next ? "enabled" : "disabled"}`, "quiet");
   };
 
+  /* The failure branch existed only to undo the optimistic spinner. cancelScan
+   * directly below reports its failure; starting one did not, so a SCAN click
+   * that 500'd flickered the button and stopped, which reads as a scan that
+   * found nothing rather than one that never began. */
   const triggerScan = async () => {
     setScanning(true);
     const r = await fetch(`${api}/api/scan/trigger`, {
@@ -116,13 +132,15 @@ export function useActions({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     }).catch(() => null);
-    if (!r?.ok) setScanning(false);
-    else {
-      toast("Library scan started", "notice");
-      // If auto-start is off, the backend will pause the worker after the
-      // scan — reflect that immediately in the UI.
-      if (!autoStart) setWorkerPaused(true);
+    if (!r?.ok) {
+      setScanning(false);
+      toast("Failed to start scan", "error");
+      return;
     }
+    toast("Library scan started", "notice");
+    // If auto-start is off, the backend will pause the worker after the
+    // scan — reflect that immediately in the UI.
+    if (!autoStart) setWorkerPaused(true);
   };
 
   const cancelScan = async () => {

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
  *  WEBSOCKET HOOK
  *  Uses a callback ref so the effect never re-fires on re-renders;
  *  only reconnects when the URL changes.
- * ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export function useWebSocket(url, onMessage, onReconnect) {
     const wsRef    = useRef(null);
     const cbRef    = useRef(onMessage);

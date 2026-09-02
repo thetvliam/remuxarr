@@ -454,11 +454,16 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
     : palette.dim;
     /* `dirty` outranks the "saved" confirmation. save() captures the values it
      * is going to send before awaiting, and anything typed while the PUT is in
-     * flight is correctly left dirty afterwards — it was not part of the
-     * request. But the confirmation fired regardless, so for the 2.5s it
-     * lasted the bar read CHANGES SAVED in green with an unsaved edit sitting
-     * on screen and the Save button still enabled beside it. The edit is not
-     * lost; the label just contradicted it. */
+     * flight is left dirty afterwards — it was not part of the request. The
+     * confirmation fired regardless, so for the 2.5s it lasted the bar read
+     * CHANGES SAVED in green with an unsaved edit sitting on screen and the
+     * Save button still enabled beside it.
+     *
+     * This ordering was written when the edit was in fact being discarded by
+     * the post-save reload, so the contradiction it describes could not
+     * actually occur — dirty was false, for the wrong reason. loadSettings now
+     * preserves those edits, which is what makes this branch reachable and
+     * this precedence the right one rather than a no-op. */
     const statusText = status === "saving" ? "Saving…"
     : status === "error" ? "Save failed — check the connection"
     : dirty ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}`
@@ -506,9 +511,9 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
 
   /* ═══════════════════════════════════════════════════════════════════════════
    * SETTINGS PAGE
-   ═ * * ═*═════════════════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════════════ */
   export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
-    liveToggles = {}, revertRefreshKey = 0 }) => {
+    liveToggles = {}, revertRefreshKey = 0, onDatabaseCleared }) => {
       const { palette, type, space } = useTheme();
       const [schema,   setSchema]   = useState([]);
       const [values,   setValues]   = useState({});
@@ -535,17 +540,41 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       // that changes settings server-side WITHOUT going through this page's own
       // save() has to call this, or the page keeps rendering pre-change values —
       // see the reload prop passed to BackupRestoreSection below.
-      const loadSettings = useCallback(() => {
+      // keepEditsSince is the values snapshot a save was started from. Any key
+      // that has moved away from it since is an edit the user made WHILE the
+      // PUT was in flight, so it is not part of what the server just stored and
+      // the reload must not write over it. Passed only by save(); every other
+      // caller wants the server's answer whole (an import is meant to replace
+      // what is on screen).
+      //
+      // Read through the setValues updater rather than a ref: `prev` is the
+      // current state at the moment the response lands, whereas save() closes
+      // over the `values` of the render its click came from, which is the stale
+      // snapshot by definition.
+      const loadSettings = useCallback((keepEditsSince = null) => {
         return Promise.all([
           fetch(`${api}/api/settings/schema`).then(r => r.json()),
                            fetch(`${api}/api/settings/`).then(r => r.json()),
         ])
         .then(([s, v]) => {
           setSchema(s);
-          setValues(v);
+          setValues(prev => {
+            if (!keepEditsSince) return v;
+            const merged = { ...v };
+            for (const k of Object.keys(prev)) {
+              if (JSON.stringify(prev[k]) !== JSON.stringify(keepEditsSince[k])) {
+                merged[k] = prev[k];
+              }
+            }
+            return merged;
+          });
           // baseline must move with values. It is what isDirty compares against,
           // so leaving it stale would leave the page looking clean while showing
           // different data than it holds.
+          //
+          // The raw server response, NOT the merged object above: baseline is
+          // what was actually saved, so a preserved in-flight edit measures as
+          // dirty against it and the SaveBar offers to save it.
           setBaseline(v);
           setLoadError(false);
         })
@@ -647,7 +676,16 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             // are exactly the ones that may have been changed elsewhere, so this
             // is what makes the page agree with the backend again instead of
             // continuing to render step 1's stale values.
-            await loadSettings();
+            //
+            // `snapshot` is handed over so the re-read keeps anything typed
+            // while the PUT was open. Without it the reload overwrote those
+            // edits with the server's values: a text field silently reverted,
+            // and an integer field diverged instead — IntegerInput holds a
+            // draft string until blur, so the box went on showing what was
+            // typed while `values` underneath it had gone back, leaving the
+            // page reporting no unsaved changes and the next save sending
+            // nothing. Neither said anything had been dropped.
+            await loadSettings(snapshot);
           } else {
             setStatus("error");
           }
@@ -723,7 +761,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             <>
             <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
             <FullBackupSection api={api} toast={toast} />
-            <DangerZone api={api} toast={toast} />
+            <DangerZone api={api} toast={toast} onCleared={onDatabaseCleared} />
             </>
           );
         }

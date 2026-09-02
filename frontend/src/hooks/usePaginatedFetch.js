@@ -48,7 +48,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
  *  generation has changed is silently dropped — including the finally block
  *  that clears loadingRef. Without this, an old finally block could reset
  *  loadingRef for a newer fetch, causing stale results or missing updates.
- ═ *══════════════════════════════════════════════════════════════════════════ */
+ ═══════════════════════════════════════════════════════════════════════════ */
 export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 50, extraParams = null) {
   const [items,   setItems]   = useState([]);
   const [total,   setTotal]   = useState(0);
