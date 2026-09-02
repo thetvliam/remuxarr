@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Removing orphaned entries under Maintenance now refreshes the rest of the app. The queue, history, review and recycle bin carried on showing the rows it had just deleted until you reloaded the page, and opening one of those rows failed.
+
 - The History panel no longer goes blank when a job finishes while a tab is still loading. The tab settled on "No success items" with the real count still shown in the badge beside it, and stayed that way until you switched tabs or another job of that same kind completed.
 
 - The planned action for an extracted subtitle no longer shows the wrong language. With automatic tagging of undefined tracks turned on, the row named the corrected file but kept the old `[und]` tag beside it, so the tag and the filename disagreed. The file itself was always correct.
