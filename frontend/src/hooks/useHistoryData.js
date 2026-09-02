@@ -88,6 +88,31 @@ export function useHistoryData(api, status, refreshKey, search) {
   const prevSearchRef = useRef(search);
   const hasRunRef     = useRef(false);
 
+  /* Abort on unmount, in an effect of its own with no dependencies.
+   *
+   * This was the main effect's cleanup, which React runs before EVERY re-run
+   * and not only on unmount — including a run the relevance gate then
+   * declines. So an irrelevant refreshKey arriving while the first page was
+   * still in flight aborted that request and then returned without starting a
+   * replacement. Because the early return sits above the generation
+   * increment, the aborted request still matched its own generation and its
+   * finally block cleared `loading` on the way out, leaving items empty,
+   * hasMore false, and nothing in flight. Nothing recovers that: no sentinel
+   * renders at hasMore false, so infinite scroll cannot retrigger it, and
+   * only a tab switch or a relevant invalidation refetches. HistoryPanel's
+   * summary counts are not gated, so the tab badge went on showing the real
+   * total above an empty list.
+   *
+   * Superseding is handled separately, by the abort at the top of the effect
+   * body below, which runs only where the effect really is about to issue a
+   * replacement. That distinction is the whole of this split: aborting
+   * because a newer request is coming, versus aborting because there is no
+   * longer anyone to receive the answer.
+   */
+  useEffect(() => () => {
+    if (abortRef.current) abortRef.current.abort();
+  }, []);
+
   useEffect(() => {
     const apiChanged    = prevApiRef.current    !== api;
     const statusChanged = prevStatusRef.current !== status;
@@ -188,10 +213,6 @@ export function useHistoryData(api, status, refreshKey, search) {
 
     doFetchRef.current = doFetch;
     doFetch(0, false);
-
-    return () => {
-      if (abortRef.current) abortRef.current.abort();
-    };
   }, [api, status, refreshKey, search]);
 
   // Stable callback — reads from refs so it never goes stale
