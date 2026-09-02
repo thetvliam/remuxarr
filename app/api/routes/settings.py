@@ -1,10 +1,24 @@
 """
 Settings API
 ============
-GET  /api/settings        — all settings as a flat dict
-GET  /api/settings/{key}  — single setting
-PUT  /api/settings/{key}  — update single setting
-PUT  /api/settings        — bulk update (body = {key: value, ...})
+GET  /api/settings               — all settings as a flat dict
+GET  /api/settings/schema        — field metadata for the Settings UI
+GET  /api/settings/export        — settings as a downloadable JSON file
+POST /api/settings/import        — replace settings from an uploaded file
+GET  /api/settings/test-sonarr   — probe the configured Sonarr
+GET  /api/settings/test-radarr   — probe the configured Radarr
+GET  /api/settings/test-plex     — probe the configured Plex server
+GET  /api/settings/test-email    — send a test notification
+POST /api/settings/clear-database — wipe scanned files, queue and history
+GET  /api/settings/{key}         — single setting
+PUT  /api/settings/{key}         — update single setting
+PUT  /api/settings               — bulk update (body = {key: value, ...})
+
+Every literal GET is declared above GET /{key} so the catch-all cannot
+swallow it, and PUT / sits above PUT /{key} for the same reason. Add new
+literal GETs above line 238. POST /clear-database is the exception: it is
+declared below the {key} routes and is safe only because no POST /{key}
+exists — adding one would shadow it.
 
 Values are arbitrary JSON (string, list, bool, int).
 """

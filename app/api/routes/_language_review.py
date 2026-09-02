@@ -19,12 +19,15 @@ effect on the other. The duplication was actively costing correctness.
 WHAT IS STILL SEPARATE
 ----------------------
 The two review types are genuinely different things and their documentation
-says so: an audio flag always means a DEFINED but non-preferred language,
-while a subtitle flag always originates from an UNDEFINED tag that
-fix_undefined_language's "always_ask" mode declined to guess. That difference
-lives in LanguageReviewKind, including the endpoint descriptions, so the
-OpenAPI schema still explains each one on its own terms rather than
-generically.
+says so: a subtitle flag always originates from an UNDEFINED tag that
+fix_undefined_language's "always_ask" mode declined to guess, while an audio
+flag has two causes — a DEFINED but non-preferred language, or an undefined
+one that the same always_ask mode flagged. (This paragraph used to claim an
+audio flag was always the defined case; that stopped being true when
+always_ask started flagging audio, and AudioLanguageFlag.detected_language
+can hold "und".) That difference lives in LanguageReviewKind, including the
+endpoint descriptions, so the OpenAPI schema still explains each one on its
+own terms rather than generically.
 """
 import json
 import logging

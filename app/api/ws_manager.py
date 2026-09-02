@@ -4,14 +4,31 @@ WebSocket Connection Manager
 A simple broadcast hub. Every connected client (browser tab) receives every
 event. The UI uses event.type to decide what to update.
 
-Event types emitted by the worker
-----------------------------------
-job_started     { job_id }
-job_progress    { job_id, progress, current_action, speed }
-job_completed   { job_id, status, filename, error }
-file_queued     { file_path, queue_item_id, reason }
-scan_started    {}
-scan_completed  { queued, manual_review, errors }
+Event types broadcast on this socket
+------------------------------------
+Emitted by worker.py:
+job_started          { job_id }
+job_progress         { job_id, progress, current_action, speed }
+job_completed        { job_id, status, filename, error }
+forge_job_started    { job_id }
+forge_job_progress   { job_id, progress, current_action, speed }
+forge_job_completed  { job_id, status, filename, error }
+
+Emitted by the routes:
+file_queued          { file_path, queue_item_id, reason }
+                       — scan.py and webhooks.py, same shape from both
+scan_started         { }
+scan_progress        { scanned, total }
+scan_completed       { queued, manual_review, errors, total, removed,
+                       cancelled }
+cleanup_completed    { removed }
+revert_complete      { point_id, success, error, restored_path }
+                       — restored_path is absent on the exception path
+
+The heading used to read "emitted by the worker" while already listing three
+events the routes send, so a reader checking whether an event belonged here
+got no useful answer either way. Anything added to this socket belongs in the
+list — it is the only inventory of the protocol the frontend consumes.
 """
 import asyncio
 import json

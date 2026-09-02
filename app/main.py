@@ -161,7 +161,7 @@ def _cleanup_orphaned_temp_files() -> None:
     mid-stream (container restart, SIGKILL, 'No space left on device'
     failures, thread-pool starvation kills, etc.).
 
-    Two locations, both necessary:
+    Three locations, all necessary:
 
     1. TEMP_DIR — *.remuxarr_tmp and *.forge_tmp. On Unraid this is tmpfs, so
        orphans consume RAM and eventually cause 'No space left on device' for

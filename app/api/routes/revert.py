@@ -3,6 +3,7 @@ Revert API Routes
 =================
 GET    /api/revert/                  — revert points, attached and detached
 GET    /api/revert/status            — whether a revert is currently running
+GET    /api/revert/{point_id}/candidates/ — files a detached point may belong to
 POST   /api/revert/{point_id}/restore/ — put the file back the way it was
 POST   /api/revert/{point_id}/attach/  — match a detached point to a file
 DELETE /api/revert/{point_id}/       — discard one revert point

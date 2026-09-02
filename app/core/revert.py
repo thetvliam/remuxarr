@@ -2,8 +2,11 @@
 Revert manifests — describing a file's original layout, and working out
 what a job actually destroyed.
 
-Two functions, and the interesting decisions are both about faithfulness
-rather than cleverness.
+Three functions — build_manifest, match_streams and find_lost_streams — and
+the interesting decisions are about faithfulness rather than cleverness.
+match_streams is public rather than a helper of find_lost_streams because
+revert_capture and revert_match both need the pairing without the
+"what is missing" view layered on top.
 
 build_manifest reads raw ffprobe output rather than probe.extract_tracks().
 That is not a shortcut around an existing helper, it is the opposite:

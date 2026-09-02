@@ -3,7 +3,11 @@ Scan Routes
 ===========
 POST /api/scan/trigger          — kick off a library scan (background)
 GET  /api/scan/status           — is a scan running?
+POST /api/scan/cancel           — ask the running scan to stop
 POST /api/scan/file             — re-scan + re-queue a single file path
+POST /api/scan/cleanup          — drop rows for files gone from scan_paths
+GET  /api/scan/orphaned         — rows whose path is outside every scan path
+POST /api/scan/orphaned/remove  — delete specific orphaned rows by id
 """
 import asyncio
 import logging
@@ -226,10 +230,10 @@ def _cleanup_sync(scan_paths: list[str]) -> int:
 
     That Session is bound to the request's own lifecycle and isn't
     intended to cross thread boundaries — it happened to work here only
-    because of check_same_thread=False, but this was the one place in the
-    codebase doing this; every other executor helper (_queue_sync,
-    _load_job_data, etc.) already opens its own session for exactly this
-    reason.
+    because of check_same_thread=False. _remove_orphaned_sync below was
+    doing the identical thing and was missed when this one was fixed; all
+    three executor helpers in this module (_scan_file_sync, this, and
+    _remove_orphaned_sync) now open their own session.
     """
     db = SessionLocal()
     try:
