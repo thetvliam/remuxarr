@@ -23,7 +23,7 @@
  *
  * Nothing in theme.jsx was restructured to make this work. The tint is
  * recoverable from the built theme as it stands (see recoverTint below), so
- * the two shipped literals are untouched — which is what makes the
+ * the shipped literals are untouched — which is what makes the
  * round-trip test meaningful. If those literals had been rewritten to go
  * through this module, the test would be comparing this code against itself
  * rather than against the themes the app actually ships.
@@ -207,7 +207,7 @@ function emitObject(obj, indent, path) {
  * at the point the block is pasted in rather than here, where the name was
  * chosen.
  *
- * The two shipped ids are deliberately absent: re-emitting `terminal` is
+ * The shipped ids are deliberately absent: re-emitting `terminal` is
  * what editing the terminal theme produces, and that block is a replacement
  * for the existing one rather than a name collision. Removing the old block
  * is the caller's job. */
@@ -229,7 +229,7 @@ const UNUSABLE_IDS = new Set([
   "themes", "alpha",
 ]);
 
-/* Lowercase alphanumeric, starting with a letter. Both shipped ids match.
+/* Lowercase alphanumeric, starting with a letter. Every shipped id matches.
  *
  * Narrower than "valid JS identifier" on purpose. The id is three things at
  * once — a const name in the source, the key in `themes`, and the value
@@ -367,7 +367,7 @@ export const inputsToTheme = (inputs) => {
 /**
  * Emit the source text of a theme block for theme.jsx.
  *
- * Produces the same shape as the two blocks already in the file — a palette
+ * Produces the same shape as the blocks already in the file — a palette
  * const, then the theme const with the derived maps as calls to the builder
  * functions — so a saved theme is indistinguishable from a hand-written one
  * and stays editable by hand afterwards.

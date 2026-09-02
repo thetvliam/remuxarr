@@ -163,14 +163,19 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     const [search,     setSearch]     = useState("");
     const [clearArmed, setClearArmed] = useState(false);
 
-    const pendingCount = items.filter(i => i.status === "pending").length;
+    // Every item here is pending: /api/queue/ returns only pending and
+    // processing rows, and useAppData's pendingQueue strips the processing
+    // ones before this panel sees them. This used to filter on the status
+    // again, which implied the list could hold something else — it cannot,
+    // and the header count and the rows themselves already assume it cannot.
+    const pendingCount = items.length;
     const filtered     = search.trim()
     ? items.filter(i =>
     (i.file?.filename || "").toLowerCase().includes(search.trim().toLowerCase())
     )
     : items;
 
-    // Auto-disarm after 3 seconds if the user doesn't confirm. Keyed on the
+    // Auto-disarm after CONFIRM_MS if the user doesn't confirm. Keyed on the
     // armed flag with cleanup, matching DangerZone and MaintenanceSection —
     // a bare setTimeout in the handler stacked one timer per click and each
     // survived unmount, so a timer from a previous mount could disarm a

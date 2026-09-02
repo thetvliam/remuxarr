@@ -66,6 +66,11 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     };
   }, []);
 
+  // App only renders this inside `{modal && ...}`, so item is never null in
+  // practice. Kept anyway, and kept HERE: the hooks above run unconditionally,
+  // so this cannot move to the top of the component, and without it a caller
+  // that ever rendered the modal unconditionally would crash on item.file
+  // rather than render nothing.
   if (!item) return null;
 
   const f       = item.file || {};

@@ -221,7 +221,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     return () => clearTimeout(t);
   }, [orphanedRemoveArmed]);
 
-  // Two-click confirmation for Force Full Rescan — auto-disarms after 3 s
+  // Two-click confirmation for Force Full Rescan — auto-disarms after CONFIRM_MS
   const [forceScanArmed, setForceScanArmed] = useState(false);
   useEffect(() => {
     if (!forceScanArmed) return;
