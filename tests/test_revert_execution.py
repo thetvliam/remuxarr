@@ -82,6 +82,7 @@ def env(tmp_path, monkeypatch):
     from app.config import settings as app_settings
     from app.core.ffmpeg import build_sidecar_command
     from app.core.revert import build_manifest, match_streams
+    from app.core.timeutil import utcnow_naive
     from app.database.models import Base, MediaFile, RevertPoint
     import app.database.session as session_mod
 
@@ -161,9 +162,15 @@ def env(tmp_path, monkeypatch):
 
     db = factory()
     stat = original.stat()
+    # last_processed is set because _finish_job sets it on every success,
+    # so a file with a revert point always carries one. Left at the column
+    # default of None the "cleared on revert" assertion could not fail:
+    # verified by mutation, deleting _apply's assignment kept the suite
+    # green.
     media = MediaFile(path=str(original), filename="Show.mkv",
                       directory=str(media_dir), size=stat.st_size,
-                      mtime=stat.st_mtime, container="mkv", status="processed")
+                      mtime=stat.st_mtime, container="mkv", status="processed",
+                      last_processed=utcnow_naive())
     db.add(media)
     db.commit()
 
@@ -254,20 +261,65 @@ def test_the_file_is_queued_for_re_evaluation(env):
     The file now looks the way it did before the job, so the next scan
     should judge it on its merits. Left as "processed" a reverted file is
     hidden from the very analysis that would say what it needs.
+
+    The size/mtime sentinels are the half that actually delivers that,
+    and they are asserted here rather than left to the end-to-end test
+    below so that breaking either one is caught on its own terms. This
+    test used to assert status alone and pass while the file was never
+    re-evaluated at all.
     """
     _revert(env["point"].id)
 
     env["db"].expire_all()
-    assert env["media"].status == "pending"
+    assert env["media"].status == "unprocessed"
     assert env["media"].last_processed is None
+    assert env["media"].size == -1
+    assert env["media"].mtime == -1.0
+
+
+@ffmpeg_required
+def test_a_delta_scan_actually_re_evaluates_the_reverted_file(env):
+    """
+    The property the test above is named for, driven through the real
+    scanner rather than inferred from the columns it leaves behind.
+
+    Both are needed. The sibling pins the values _apply writes; this pins
+    what the scanner does with them, which is the thing the user cares
+    about and the thing that was broken. Asserting the columns alone is
+    how a reverted file went a whole release being skipped by every delta
+    scan while a test named for re-evaluation passed.
+    """
+    from tests.conftest import BASE_SETTINGS
+    from app.core.scanner import ScanStats, _process_file
+
+    _revert(env["point"].id)
+
+    env["db"].expire_all()
+    stats = ScanStats()
+    _process_file(env["db"], str(env["path"]), BASE_SETTINGS,
+                  force_probe=False, dry_run=False, stats=stats)
+
+    assert stats.unchanged == 0, (
+        "the reverted file was skipped by a delta scan — it is only "
+        "reachable via a forced full rescan"
+    )
 
 
 @ffmpeg_required
 def test_track_rows_are_refreshed_to_the_restored_file(env):
     """
-    Without this every future delta scan skips the file — size and mtime
-    are updated here, so the scanner sees no change — and the rows keep
-    describing a version that no longer exists.
+    The rows must describe the file that is on disk now, not the one the
+    job produced.
+
+    This used to be the only thing standing between a reverted file and
+    permanently stale rows, because _apply wrote the restored file's real
+    size and mtime and every delta scan therefore skipped it. It now
+    writes the sentinels instead, so the next scan re-probes anyway —
+    but "the next scan" can be hours away on a schedule, and until then
+    anything reading Track directly is served from here. AC3 Forge's
+    candidate query is the one that matters: it selects on codec and
+    channels, so rows describing the pre-revert file offer the wrong
+    files and hide the right ones.
     """
     from app.database.models import Track
 

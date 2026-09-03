@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Reverting a file now lets the next ordinary scan re-evaluate it. The revert rewrote the file's stored size and timestamp to match the restored file, so every delta scan — including every scheduled one — saw nothing had changed and skipped it, leaving the file reachable only through a forced full rescan. Note the consequence: if you revert without changing the settings that produced the job, the next scan will queue it again.
+
 - Retry All now refreshes every History tab, not just Failed. A retry that turned failures into skips or review items left the Skipped tab showing rows that had moved, and left Failed showing rows that were gone when nothing was requeued at all.
 
 - Removing orphaned entries under Maintenance now refreshes the rest of the app. The queue, history, review and recycle bin carried on showing the rows it had just deleted until you reloaded the page, and opening one of those rows failed.
