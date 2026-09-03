@@ -1088,10 +1088,14 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     Ac3ForgeJob.audio_track_count — the 0-based audio-track-relative
     index the AC3 was appended at. analyze_file() uses this to exclude
     that track from the "multiple undefined-language audio tracks"
-    manual-review threshold count; since the index reflects the track's
-    position at ADD time, analyze_file validates it against the actual
-    track (with a last-audio-track fallback) rather than trusting it
-    blindly — see the exclusion block there.
+    manual-review threshold count.
+
+    Only whether this is None matters to the caller. Because the index
+    is the position at ADD time, analyze_file locates the track by
+    property instead — the last audio track, if it carries the forge
+    shape — which is the same rule forge.resolve_forge_ac3_for_undo
+    applies. See the exclusion block in analyze_file for why the stored
+    position could never be uniquely right.
 
     Matched states — every one in which the AC3 physically exists:
       "success"      — AC3 added and present;

@@ -377,17 +377,26 @@ def analyze_file(
         relevant for existing MP4 files; new MP4 outputs from a container
         conversion always get +faststart from the FFmpeg command builder.
     forged_ac3_audio_index : int | None
-        0-based audio-track-relative index of an AC3 track added by a
-        completed (or undo-in-progress/undo-failed) Ac3ForgeJob for this
-        file — i.e. Ac3ForgeJob.audio_track_count. When set, this specific
-        track is excluded from the "multiple undefined-language audio
-        tracks" manual-review threshold count: it's a known, intentional
+        Set when a completed (or undo-in-progress/undo-failed)
+        Ac3ForgeJob exists for this file — i.e.
+        Ac3ForgeJob.audio_track_count, the 0-based audio-track-relative
+        index the AC3 was appended at. When set, the forge AC3 is
+        excluded from the "multiple undefined-language audio tracks"
+        manual-review threshold count: it's a known, intentional
         duplicate of an existing audio track (added by the AC3 forge
         feature for AVR passthrough), not a new genuinely-ambiguous
         source. Without this exclusion, any file where forge was used on
         an "und"-language source would trip manual review on every
         subsequent scan even though both tracks are always meant to be
         kept — there's nothing for a human to actually decide.
+
+        Only its PRESENCE is used, not its value. The track is located
+        by property — the last audio track, if it has the forge shape —
+        because that invariant holds where the stored position does not:
+        the index describes the file as it was at add time. The value is
+        kept in the signature rather than reduced to a bool so callers
+        need not change and the provenance stays visible; see the
+        exclusion block below for why trusting the position was wrong.
     """
     # A fresh copy, not a reference to the caller's own dict — the
     # image_subtitle_handling gate below may inject synthetic "keep"/
@@ -488,32 +497,37 @@ def analyze_file(
     # duplicate, not a new ambiguous source, so it shouldn't count toward
     # triggering manual review.
     #
-    # The index is VALIDATED against the track it lands on, not trusted
-    # blindly: it's the track's position at ADD time, and the main
-    # pipeline can drop audio tracks afterwards, shifting every index
-    # down. Since the forge AC3 is appended as the LAST audio track and
-    # the pipeline never reorders or appends audio, a surviving forge AC3
-    # is provably still the last audio track — so when the stored index
-    # no longer lands on an ac3/6ch track, fall back to the last track if
-    # (and only if) IT has the forge shape. If neither matches, the forge
-    # AC3 is genuinely gone (dropped by the pipeline) and nothing is
-    # excluded — previously a stale in-range index silently excluded
-    # whatever unrelated track happened to sit there. Same resolution
-    # rule as forge.resolve_forge_ac3_for_undo, kept inline here because
-    # this module is deliberately import-light and pure.
+    # WHICH track is resolved by property, not by the stored index. The
+    # index is the track's position at ADD time and is deliberately not
+    # trusted, because the invariant is stronger than it: forge APPENDS
+    # the AC3 after every existing stream, and the main pipeline only
+    # ever drops or copies audio in source order — it never reorders and
+    # never appends — so a surviving forge AC3 is provably still the LAST
+    # audio track. If the last audio track does not have the forge shape,
+    # the forge AC3 is genuinely gone (the pipeline legitimately drops it
+    # when its inherited language isn't in the keep list) and nothing is
+    # excluded.
+    #
+    # The stored index was checked first, ahead of that fallback, and it
+    # could never be uniquely right — only redundant or wrong. The index
+    # is Ac3ForgeJob.audio_track_count, the audio count BEFORE the
+    # append, and build_add_ac3_command puts the new track at exactly
+    # that index. So straight after a forge the file has index+1 audio
+    # tracks and the indexed track IS the last one; dropping tracks only
+    # pushes the index out of range. The one way it lands in range on
+    # something that is not last is if the file GAINED audio tracks,
+    # which means the path now holds a different release — and then the
+    # ac3/6ch it points at belongs to a file forge never touched, so
+    # exempting it let an unknown file past this gate.
+    #
+    # This is the rule forge.resolve_forge_ac3_for_undo applies, and that
+    # function calls the same layout "mismatch" and refuses. Kept inline
+    # rather than imported because this module is deliberately
+    # import-light and pure.
     if forged_ac3_audio_index is not None and audio_tracks:
-        def _is_forge_ac3(t: dict) -> bool:
-            return (t.get("codec") or "").lower() == "ac3" and t.get("channels") == 6
-
-        forged_track = None
-        if (forged_ac3_audio_index < len(audio_tracks)
-                and _is_forge_ac3(audio_tracks[forged_ac3_audio_index])):
-            forged_track = audio_tracks[forged_ac3_audio_index]
-        elif _is_forge_ac3(audio_tracks[-1]):
-            forged_track = audio_tracks[-1]
-
-        if forged_track is not None:
-            und_audio = [t for t in und_audio if t is not forged_track]
+        last = audio_tracks[-1]
+        if (last.get("codec") or "").lower() == "ac3" and last.get("channels") == 6:
+            und_audio = [t for t in und_audio if t is not last]
 
     if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
         # Names the setting that caused this rather than just the count. The
