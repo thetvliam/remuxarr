@@ -337,11 +337,19 @@ def get_candidates(
 
     if search.strip():
         s = search.strip()
-        query = query.filter(MediaFile.filename.ilike(f"%{s}%"))
+        # icontains/istartswith with autoescape rather than ilike
+        # f-string patterns — see history.py's list_history for the
+        # reasoning. This endpoint had no search test at all, which is
+        # how it kept the same bug as its two siblings, and the
+        # consequence here is the worst of the three: the next thing the
+        # user does with a row is click ADD AC3, so a term whose `_`
+        # quietly matched a different release offers to rewrite that
+        # file's audio.
+        query = query.filter(MediaFile.filename.icontains(s, autoescape=True))
         # Relevance ordering: filename-starts-with ranks above mid-word match
         relevance = sa_case(
-            (MediaFile.filename.ilike(f"{s}%"),   0),
-            (MediaFile.filename.ilike(f"% {s}%"), 1),
+            (MediaFile.filename.istartswith(s, autoescape=True),     0),
+            (MediaFile.filename.icontains(" " + s, autoescape=True), 1),
             else_=2,
         )
         order_clause = [relevance, MediaFile.filename]

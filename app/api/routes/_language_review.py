@@ -242,8 +242,16 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             db.query(Flag)
             .join(Flag.media_file)
         )
+        # icontains(autoescape=True) rather than an ilike f-string
+        # pattern — see history.py's list_history for the full reasoning.
+        # It matters more here: the facet counts below are built from
+        # this same query, and "select all" acts on what the server
+        # returned, so an unescaped `_` pulls in files the user never
+        # searched for and the next click tags every one of them.
         if search.strip():
-            base = base.filter(MediaFile.filename.ilike(f"%{search.strip()}%"))
+            base = base.filter(
+                MediaFile.filename.icontains(search.strip(), autoescape=True)
+            )
 
         # Facet counts honour `search` but deliberately ignore `language`.
         # Faceting on the language filter itself would collapse the dropdown to
