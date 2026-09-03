@@ -944,6 +944,16 @@ def _process_file(
         if existing_skip:
             existing_skip.reason       = decision.reason
             existing_skip.completed_at = utcnow()
+            # Refreshed for the same reason the manual_review branch above
+            # refreshes it: this row is only being revisited because the
+            # file's size or mtime changed, so the size captured when it
+            # was first skipped describes a file that is no longer there.
+            # Nothing renders it today — the History summary sums only
+            # status="success" rows, and the frontend reads original_size
+            # from the forge panel's own model — but it is in this row's
+            # API response, and a stale number there is worth less than
+            # no number.
+            existing_skip.original_size = current_size
         else:
             db.add(QueueItem(
                 file_id       = media_file.id,

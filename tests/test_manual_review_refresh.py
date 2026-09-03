@@ -256,20 +256,28 @@ def test_scanner_branch_matches_this_shape():
     """
     Guards the mirror above. If the real branch stops refreshing or stops
     passing is_new_file, these tests would keep passing against a stale copy.
+
+    The last assertion guards the SKIP branch rather than this one. It is
+    here because it protects the same function against the same class of
+    regression, and because the skip branch cannot be driven cheaply — it
+    is reached only after a real stat and a real probe. That branch went a
+    long time refreshing the reason and completed_at but not
+    original_size, leaving the row's size describing a file that had
+    already changed, which is the only reason the row was revisited.
     """
     import inspect
 
     import app.core.scanner as scanner
 
     src = inspect.getsource(scanner._process_file)
-    review = src.split('status     = "manual_review"')[0]
     assert "already.review_subtitles" in src, \
         "scanner no longer refreshes review_subtitles on an existing review row"
     assert "already.reason" in src, \
         "scanner no longer refreshes the reason on an existing review row"
     assert "is_new_file = is_new_file" in src, \
         "scanner no longer passes is_new_file when creating a review row"
-    del review
+    assert "existing_skip.original_size" in src, \
+        "scanner no longer refreshes original_size on an existing skipped row"
 
 
 # ── The null discriminator ───────────────────────────────────────────────────
