@@ -42,6 +42,24 @@ export const BuildInfoSection = ({ api }) => {
     return () => { live = false; };
   }, [api]);
 
+  /* Keyed on the flag with cleanup rather than a bare setTimeout in the
+   * handler, matching SettingsPage's save status and the four confirm
+   * buttons — this was the last bare one left. Two effects of that: one
+   * timer exists at a time instead of one per click, and it is cleared on
+   * unmount, which here is a single click away since the section unmounts on
+   * every Settings category switch.
+   *
+   * It does NOT restart the window when COPIED is already showing — the flag
+   * does not change, so the effect does not re-run, and a second copy at
+   * 1.9s still clears at 2.0s. Checked rather than assumed. Left that way on
+   * purpose: it matches the other four timers, and the cost of the edge is a
+   * label clearing early, not a wrong result. */
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+
   if (failed || !build) return null;
 
   const label = `${build.version} (${build.commit_short})`;
@@ -50,7 +68,6 @@ export const BuildInfoSection = ({ api }) => {
     try {
       await navigator.clipboard.writeText(`${build.version} ${build.commit}`);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch (_) {
       /* No clipboard: the text beside the button is selectable, which is
        * why the value is rendered rather than living only in the handler. */
