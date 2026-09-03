@@ -135,8 +135,14 @@ async def run_staged_subprocess(
     exist.  Return None to continue, or an error string to abort the run with
     every original untouched.  See the call site for the full contract.
 
-    All outputs succeed together or all fail together — any failure cleans up
-    all temp paths.  On exception temp paths are cleaned and the exception is
+    Staging is two-pass, so a failure while copying leaves every original
+    untouched and every output unswapped.  The swap pass itself is a loop of
+    per-file os.replace calls: each one is atomic, but the loop is not, so a
+    failure part-way through leaves the earlier finals swapped and the rest
+    not.  That window is the residual the two-pass design deliberately trades
+    down to — same-filesystem metadata renames rather than gigabytes of
+    copying with no original — not one it removes.  Any failure cleans up all
+    temp paths.  On exception temp paths are cleaned and the exception is
     re-raised so the caller's job-failure logic runs normally.
     """
     try:
