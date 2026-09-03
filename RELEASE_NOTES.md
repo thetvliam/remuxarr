@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Extracted subtitles no longer pick up a `.sdh` or `.dub` tag from the video's own filename. When an undefined-language subtitle was retagged, the sidecar's SDH/dubtitle status was read back out of the filename being built — which starts with the video's name. A release called `Show.dub.S01E01.mkv` gave every subtitle it owned a `Show.dub.S01E01.en.dub.srt` sidecar, and Plex labels that a dubtitle.
+
 - Searching by filename now treats `_` and `%` as ordinary characters. Both were being passed through to the database as wildcards, so `_` matched any single character and `%` matched everything — a search for `The_Movie` also returned `TheXMovie`, and one containing a `%` returned rows that matched nothing you typed. Affects History, Audio and Subtitle Language Review, and the AC3 Forge candidate list; on that last one the wrong row could be the one you clicked ADD AC3 on.
 
 - Reverting a file now lets the next ordinary scan re-evaluate it. The revert rewrote the file's stored size and timestamp to match the restored file, so every delta scan — including every scheduled one — saw nothing had changed and skipped it, leaving the file reachable only through a forced full rescan. Note the consequence: if you revert without changing the settings that produced the job, the next scan will queue it again.

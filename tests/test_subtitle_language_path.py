@@ -270,6 +270,49 @@ def test_always_fix_rename_does_not_collide_with_itself():
     assert ".2.srt" not in _action_for(d, 2).external_path
 
 
+def test_always_fix_does_not_read_sdh_or_dub_out_of_the_media_filename():
+    """
+    The relabel recovered is_sdh and is_dub by testing for ".sdh." and
+    ".dub." in the sidecar path it had just built. That path starts with
+    the MEDIA file's stem, so any release whose own name contains either
+    substring hands the relabel a tag that no track ever had.
+
+    ".dub." is the one that bites: dubbed anime is routinely released as
+    Show.dub.S01E01.mkv, and the sidecar for an ordinary non-dubtitle
+    subtitle comes back as Show.dub.S01E01.en.dub.srt. Plex reads that
+    trailing tag and labels the subtitle a dubtitle.
+
+    is_forced sits on the Action as a real field for exactly this reason;
+    these two were the ones left being re-derived from a string.
+
+    Both directions are asserted. Carrying the flags is only half the fix
+    — hardcoding them to False also stops the false positive, and passes
+    a test that checks the false case alone, so a real SDH track has to
+    be shown keeping its tag across the same relabel.
+    """
+    cfg = _prod(fix_undefined_language="always_fix", undefined_language_value="eng")
+
+    d = analyze_file(_fmt("/media/Show.dub.S01E01.mkv"), [VIDEO, _audio(), _sub(2)], cfg)
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Show.dub.S01E01.en.srt"), path
+
+    d = analyze_file(_fmt("/media/Movie.sdh.2020.mkv"), [VIDEO, _audio(), _sub(2)], cfg)
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Movie.sdh.2020.en.srt"), path
+
+    # A track that genuinely IS hearing-impaired keeps its tag through the
+    # retag, on an ordinary filename that supplies no tag of its own.
+    sdh = dict(_sub(2), is_hearing_impaired=True)
+    d = analyze_file(_fmt("/media/Movie.mkv"), [VIDEO, _audio(), sdh], cfg)
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Movie.en.sdh.srt"), path
+
+    dub = dict(_sub(2), is_dub=True)
+    d = analyze_file(_fmt("/media/Movie.mkv"), [VIDEO, _audio(), dub], cfg)
+    path = _action_for(d, 2).external_path
+    assert path.endswith("Movie.en.dub.srt"), path
+
+
 def test_always_leave_touches_nothing():
     cfg = _prod(fix_undefined_language="always_leave")
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)

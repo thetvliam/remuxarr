@@ -129,6 +129,13 @@ class Action:
     external_path: str | None = None
     language:      str | None = None
     is_forced:     bool = False
+    # Carried alongside is_forced rather than recovered from external_path.
+    # The relabel pass used to test for ".sdh."/".dub." in the path it had
+    # just built, and that path opens with the MEDIA file's stem — so a
+    # release named Show.dub.S01E01.mkv handed every one of its subtitles a
+    # .dub tag that no track ever had, and Plex read it.
+    is_sdh:        bool = False
+    is_dub:        bool = False
     # Set by the language fix pass when an und track should be re-tagged.
     # The value is the ISO 639-2/B code to write (e.g. "eng").
     # ffmpeg.py reads this to emit -metadata:s:a:N / :s:s:N flags.
@@ -956,6 +963,8 @@ def analyze_file(
                 external_path=srt_path,
                 language=srt_lang,
                 is_forced=is_forced,
+                is_sdh=is_sdh,
+                is_dub=is_dub,
             ))
             order += 1
             continue
@@ -1437,13 +1446,18 @@ def _relabel_extract_action(
     The old path is discharged from `used_paths` before the new one is built,
     so the rename cannot collide with the name it is replacing and pick up a
     spurious ".2" suffix.
+
+    is_sdh and is_dub are read off the action, not recovered from the path.
+    They were re-derived by testing for ".sdh."/".dub." in external_path,
+    which begins with the MEDIA file's stem — so Show.dub.S01E01.mkv gave
+    every subtitle it owned a .dub tag on the way through here.
     """
     used_paths.discard(action.external_path)
     new_path = _build_srt_path(
         media_path, new_lang,
         action.is_forced or False,
-        ".sdh." in (action.external_path or ""),
-        ".dub." in (action.external_path or ""),
+        action.is_sdh,
+        action.is_dub,
         used_paths,
     )
     used_paths.add(new_path)
