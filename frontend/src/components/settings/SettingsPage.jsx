@@ -552,9 +552,32 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       // over the `values` of the render its click came from, which is the stale
       // snapshot by definition.
       const loadSettings = useCallback((keepEditsSince = null) => {
+        /* Both requests go through this rather than .then(r => r.json())
+         * directly. fetch rejects on a network failure but not on an HTTP
+         * error, and a FastAPI error carries a {"detail": ...} body that
+         * json() parses happily — so an error response used to resolve down
+         * the success path and the catch below was reachable only by an
+         * unreachable host or an unparseable body.
+         *
+         * The schema request is the one that mattered. setSchema stored the
+         * error object and dirtyKeys then ran schema.map against something
+         * with no .map; with no error boundary in the tree that throw
+         * unmounts the root, so a 500 here blanked the whole app rather than
+         * this page. The values request degraded more quietly and just as
+         * wrongly: every field rendered a default it had never been given,
+         * and saving wrote those defaults back.
+         *
+         * Carrying the status in the message rather than swallowing it — the
+         * catch reports exactly once, so this is the only place a reader
+         * finds out which of the two failed and how. */
+        const readJson = async (path) => {
+          const r = await fetch(`${api}${path}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status} from ${path}`);
+          return r.json();
+        };
         return Promise.all([
-          fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                           fetch(`${api}/api/settings/`).then(r => r.json()),
+          readJson("/api/settings/schema"),
+          readJson("/api/settings/"),
         ])
         .then(([s, v]) => {
           setSchema(s);

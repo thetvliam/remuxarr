@@ -60,4 +60,6 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- The Settings page no longer takes the whole app down when the backend answers with an error. An error reply was being read as though it were your settings, and the page then failed on it hard enough to blank the entire interface until you reloaded. It now shows the same "couldn't load settings" message it already showed for a backend it could not reach. The same fix covers a quieter version of this, where every setting on the page rendered a default it had never been given and saving would have written those defaults back.
+
 - A list that scrolls to load more no longer gets stuck reloading the same page. If the server reported more results than the page it sent back — which could happen when rows were removed while you were scrolling — the list kept asking for the same page indefinitely, spinning without ever growing and putting steady load on the server until you navigated away. Affects History, Audio and Subtitle Language Review, and the AC3 Forge candidate list.
