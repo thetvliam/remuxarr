@@ -24,6 +24,9 @@
  *     hardcoded "failed" left the Dry Run tab showing a row that no longer
  *     existed. dismissQueueItem and clearQueue tag "failed" because the DELETE
  *     sets status "cancelled" and history.py folds cancelled into that tab.
+ *     retryAllFailed tags null: it deletes each row before the re-run decides
+ *     anything, so one click can empty rows out of Failed and write new ones
+ *     into Skipped in the same call.
  *
  *   THE COUNTS
  *     retryAllFailed reads its counts straight into UI copy. "needs review"
@@ -448,19 +451,59 @@ describe("useActions — retryAllFailed", () => {
     expect(deps.toast).toHaveBeenCalledWith("No failed items to retry", "neutral");
   });
 
-  it("only invalidates history when something was actually requeued", async () => {
-    // Nothing was removed from the Failed tab, so there is nothing to refresh.
+  it("invalidates every tab when the retry only produced skips", async () => {
+    /* Was "only invalidates history when something was actually requeued",
+       asserting no invalidation here on the grounds that nothing had left the
+       Failed tab. That reading of the response was wrong. retry-all deletes
+       each item BEFORE the re-run decides anything, and a re-run that finds
+       the file needs no work writes a skipped QueueItem in its place — so
+       these four rows left Failed and four arrived in Skipped, with nothing
+       requeued. The only case that really changes nothing is a source file
+       missing from disk, which the endpoint folds into this same `skipped`
+       figure and which therefore cannot be told apart here. */
     mockFetch({ ok: true, body: { retried: 0, skipped: 4, manual_review: 0, errors: [] } });
+    await useSubject().retryAllFailed();
+
+    expect(deps.invalidateHistory).toHaveBeenCalledWith(null);
+  });
+
+  it("invalidates every tab when the retry only produced reviews", async () => {
+    /* Nothing requeued and nothing skipped, but the old rows have gone from
+       Failed all the same. */
+    mockFetch({ ok: true, body: { retried: 0, skipped: 0, manual_review: 3, errors: [] } });
+    await useSubject().retryAllFailed();
+
+    expect(deps.invalidateHistory).toHaveBeenCalledWith(null);
+  });
+
+  it("invalidates every tab, not just Failed, when items were requeued", async () => {
+    /* Tagged "failed" before. eventAffectsTab("failed", "skipped") is false,
+       so a mixed batch refreshed Failed and left Skipped showing rows that
+       had moved — beside a badge count that had already updated, since
+       HistoryPanel's counts are not gated. */
+    mockFetch({ ok: true, body: { retried: 2, skipped: 1, manual_review: 0, errors: [] } });
+    await useSubject().retryAllFailed();
+
+    expect(deps.invalidateHistory).toHaveBeenCalledWith(null);
+  });
+
+  it("does not invalidate when there was nothing to retry", async () => {
+    /* The empty case: no failed items at all, so no row anywhere changed and
+       a refetch would be pure noise. */
+    mockFetch({ ok: true, body: { retried: 0, skipped: 0, manual_review: 0, errors: [] } });
     await useSubject().retryAllFailed();
 
     expect(deps.invalidateHistory).not.toHaveBeenCalled();
   });
 
-  it("invalidates when items were requeued", async () => {
-    mockFetch({ ok: true, body: { retried: 2, skipped: 0, manual_review: 0, errors: [] } });
+  it("does not invalidate when the request itself failed", async () => {
+    /* Nothing was touched server-side, and refreshing would make a failed
+       request look like a completed one. */
+    mockFetch({ ok: false, body: {} });
     await useSubject().retryAllFailed();
 
-    expect(deps.invalidateHistory).toHaveBeenCalledWith("failed");
+    expect(deps.invalidateHistory).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith("Retry all failed", "error");
   });
 });
 

@@ -366,10 +366,14 @@ export default function App() {
             isMobile={isMobile}
             revertRefreshKey={revertRefreshKey}
             onDirtyChange={setSettingsDirty}
-            /* Clearing the database empties the queue, history, forge and
-               revert tables. The endpoint broadcasts nothing, so this is the
-               only thing that tells those panels. */
-            onDatabaseCleared={refreshAllPanels}
+            /* Two places in Settings delete rows the dashboard is still
+               holding: Clear Database empties the queue, history, forge and
+               revert tables, and removing orphaned entries deletes the same
+               kinds of row for the files selected. Neither endpoint
+               broadcasts, so this is the only thing that tells those panels.
+               One prop rather than two, named for what it means here — the
+               page is not required to say which button was pressed. */
+            onRecordsRemoved={refreshAllPanels}
             /* dry_run_mode and auto_start_jobs are rendered from the app-level
                state rather than the page's own loaded snapshot, and applied on
                click. The header owns them: it toggles both, and abort_job
@@ -427,9 +431,10 @@ export default function App() {
                 revertRefreshKey={revertRefreshKey}
                 onDirtyChange={() => {}}
                 /* Passed here too, unlike onDirtyChange above: the Danger Zone
-                   in this preview is live and really does clear the database,
-                   and there is no equivalent reason to make it a no-op. */
-                onDatabaseCleared={refreshAllPanels}
+                   and the orphaned-file removal in this preview are live and
+                   really do delete rows, and there is no equivalent reason to
+                   make it a no-op. */
+                onRecordsRemoved={refreshAllPanels}
                 liveToggles={{
                   dry_run_mode:    { value: dryRun,    onToggle: toggleDryRun },
                   auto_start_jobs: { value: autoStart, onToggle: toggleAutoStart },

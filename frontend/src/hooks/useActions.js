@@ -341,11 +341,30 @@ export function useActions({
       );
       fetchAll();
       // Same reasoning as retryItem above, just for the bulk case — every
-      // retried item's old QueueItem is already deleted by the time this
-      // response comes back, and nothing else will tell the Failed tab
-      // that until (and unless) each one individually completes later.
-      if (retried > 0) {
-        invalidateHistory?.("failed");
+      // item the backend consumed has had its old QueueItem deleted by the
+      // time this response comes back, and nothing else will tell the history
+      // tabs that until (and unless) each one completes later.
+      //
+      // Tagged null rather than "failed". The endpoint deletes the old row
+      // before the re-run decides anything, so Failed loses rows on all three
+      // outcomes, and a re-run that decides a file now needs no work writes a
+      // skipped QueueItem in its place — that row appears in the Skipped tab.
+      // "failed" left Skipped stale, while HistoryPanel's badge counts, which
+      // are not gated, updated correctly beside it.
+      //
+      // Not gated on `retried` alone either. A settings change can turn a
+      // batch of failures entirely into skips or reviews with nothing
+      // requeued at all, and those rows have still left the Failed tab.
+      //
+      // The one case this over-refreshes is a batch skipped only because the
+      // source files are gone, where the items are left where they are: the
+      // response folds that into the same `skipped` figure as a re-run that
+      // needed no work, so there is nothing here to tell them apart by.
+      // Refetching when nothing moved costs one request and redraws identical
+      // rows; not refetching when something moved leaves the tab wrong until
+      // the user clicks away and back. The asymmetry decides it.
+      if (retried > 0 || skipped > 0 || needsReview > 0) {
+        invalidateHistory?.(null);
       }
     } catch (err) {
         console.error("Retry-all failed", err);

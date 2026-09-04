@@ -96,3 +96,80 @@ def test_empty_page_is_safe():
     db = _db()  # nothing seeded
     res = get_candidates(db)
     assert res == {"total": 0, "items": []}
+
+
+def test_search_treats_underscore_and_percent_as_literal_characters():
+    """
+    The candidate search had no test at all, which is how it kept the
+    same unescaped-wildcard bug as history and language review: `_`
+    matched any single character and `%` matched everything.
+
+    On this endpoint the consequence is worse than a bad result list.
+    The next thing the user does is click ADD AC3 on a row, so a search
+    that quietly matches the wrong file is a search that offers to
+    rewrite the wrong file's audio.
+    """
+    from app.database.models import MediaFile, Track
+
+    db = _db()
+    for i, name in ((1, "The_Movie.mkv"), (2, "TheXMovie.mkv"),
+                    (3, "Show 100% Real.mkv"), (4, "Show 100Z Real.mkv")):
+        db.add(MediaFile(id=i, path=f"/m/{name}", filename=name,
+                         directory="/m", size=100, mtime=1.0))
+        db.add(Track(file_id=i, stream_index=1, track_type="audio",
+                     codec="aac", channels=6, channel_layout="6ch",
+                     language="eng", is_default=True))
+    db.commit()
+
+    underscore = get_candidates(db, search="The_Movie")
+    assert [i["filename"] for i in underscore["items"]] == ["The_Movie.mkv"]
+    assert underscore["total"] == 1
+
+    percent = get_candidates(db, search="100%")
+    assert [i["filename"] for i in percent["items"]] == ["Show 100% Real.mkv"]
+    assert percent["total"] == 1
+
+
+def test_search_relevance_ranking_also_treats_wildcards_literally():
+    """
+    The ranking builds two more patterns from the same term, and both
+    need the same escaping the filter got. See the matching test in
+    test_history_routes.py for the full reasoning — this endpoint builds
+    the identical two patterns, so it can drift in the identical way.
+
+    Every name below contains a literal "The_Movie" and so survives any
+    filter; what differs is the rank each earns:
+
+      name                          escaped  unescaped
+      The_Movie Quest.mkv           0        0
+      TheXMovie The_Movie.mkv       1        0   ← "_" matches "X"
+      Zzz TheXMovie-The_Movie.mkv   2        1   ← "_" matches "X"
+      Aaa-The_Movie.mkv             2        2
+
+    Within a rank the tie-break is filename, so the two rank-2 names are
+    chosen to order Aaa before Zzz.
+    """
+    from app.database.models import MediaFile, Track
+
+    db = _db()
+    for i, name in enumerate((
+        "The_Movie Quest.mkv",
+        "TheXMovie The_Movie.mkv",
+        "Zzz TheXMovie-The_Movie.mkv",
+        "Aaa-The_Movie.mkv",
+    ), 1):
+        db.add(MediaFile(id=i, path=f"/m/{name}", filename=name,
+                         directory="/m", size=100, mtime=1.0))
+        db.add(Track(file_id=i, stream_index=1, track_type="audio",
+                     codec="aac", channels=6, channel_layout="6ch",
+                     language="eng", is_default=True))
+    db.commit()
+
+    out = get_candidates(db, search="The_Movie")
+
+    assert [i["filename"] for i in out["items"]] == [
+        "The_Movie Quest.mkv",
+        "TheXMovie The_Movie.mkv",
+        "Aaa-The_Movie.mkv",
+        "Zzz TheXMovie-The_Movie.mkv",
+    ]

@@ -179,3 +179,47 @@ def test_pagination_reflects_the_filtered_total():
 
     assert result["total"] == 2, "total should count all matches, not the page"
     assert len(result["items"]) == 1, "items should honour the limit"
+
+
+def test_search_treats_underscore_and_percent_as_literal_characters():
+    """
+    The search box takes a filename, not a LIKE pattern.
+
+    Worse here than a wrong result list, because of the module docstring's
+    own point: "select all" acts on what the server returned. An
+    unescaped `_` pulls in files the user never searched for, and the
+    next click applies a language tag to all of them.
+
+    Only the audio router is exercised — list_flags is the shared
+    _language_review implementation, so the subtitle router runs the same
+    query builder. See test_language_review_isolation.py for what is NOT
+    shared between them.
+    """
+    db = _db()
+    _flag(db, "The_Movie.mkv",      "dut", 1)
+    _flag(db, "TheXMovie.mkv",      "dut", 2)
+    _flag(db, "Show 100% Real.mkv", "jpn", 3)
+    _flag(db, "Show 100Z Real.mkv", "jpn", 4)
+
+    underscore = _list(db, search="The_Movie")
+    assert [i["filename"] for i in underscore["items"]] == ["The_Movie.mkv"]
+    assert underscore["total"] == 1
+
+    percent = _list(db, search="100%")
+    assert [i["filename"] for i in percent["items"]] == ["Show 100% Real.mkv"]
+    assert percent["total"] == 1
+
+
+def test_facet_counts_also_honour_wildcard_escaping():
+    """
+    The facets are built from the same filtered query, so an unescaped
+    term inflates the language dropdown too — offering tags that only
+    appear on files the search should not have matched.
+    """
+    db = _db()
+    _flag(db, "The_Movie.mkv", "dut", 1)
+    _flag(db, "TheXMovie.mkv", "jpn", 2)
+
+    langs = {e["language"]: e["count"] for e in _list(db, search="The_Movie")["languages"]}
+
+    assert langs == {"dut": 1}

@@ -197,7 +197,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 };
 
 /* ── Main component ─────────────────────────────────────────────────────── */
-export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
+export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved }) => {
   const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
@@ -221,7 +221,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
     return () => clearTimeout(t);
   }, [orphanedRemoveArmed]);
 
-  // Two-click confirmation for Force Full Rescan — auto-disarms after 3 s
+  // Two-click confirmation for Force Full Rescan — auto-disarms after CONFIRM_MS
   const [forceScanArmed, setForceScanArmed] = useState(false);
   useEffect(() => {
     if (!forceScanArmed) return;
@@ -296,6 +296,12 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
         // history and review panels, and it fires for a cleanup triggered
         // anywhere, not just from this button. The inline cleanupResult below
         // still gives immediate local feedback.
+        //
+        // For the same reason this does NOT call onRecordsRemoved the way the
+        // orphaned removal below does. The broadcast already refreshes what
+        // cleanup invalidates; calling both would refetch everything twice
+        // per click. Orphaned removal has no broadcast at all, which is the
+        // whole difference between the two.
         //
         // The failure paths keep their toasts — a request that never reached
         // the backend produces no broadcast, so nothing else would report it.
@@ -393,6 +399,21 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0 }) => {
         );
         // Re-check rather than assume — reflects the real current state
         await checkOrphaned();
+        // Everything else that referenced those rows is now stale, and this
+        // is the only thing that will say so: unlike Manual Cleanup above,
+        // POST /api/scan/orphaned/remove broadcasts nothing, and this section
+        // lives in Settings with the dashboard panels unmounted, so their
+        // state survives in useAppData untouched.
+        //
+        // Removal runs the same _delete_media_file_and_related as cleanup, so
+        // the reach is the same: queue items and their planned actions (queue
+        // and every history tab), forge jobs, the Plex backlog, and both
+        // language-flag tables (review). Revert points are detached rather
+        // than deleted, which still moves them from the recycle bin's
+        // attached list to its detached one. That is the whole set
+        // refreshAllPanels covers, which is why this hands back to it rather
+        // than invalidating history alone.
+        onRecordsRemoved?.();
       } else {
         toast?.("Failed to remove orphaned files", "error");
       }

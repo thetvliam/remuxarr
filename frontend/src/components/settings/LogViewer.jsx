@@ -263,7 +263,12 @@ export const LogViewer = ({ api, toast }) => {
               flexShrink: 0,
               marginRight: space.sm,
               minWidth: 60,
-              fontWeight: r.level === "ERROR" || r.level === "WARNING"
+              // Read off LEVEL_ORDER rather than naming levels: written as
+              // `ERROR || WARNING` this left CRITICAL at normal weight, so
+              // the most severe line rendered less prominently than an ERROR
+              // directly above it, in the same red. An unknown level has no
+              // rank and stays normal, as before.
+              fontWeight: LEVEL_ORDER[r.level] >= LEVEL_ORDER.WARNING
               ? type.weight.bold : type.weight.normal,
             }}>
             {r.level}

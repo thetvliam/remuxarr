@@ -75,26 +75,6 @@ def recycle_dir_status() -> tuple[bool, str]:
     return True, ""
 
 
-def ensure_recycle_subdir(name: str) -> str:
-    """
-    Create and return a subdirectory of the recycle volume.
-
-    Creating a LEAF under a directory that already exists is safe in a way
-    that creating the root is not: the root's existence is what proves the
-    volume is mounted, so by the time this runs there is a real volume
-    underneath. Raises if the volume is not ready, rather than falling back
-    to somewhere writable — a silent fallback is how sidecars would end up
-    on a filesystem the user never sized for them.
-    """
-    ready, reason = recycle_dir_status()
-    if not ready:
-        raise RuntimeError(f"Recycle bin unavailable: {reason}")
-
-    path = os.path.join(app_settings.RECYCLE_DIR, name)
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
 def delete_sidecar(path: str | None) -> bool:
     """
     Remove one sidecar file. Returns True if a file was actually removed.

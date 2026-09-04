@@ -60,8 +60,14 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- The planned action for an extracted subtitle no longer shows the wrong language. With automatic tagging of undefined tracks turned on, the row named the corrected file but kept the old `[und]` tag beside it, so the tag and the filename disagreed. The file itself was always correct.
+- Extracted subtitles no longer pick up a `.sdh` or `.dub` tag from the video's own filename. When an undefined-language subtitle was retagged, the sidecar's SDH/dubtitle status was read back out of the filename being built — which starts with the video's name. A release called `Show.dub.S01E01.mkv` gave every subtitle it owned a `Show.dub.S01E01.en.dub.srt` sidecar, and Plex labels that a dubtitle.
 
-## Changed
+- Searching by filename now treats `_` and `%` as ordinary characters. Both were being passed through to the database as wildcards, so `_` matched any single character and `%` matched everything — a search for `The_Movie` also returned `TheXMovie`, and one containing a `%` returned rows that matched nothing you typed. Affects History, Audio and Subtitle Language Review, and the AC3 Forge candidate list; on that last one the wrong row could be the one you clicked ADD AC3 on.
 
-- The Sonarr and Radarr "Enable Integration" descriptions now say what those switches actually do. They control the rescan Remuxarr sends after a job finishes; they have never controlled whether incoming webhooks are acted on. If you want Remuxarr to stop processing webhooks, remove the webhook in Sonarr or Radarr itself. Nothing has changed about how your setup behaves.
+- Reverting a file now lets the next ordinary scan re-evaluate it. The revert rewrote the file's stored size and timestamp to match the restored file, so every delta scan — including every scheduled one — saw nothing had changed and skipped it, leaving the file reachable only through a forced full rescan. Note the consequence: if you revert without changing the settings that produced the job, the next scan will queue it again.
+
+- Retry All now refreshes every History tab, not just Failed. A retry that turned failures into skips or review items left the Skipped tab showing rows that had moved, and left Failed showing rows that were gone when nothing was requeued at all.
+
+- Removing orphaned entries under Maintenance now refreshes the rest of the app. The queue, history, review and recycle bin carried on showing the rows it had just deleted until you reloaded the page, and opening one of those rows failed.
+
+- The History panel no longer goes blank when a job finishes while a tab is still loading. The tab settled on "No success items" with the real count still shown in the badge beside it, and stayed that way until you switched tabs or another job of that same kind completed.

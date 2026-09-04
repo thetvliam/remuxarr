@@ -19,10 +19,17 @@ Undo removed tracks by a positional index captured at ADD time:
     The same stale index also fed analyze_file's und-threshold
     exclusion, which previously indexed into audio_tracks blindly — a
     stale in-range index silently excluded whatever unrelated track sat
-    there. The exclusion is now property-validated with the same
-    last-track fallback; tests below cover both directions (stale index
-    still excludes the real forge track; a forge track that's genuinely
-    gone excludes nothing).
+    there. Checking the index first and only falling back to the last
+    track closed most of that, but not all: the index is the audio count
+    BEFORE the append, so it can only land in range on a non-last track
+    if the file gained audio tracks, i.e. the path holds a different
+    release, and then it pointed at that release's own AC3. The
+    exclusion now resolves purely by the last-track property, the same
+    rule resolve_forge_ac3_for_undo applies, so the two agree on every
+    layout. Tests below cover all three directions: a stale out-of-range
+    index still excludes the real forge track, a forge track that is
+    genuinely gone excludes nothing, and an in-range index landing on an
+    unrelated release's AC3 excludes nothing.
 
 _get_forged_ac3_audio_index couldn't see an undo mid-flight:
     claiming an undo job flips undo_pending → "processing", a status the
@@ -183,6 +190,97 @@ def test_stale_index_landing_on_wrong_track_does_not_exclude_it():
     assert decision.is_manual_review, (
         "An in-range stale index excluded a genuine und track that is "
         "not the forge AC3 — the threshold gate was silently bypassed."
+    )
+
+
+def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
+    """
+    The gap the last-track fallback left open.
+
+    The stored index is Ac3ForgeJob.audio_track_count, the audio count
+    BEFORE the append, and build_add_ac3_command puts the new track at
+    exactly that index — so straight after a forge the file has index+1
+    audio tracks and the forge one is last. Dropping tracks only pushes
+    the index out of range. The single way it can land in range on a
+    track that is NOT last is if the file GAINED audio tracks, which
+    means the path now holds a different release.
+
+    Here the stored index is 1 (the original had one audio track) and a
+    replacement release carries three, its own AC3 5.1 sitting at index
+    1. That track belongs to a file forge never touched, so excluding it
+    from the threshold lets an unknown file past the manual-review gate.
+    resolve_forge_ac3_for_undo calls this exact layout "mismatch" and
+    refuses; the exclusion must reach the same answer.
+    """
+    settings = dict(BASE_SETTINGS, und_audio_threshold=3)
+    replacement = [
+        _video(0),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="und", channels=2, channel_layout="stereo"),
+        _ac3_forge(2, "und"),    # the REPLACEMENT release's own AC3 5.1
+        _aac51(3, "und"),
+    ]
+    audio = [t for t in replacement if t["track_type"] == "audio"]
+    assert resolve_forge_ac3_for_undo(replacement) == ("mismatch", None), (
+        "fixture no longer models the mismatch layout"
+    )
+    assert audio[1]["codec"] == "ac3", "fixture: stored index must land on the AC3"
+
+    decision = analyze_file(make_file_info(), replacement, settings,
+                            forged_ac3_audio_index=1)
+
+    assert decision.is_manual_review, (
+        "an unrelated release's AC3 5.1 was excluded from the und threshold "
+        "because a stale index happened to land on it — the gate was "
+        "bypassed for a file forge never touched"
+    )
+
+
+def test_an_ac3_stereo_last_track_is_not_mistaken_for_the_forge_ac3():
+    """
+    Channel count is half the identity. An AC3 STEREO commentary track
+    sitting last is a perfectly ordinary thing for a release to carry,
+    and it is not what forge produces — forge always writes 6 channels.
+    Exempting it would drop a genuine und track out of the count.
+
+    resolve_forge_ac3_for_undo pins the same property in
+    test_wrong_shaped_last_track_does_not_match; this is the exclusion's
+    own copy of it, which nothing covered.
+    """
+    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
+    ac3_stereo = make_track(stream_index=2, track_type="audio", codec="ac3",
+                            language="und", channels=2, channel_layout="stereo")
+    tracks = [_video(0), _aac51(1, "und"), ac3_stereo]
+
+    decision = analyze_file(make_file_info(), tracks, settings,
+                            forged_ac3_audio_index=1)
+
+    assert decision.is_manual_review, (
+        "an AC3 stereo commentary track was treated as the forge AC3 and "
+        "exempted from the und threshold"
+    )
+
+
+def test_nothing_is_excluded_for_a_file_with_no_forge_job():
+    """
+    The exclusion is an exemption granted to files this app forged. A
+    file that merely happens to end on an AC3 5.1 — very common, plenty
+    of releases ship one last — has earned no exemption, and silently
+    granting it lowers the und count for a large slice of an ordinary
+    library.
+
+    forged_ac3_audio_index being None is the only thing separating those
+    two cases, so it is the guard that carries the whole distinction.
+    """
+    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
+    tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
+
+    decision = analyze_file(make_file_info(), tracks, settings,
+                            forged_ac3_audio_index=None)
+
+    assert decision.is_manual_review, (
+        "a file with no forge job had its last AC3 5.1 exempted from the "
+        "und threshold — the exemption is supposed to require a forge job"
     )
 
 

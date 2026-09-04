@@ -39,12 +39,23 @@ def list_history(
         query = query.filter(QueueItem.status == status)
 
     # Server-side filename search — join MediaFile only when needed.
+    #
+    # icontains(autoescape=True), not ilike(f"%{s}%"): the search box
+    # takes a filename, and an f-string pattern hands the user's own
+    # characters to LIKE as syntax. `_` matched any single character —
+    # reachable by typing a release name as it appears on disk — and `%`
+    # matched everything, turning a search into a no-op that still looks
+    # like a result. autoescape lets SQLAlchemy escape the term and
+    # declare its own ESCAPE, rather than this module hand-rolling both.
+    #
+    # Renders the same lower(...) LIKE ... as the ilike it replaces, so
+    # case handling is unchanged.
     if search.strip():
         s = search.strip()
         query = (
             query
             .join(QueueItem.media_file)
-            .filter(MediaFile.filename.ilike(f"%{s}%"))
+            .filter(MediaFile.filename.icontains(s, autoescape=True))
         )
 
     total = query.count()
@@ -58,11 +69,16 @@ def list_history(
     # Rank 2: match anywhere else                            "…Wander…"
     #
     # Within each rank group, most-recently completed items appear first.
+    # Escaped for the same reason as the filter above, and it has to be
+    # both: escaping only the filter still lets a file that matches
+    # nothing but an unescaped wildcard take rank 0 and sort above every
+    # real match. Rank 1's leading space is a literal, not a wildcard, so
+    # it stays outside the escaped term.
     if search.strip():
         s = search.strip()
         relevance = sa_case(
-            (MediaFile.filename.ilike(f"{s}%"),   0),
-            (MediaFile.filename.ilike(f"% {s}%"), 1),
+            (MediaFile.filename.istartswith(s, autoescape=True),      0),
+            (MediaFile.filename.icontains(" " + s, autoescape=True),  1),
             else_=2,
         )
         order_clause = [relevance, desc(QueueItem.completed_at)]

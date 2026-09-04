@@ -513,7 +513,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
    * SETTINGS PAGE
    ═══════════════════════════════════════════════════════════════════════════ */
   export const SettingsPage = ({ api, toast, isMobile = false, onDirtyChange,
-    liveToggles = {}, revertRefreshKey = 0, onDatabaseCleared }) => {
+    liveToggles = {}, revertRefreshKey = 0, onRecordsRemoved }) => {
       const { palette, type, space } = useTheme();
       const [schema,   setSchema]   = useState([]);
       const [values,   setValues]   = useState({});
@@ -750,7 +750,8 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
         if (cat.custom === "maintenance") {
           return (
             <>
-            <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey} />
+            <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey}
+                                onRecordsRemoved={onRecordsRemoved} />
             <LogViewer api={api} toast={toast} />
             <BuildInfoSection api={api} />
             </>
@@ -761,7 +762,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             <>
             <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
             <FullBackupSection api={api} toast={toast} />
-            <DangerZone api={api} toast={toast} onCleared={onDatabaseCleared} />
+            <DangerZone api={api} toast={toast} onCleared={onRecordsRemoved} />
             </>
           );
         }

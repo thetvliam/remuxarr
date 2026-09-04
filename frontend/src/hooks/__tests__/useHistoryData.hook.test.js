@@ -78,6 +78,46 @@ function deferredServer() {
   return pending;
 }
 
+/**
+ * deferredServer's sibling, honouring AbortSignal the way a real fetch does:
+ * an aborted request rejects with an AbortError instead of resolving. It also
+ * hands back the signals, so a test can assert what was aborted rather than
+ * only what was received.
+ *
+ * Deliberately a second function, with deferredServer left ignoring the
+ * signal. The generation-guard tests below release a SUPERSEDED request and
+ * assert its page is discarded — if aborting rejected that promise, the
+ * release would land on an already-settled one and those tests would pass
+ * with the generation counter deleted. The two groups want opposite things
+ * from an abort, so they get a server each.
+ */
+function abortAwareServer() {
+  const pending = [];
+  const signals = [];
+  calls = [];
+  vi.stubGlobal("fetch", vi.fn((url, opts) => {
+    const u = new URL(String(url), "http://localhost");
+    calls.push({ status: u.searchParams.get("status"),
+                 offset: u.searchParams.get("offset") });
+    signals.push(opts?.signal);
+    let release;
+    const p = new Promise((resolve, reject) => {
+      release = resolve;
+      opts?.signal?.addEventListener("abort", () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+    });
+    pending.push({
+      release: (items, total) =>
+        release({ ok: true, json: async () => ({ items, total }) }),
+    });
+    return p;
+  }));
+  return { pending, signals };
+}
+
 const item = (id) => ({ id, status: "success", filename: `f${id}.mkv` });
 
 beforeEach(() => { calls = []; });
@@ -201,6 +241,68 @@ describe("relevance gating", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(calls.length).toBe(1);
     expect(result.current.items).toHaveLength(1);
+  });
+
+  it("an irrelevant refreshKey does not discard a first page still in flight", async () => {
+    /**
+     * The gate is about not disturbing what is ALREADY on screen. A first
+     * page still loading is not that, and it used to be killed anyway: React
+     * runs the previous effect's cleanup before every re-run, so the cleanup's
+     * abort fired and the gated run then returned without issuing a
+     * replacement. The aborted request's finally still matched its own
+     * generation — the early return sits above the increment — so it cleared
+     * loading on the way out, leaving an empty list with nothing in flight.
+     *
+     * Unrecoverable in the UI: hasMore is false so no scroll sentinel renders
+     * to retrigger it, and HistoryPanel's badge counts are not gated, so the
+     * tab read the real total above "No success items" until the user
+     * switched tabs.
+     *
+     * Needs abortAwareServer specifically. Under a mock that ignores the
+     * signal the response lands regardless and the bug is invisible, which is
+     * why the existing coverage here did not see it.
+     */
+    const { pending } = abortAwareServer();
+
+    const { result, rerender } = renderHook(
+      ({ key }) => useHistoryData("", "success", key, ""),
+      { initialProps: { key: K1_NULL } },
+    );
+    await waitFor(() => expect(pending.length).toBe(1));
+
+    // A failed job completes while the Success tab is still loading.
+    rerender({ key: K2_FAILED });
+
+    await act(async () => { pending[0].release([item(1)], 1); });
+
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    // Still gated: the page arrived because it was never cancelled, not
+    // because the bump triggered a second request.
+    expect(calls.length).toBe(1);
+  });
+
+  it("an irrelevant refreshKey does not discard an in-flight loadMore page", async () => {
+    /** The same abort, on an append rather than a first page. Milder — the
+     *  sentinel stays mounted at hasMore true, so scrolling can retrigger it
+     *  — but the page in flight was still thrown away. */
+    const { pending } = abortAwareServer();
+
+    const { result, rerender } = renderHook(
+      ({ key }) => useHistoryData("", "success", key, ""),
+      { initialProps: { key: K1_NULL } },
+    );
+    await waitFor(() => expect(pending.length).toBe(1));
+    await act(async () => { pending[0].release([item(1)], 2); });
+    await waitFor(() => expect(result.current.hasMore).toBe(true));
+
+    act(() => { result.current.loadMore(); });
+    await waitFor(() => expect(pending.length).toBe(2));
+
+    rerender({ key: K2_FAILED });
+    await act(async () => { pending[1].release([item(2)], 2); });
+
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+    expect(result.current.items.map((i) => i.id)).toEqual([1, 2]);
   });
 
   it("a relevant refreshKey refetches", async () => {
@@ -459,5 +561,49 @@ describe("generation guards", () => {
     rerender({ status: "failed" });
 
     expect(result.current.items).toHaveLength(0);
+  });
+});
+
+
+// ── Aborting ─────────────────────────────────────────────────────────────────
+
+describe("aborting", () => {
+  /* Both aborts the hook performs, pinned separately, because they are now
+   * issued from different places and the reason for each differs. The gating
+   * tests above cover the third case: the run that must NOT abort. */
+
+  it("aborts a superseded request when it issues the replacement", async () => {
+    /** The abort at the top of the effect body. Without it a tab switch
+     *  leaves the old request running to completion against a server that no
+     *  longer has a reader — the generation counter discards the result, but
+     *  the request itself was never cancelled. */
+    const { signals } = abortAwareServer();
+
+    const { rerender } = renderHook(
+      ({ status }) => useHistoryData("", status, K_NULL, ""),
+      { initialProps: { status: "success" } },
+    );
+    await waitFor(() => expect(signals.length).toBe(1));
+
+    rerender({ status: "failed" });
+
+    await waitFor(() => expect(signals.length).toBe(2));
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it("aborts the in-flight request on unmount", async () => {
+    /** The unmount-only effect. HistoryPanel unmounts on every navigation
+     *  away from the dashboard, so this is the common case, not a teardown
+     *  nicety. */
+    const { signals } = abortAwareServer();
+
+    const { unmount } = renderHook(() =>
+      useHistoryData("", "success", K1_NULL, ""));
+    await waitFor(() => expect(signals.length).toBe(1));
+    expect(signals[0].aborted).toBe(false);
+
+    unmount();
+
+    expect(signals[0].aborted).toBe(true);
   });
 });

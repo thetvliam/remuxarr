@@ -526,6 +526,81 @@ def test_a_blank_search_is_not_treated_as_a_filter(db):
     assert list_history("all", 50, 0, "   ", db)["total"] == 1
 
 
+@pytest.mark.parametrize("term, wanted, decoy", [
+    ("The_Movie", "The_Movie.mkv", "TheXMovie.mkv"),
+    ("100%",      "Show 100% Real.mkv", "Show 100Z Real.mkv"),
+])
+def test_search_treats_underscore_and_percent_as_literal_characters(
+    db, term, wanted, decoy,
+):
+    """
+    The search box takes a filename, not a LIKE pattern.
+
+    Underscores are everywhere in release names, so an unescaped `_`
+    silently matching any single character is reachable by simply typing
+    what you see. `%` is rarer in a filename but matches EVERYTHING once
+    unescaped, which turns a search into a no-op that still looks like a
+    result.
+
+    The same escaping is required in the relevance ranking below and in
+    the sibling search endpoints (forge candidates, language review) —
+    escaping only the filter would leave the ranking reading a term the
+    filter had already treated as literal.
+    """
+    from app.api.routes.history import list_history
+
+    _file(db, file_id=1, filename=wanted)
+    _item(db, item_id=1, file_id=1, status="success", completed_at=_at(0))
+    _file(db, file_id=2, filename=decoy)
+    _item(db, item_id=2, file_id=2, status="success", completed_at=_at(1))
+
+    out = list_history("all", 50, 0, term, db)
+
+    assert [i["file"]["filename"] for i in out["items"]] == [wanted]
+    assert out["total"] == 1
+
+
+def test_relevance_ranking_also_treats_wildcards_literally(db):
+    """
+    The ranking builds two more patterns from the same term, and both
+    need the same escaping the filter got.
+
+    Escaping the filter alone is not enough, and asserting on the result
+    SET cannot show it: once the filter is literal, every surviving row
+    genuinely contains the term, so nothing appears that should not.
+    What changes is the ORDER. A row can contain the literal term and
+    also match an unescaped pattern earlier in the name, which lifts it
+    into a better rank than it has earned.
+
+    All four names below contain a literal "The_Movie" and so survive any
+    filter. What differs is the rank each is given:
+
+      id  name                          escaped  unescaped
+      1   The_Movie Quest.mkv           0        0
+      2   TheXMovie The_Movie.mkv       1        0   ← "_" matches "X"
+      3   Zzz TheXMovie-The_Movie.mkv   2        1   ← "_" matches "X"
+      4   Aaa-The_Movie.mkv             2        2
+
+    Completion times are set so that a wrong rank always changes the
+    order rather than being hidden by a tie.
+    """
+    from app.api.routes.history import list_history
+
+    for fid, name, minutes in (
+        (1, "The_Movie Quest.mkv",         10),
+        (2, "TheXMovie The_Movie.mkv",     40),
+        (3, "Zzz TheXMovie-The_Movie.mkv", 20),
+        (4, "Aaa-The_Movie.mkv",           30),
+    ):
+        _file(db, file_id=fid, filename=name)
+        _item(db, item_id=fid, file_id=fid, status="success",
+              completed_at=_at(minutes))
+
+    out = list_history("all", 50, 0, "The_Movie", db)
+
+    assert [i["id"] for i in out["items"]] == [1, 2, 4, 3]
+
+
 # ── retry_history_item ───────────────────────────────────────────────────────
 
 def test_retrying_a_missing_history_item_is_a_404(db):

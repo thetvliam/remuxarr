@@ -15,8 +15,8 @@ unit-test material:
      possible failure: sidecars written to the container's writable
      layer, surviving restarts, convincing the user their retention
      window works, then vanishing on the next image pull.
-     test_missing_root_is_not_created is the test for that, and it
-     asserts the absence, not just the exception.
+     test_a_missing_root_is_never_created_by_the_status_check is the
+     test for that, and it asserts the absence, not just the status.
 
   3. _delete_media_file_and_related unlinks the sidecar, not just the
      row. RevertPoint is the first table referencing media_files whose
@@ -39,7 +39,8 @@ than of the relationship's configuration, and it is the reason a future
 cascade change cannot quietly turn detaching back into deleting.
 Verified by applying all three combinations.
 
-Verified by mutation, 11 applied to recycle.py and the deletion path:
+Verified by mutation, 10 applied to recycle.py and the deletion path,
+all killed. Re-run in full when ensure_recycle_subdir was removed:
 
   • Returning True instead of False from delete_sidecar's FileNotFoundError
     branch                                          → killed
@@ -48,9 +49,13 @@ Verified by mutation, 11 applied to recycle.py and the deletion path:
   • os.path.exists → os.path.isdir in the status check, and the reverse
                                                     → killed (file-not-dir case)
   • Dropping the os.access check                    → killed
-  • ensure_recycle_subdir calling makedirs before the readiness check
-                                                    → killed by
-                                                      test_missing_root_is_not_created
+  • recycle_dir_status creating the missing root    → killed, though by
+                                                      three tests: making
+                                                      the directory also
+                                                      flips ready to True
+  • recycle_dir_status creating the root but still reporting not-ready
+                                                    → killed ONLY by
+                                                      test_a_missing_root_is_never_created_by_the_status_check
   • Dropping the delete_sidecar loop from
     _delete_media_file_and_related                  → killed
   • Deleting the RevertPoint row query from the same function
@@ -58,23 +63,17 @@ Verified by mutation, 11 applied to recycle.py and the deletion path:
                                                       test_media_file_deletion's
                                                       metadata-derived test
 
-One equivalent mutant, recorded rather than papered over:
-`exist_ok=True` on ensure_recycle_subdir's makedirs. Flipping it to False
-changes nothing observable through this module's own surface, because the
-only caller reaching that line has already passed the readiness check and
-every call site creates the same per-install subdirectory name — the
-second call is the one that would raise, and there is no code path today
-that makes a second call with different state. It becomes a real mutant
-the moment a caller creates per-job subdirectories; noted here so that
-change is not made silently.
+The last two status mutants are why that test exists at all rather than
+being folded into the ready-flag assertions above it. Nothing else here
+notices a function that creates the directory and then honestly reports
+it as missing, which is exactly the shape a well-meaning "the folder
+wasn't there so I made it" fix would take.
 
 The suffix-invariant tests below are deliberately weak on their own —
 they restate a constant. The load-bearing versions are behavioural and
 live in test_startup_recovery.py, where a real sidecar is put in front of
 the real sweep.
 """
-import os
-
 import pytest
 
 
@@ -181,31 +180,30 @@ def test_empty_configured_path_is_not_ready(monkeypatch):
     assert reason
 
 
-# ── ensure_recycle_subdir ────────────────────────────────────────────────────
-
-def test_subdirectory_is_created_under_a_mounted_root(recycle):
-    from app.core.recycle import ensure_recycle_subdir
-
-    path = ensure_recycle_subdir("sidecars")
-
-    assert path == str(recycle / "sidecars")
-    assert os.path.isdir(path)
-
-
-def test_missing_root_is_not_created(unmounted):
+def test_a_missing_root_is_never_created_by_the_status_check(unmounted):
     """
-    The trap this whole module exists to avoid.
+    The trap this whole module exists to avoid, now asserted against the
+    only function that still looks at the root.
 
-    Asserting the RuntimeError alone would still pass an implementation
-    that created the directory and then raised, or one that created it on
-    the way to succeeding. The assertion that matters is that nothing
-    appeared on disk: an unmounted volume must stay unmounted.
+    This used to live on ensure_recycle_subdir, which called makedirs and
+    so could genuinely have created the root on the way past its own
+    readiness check. That function had no callers and has been removed,
+    which leaves no code in app/ that creates anything under RECYCLE_DIR
+    — the protection is structural rather than behavioural now.
+
+    Kept as a test anyway, and deliberately: recycle_dir_status is where
+    a future "the directory was missing so I made it" fix would land,
+    and config.py's RECYCLE_DIR comment explains why that fix would be
+    the worst available outcome. Sidecars written into the container's
+    writable layer survive restarts, convince the user their retention
+    window works, and vanish on the next image pull. Verified by
+    mutation: adding makedirs here fails this test.
     """
-    from app.core.recycle import ensure_recycle_subdir
+    from app.core.recycle import recycle_dir_status
 
-    with pytest.raises(RuntimeError):
-        ensure_recycle_subdir("sidecars")
+    ready, _reason = recycle_dir_status()
 
+    assert ready is False
     assert not unmounted.exists(), (
         "the recycle root was created despite not being mounted — sidecars "
         "would be written into the container's writable layer and lost on "

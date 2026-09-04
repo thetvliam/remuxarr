@@ -241,18 +241,42 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         media.filename = os.path.basename(restored_path)
         media.directory = os.path.dirname(restored_path)
 
-    try:
-        stat = os.stat(restored_path)
-        media.size = stat.st_size
-        media.mtime = stat.st_mtime
-    except OSError:
-        pass
+    # The delta-scan sentinels, not the restored file's real stats.
+    #
+    # The file now looks the way it did before the job, so the next scan
+    # should evaluate it on its merits — and evaluating it is the whole
+    # point of the workflow this feature exists for: revert a rule that
+    # turned out wrong, change the rule, rescan.
+    #
+    # Status alone does not achieve that. _process_file's delta check
+    # compares ONLY size and mtime against the on-disk stat and has no
+    # awareness of .status, so writing the restored file's real stats
+    # here is precisely what makes every future delta scan — the default,
+    # and what the scheduler always uses — see "unchanged" and return
+    # before probing. The file was reachable only through a forced full
+    # rescan.
+    #
+    # This mirrored _finish_job, where the same two lines are correct:
+    # there the file genuinely IS processed, so skipping it is the right
+    # outcome. A revert inverts that, and the copied lines came with a
+    # consequence that only made sense at the place they were copied
+    # from.
+    #
+    # -1/-1.0 is the established spelling for "re-evaluate this" —
+    # cancel_item, clear_pending, clear_dry_run, abort_job,
+    # clear_history and delete_history_item all write it, for this exact
+    # reason. Real files never carry a negative size or mtime, so the
+    # value cannot be mistaken for a measurement.
+    media.size = -1
+    media.mtime = -1.0
 
-    # Back to "pending" rather than "processed": the file now looks the
-    # way it did before the job, so the next scan should evaluate it on
-    # its merits. Leaving it "processed" would hide a reverted file from
-    # the very analysis that would tell the user what it needs.
-    media.status = "pending"
+    # "unprocessed", matching the history dismissal paths rather than the
+    # queue cancellation ones. Both resurface a file; they differ in what
+    # they claim happened to it, and a revert has put the file back to
+    # never-having-been-processed, which is what last_processed=None below
+    # already records. "pending" was assigned nowhere else in the app and
+    # is a QueueItem status, not a MediaFile one.
+    media.status = "unprocessed"
     media.last_processed = None
 
     try:
