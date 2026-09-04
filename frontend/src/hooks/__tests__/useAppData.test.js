@@ -542,6 +542,136 @@ describe("useAppData — refreshAllPanels", () => {
 });
 
 
+/* ── fetchForge ──────────────────────────────────────────────────────────── */
+
+/**
+ * fetchForge guarded one of its two responses and not the other:
+ *
+ *   setForgeActive(a.value)
+ *   setForgeProcessed(Array.isArray(p.value) ? p.value : [])
+ *
+ * The asymmetry is not carelessness, it is what the shape allows.
+ * /api/forge/processed/ returns an array, so Array.isArray tells a real
+ * answer apart from an error body. /api/forge/active returns an object or
+ * null, and an error body is also an object — no shape test can separate
+ * them, which is why the guard stops there.
+ *
+ * So the error body went straight into the panel as a job. ForgeActivePanel
+ * takes any truthy value as work in progress: status undefined is not
+ * "pending", so it rendered FORGING with a pulsing LED, "Unknown file", and a
+ * progress bar sitting at 0.0%. Nothing polls this — it refetches on
+ * navigation and on forge websocket events — so that phantom stayed on screen
+ * until one of those happened.
+ */
+describe("useAppData — fetchForge", () => {
+  /** Answer the two forge endpoints independently of everything else. */
+  function mockForge({ active = null, activeOk = true,
+                       processed = [], processedOk = true } = {}) {
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/forge/active")) {
+        return activeOk
+          ? { ok: true, status: 200, json: async () => active }
+          : { ok: false, status: 500, json: async () => ({ detail: "Internal Server Error" }) };
+      }
+      if (u.includes("/api/forge/processed/")) {
+        return processedOk
+          ? { ok: true, status: 200, json: async () => processed }
+          : { ok: false, status: 500, json: async () => ({ detail: "Internal Server Error" }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ value: false, items: [], total: 0 }) };
+    }));
+  }
+
+  const JOB = { id: 4, status: "processing", progress: 12.5, file: { filename: "x.mkv" } };
+
+  it("does not turn an error response into a phantom active job", async () => {
+    mockForge({ activeOk: false });
+    setHash("#forge");
+    const { result } = await mount();
+
+    // Anything truthy here renders as a job in progress.
+    expect(result.current.forgeActive).toBeNull();
+  });
+
+  it("keeps the job already on screen when a refresh errors", async () => {
+    mockForge({ active: JOB });
+    setHash("#forge");
+    const { result } = await mount();
+    expect(result.current.forgeActive).toMatchObject({ id: 4 });
+
+    mockForge({ activeOk: false });
+    await act(async () => { await result.current.fetchForge(); });
+
+    // Better a moment stale than replaced by an error body — the next event
+    // or navigation corrects it.
+    expect(result.current.forgeActive).toMatchObject({ id: 4 });
+  });
+
+  it("still clears the panel when the server says nothing is running", async () => {
+    /* null is the idle answer, not a failure, so it must still land. This is
+     * the test that stops the guard being written as `if (a.value)`, which
+     * would leave a finished job on screen for ever. */
+    mockForge({ active: JOB });
+    setHash("#forge");
+    const { result } = await mount();
+    expect(result.current.forgeActive).toMatchObject({ id: 4 });
+
+    mockForge({ active: null });
+    await act(async () => { await result.current.fetchForge(); });
+
+    expect(result.current.forgeActive).toBeNull();
+  });
+
+  it("does not empty the processed list when its request errors", async () => {
+    /* The other half of the same asymmetry. Array.isArray caught the error
+     * body, but its else branch wrote [] — so a transient 500 cleared the
+     * completed-jobs panel rather than leaving what was already there. */
+    mockForge({ processed: [{ id: 1 }, { id: 2 }] });
+    setHash("#forge");
+    const { result } = await mount();
+    expect(result.current.forgeProcessed).toHaveLength(2);
+
+    mockForge({ processedOk: false });
+    await act(async () => { await result.current.fetchForge(); });
+
+    expect(result.current.forgeProcessed).toHaveLength(2);
+  });
+
+  it("still replaces the processed list on a successful refresh", async () => {
+    // The guard must not freeze the panel at its first answer.
+    mockForge({ processed: [{ id: 1 }, { id: 2 }] });
+    setHash("#forge");
+    const { result } = await mount();
+    expect(result.current.forgeProcessed).toHaveLength(2);
+
+    mockForge({ processed: [{ id: 9 }] });
+    await act(async () => { await result.current.fetchForge(); });
+
+    expect(result.current.forgeProcessed).toEqual([{ id: 9 }]);
+  });
+  it("ignores a processed body that is not a list, even on a 200", async () => {
+    /* The status check does not subsume the Array.isArray guard, so this
+     * pins the case only the guard covers: a 200 whose body is not the list
+     * the panel maps over. ForgeProcessedPanel would call .map on it. */
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/forge/processed/")) {
+        return { ok: true, status: 200, json: async () => ({ detail: "not a list" }) };
+      }
+      if (u.includes("/api/forge/active")) {
+        return { ok: true, status: 200, json: async () => null };
+      }
+      return { ok: true, status: 200, json: async () => ({ value: false, items: [], total: 0 }) };
+    }));
+    setHash("#forge");
+    const { result } = await mount();
+
+    expect(result.current.forgeProcessed).toEqual([]);
+  });
+});
+
+
 /* ── forge_job_completed ─────────────────────────────────────────────────── */
 
 /**

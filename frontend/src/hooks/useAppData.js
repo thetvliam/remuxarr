@@ -391,9 +391,31 @@ export function useAppData() {
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   const fetchForge = useCallback(async () => {
+    /* Status-checked rather than shape-checked, unlike fetchAll above, and
+     * the difference is forced by what these two endpoints return.
+     *
+     * fetchAll can guard on shape because every one of its responses has a
+     * shape an error body fails: Array.isArray for the lists, `?.value ??`
+     * for the scalars. /api/forge/active returns an object or null, and a
+     * FastAPI error body is also an object — so no shape test tells them
+     * apart, and setForgeActive(a.value) stored the error as a job.
+     * ForgeActivePanel treats any truthy value as work in progress, so that
+     * rendered FORGING with a pulsing LED, "Unknown file" and a bar at 0.0%,
+     * and nothing polls this to correct it.
+     *
+     * allSettled then does the rest: a rejected request skips its setter, so
+     * a failed refresh leaves the panel showing the last good answer instead
+     * of a phantom job or an emptied list. The Array.isArray guard below
+     * stays for a 200 that is not a list, which the status check cannot
+     * catch. */
+    const readJson = async (path) => {
+      const r = await fetch(`${api}${path}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status} from ${path}`);
+      return r.json();
+    };
     const [a, p] = await Promise.allSettled([
-      fetch(`${api}/api/forge/active`).then(r => r.json()),
-                                            fetch(`${api}/api/forge/processed/`).then(r => r.json()),
+      readJson("/api/forge/active"),
+      readJson("/api/forge/processed/"),
     ]);
     if (a.status === "fulfilled") setForgeActive(a.value);
     if (p.status === "fulfilled") setForgeProcessed(Array.isArray(p.value) ? p.value : []);
