@@ -374,6 +374,36 @@ describe("pagination", () => {
     expect(result.current.hasMore).toBe(false);
   });
 
+  /* An empty page cannot advance offsetRef. If hasMore stays true the panel
+   * keeps its scroll sentinel mounted, and its observer — re-armed on every
+   * loading transition, deps [hasMore, loading, loadMore] — re-issues the
+   * identical request without end. hasMore is the gate, so it is what these
+   * pin.
+   *
+   * Reached here through a total that outruns the page rather than through a
+   * dropped row: list_history counts and pages in two separate statements, so
+   * rows removed between them leave `total` ahead of what the page can serve. */
+  it("clears hasMore when a page arrives empty despite an unreached total", async () => {
+    mockServer({ items: [], total: 10 });
+
+    const { result } = renderHook(() => useHistoryData("", "all", K_NULL, ""));
+
+    await waitFor(() => expect(result.current.total).toBe(10));
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it("still reports more pages when a short page DID serve rows", async () => {
+    /* Why the guard is "no rows" and not "fewer rows than asked for": a page
+     * short by the odd row still moves the offset, so it terminates on its
+     * own and must keep paginating. */
+    mockServer({ items: [item(1)], total: 10 });
+
+    const { result } = renderHook(() => useHistoryData("", "all", K_NULL, ""));
+
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    expect(result.current.hasMore).toBe(true);
+  });
+
   it("loadMore requests the next page and appends to what is shown", async () => {
     /** The offset must advance. Refetching from 0 and appending duplicates
      *  every row already on screen. */

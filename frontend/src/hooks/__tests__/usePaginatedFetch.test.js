@@ -60,6 +60,36 @@ function mockServer({ total = 3, ok = true, extra = {} } = {}) {
   }));
 }
 
+/* Servers whose page does not account for the whole of `total`.
+ *
+ * Deliberately separate from mockServer rather than an option on it.
+ * mockServer derives its page FROM total, which is what makes it a fair stand
+ * in for a healthy endpoint — every page it serves advances the offset, so
+ * every existing pagination test above asserts against a server that always
+ * makes progress. Teaching it to under-serve would let those same tests run
+ * against a server that does not, and the hasMore arithmetic they exist to
+ * pin would then be satisfied by a mock that never exercises the short case. */
+function mockUnderservingServer({ total = 250 } = {}) {
+  calls = [];
+  vi.stubGlobal("fetch", vi.fn(async (url) => {
+    const u = new URL(String(url), "http://localhost");
+    calls.push({ offset: Number(u.searchParams.get("offset")) });
+    return { ok: true, json: async () => ({ items: [], total }) };
+  }));
+}
+
+/** Serves a fixed number of rows per page, fewer than asked for but not none. */
+function mockShortPageServer({ total = 250, served = 99 } = {}) {
+  calls = [];
+  vi.stubGlobal("fetch", vi.fn(async (url) => {
+    const u = new URL(String(url), "http://localhost");
+    const offset = Number(u.searchParams.get("offset"));
+    calls.push({ offset });
+    const items = Array.from({ length: served }, (_, i) => ({ id: offset + i }));
+    return { ok: true, json: async () => ({ items, total }) };
+  }));
+}
+
 /* refreshKey and extraParams are compared by identity / by serialisation
    respectively. refreshKey must be a stable reference across renders or the
    effect refires forever; extraParams deliberately need NOT be, which is the
@@ -221,6 +251,43 @@ describe("usePaginatedFetch — pagination", () => {
     expect(calls.map(c => c.offset)).toEqual([0, 100]);
     const ids = result.current.items.map(i => i.id);
     expect(new Set(ids).size).toBe(ids.length);   // no duplicates
+  });
+
+  /* ── Pages that do not advance the offset ───────────────────────────────
+   *
+   * `total` and `items` come from two separate queries on this endpoint, and
+   * the server drops rows from the page after counting them: get_candidates
+   * skips a file whose AAC track vanished between the two queries, and
+   * _language_review skips a flag whose MediaFile did. So a page can be short
+   * of what `total` implies, and in the limit empty while `total` still counts
+   * the rows.
+   *
+   * An empty page cannot advance offsetRef, so if hasMore stays true the
+   * sentinel keeps rendering, the observer re-arms on every loading
+   * transition (its deps are [hasMore, loading, loadMore]) and re-issues the
+   * identical request without end. hasMore is what gates that, so it is what
+   * these pin. */
+  it("clears hasMore when a page arrives empty despite an unreached total", async () => {
+    mockUnderservingServer({ total: 250 });
+    const { result } = renderHook(() => usePaginatedFetch("", EP, K1, "", 100));
+    await waitFor(() => expect(result.current.total).toBe(250));
+
+    // No row was served, so there is no offset to advance to. Reporting
+    // another page here is what makes the loop self-sustaining.
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  it("still reports more pages when a short page DID serve rows", async () => {
+    /* The companion to the test above, and the reason the guard is on "no
+     * rows" rather than "fewer rows than asked for". A page short by the odd
+     * dropped row still advances the offset, so it terminates on its own and
+     * must keep paginating — gating on newItems.length < pageSize would strand
+     * the rest of the list behind a single skipped row. */
+    mockShortPageServer({ total: 250, served: 99 });
+    const { result } = renderHook(() => usePaginatedFetch("", EP, K1, "", 100));
+    await waitFor(() => expect(result.current.items.length).toBe(99));
+
+    expect(result.current.hasMore).toBe(true);
   });
 
   it("carries search and extraParams onto the next page too", async () => {

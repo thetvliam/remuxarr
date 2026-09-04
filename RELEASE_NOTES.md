@@ -58,3 +58,6 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Fixed
+
+- A list that scrolls to load more no longer gets stuck reloading the same page. If the server reported more results than the page it sent back — which could happen when rows were removed while you were scrolling — the list kept asking for the same page indefinitely, spinning without ever growing and putting steady load on the server until you navigated away. Affects History, Audio and Subtitle Language Review, and the AC3 Forge candidate list.
