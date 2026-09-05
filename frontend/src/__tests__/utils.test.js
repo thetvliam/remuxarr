@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import {
   basename, fmtClock, fmtCount, fmtDur, fmtRel, fmtSize, fmtTime, formatBytesSaved,
+  toUtcDate,
 } from "../utils";
 
 /* ── Timezone ──────────────────────────────────────────────────────────────
@@ -127,6 +128,46 @@ describe("fmtTime and fmtClock", () => {
   it("shows nothing rather than an invalid date when there is no timestamp", () => {
     expect(fmtTime(null)).toBe("—");
     expect(fmtClock("")).toBe("—");
+  });
+});
+
+/* ── toUtcDate, directly ─────────────────────────────────────────────────── */
+
+describe("toUtcDate", () => {
+  /* Tested here as well as through the formatters above, because it has a
+   * branch none of them reach: a string that already declares an offset. The
+   * formatters only ever see what the backend sends, which is naive UTC.
+   *
+   * These compare instants rather than rendered strings, so unlike the
+   * formatter tests they do not depend on the forced zone. */
+  const INSTANT = Date.UTC(2026, 5, 18, 11, 24, 37, 655);
+
+  it("reads a timestamp with no zone as UTC", () => {
+    expect(toUtcDate("2026-06-18 11:24:37.655").getTime()).toBe(INSTANT);
+  });
+
+  it("leaves a timestamp that already declares Z alone", () => {
+    expect(toUtcDate("2026-06-18T11:24:37.655Z").getTime()).toBe(INSTANT);
+  });
+
+  it("leaves a timestamp that already declares an offset alone", () => {
+    /* Appending Z to this would produce an Invalid Date rather than a wrong
+     * time, so the failure is loud — but only if something reaches the
+     * branch, and nothing did before this test. */
+    expect(toUtcDate("2026-06-18T13:24:37.655+02:00").getTime()).toBe(INSTANT);
+  });
+
+  /* Not tested: a NEGATIVE offset, e.g. "2026-06-18T06:24:37.655-05:00".
+   * It matches neither guard, so it has "Z" appended and comes back as an
+   * Invalid Date. Left alone rather than pinned, because asserting the
+   * current result would lock the fault in, and the source says this
+   * function must not be altered. Unreachable from this backend, which sends
+   * naive UTC — reachable only if a caller ever passes a timestamp from
+   * somewhere else. */
+
+  it("returns nothing when there is no timestamp to convert", () => {
+    expect(toUtcDate(null)).toBeNull();
+    expect(toUtcDate("")).toBeNull();
   });
 });
 
