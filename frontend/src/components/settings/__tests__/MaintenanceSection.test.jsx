@@ -172,6 +172,36 @@ describe("MaintenanceSection — orphaned removal", () => {
     }
     expect(removeCalls).toHaveLength(0);
   });
+
+  it("disarms the force rescan once the confirmation window lapses", async () => {
+    /* The second armed button in this component, and the one that had no
+     * test: deleting its timeout outright left all 466 tests passing. Force
+     * Full Rescan walks the whole library, so a button left armed
+     * indefinitely is one stray click from a full rescan the user has
+     * forgotten they started.
+     *
+     * Same shape as the orphaned-removal test above — the constant rather
+     * than a literal, and fireEvent rather than userEvent, which schedules
+     * its own work on the timers this replaces and deadlocks with them. */
+    mockApi();
+    setup();
+
+    const btn = () => screen.getByRole("button", { name: /FORCE FULL RESCAN|CLICK AGAIN TO CONFIRM/i });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(btn());
+      expect(btn()).toHaveTextContent(/CONFIRM/i);
+
+      act(() => { vi.advanceTimersByTime(CONFIRM_MS - 100); });
+      expect(btn()).toHaveTextContent(/CONFIRM/i);
+
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(btn()).not.toHaveTextContent(/CONFIRM/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 
