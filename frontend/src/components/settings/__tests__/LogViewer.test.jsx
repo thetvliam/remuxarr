@@ -18,7 +18,7 @@
  * The filter itself is pinned alongside, because the bold rule and the filter
  * now read from the same table and a change to it moves both.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogViewer } from "../LogViewer";
@@ -108,5 +108,92 @@ describe("LogViewer — level filter", () => {
     await screen.findByText("info line");
 
     expect(screen.queryByText("debug line")).toBeNull();
+  });
+});
+
+/**
+ * The poll loop.
+ *
+ * It refetches every 3s and wrote whatever came back straight into state,
+ * with no status check and nothing tying a response to the request that asked
+ * for it. Two things followed.
+ *
+ * An HTTP error parsed as data: `d.records || []` found no records on the
+ * error body and emptied the view, so a single 500 blanked the log while the
+ * backend was still running and the next tick refilled it. The network
+ * failure path was already right — its catch leaves the lines alone — so the
+ * two disagreed.
+ *
+ * And responses were applied in whatever order they arrived. At 3s intervals
+ * against a slow backend two polls overlap, and the older one landing last
+ * put stale lines back on screen.
+ */
+describe("LogViewer — polling", () => {
+  let resolvers;
+
+  const mockPoll = () => {
+    resolvers = [];
+    global.fetch = vi.fn(() => new Promise((res) => { resolvers.push(res); }));
+  };
+  const answer = (n, records) =>
+    resolvers[n]({ ok: true, json: async () => ({ records, total: records.length }) });
+  const failPoll = (n, status = 500) =>
+    resolvers[n]({ ok: false, status, json: async () => ({ detail: "boom" }) });
+
+  const renderBare = () => render(
+    <ThemeProvider>
+      <LogViewer api="" toast={vi.fn()} />
+    </ThemeProvider>,
+  );
+
+  /** Let the next interval tick fire. */
+  const tick = async () => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  };
+
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("keeps the lines on screen when a poll returns an HTTP error", async () => {
+    mockPoll();
+    renderBare();
+    await act(async () => { answer(0, [rec("INFO", "first line")]); });
+    await screen.findByText("first line");
+
+    await tick();
+    await act(async () => { failPoll(1); });
+
+    expect(screen.getByText("first line")).toBeInTheDocument();
+  });
+
+  it("does not let a slow earlier poll overwrite a newer one", async () => {
+    mockPoll();
+    renderBare();
+    await act(async () => { answer(0, [rec("INFO", "first line")]); });
+    await screen.findByText("first line");
+
+    await tick();
+    await tick();
+
+    await act(async () => { answer(2, [rec("INFO", "third line")]); });
+    await screen.findByText("third line");
+    await act(async () => { answer(1, [rec("INFO", "second line")]); });
+
+    expect(screen.getByText("third line")).toBeInTheDocument();
+    expect(screen.queryByText("second line")).not.toBeInTheDocument();
+  });
+
+  it("still applies each new poll response in order", async () => {
+    // The guards must not freeze the view at whatever loaded first.
+    mockPoll();
+    renderBare();
+    await act(async () => { answer(0, [rec("INFO", "first line")]); });
+    await screen.findByText("first line");
+
+    await tick();
+    await act(async () => { answer(1, [rec("INFO", "second line")]); });
+
+    await screen.findByText("second line");
+    expect(screen.queryByText("first line")).not.toBeInTheDocument();
   });
 });

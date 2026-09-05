@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Three panels that refresh on a timer no longer misreport when a refresh fails. A backend error was read as data, so the log viewer blanked itself mid-session, the Plex re-analysis backlog dropped to "0 files queued" as though it had drained, and the warning that failure emails are paused disappeared while they were still paused. Overlapping refreshes could also land out of order and put older information back on screen. All three now keep what they last read successfully and try again on the next tick.
+
 - The counts on the History tabs no longer go blank or show the wrong numbers. When two refreshes overlapped, which happens when jobs finish while you have History open, the slower one could land last and leave the badges disagreeing with the list under them. Separately, an error from the backend was read as a set of counts and dropped all four badges to zero over a list that still had rows in it. Both now leave the last good counts on screen.
 
 - The AC3 Forge page no longer shows a job that is not running. When the backend returned an error while the page was refreshing, the error was read as a job: the panel showed FORGING against "Unknown file" with the bar stuck at 0.0%, and nothing polls it, so it stayed that way until you navigated away or a real forge job finished. The completed-jobs list below it was emptied by the same failure. Both now keep showing whatever they last loaded successfully.

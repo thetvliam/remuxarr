@@ -127,11 +127,28 @@ const PlexBacklogStatus = ({ api }) => {
   const [count, setCount] = useState(null);
 
   useEffect(() => {
-    const poll = () => {
-      fetch(`${api}/api/plex/backlog`)
-      .then(r => r.json())
-      .then(d => setCount(d.count ?? 0))
-      .catch(() => {});
+    /* Same shape as the LogViewer poll and guarded the same way: `seq`
+     * discards a response the interval has already superseded, and the status
+     * check keeps an error body out of the count. No unmount flag, for the
+     * reason recorded on that one.
+     *
+     * The status check matters most here. `d.count ?? 0` turned an error into
+     * a count of zero, so "5 files queued" became "0 files queued" on a
+     * single 500 — which reads as the backlog having drained rather than as a
+     * failed read. Before the first successful poll it invented a zero where
+     * the null below deliberately renders nothing at all. */
+    let latest = 0;
+    const poll = async () => {
+      const seq = ++latest;
+      try {
+        const r = await fetch(`${api}/api/plex/backlog`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (seq !== latest) return;
+        setCount(d.count ?? 0);
+      } catch {
+        // Keep what is shown; the next tick tries again.
+      }
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -173,11 +190,23 @@ const EmailBreakerStatus = ({ api }) => {
   const [state, setState] = useState(null);
 
   useEffect(() => {
-    const poll = () => {
-      fetch(`${api}/api/notifications/state`)
-      .then(r => r.json())
-      .then(setState)
-      .catch(() => {});
+    /* Guarded like the two pollers above. The failure here is the inverse of
+     * the Plex one: setState took the body unfiltered, and an error body has
+     * no `tripped`, so a failed read DISMISSED the warning banner rather than
+     * inventing one. The breaker was still tripped and the page stopped
+     * saying so. */
+    let latest = 0;
+    const poll = async () => {
+      const seq = ++latest;
+      try {
+        const r = await fetch(`${api}/api/notifications/state`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (seq !== latest) return;
+        setState(d);
+      } catch {
+        // Keep the banner as it is; the next tick tries again.
+      }
     };
     poll();
     const id = setInterval(poll, 10000);
