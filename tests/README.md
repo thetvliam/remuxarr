@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1202 tests across 57 test files, plus 472 frontend tests under
+1239 tests across 58 test files, plus 472 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 78%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -42,8 +42,11 @@ absent (CI installs them, so they always run there).
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
 `test_arr_notifications.py`, `test_plex_client.py`, `test_scheduler.py`,
-`test_email_notify.py`. The last covers the SMTP send path only — whether an
-email is owed at all is the circuit breaker's decision, and that lives in
+`test_email_notify.py`, `test_post_job_notify.py`. The last two are the two
+halves of a notification: `test_email_notify.py` covers the SMTP send path,
+and `test_post_job_notify.py` covers the layer in `worker.py` that decides
+whether Sonarr, Radarr or Plex are told anything at all and with which URL
+and key. The email circuit breaker's own decision lives in
 `test_assorted_regressions.py`.
 
 **Language review** — `test_audio_language_review.py`,
