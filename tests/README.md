@@ -1,11 +1,11 @@
 # Remuxarr test suite
 
 1176 tests across 56 test files, plus 472 frontend tests under
-`frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
-number below matters more than that one.
+`frontend/src/**/__tests__/`. Backend line coverage is around 78%, though it is
+not the measure used here — see How these tests are written below.
 
-The file count is the modules `pytest` collects. There are 56 `.py` files under
-`tests/`; `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
+The file count is the modules `pytest` collects, not the `.py` files under
+`tests/`: `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
 and a helper script, contain no tests, and are not counted. Both readings were
 in use at once until this was written down.
 
