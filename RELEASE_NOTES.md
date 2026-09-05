@@ -60,6 +60,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- The Maintenance settings no longer reset themselves to defaults when a refresh fails. After importing settings the panel reloads these three values, and if that reload hit a backend error the error was read as data: scheduled scans showed as off, the scan times list emptied, and auto-cleanup showed as on, regardless of what the server actually had. Nothing was written back unless you then touched a toggle, but the panel was reporting settings you did not have. It now keeps what it last read.
+
 - Three panels that refresh on a timer no longer misreport when a refresh fails. A backend error was read as data, so the log viewer blanked itself mid-session, the Plex re-analysis backlog dropped to "0 files queued" as though it had drained, and the warning that failure emails are paused disappeared while they were still paused. Overlapping refreshes could also land out of order and put older information back on screen. All three now keep what they last read successfully and try again on the next tick.
 
 - The counts on the History tabs no longer go blank or show the wrong numbers. When two refreshes overlapped, which happens when jobs finish while you have History open, the slower one could land last and leave the badges disagreeing with the list under them. Separately, an error from the backend was read as a set of counts and dropped all four badges to zero over a list that still had rows in it. Both now leave the last good counts on screen.

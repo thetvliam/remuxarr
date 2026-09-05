@@ -255,3 +255,145 @@ describe("MaintenanceSection — wiring through SettingsPage", () => {
     await waitFor(() => expect(onRecordsRemoved).toHaveBeenCalledTimes(1));
   });
 });
+
+/**
+ * The settings load, and what a failed reload does to it.
+ *
+ * The three reads on mount parsed without checking the status, so an error
+ * body reached them all: `!!enabled.value` found undefined and gave false,
+ * the times gave [], and `cleanup.value !== false` gave true.
+ *
+ * On first mount that is invisible, because those three happen to be exactly
+ * the initial state. It bites on the reload. SettingsPage bumps reloadKey
+ * after a settings import, and if that reload errors the panel silently
+ * replaces whatever was loaded with the defaults — scheduled scans off, no
+ * scan times, auto-cleanup on — while the server has something else. The
+ * network-failure path was already right, its catch leaves the state alone,
+ * so the two disagreed only because one of them was never checked.
+ *
+ * Note the three fallbacks are NOT interchangeable and the difference is not
+ * a mistake: each matches its own key's server default in session.py, which
+ * is False for scheduled_scan_enabled, [] for scheduled_scan_times, and True
+ * for auto_cleanup_on_scan. Normalising them to one form would put a wrong
+ * default on two of the three.
+ */
+describe("MaintenanceSection — settings load", () => {
+  /* The three settings reads are left pending so a test can resolve them at a
+   * known point. The alternative, an immediately-resolving mock plus waitFor,
+   * races here: the assertion for "nothing changed" passes against the state
+   * from the PREVIOUS load before the reload has landed, so the test reports
+   * success without ever having exercised the reload. */
+  let pending;
+
+  const mockSettings = () => {
+    pending = [];
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      const key = ["scheduled_scan_enabled", "scheduled_scan_times", "auto_cleanup_on_scan"]
+        .find(k => u.includes(`/api/settings/${k}`));
+      if (key) return new Promise((resolve) => { pending.push({ key, resolve }); });
+      if (u.includes("/api/scan/orphaned"))
+        return { ok: true, json: async () => ({ total: 0, items: [] }) };
+      return { ok: true, json: async () => ({}) };
+    }));
+  };
+
+  /** Answer the three reads of one load, either with values or with errors. */
+  const settle = async ({ enabled, times, cleanup, ok = true }) => {
+    await waitFor(() => expect(pending).toHaveLength(3));
+    const batch = pending.splice(0, 3);
+    const value = { scheduled_scan_enabled: enabled, scheduled_scan_times: times,
+                    auto_cleanup_on_scan: cleanup };
+    await act(async () => {
+      for (const { key, resolve } of batch) {
+        resolve(ok
+          ? { ok: true, status: 200, json: async () => ({ value: value[key] }) }
+          : { ok: false, status: 500, json: async () => ({ detail: "boom" }) });
+      }
+    });
+  };
+
+  const renderAt = (reloadKey) => render(
+    <ThemeProvider>
+      <MaintenanceSection api="" toast={vi.fn()} reloadKey={reloadKey} />
+    </ThemeProvider>,
+  );
+  const reloadTo = (rerender, reloadKey) => rerender(
+    <ThemeProvider>
+      <MaintenanceSection api="" toast={vi.fn()} reloadKey={reloadKey} />
+    </ThemeProvider>,
+  );
+
+  const scans   = () => screen.getByRole("switch", { name: "Enable Scheduled Scans" });
+  const cleanup = () => screen.getByRole("switch", { name: "Auto-cleanup on Scan" });
+
+  /* Non-default on every key, so a reset to defaults shows on all three
+   * rather than only on the one whose default differs. */
+  const LOADED = { enabled: true, times: ["03:00"], cleanup: false };
+
+  it("shows what the server returned", async () => {
+    mockSettings();
+    renderAt(0);
+    await settle(LOADED);
+
+    expect(scans()).toHaveAttribute("aria-checked", "true");
+    expect(cleanup()).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("03:00")).toBeInTheDocument();
+  });
+
+  it("keeps the loaded values when a reload returns an HTTP error", async () => {
+    mockSettings();
+    const { rerender } = renderAt(0);
+    await settle(LOADED);
+
+    reloadTo(rerender, 1);
+    await settle({ ok: false });
+
+    // Each of the three would flip to its own default if the error body were
+    // read as data: scans off, times empty, auto-cleanup on.
+    expect(scans()).toHaveAttribute("aria-checked", "true");
+    expect(cleanup()).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("03:00")).toBeInTheDocument();
+  });
+
+  it("falls back to each key's own server default when a value is null", async () => {
+    /* The PUT body is typed Any, so a stored null comes back on a 200 and
+     * every fallback is exercised at once. They are not interchangeable:
+     * session.py defaults scheduled_scan_enabled False, scheduled_scan_times
+     * [] and auto_cleanup_on_scan True, so the right answer here is off,
+     * empty and ON. Writing all three the same way would get two of them
+     * wrong, and this is what says so. */
+    mockSettings();
+    renderAt(0);
+    await settle({ enabled: null, times: null, cleanup: null });
+
+    expect(scans()).toHaveAttribute("aria-checked", "false");
+    expect(cleanup()).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("03:00")).not.toBeInTheDocument();
+  });
+
+  it("ignores scan times that come back as something other than a list", async () => {
+    /* Reachable through the settings import, whose body is unvalidated. The
+     * check has to be on the type, not on truthiness: TimeTagInput maps over
+     * this, and a bare string is truthy and would reach it. */
+    mockSettings();
+    renderAt(0);
+    await settle({ enabled: false, times: "03:00", cleanup: true });
+
+    expect(screen.queryByText("03:00")).not.toBeInTheDocument();
+  });
+
+  it("still applies the new values when a reload succeeds", async () => {
+    // The guard must not freeze the panel at whatever loaded first.
+    mockSettings();
+    const { rerender } = renderAt(0);
+    await settle(LOADED);
+
+    reloadTo(rerender, 1);
+    await settle({ enabled: false, times: ["09:15"], cleanup: true });
+
+    expect(scans()).toHaveAttribute("aria-checked", "false");
+    expect(cleanup()).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("09:15")).toBeInTheDocument();
+  });
+});
