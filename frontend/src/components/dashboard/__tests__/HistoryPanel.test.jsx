@@ -211,8 +211,10 @@ describe("HistoryPanel — infinite scroll gate", () => {
     mockList({ total: 4, page: 2 });
     renderPanel();
 
-    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
-    expect(watching()).toBe(true);
+    /* Same ordering as the two tests below: the observer is armed by a passive
+     * effect that runs after the commit which put the row in the DOM, so this
+     * waits for the arming rather than for the row. */
+    await waitFor(() => expect(watching()).toBe(true));
   });
 
   it("loads the next page when the end of the list comes into view", async () => {
@@ -220,7 +222,15 @@ describe("HistoryPanel — infinite scroll gate", () => {
     // component whose scrolling never loaded anything at all.
     mockList({ total: 4, page: 2 });
     renderPanel();
-    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+    /* Wait for the observer, not for the row. The row arriving in the DOM and
+     * the observer being armed are two different moments: the rows are put
+     * there by the commit, while the observer is created by a passive effect
+     * that React flushes afterwards. waitFor wakes on DOM mutations, so
+     * waiting on the text can return in the gap between the two, leaving
+     * observers empty and `observers.at(-1)` undefined. That is what it did
+     * on CI while passing here every time. The row is still covered — f4.mkv
+     * below cannot appear unless f2.mkv did first. */
+    await waitFor(() => expect(watching()).toBe(true));
 
     await act(async () => {
       observers.at(-1).cb([{ isIntersecting: true }]);
@@ -256,7 +266,8 @@ describe("HistoryPanel — infinite scroll gate", () => {
       return { ok: true, status: 200, json: async () => ({ items, total: 99 }) };
     }));
     renderPanel();
-    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+    // Same race as above: wait for the observer to be armed, not for the row.
+    await waitFor(() => expect(watching()).toBe(true));
 
     await act(async () => {
       observers.at(-1).cb([{ isIntersecting: true }]);
