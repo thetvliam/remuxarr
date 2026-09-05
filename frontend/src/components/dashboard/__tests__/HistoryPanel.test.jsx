@@ -24,7 +24,7 @@
  * These pin the counts on screen rather than the call count, per the
  * frontend testing note in tests/README.md.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HistoryPanel } from "../HistoryPanel";
@@ -70,6 +70,28 @@ function renderPanel(refreshKey = { key: 1, status: null }) {
 /** The badge text for a tab, e.g. "SUCCESS12". Absent count means zero. */
 const badge = (label) =>
   screen.getByRole("button", { name: new RegExp(`^${label}`) }).textContent;
+
+/* jsdom has no IntersectionObserver, and this one records what it observes.
+ * Stubbed for the whole file, not just the scroll tests below: without it the
+ * counts tests would depend on this component never constructing an observer,
+ * and would fail with a ReferenceError the moment it did — for a reason that
+ * has nothing to do with what they assert. */
+let observers;
+
+class FakeObserver {
+  constructor(cb) { this.cb = cb; this.targets = []; observers.push(this); }
+  observe(el) { this.targets.push(el); }
+  unobserve(el) { this.targets = this.targets.filter(t => t !== el); }
+  disconnect() { this.targets = []; }
+}
+
+/** Whether anything is currently watching for the end of the list. */
+const watching = () => observers.some(o => o.targets.length > 0);
+
+beforeEach(() => {
+  observers = [];
+  vi.stubGlobal("IntersectionObserver", FakeObserver);
+});
 
 describe("HistoryPanel — summary counts", () => {
   beforeEach(() => mockApi());
@@ -146,5 +168,100 @@ describe("HistoryPanel — summary counts", () => {
     answer(1, COUNTS_B);
 
     await waitFor(() => expect(badge("SUCCESS")).toContain("70"));
+  });
+});
+
+/**
+ * The infinite-scroll gate.
+ *
+ * Two guards decide whether scrolling can ask for another page: the sentinel
+ * is rendered only when hasMore, and the observer effect returns early unless
+ * hasMore. They are redundant — the effect's own `!sentinel` check already
+ * covers the rendered guard, since React nulls the ref before effects run —
+ * so removing either one alone changes nothing observable. Only removing both
+ * reopens the loop these were written to prevent, where a page that serves no
+ * rows leaves the offset where it was and the observer re-arms on every
+ * loading transition against a request that can never advance.
+ *
+ * So this pins the pair rather than either clause, and says so, because a
+ * later reader looking at one of them alone will find no test naming it and
+ * has to know that is deliberate.
+ */
+describe("HistoryPanel — infinite scroll gate", () => {
+  const row = (id) => ({ id, status: "success", file: { filename: `f${id}.mkv` } });
+
+  /** A list server: `total` rows overall, served `page` at a time. */
+  function mockList({ total, page }) {
+    summary = [];
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/history/summary")) {
+        return new Promise((resolve) => { summary.push(resolve); });
+      }
+      const offset = Number(new URL(u, "http://x").searchParams.get("offset") || 0);
+      const items = Array.from(
+        { length: Math.max(0, Math.min(page, total - offset)) },
+        (_, i) => row(offset + i + 1),
+      );
+      return { ok: true, status: 200, json: async () => ({ items, total }) };
+    }));
+  }
+
+  it("watches for the end of the list while pages remain", async () => {
+    mockList({ total: 4, page: 2 });
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+    expect(watching()).toBe(true);
+  });
+
+  it("loads the next page when the end of the list comes into view", async () => {
+    // The positive control: without this, the test below would pass against a
+    // component whose scrolling never loaded anything at all.
+    mockList({ total: 4, page: 2 });
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    await waitFor(() => expect(screen.getByText("f4.mkv")).toBeInTheDocument());
+  });
+
+  it("stops watching once the last page has been served", async () => {
+    /* The kill. With neither guard, the observer stays armed against an
+     * offset that cannot advance, and re-arms on every loading transition —
+     * one request per cycle, without end. */
+    mockList({ total: 2, page: 2 });
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+    expect(watching()).toBe(false);
+  });
+
+  it("stops watching when a page serves no rows despite an unreached total", async () => {
+    /* The exact shape the hooks guard against: the server counts rows it then
+     * drops from the page. Nothing can advance the offset, so nothing should
+     * be watching for more. */
+    summary = [];
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/history/summary")) {
+        return new Promise((resolve) => { summary.push(resolve); });
+      }
+      const offset = Number(new URL(u, "http://x").searchParams.get("offset") || 0);
+      // First page serves rows; every later page is empty while total says 99.
+      const items = offset === 0 ? [row(1), row(2)] : [];
+      return { ok: true, status: 200, json: async () => ({ items, total: 99 }) };
+    }));
+    renderPanel();
+    await waitFor(() => expect(screen.getByText("f2.mkv")).toBeInTheDocument());
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    await waitFor(() => expect(watching()).toBe(false));
   });
 });
