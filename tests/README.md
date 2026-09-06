@@ -98,6 +98,34 @@ Two failure modes this has caught, both of which read as coverage:
   so a value could be committed correctly while the user was shown something
   else entirely.
 
+### Lines left untested on purpose
+
+It follows from the above that some lines should stay uncovered, and a
+coverage report will keep pointing at them. A line is left alone when no
+mutation of it produces a failure a test could meaningfully assert on —
+which is a different question from whether the line is important.
+
+The recurring shapes, so the next reader does not re-derive them:
+
+- **One-line reads of module state**, like the worker's paused flag and active
+  job count. A test can only restate the implementation, and any mutation is
+  either equivalent or absurd.
+- **Log-only branches**, where the code catches something, writes a warning and
+  carries on — removing the original after a container change, the
+  emergency-cleanup handler of last resort. The only assertion available is
+  "it did not crash", which the surrounding tests already establish.
+- **Guards whose real caller is covered elsewhere.** The worker loop's
+  `CancelledError` break is reached through `stop_worker`, which has its own
+  tests; asserting it directly means cancelling a task mid-iteration to check
+  that nothing escaped.
+
+Two things worth keeping straight. This is not a licence to skip anything
+awkward to reach — every one of these was checked by asking what a wrong
+version would look like, and the answer was "nothing a test can see". And
+coverage is still useful as a *finder*: a block sitting at zero is a reliable
+signal that nothing exercises it, which is how most of the units above were
+picked. It is the target that is wrong, not the tool.
+
 ## Running it — two options, same suite either way
 
 **Option A — locally.**
