@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1342 tests across 65 test files, plus 472 frontend tests under
+1351 tests across 66 test files, plus 472 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 78%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -118,6 +118,12 @@ The recurring shapes, so the next reader does not re-derive them:
   `CancelledError` break is reached through `stop_worker`, which has its own
   tests; asserting it directly means cancelling a task mid-iteration to check
   that nothing escaped.
+- **Short-circuits whose only observable difference is on input nothing
+  sends.** `broadcast_json` returns early when no client is connected. With an
+  empty connection list the send loop never runs and the prune list is empty
+  either way, so removing the return differs only on a payload `json.dumps`
+  cannot serialise — and every caller passes a plain dict. A test would pin
+  the accident that broadcasting garbage to nobody happens to be silent.
 
 Two things worth keeping straight. This is not a licence to skip anything
 awkward to reach — every one of these was checked by asking what a wrong
