@@ -400,10 +400,20 @@ def test_the_readme_records_the_known_limitations():
 
 def test_the_documented_test_counts_are_current():
     """
-    Both READMEs quote a test count, and both had drifted by more than
-    two hundred before anyone looked — which makes every other number on
-    the page worth less. Counting them here is cheap and the failure
+    tests/README.md is the only place either count is written down, and
+    this is what keeps it true. Counting here is cheap and the failure
     message says what to write.
+
+    It used to check the root README.md too, because that file quoted the
+    same two numbers. Holding one number in two files means updating both
+    for every new test module, and the cost of missing one is a page that
+    contradicts itself — the frontend count in particular sat in both and
+    was easy to update in one and forget in the other. The root README no
+    longer quotes any test count at all, so there is nothing there to
+    check; its Development section describes what the two suites cover
+    without sizing them, and already links here for the detail. If a
+    number reappears in that file, this test will not notice, which is
+    the accepted cost of not having to keep two copies in step.
 
     Deliberately tolerant on the test count: this fails when a number is
     stale by enough to mislead, not when a single test is added.
@@ -440,26 +450,27 @@ def test_the_documented_test_counts_are_current():
         pytest.skip("could not determine the collected module list")
     actual_files = len(modules)
 
-    for name in ("README.md", "tests/README.md"):
-        text = _read(name)
-        quoted = re.search(r"(\d[\d,]*) tests across", text)
-        assert quoted, f"{name} no longer quotes a backend test count"
-        claimed = int(quoted.group(1).replace(",", ""))
-        assert abs(claimed - actual) <= 25, (
-            f"{name} claims {claimed} backend tests; there are {actual}"
-        )
+    name = "tests/README.md"
+    text = _read(name)
 
-        quoted_files = re.search(r"tests across ([\d,]+) (?:test )?files", text)
-        assert quoted_files, (
-            f"{name} no longer quotes a backend test file count"
-        )
-        claimed_files = int(quoted_files.group(1).replace(",", ""))
-        assert claimed_files == actual_files, (
-            f"{name} claims {claimed_files} test files; pytest collects "
-            f"{actual_files}. Count collected modules, not .py files under "
-            f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
-            f"hold no tests and are not counted."
-        )
+    quoted = re.search(r"(\d[\d,]*) tests across", text)
+    assert quoted, f"{name} no longer quotes a backend test count"
+    claimed = int(quoted.group(1).replace(",", ""))
+    assert abs(claimed - actual) <= 25, (
+        f"{name} claims {claimed} backend tests; there are {actual}"
+    )
+
+    quoted_files = re.search(r"tests across ([\d,]+) (?:test )?files", text)
+    assert quoted_files, (
+        f"{name} no longer quotes a backend test file count"
+    )
+    claimed_files = int(quoted_files.group(1).replace(",", ""))
+    assert claimed_files == actual_files, (
+        f"{name} claims {claimed_files} test files; pytest collects "
+        f"{actual_files}. Count collected modules, not .py files under "
+        f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
+        f"hold no tests and are not counted."
+    )
 
 
 def test_the_documented_install_commands_include_the_app_dependencies():

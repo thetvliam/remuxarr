@@ -127,11 +127,28 @@ const PlexBacklogStatus = ({ api }) => {
   const [count, setCount] = useState(null);
 
   useEffect(() => {
-    const poll = () => {
-      fetch(`${api}/api/plex/backlog`)
-      .then(r => r.json())
-      .then(d => setCount(d.count ?? 0))
-      .catch(() => {});
+    /* Same shape as the LogViewer poll and guarded the same way: `seq`
+     * discards a response the interval has already superseded, and the status
+     * check keeps an error body out of the count. No unmount flag, for the
+     * reason recorded on that one.
+     *
+     * The status check matters most here. `d.count ?? 0` turned an error into
+     * a count of zero, so "5 files queued" became "0 files queued" on a
+     * single 500 — which reads as the backlog having drained rather than as a
+     * failed read. Before the first successful poll it invented a zero where
+     * the null below deliberately renders nothing at all. */
+    let latest = 0;
+    const poll = async () => {
+      const seq = ++latest;
+      try {
+        const r = await fetch(`${api}/api/plex/backlog`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (seq !== latest) return;
+        setCount(d.count ?? 0);
+      } catch {
+        // Keep what is shown; the next tick tries again.
+      }
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -173,11 +190,23 @@ const EmailBreakerStatus = ({ api }) => {
   const [state, setState] = useState(null);
 
   useEffect(() => {
-    const poll = () => {
-      fetch(`${api}/api/notifications/state`)
-      .then(r => r.json())
-      .then(setState)
-      .catch(() => {});
+    /* Guarded like the two pollers above. The failure here is the inverse of
+     * the Plex one: setState took the body unfiltered, and an error body has
+     * no `tripped`, so a failed read DISMISSED the warning banner rather than
+     * inventing one. The breaker was still tripped and the page stopped
+     * saying so. */
+    let latest = 0;
+    const poll = async () => {
+      const seq = ++latest;
+      try {
+        const r = await fetch(`${api}/api/notifications/state`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (seq !== latest) return;
+        setState(d);
+      } catch {
+        // Keep the banner as it is; the next tick tries again.
+      }
     };
     poll();
     const id = setInterval(poll, 10000);
@@ -552,9 +581,32 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       // over the `values` of the render its click came from, which is the stale
       // snapshot by definition.
       const loadSettings = useCallback((keepEditsSince = null) => {
+        /* Both requests go through this rather than .then(r => r.json())
+         * directly. fetch rejects on a network failure but not on an HTTP
+         * error, and a FastAPI error carries a {"detail": ...} body that
+         * json() parses happily — so an error response used to resolve down
+         * the success path and the catch below was reachable only by an
+         * unreachable host or an unparseable body.
+         *
+         * The schema request is the one that mattered. setSchema stored the
+         * error object and dirtyKeys then ran schema.map against something
+         * with no .map; with no error boundary in the tree that throw
+         * unmounts the root, so a 500 here blanked the whole app rather than
+         * this page. The values request degraded more quietly and just as
+         * wrongly: every field rendered a default it had never been given,
+         * and saving wrote those defaults back.
+         *
+         * Carrying the status in the message rather than swallowing it — the
+         * catch reports exactly once, so this is the only place a reader
+         * finds out which of the two failed and how. */
+        const readJson = async (path) => {
+          const r = await fetch(`${api}${path}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status} from ${path}`);
+          return r.json();
+        };
         return Promise.all([
-          fetch(`${api}/api/settings/schema`).then(r => r.json()),
-                           fetch(`${api}/api/settings/`).then(r => r.json()),
+          readJson("/api/settings/schema"),
+          readJson("/api/settings/"),
         ])
         .then(([s, v]) => {
           setSchema(s);

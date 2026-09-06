@@ -143,15 +143,41 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
   // Summary counts for tab badges (unaffected by search)
   useEffect(() => {
-    fetch(`${api}/api/history/summary`)
-    .then(r => r.json())
-    .then(d => setCounts({
-      success: d.success  || 0,
-      failed:  d.failed   || 0,   // already includes cancelled
-      skipped: d.skipped  || 0,
-      dry_run: d.dry_run  || 0,
-    }))
-    .catch(() => {});
+    /* This effect re-runs on every historyRefreshKey bump and job completions
+     * bump it, so two of these can be in flight at once. `stale` is what stops
+     * the older one landing last and leaving badges that disagree with the
+     * list under them — and stops a write after unmount.
+     *
+     * A flag rather than an AbortController, unlike the two hooks below,
+     * which abort because they cancel large paginated reads that the user is
+     * actively scrolling. This is four integers. The flag also closes a
+     * window abort cannot: once json() has resolved, aborting no longer
+     * prevents the setState that follows it.
+     *
+     * The status check is the other half. fetch does not reject on an HTTP
+     * error, so an error body reached the reads below, every `|| 0` found
+     * undefined on it, and all four badges dropped to zero over a list that
+     * still had rows. Returning early leaves the counts alone, which is what
+     * the catch already did for a network failure — the two paths disagreed
+     * only because this one was never checked. */
+    let stale = false;
+    (async () => {
+      try {
+        const r = await fetch(`${api}/api/history/summary`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (stale) return;
+        setCounts({
+          success: d.success  || 0,
+          failed:  d.failed   || 0,   // already includes cancelled
+          skipped: d.skipped  || 0,
+          dry_run: d.dry_run  || 0,
+        });
+      } catch {
+        // Network failure: keep whatever the badges already show.
+      }
+    })();
+    return () => { stale = true; };
   }, [api, historyRefreshKey]);
 
   // Paginated items for the active tab + search

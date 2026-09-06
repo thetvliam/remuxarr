@@ -1,11 +1,11 @@
 # Remuxarr test suite
 
-1176 tests across 56 test files, plus 396 frontend tests under
-`frontend/src/**/__tests__/`. Backend line coverage is around 78%, though the
-number below matters more than that one.
+1239 tests across 58 test files, plus 472 frontend tests under
+`frontend/src/**/__tests__/`. Backend line coverage is around 78%, though it is
+not the measure used here — see How these tests are written below.
 
-The file count is the modules `pytest` collects. There are 56 `.py` files under
-`tests/`; `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
+The file count is the modules `pytest` collects, not the `.py` files under
+`tests/`: `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
 and a helper script, contain no tests, and are not counted. Both readings were
 in use at once until this was written down.
 
@@ -41,7 +41,13 @@ absent (CI installs them, so they always run there).
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
-`test_arr_notifications.py`, `test_plex_client.py`, `test_scheduler.py`.
+`test_arr_notifications.py`, `test_plex_client.py`, `test_scheduler.py`,
+`test_email_notify.py`, `test_post_job_notify.py`. The last two are the two
+halves of a notification: `test_email_notify.py` covers the SMTP send path,
+and `test_post_job_notify.py` covers the layer in `worker.py` that decides
+whether Sonarr, Radarr or Plex are told anything at all and with which URL
+and key. The email circuit breaker's own decision lives in
+`test_assorted_regressions.py`.
 
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`.

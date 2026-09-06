@@ -92,7 +92,7 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
 </table>
 
-<video src="https://github.com/user-attachments/assets/05affe2d-0b6d-4e00-9d7b-1ffb1b633bbe" aria-label="Demo video" title="Demo video">Demo video</video>
+<video src="https://github.com/user-attachments/assets/deacb14e-df96-489f-a0ad-e71670d1d4c1" aria-label="Demo video" title="Demo video">Demo video</video>
 
 ▶ [**Watch the demo video**](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/demo_video.mp4) — plays inline on GitHub above; this link is for viewers that strip embedded video, such as Docker Hub.
 
@@ -316,20 +316,21 @@ a player may list it as a second video stream.
 
 ## Development
 
-The backend has a real test suite - 1176 tests across 56 test files, covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
+The backend has a real test suite covering the decision engine (what happens to each file and why), library scanning and deletion cascades, queue and job lifecycle, job finalisation, Sonarr/Radarr webhook path translation and notification, FFmpeg command construction, AC3 Forge, the scheduler and Plex client, settings persistence, backup/restore, startup recovery, revert-to-original (including real-FFmpeg round trips that capture from a file and restore it, comparing stream by stream), and a sample-library regression suite that runs the real pipeline against a fixed set of probed media files:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 ```
 
-The frontend has its own suite - 396 tests covering the app's central state
+The frontend has its own suite covering the app's central state
 hook (routing, toasts, history invalidation), every mutating user action,
-paginated and history data fetching, the settings save path, integer input
-handling, the theme serialiser that round-trips a theme between its source
-text and the object the app renders from, and the developer theme editor's
-preview isolation, control coverage and export, and the invariants every
-shipped theme must satisfy:
+paginated and history data fetching, the settings load and save paths,
+integer input handling, the shared formatters that decide how a size, a
+duration and a UTC timestamp read, the theme serialiser that round-trips a
+theme between its source text and the object the app renders from, and the
+developer theme editor's preview isolation, control coverage and export, and
+the invariants every shipped theme must satisfy:
 
 ```bash
 cd frontend && npm install && npm test

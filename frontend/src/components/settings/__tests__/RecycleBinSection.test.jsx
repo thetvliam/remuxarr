@@ -56,12 +56,13 @@
  * row was ever marked, because the reload corrects it either way. They
  * assert synchronously now, against a deliberately delayed /status.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RecycleBinSection } from "../RecycleBinSection";
 import { ThemeProvider } from "../../../theme";
+import { CONFIRM_MS } from "../../../constants";
 
 const API = "http://backend";
 
@@ -163,6 +164,35 @@ beforeEach(() => { calls = []; });
 /* ── Destructive actions need two clicks ─────────────────────────────────── */
 
 describe("confirmation", () => {
+  it("disarms itself once the confirmation window lapses", async () => {
+    /* ConfirmBtn's timeout had no test: deleting it outright left all 466
+     * tests passing. Every destructive action in this panel goes through
+     * this one component, so an armed button that never stands down is one
+     * stray click from a revert or a discard the user had walked away from.
+     *
+     * The constant rather than a literal — a number here would drift from
+     * the source the way this component's neighbours already have. fireEvent
+     * rather than userEvent, which schedules its own work on the timers this
+     * replaces and deadlocks with them. */
+    setup();
+    const revert = await screen.findByRole("button", { name: "REVERT" });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(revert);
+      expect(screen.getByRole("button", { name: "CONFIRM REVERT" })).toBeTruthy();
+
+      act(() => { vi.advanceTimersByTime(CONFIRM_MS - 100); });
+      expect(screen.getByRole("button", { name: "CONFIRM REVERT" })).toBeTruthy();
+
+      act(() => { vi.advanceTimersByTime(200); });
+      expect(screen.getByRole("button", { name: "REVERT" })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(calls.some(c => c.url.includes("/restore/"))).toBe(false);
+  });
+
   it("does not revert on the first click", async () => {
     setup();
     const user = userEvent.setup();

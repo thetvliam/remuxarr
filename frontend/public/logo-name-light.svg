@@ -7,7 +7,7 @@
    viewBox="0 0 158.75 39.687499"
    version="1.1"
    id="svg1"
-   sodipodi:docname="banner_light_transparent.svg"
+   sodipodi:docname="logo-name-light.svg"
    inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
@@ -24,14 +24,14 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:zoom="1.9833333"
-     inkscape:cx="299.7479"
-     inkscape:cy="74.87395"
+     inkscape:cx="292.68908"
+     inkscape:cy="123.27731"
      inkscape:window-width="1920"
      inkscape:window-height="1008"
      inkscape:window-x="0"
      inkscape:window-y="0"
      inkscape:window-maximized="0"
-     inkscape:current-layer="svg1" />
+     inkscape:current-layer="g87" />
   <defs
      id="defs1">
     <linearGradient
@@ -536,11 +536,13 @@
   <g
      id="g87"
      transform="matrix(0.93020119,0,0,0.93020119,-0.14485885,3.4039901)"
-     style="display:inline">
+     style="display:inline"
+     inkscape:label="logo+text">
     <g
        id="g70"
        style="display:inline;fill:url(#linearGradient22);fill-opacity:1;stroke:none;stroke-opacity:1"
-       transform="matrix(1.0750362,0,0,1.0750362,0.15572852,-3.6594128)">
+       transform="matrix(1.0750362,0,0,1.0750362,0.15572852,-3.6594128)"
+       inkscape:label="bg">
       <rect
          style="display:inline;fill:#ffffff;fill-opacity:0;stroke-width:0.264585"
          id="rect69"
@@ -551,8 +553,9 @@
     </g>
     <g
        id="g77"
-       transform="matrix(0.23025249,0,0,0.2396534,0.95447432,-0.23149434)"
-       style="display:inline;fill:url(#linearGradient39);fill-opacity:1;stroke:none;stroke-opacity:1">
+       transform="matrix(0.27465508,0,0,0.28586889,-11.105873,-2.9633281)"
+       style="display:inline;fill:url(#linearGradient39);fill-opacity:1;stroke:none;stroke-opacity:1"
+       inkscape:label="logo">
       <path
          id="path71"
          fill="none"
@@ -626,8 +629,9 @@
     </g>
     <g
        id="g86"
-       transform="matrix(0.05776067,0,0,0.05779912,-10.429978,-70.04824)"
-       style="display:inline;stroke:none;stroke-opacity:1">
+       transform="matrix(0.06889941,0,0,0.06894527,-24.685738,-86.243748)"
+       style="display:inline;stroke:none;stroke-opacity:1"
+       inkscape:label="text">
       <g
          id="g80">
         <path

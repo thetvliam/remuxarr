@@ -116,7 +116,23 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
         const next     = fetchOffset + newItems.length;
 
         setTotal(newTotal);
-        setHasMore(next < newTotal);
+        /* `newItems.length > 0` is load-bearing, not defensive tidiness.
+         * `total` and the page come from two separate queries on these
+         * endpoints, and the server drops rows from the page after counting
+         * them — get_candidates skips a file whose AAC track went away
+         * between the two, _language_review skips a flag whose MediaFile did.
+         * A page can therefore be empty while total still counts those rows.
+         *
+         * An empty page leaves offsetRef where it was, so on `next < newTotal`
+         * alone hasMore stayed true against an offset that could never move:
+         * the sentinel kept rendering, its observer re-armed on the loading
+         * transition, and the identical request went out again without end.
+         *
+         * The test on "no rows" rather than "fewer rows than pageSize" is the
+         * point. A page short by the odd dropped row still advances the
+         * offset and terminates on its own, so gating on a short page would
+         * strand the rest of the list behind one skipped row. */
+        setHasMore(newItems.length > 0 && next < newTotal);
         offsetRef.current = next;
         setItems(append ? (prev => [...prev, ...newItems]) : newItems);
 

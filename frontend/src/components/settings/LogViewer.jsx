@@ -37,11 +37,36 @@ export const LogViewer = ({ api, toast }) => {
 
   // ── Polling ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    const poll = () => {
-      fetch(`${api}/api/logs/?limit=200`)
-      .then(r => r.json())
-      .then(d => setAllRecords(d.records || []))
-      .catch(() => {});
+    /* `seq` ties a response to the request that asked for it. The interval
+     * does not wait for the previous poll, so at 3s against a slow backend
+     * two are in flight together and the older one landing last put stale
+     * lines back on screen.
+     *
+     * The status check is the other half. fetch does not reject on an HTTP
+     * error, so an error body reached `d.records || []`, found no records on
+     * it and emptied the view — a single 500 blanked the log while the
+     * backend was still running. Returning early leaves the lines alone and
+     * the next tick retries, which is what the catch already did for a
+     * network failure.
+     *
+     * No unmount guard, deliberately. cleanup stops the interval, so the most
+     * that outlives this component is the one request already in flight, and
+     * on React 18 its setState is a silent no-op — verified, not assumed: a
+     * poll resolved after unmount logs nothing. A flag for it could not be
+     * tested, and an untestable guard is one a later reader cannot tell is
+     * still doing anything. */
+    let latest = 0;
+    const poll = async () => {
+      const seq = ++latest;
+      try {
+        const r = await fetch(`${api}/api/logs/?limit=200`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (seq !== latest) return;
+        setAllRecords(d.records || []);
+      } catch {
+        // Keep what is on screen; the next tick tries again.
+      }
     };
     poll();
     const id = setInterval(poll, 3000);

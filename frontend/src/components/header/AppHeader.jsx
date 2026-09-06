@@ -29,8 +29,8 @@ const NAV_ITEMS = [
  * time (and app.main's static handler serves from there), so these absolute
  * paths work in dev and in the container alike.
  *
- *   variant="mark" → /logo.svg            icon only (1:1),        mobile header
- *   variant="full" → /logo-name-<scheme>  icon + wordmark (~4:1), desktop header
+ *   variant="mark" → /logo.svg            icon only (1:1),          mobile header
+ *   variant="full" → /logo-name-<scheme>  icon + wordmark (~4.9:1), desktop header
  *
  * The mark is the transparent icon, which is orange throughout and legible on
  * any background, so it needs no per-theme variant. The wordmark does: its
@@ -51,13 +51,29 @@ const NAV_ITEMS = [
  * lockup can be re-exported at a different ratio without touching this code.
  * If a file is missing or fails to load, the original CSS placeholder renders
  * instead — the header degrades to the old look rather than a broken image.
+ *
+ * The three assets are cropped to their own artwork, so `height` below is the
+ * height the logo actually appears at and the clearance in the bar is real
+ * space rather than transparent pixels. They did not start that way: the
+ * exports carried 16% transparent padding above and below the wordmark and
+ * 12.5% around the mark, so at the previous height of 24 the visible lockup
+ * was about 16px in a 46px bar and looked lost in it. Anything re-exported
+ * from Inkscape will bring that padding back — the artboard is larger than
+ * the art — and the symptom is the logo silently shrinking again while this
+ * number stays the same. Crop on export.
+ *
+ * 28 rather than something closer to headerHeight because the lockup is near
+ * 5:1: every pixel of height costs five of width, and the desktop layout
+ * starts at 640px where the bar also holds four nav links, SCAN and the
+ * indicators. 28 leaves 9px of clearance top and bottom on a 46px bar and 12
+ * on the 52px theme, so it cannot touch the edges on either.
  */
 const LOGO_SRC = {
   mark: () => "/logo.svg",
   full: (scheme) => (scheme === "light" ? "/logo-name-light.svg" : "/logo-name-dark.svg"),
 };
 
-const Logo = ({ variant = "mark", height = 24 }) => {
+const Logo = ({ variant = "mark", height = 28 }) => {
   const { palette, type, space, surface, colorScheme } = useTheme();
   const [failed, setFailed] = useState(false);
 

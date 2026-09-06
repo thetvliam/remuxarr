@@ -191,7 +191,18 @@ export function useHistoryData(api, status, refreshKey, search) {
         const next     = fetchOffset + newItems.length;
 
         setTotal(newTotal);
-        setHasMore(next < newTotal);
+        /* Same guard as usePaginatedFetch, for the same failure. list_history
+         * counts and pages in two separate statements, so rows deleted
+         * between them leave `total` ahead of what the page can serve. An
+         * empty page cannot advance offsetRef, and on `next < newTotal` alone
+         * hasMore stayed true against an offset that could never move —
+         * HistoryPanel's sentinel kept rendering and its observer, re-armed
+         * on every loading transition, re-issued the identical request
+         * without end.
+         *
+         * "No rows" rather than "fewer rows than PAGE_SIZE": a short page
+         * still advances the offset and terminates on its own. */
+        setHasMore(newItems.length > 0 && next < newTotal);
         offsetRef.current = next;
         setItems(append ? (prev => [...prev, ...newItems]) : newItems);
 

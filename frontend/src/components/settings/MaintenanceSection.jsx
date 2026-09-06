@@ -231,10 +231,30 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
 
   // Load current values on mount
   useEffect(() => {
+    /* Status-checked, so an error response fails the Promise.all and the
+     * catch below leaves the toggles as they are. Without it the error body
+     * was read as data, and each fallback then produced its own default:
+     * scans off, no scan times, auto-cleanup on. On first mount that is
+     * invisible because those are also the initial state — it bites on the
+     * reload, where the panel silently replaced loaded values with defaults
+     * while the server had something else. The network-failure path already
+     * behaved this way; only this one was unchecked.
+     *
+     * The three fallbacks are deliberately not the same shape. Each matches
+     * its own key's default in database/session.py — False for
+     * scheduled_scan_enabled, [] for scheduled_scan_times, True for
+     * auto_cleanup_on_scan — so a value the server omits reads the way the
+     * server would treat it. Normalising them to one form would put a wrong
+     * default on two of the three. */
+    const readSetting = async (key) => {
+      const r = await fetch(`${api}/api/settings/${key}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status} from ${key}`);
+      return r.json();
+    };
     Promise.all([
-      fetch(`${api}/api/settings/scheduled_scan_enabled`).then(r => r.json()),
-                fetch(`${api}/api/settings/scheduled_scan_times`).then(r => r.json()),
-                fetch(`${api}/api/settings/auto_cleanup_on_scan`).then(r => r.json()),
+      readSetting("scheduled_scan_enabled"),
+      readSetting("scheduled_scan_times"),
+      readSetting("auto_cleanup_on_scan"),
     ])
     .then(([enabled, times, cleanup]) => {
       setSettings({
@@ -243,7 +263,9 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
                   auto_cleanup_on_scan:   cleanup.value !== false,
       });
     })
-    .catch(() => {});
+    .catch(() => {
+      // Keep whatever the toggles already show; a later reload retries.
+    });
     // reloadKey: bumped by SettingsPage after a settings import, which changes
     // these three keys server-side without this component knowing. Without it
     // the toggles kept rendering pre-import values indefinitely.
