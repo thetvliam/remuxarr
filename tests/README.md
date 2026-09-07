@@ -1,7 +1,7 @@
 # Remuxarr test suite
 
-1351 tests across 66 test files, plus 472 frontend tests under
-`frontend/src/**/__tests__/`. Backend line coverage is around 86%, though it is
+1362 tests across 67 test files, plus 472 frontend tests under
+`frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
 The file count is the modules `pytest` collects, not the `.py` files under
@@ -20,7 +20,7 @@ see each docstring.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
-`test_clear_database.py`, `test_settings_persistence.py`,
+`test_clear_database.py`, `test_scan_library.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`. Real SQLite, real
 temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
@@ -31,6 +31,10 @@ unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
+`test_scan_library.py` covers the walk itself, and mostly one line of it: the
+cleanup pass is scoped to the scan paths that are directories right now, which
+is the only thing standing between a share that has not mounted and every row
+under it being deleted.
 
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
