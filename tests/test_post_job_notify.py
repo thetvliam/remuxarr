@@ -193,14 +193,16 @@ def test_sonarr_and_radarr_each_get_their_own_url_and_key(db):
     data = worker._load_post_job_data(1)
 
     assert data["sonarr"] == {
-        "entity_id": 11,
-        "url":       "http://sonarr:8989",
-        "api_key":   "SONARR-KEY",
+        "entity_id":   11,
+        "url":         "http://sonarr:8989",
+        "api_key":     "SONARR-KEY",
+        "output_path": "/media/Show.mkv",
     }
     assert data["radarr"] == {
-        "entity_id": 22,
-        "url":       "http://radarr:7878",
-        "api_key":   "RADARR-KEY",
+        "entity_id":   22,
+        "url":         "http://radarr:7878",
+        "api_key":     "RADARR-KEY",
+        "output_path": "/media/Show.mkv",
     }
 
 
@@ -462,7 +464,7 @@ def test_the_arr_trigger_passes_url_key_and_entity_through(db):
     data = {"url": "http://sonarr:8989", "api_key": "K", "entity_id": 11}
 
     run(lambda loop: worker._trigger_arr_notify(
-        data, loop, lambda *a: calls.append(a), "Sonarr"))
+        data, loop, lambda *a: calls.append(a), lambda *a: None, "Sonarr"))
 
     assert calls == [("http://sonarr:8989", "K", 11)]
 
@@ -476,7 +478,8 @@ def test_a_failing_arr_notifier_never_escapes_the_trigger(db):
         raise RuntimeError("sonarr is down")
 
     run(lambda loop: worker._trigger_arr_notify(
-        {"url": "u", "api_key": "k", "entity_id": 1}, loop, _boom, "Sonarr"))
+        {"url": "u", "api_key": "k", "entity_id": 1}, loop, _boom,
+        lambda *a: None, "Sonarr"))
 
 
 def test_the_plex_trigger_passes_the_refresh_payload_through(db, monkeypatch):

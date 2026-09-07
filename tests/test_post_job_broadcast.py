@@ -71,6 +71,8 @@ EMAIL_DATA  = {"email": "failure"}
 # except in which object was passed.
 SONARR_NOTIFIER = object()
 RADARR_NOTIFIER = object()
+SONARR_RESTORER = object()
+RADARR_RESTORER = object()
 
 FORCED_REASON = "Job did not complete cleanly (finalisation failed)"
 FORCED_ERROR  = "Finalisation failed — check container logs"
@@ -153,6 +155,8 @@ def rig(monkeypatch):
     monkeypatch.setattr(worker, "_trigger_email_notify", _recorder(rig.email))
     monkeypatch.setattr(worker, "notify_sonarr", SONARR_NOTIFIER)
     monkeypatch.setattr(worker, "notify_radarr", RADARR_NOTIFIER)
+    monkeypatch.setattr(worker, "restore_episode_quality", SONARR_RESTORER)
+    monkeypatch.setattr(worker, "restore_movie_quality",   RADARR_RESTORER)
     return rig
 
 
@@ -173,8 +177,8 @@ def post_job(status="success", *, filename="Show.mkv", error=None,
 
 
 def arr_calls(sink):
-    """(data, notifier, service) per dispatch, with the loop dropped."""
-    return [(args[0], args[2], args[3]) for args in sink]
+    """(data, notifier, restorer, service) per dispatch, with the loop dropped."""
+    return [(args[0], args[2], args[3], args[4]) for args in sink]
 
 
 def payloads(sink):
@@ -350,8 +354,8 @@ def test_each_arr_is_dispatched_through_its_own_notifier(rig):
     run(rig)
 
     assert arr_calls(rig.arr) == [
-        (SONARR_DATA, SONARR_NOTIFIER, "Sonarr"),
-        (RADARR_DATA, RADARR_NOTIFIER, "Radarr"),
+        (SONARR_DATA, SONARR_NOTIFIER, SONARR_RESTORER, "Sonarr"),
+        (RADARR_DATA, RADARR_NOTIFIER, RADARR_RESTORER, "Radarr"),
     ]
 
 
@@ -362,7 +366,9 @@ def test_an_arr_the_loader_declined_is_not_dispatched(rig):
 
     run(rig)
 
-    assert arr_calls(rig.arr) == [(RADARR_DATA, RADARR_NOTIFIER, "Radarr")]
+    assert arr_calls(rig.arr) == [
+        (RADARR_DATA, RADARR_NOTIFIER, RADARR_RESTORER, "Radarr"),
+    ]
 
 
 def test_plex_is_dispatched_when_the_loader_returns_data(rig):

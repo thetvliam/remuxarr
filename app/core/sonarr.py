@@ -23,6 +23,7 @@ import logging
 import urllib.error
 
 from app.core.arr_client import arr_post
+from app.core.arr_quality import SONARR, restore_quality
 
 logger = logging.getLogger(__name__)
 
@@ -52,3 +53,28 @@ def notify_sonarr(base_url: str, api_key: str, series_id: int) -> None:
         )
     except Exception:
         logger.exception("Sonarr: RescanSeries failed for series %d", series_id)
+
+
+def restore_episode_quality(
+    base_url: str, api_key: str, series_id: int, path: str
+) -> None:
+    """
+    Put back the quality Sonarr re-parsed from the filename after the
+    rescan above replaced the file record.
+
+    Best-effort, like the notification: the file is already on disk and
+    correct, so a failed metadata write must not mark the job failed. It
+    is logged at error rather than swallowed, because the state it leaves
+    behind is a file Sonarr may decide to replace.
+    """
+    try:
+        restore_quality(SONARR, base_url, api_key, series_id, path)
+    except urllib.error.HTTPError as exc:
+        logger.error(
+            "Sonarr: quality restore HTTP %d for series %d (%s): %s",
+            exc.code, series_id, path, exc.reason,
+        )
+    except Exception:
+        logger.exception(
+            "Sonarr: quality restore failed for series %d (%s)", series_id, path
+        )

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1367 tests across 68 test files, plus 472 frontend tests under
+1379 tests across 69 test files, plus 472 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -69,8 +69,14 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
-`test_arr_client.py`, `test_arr_notifications.py`, `test_plex_client.py`,
-`test_scheduler.py`, `test_email_notify.py`, `test_post_job_notify.py`.
+`test_arr_client.py`, `test_arr_notifications.py`,
+`test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
+`test_email_notify.py`, `test_post_job_notify.py`.
+`test_arr_quality_restore.py` covers putting a file's quality back after a
+container change replaces it, and its fixture is the real history of one
+movie that this happened to — two deletion records newer than the import
+that matters, a grab, and a three-week-old import at the same path the file
+returns to. An invented fixture would have agreed with every wrong answer.
 `test_arr_client.py` covers only the *arr HTTP client's GET and PUT surface
 and the per-verb wiring: the rules all three verbs share — the base_url
 rstrip, the API key header, the timeout, errors propagating — are pinned

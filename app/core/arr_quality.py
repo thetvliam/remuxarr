@@ -1,0 +1,220 @@
+"""
+Restoring a file's quality after Remuxarr replaces it.
+
+Sonarr and Radarr parse quality from the filename at import, and neither
+carries it across a file replacement. When a job changes a container, the
+rescan sees the old file gone and the new one as previously unknown, and
+re-parses from scratch. A name with a resolution but no source token falls
+back to HDTV at that resolution, so a WEBDL-1080p download becomes
+HDTV-1080p.
+
+That is not only a wrong label. Radarr set qualityCutoffNotMet on the
+replaced file, which means it considers the movie upgradable and will grab
+a replacement on its next search — overwriting the file Remuxarr just
+produced. The observed case is in the fixtures behind
+tests/test_arr_quality_restore.py.
+
+Nothing has to be captured before the job. Both services keep the original
+downloadFolderImported record after the file it describes is gone, with the
+quality intact, so the value is read back afterwards from history. That
+makes this idempotent and retryable: if it fails, nothing is lost and it
+can be run again.
+
+WHAT DECIDES WHETHER THERE IS ANYTHING TO DO
+--------------------------------------------
+Not a filename comparison. The pre-job path is not available by the time
+this runs — _finish_job has already moved MediaFile.path on to the new one
+— and reconstructing it would mean a schema change to answer a question
+history answers directly.
+
+Instead: if the newest import record describes the file that is live right
+now, nothing replaced it and there is nothing to restore. That is exactly
+the condition worth acting on, it needs no extra state, and it also covers
+a replacement that happened for some reason other than a container change.
+The cost is two reads per job for Radarr and three for Sonarr where the
+answer turns out to be "nothing to do".
+
+WHY NOT MATCH HISTORY ON PATH
+-----------------------------
+Because a path is reused. In the recorded case the movie was an MP4, was
+upgraded to an MKV three weeks later, and Remuxarr then remuxed it back to
+MP4 at the same path — so that path appears in history as the importedPath
+of a release that stopped being on disk in August. Selecting on it restores
+a quality three weeks out of date, and because both happened to be
+WEBRip-1080p, it would have looked like it worked. Selection is by event
+type and date. Path is used only to identify the new file record, which is
+the one thing it is reliable for.
+"""
+import logging
+import time
+from dataclasses import dataclass
+
+from app.core.arr_client import arr_get, arr_put
+
+logger = logging.getLogger(__name__)
+
+POLL_DEADLINE = 120.0
+POLL_INTERVAL = 3.0
+IMPORT_EVENT  = "downloadFolderImported"
+
+
+@dataclass(frozen=True)
+class ArrService:
+    """
+    The endpoint names that differ between the two services.
+
+    They are not symmetric. Radarr scopes history by movieId and every
+    record returned belongs to the file's movie. Sonarr scopes by series,
+    so its history mixes in every other episode, and the records belonging
+    to this file have to be selected by episodeId — which means asking
+    which episodes carry it first. episodes_path is set for Sonarr only.
+    """
+    name:          str
+    files_path:    str
+    files_param:   str
+    history_path:  str
+    history_param: str
+    episodes_path: str | None = None
+
+
+SONARR = ArrService(
+    name          = "Sonarr",
+    files_path    = "/api/v3/episodefile",
+    files_param   = "seriesId",
+    history_path  = "/api/v3/history/series",
+    history_param = "seriesId",
+    episodes_path = "/api/v3/episode",
+)
+
+RADARR = ArrService(
+    name          = "Radarr",
+    files_path    = "/api/v3/moviefile",
+    files_param   = "movieId",
+    history_path  = "/api/v3/history/movie",
+    history_param = "movieId",
+)
+
+
+def _await_file_record(
+    service, base_url, api_key, entity_id, path, deadline, interval,
+):
+    """
+    Poll until a file record reports the path the job produced.
+
+    This is what tells us the rescan finished — the *arr queues it as a
+    command and runs it in its own time — and it is where the new file's
+    id comes from. Matched on the full path: a basename match would pick
+    the same episode number in a different season.
+
+    Returns None once the deadline passes, rather than waiting on a
+    service that may be down.
+    """
+    end = time.monotonic() + deadline
+    while True:
+        records = arr_get(
+            base_url, api_key, service.files_path,
+            {service.files_param: entity_id},
+        ) or []
+
+        for record in records:
+            if record.get("path") == path:
+                return record
+
+        if time.monotonic() >= end:
+            return None
+        time.sleep(interval)
+
+
+def _history_for_file(service, base_url, api_key, entity_id, file_id):
+    """Every history record that belongs to the given file's entity."""
+    records = arr_get(
+        base_url, api_key, service.history_path,
+        {service.history_param: entity_id},
+    ) or []
+
+    if service.episodes_path is None:
+        return records
+
+    episodes = arr_get(
+        base_url, api_key, service.episodes_path, {"seriesId": entity_id},
+    ) or []
+    on_this_file = {
+        e.get("id") for e in episodes if e.get("episodeFileId") == file_id
+    }
+    return [r for r in records if r.get("episodeId") in on_this_file]
+
+
+def _quality_of_the_import(records, file_id):
+    """
+    The quality of the newest import, unless that import is the file that
+    is live right now — in which case nothing replaced it and there is
+    nothing to put back.
+
+    The check is against the newest record only, not a filter across all
+    of them. Excluding the live file and taking the next one down looks
+    equivalent and is not: in the recorded case it restores the release
+    that was superseded three weeks earlier, because that import is still
+    sitting in history underneath.
+
+    Deletion records are excluded by event type, not by hoping they sort
+    late: they are written after the import they describe and they carry a
+    quality field of their own, so reading the newest record of any type
+    reads a deletion.
+    """
+    imports = [r for r in records if r.get("eventType") == IMPORT_EVENT]
+    if not imports:
+        return None
+
+    newest = max(imports, key=lambda r: r.get("date") or "")
+    if str((newest.get("data") or {}).get("fileId")) == str(file_id):
+        return None
+
+    return newest.get("quality")
+
+
+def restore_quality(
+    service, base_url, api_key, entity_id, path,
+    deadline=POLL_DEADLINE, interval=POLL_INTERVAL,
+) -> bool:
+    """
+    Put the imported quality back on the file now at *path*.
+
+    Returns whether anything was written. Raises nothing of its own — the
+    HTTP client propagates failures and the callers in sonarr.py and
+    radarr.py log them, because a job whose file is already on disk should
+    not be recorded as failed over a metadata write.
+    """
+    record = _await_file_record(
+        service, base_url, api_key, entity_id, path, deadline, interval,
+    )
+    if record is None:
+        logger.warning(
+            "%s: no file record for %s after %.0fs — quality not restored",
+            service.name, path, deadline,
+        )
+        return False
+
+    file_id = record.get("id")
+    quality = _quality_of_the_import(
+        _history_for_file(service, base_url, api_key, entity_id, file_id),
+        file_id,
+    )
+    if quality is None:
+        logger.debug(
+            "%s: nothing to restore for %s — the live file is the one that "
+            "was imported, or it never was",
+            service.name, path,
+        )
+        return False
+
+    arr_put(
+        base_url, api_key, f"{service.files_path}/{file_id}",
+        {"quality": quality},
+    )
+    logger.info(
+        "%s: restored quality %s on file %s (%s)",
+        service.name,
+        (quality.get("quality") or {}).get("name", "?"),
+        file_id, path,
+    )
+    return True
