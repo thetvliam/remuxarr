@@ -58,20 +58,7 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+
 ## Fixed
 
-- The Maintenance settings no longer reset themselves to defaults when a refresh fails. After importing settings the panel reloads these three values, and if that reload hit a backend error the error was read as data: scheduled scans showed as off, the scan times list emptied, and auto-cleanup showed as on, regardless of what the server actually had. Nothing was written back unless you then touched a toggle, but the panel was reporting settings you did not have. It now keeps what it last read.
-
-- Three panels that refresh on a timer no longer misreport when a refresh fails. A backend error was read as data, so the log viewer blanked itself mid-session, the Plex re-analysis backlog dropped to "0 files queued" as though it had drained, and the warning that failure emails are paused disappeared while they were still paused. Overlapping refreshes could also land out of order and put older information back on screen. All three now keep what they last read successfully and try again on the next tick.
-
-- The counts on the History tabs no longer go blank or show the wrong numbers. When two refreshes overlapped, which happens when jobs finish while you have History open, the slower one could land last and leave the badges disagreeing with the list under them. Separately, an error from the backend was read as a set of counts and dropped all four badges to zero over a list that still had rows in it. Both now leave the last good counts on screen.
-
-- The AC3 Forge page no longer shows a job that is not running. When the backend returned an error while the page was refreshing, the error was read as a job: the panel showed FORGING against "Unknown file" with the bar stuck at 0.0%, and nothing polls it, so it stayed that way until you navigated away or a real forge job finished. The completed-jobs list below it was emptied by the same failure. Both now keep showing whatever they last loaded successfully.
-
-- The Settings page no longer takes the whole app down when the backend answers with an error. An error reply was being read as though it were your settings, and the page then failed on it hard enough to blank the entire interface until you reloaded. It now shows the same "couldn't load settings" message it already showed for a backend it could not reach. The same fix covers a quieter version of this, where every setting on the page rendered a default it had never been given and saving would have written those defaults back.
-
-- A list that scrolls to load more no longer gets stuck reloading the same page. If the server reported more results than the page it sent back — which could happen when rows were removed while you were scrolling — the list kept asking for the same page indefinitely, spinning without ever growing and putting steady load on the server until you navigated away. Affects History, Audio and Subtitle Language Review, and the AC3 Forge candidate list.
-
-## Changed
-
-- The Remuxarr logo in the header is larger. It was drawing at roughly a third of the bar's height because the image files carried transparent padding around the artwork, which has now been trimmed.
+- Sonarr and Radarr no longer lose a file's quality when Remuxarr changes its container. Converting an MKV to an MP4 replaces the file, and the rescan reads the quality back off the new filename, so a WEBDL-1080p download reappeared as HDTV-1080p. That sits below most quality profiles' cutoff, so the service then treated the file as upgradable and would grab a replacement over the top of the converted one. Remuxarr now reads the original quality from the service's own import history after the rescan and writes it back to the new file. Files converted before this release are not corrected; it applies from here on.
