@@ -42,6 +42,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.api.ws_manager import ws_manager
 from app.config import settings
 from app.core.scanner import queue_single_file
+from app.core.pathmap import translate_path
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -50,30 +51,6 @@ router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 # {translated_path: asyncio.Task}
 _pending: dict[str, asyncio.Task] = {}
 _lock    = asyncio.Lock()
-
-
-def _translate_path(path: str, remote_prefix: str, local_prefix: str) -> str:
-    """
-    Translate a path from Sonarr's container view to Remuxarr's view.
-
-    Sonarr and Remuxarr often run in separate Docker containers with the
-    same physical directory mounted at different paths. For example, both
-    containers might mount /mnt/user/data/tv, but Sonarr maps it as /media
-    while Remuxarr maps it as /media/tv. Without translation, the path in
-    Sonarr's webhook payload points to a file that doesn't exist from
-    Remuxarr's perspective, causing silent queue failures.
-
-    Both prefixes must be non-empty for translation to apply — if either
-    is blank, the path is returned unchanged so unconfigured setups
-    (where both containers already agree on the path) work out of the box.
-    """
-    remote = remote_prefix.rstrip("/")
-    local  = local_prefix.rstrip("/")
-    if not remote or not local:
-        return path
-    if path.startswith(remote + "/") or path == remote:
-        return local + path[len(remote):]
-    return path
 
 
 def _resolve_translated_path_sync(
@@ -98,7 +75,7 @@ def _resolve_translated_path_sync(
             local  = cfg.get("radarr_path_prefix_local",  "")
         else:
             remote = local = ""
-        translated = _translate_path(path, remote, local)
+        translated = translate_path(path, remote, local)
         if translated != path:
             logger.info("Path translated: %s → %s", path, translated)
         return translated

@@ -193,15 +193,85 @@ def test_sonarr_and_radarr_each_get_their_own_url_and_key(db):
     data = worker._load_post_job_data(1)
 
     assert data["sonarr"] == {
-        "entity_id": 11,
-        "url":       "http://sonarr:8989",
-        "api_key":   "SONARR-KEY",
+        "entity_id":   11,
+        "url":         "http://sonarr:8989",
+        "api_key":     "SONARR-KEY",
+        "output_path": "/media/Show.mkv",
     }
     assert data["radarr"] == {
-        "entity_id": 22,
-        "url":       "http://radarr:7878",
-        "api_key":   "RADARR-KEY",
+        "entity_id":   22,
+        "url":         "http://radarr:7878",
+        "api_key":     "RADARR-KEY",
+        "output_path": "/media/Show.mkv",
     }
+
+
+def test_the_output_path_is_translated_into_the_service_view(db):
+    """
+    The *arr reports its own view of the library, which is not Remuxarr's
+    when the two containers mount it differently. The restore compares the
+    path it was given against the record the service holds, so an
+    untranslated path matches nothing, polls for its whole deadline and
+    gives up — which is what happened on a real setup where Radarr saw
+    /media and Remuxarr saw /media/movies.
+
+    Closes: the translation dropped, and the prefixes passed the wrong way
+    round. The webhook translates remote to local on the way in; this is
+    the same function on the way back out, so the reversal produces a path
+    that is wrong in a plausible-looking direction.
+    """
+    settings(db, **(ARR_ON | {
+        "radarr_path_prefix_local":  "/media/movies",
+        "radarr_path_prefix_remote": "/media",
+    }))
+    job(db, 1, radarr_movie_id=22,
+        output_path="/media/movies/Toy Story 5 (2026)/Toy Story 5 (2026).mp4")
+
+    data = worker._load_post_job_data(1)
+
+    assert data["radarr"]["output_path"] == \
+        "/media/Toy Story 5 (2026)/Toy Story 5 (2026).mp4"
+
+
+def test_each_service_translates_with_its_own_prefixes(db):
+    """
+    Closes: one service's prefix settings used for the other. Both are read
+    from the same config dict two lines apart, which is the shape that
+    produces a copy-paste defect, and the result is a path that translates
+    cleanly to somewhere that does not exist.
+    """
+    settings(db, **(ARR_ON | {
+        "sonarr_path_prefix_local":  "/media/tv",
+        "sonarr_path_prefix_remote": "/tv",
+        "radarr_path_prefix_local":  "/media/movies",
+        "radarr_path_prefix_remote": "/movies",
+    }))
+    media(db, 1, "/media/tv/Show/ep.mkv")
+    db.add(QueueItem(id=1, file_id=1, status="success",
+                     sonarr_series_id=11,
+                     output_path="/media/tv/Show/ep.mp4"))
+    db.add(QueueItem(id=2, file_id=1, status="success",
+                     radarr_movie_id=22,
+                     output_path="/media/movies/Film/film.mp4"))
+    db.commit()
+
+    assert worker._load_post_job_data(1)["sonarr"]["output_path"] == \
+        "/tv/Show/ep.mp4"
+    assert worker._load_post_job_data(2)["radarr"]["output_path"] == \
+        "/movies/Film/film.mp4"
+
+
+def test_an_unconfigured_prefix_leaves_the_path_alone(db):
+    """
+    Both prefixes blank is the ordinary case: one container, or two that
+    already agree. The path must go through untouched rather than being
+    mangled by a half-configured pair.
+    """
+    settings(db, **ARR_ON)
+    job(db, 1, radarr_movie_id=22, output_path="/media/Film/film.mp4")
+
+    assert worker._load_post_job_data(1)["radarr"]["output_path"] == \
+        "/media/Film/film.mp4"
 
 
 def test_a_service_switched_off_is_not_notified(db):
@@ -462,7 +532,7 @@ def test_the_arr_trigger_passes_url_key_and_entity_through(db):
     data = {"url": "http://sonarr:8989", "api_key": "K", "entity_id": 11}
 
     run(lambda loop: worker._trigger_arr_notify(
-        data, loop, lambda *a: calls.append(a), "Sonarr"))
+        data, loop, lambda *a: calls.append(a), lambda *a: None, "Sonarr"))
 
     assert calls == [("http://sonarr:8989", "K", 11)]
 
@@ -476,7 +546,8 @@ def test_a_failing_arr_notifier_never_escapes_the_trigger(db):
         raise RuntimeError("sonarr is down")
 
     run(lambda loop: worker._trigger_arr_notify(
-        {"url": "u", "api_key": "k", "entity_id": 1}, loop, _boom, "Sonarr"))
+        {"url": "u", "api_key": "k", "entity_id": 1}, loop, _boom,
+        lambda *a: None, "Sonarr"))
 
 
 def test_the_plex_trigger_passes_the_refresh_payload_through(db, monkeypatch):

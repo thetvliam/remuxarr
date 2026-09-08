@@ -27,9 +27,10 @@ from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
-from app.core.radarr import notify_radarr
+from app.core.pathmap import translate_path
+from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
-from app.core.sonarr import notify_sonarr
+from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
 
@@ -407,11 +408,17 @@ async def _run_and_broadcast(
             if final.get("status") == "success":
                 if post_job["sonarr"]:
                     asyncio.create_task(
-                        _trigger_arr_notify(post_job["sonarr"], loop, notify_sonarr, "Sonarr")
+                        _trigger_arr_notify(
+                            post_job["sonarr"], loop, notify_sonarr,
+                            restore_episode_quality, "Sonarr",
+                        )
                     )
                 if post_job["radarr"]:
                     asyncio.create_task(
-                        _trigger_arr_notify(post_job["radarr"], loop, notify_radarr, "Radarr")
+                        _trigger_arr_notify(
+                            post_job["radarr"], loop, notify_radarr,
+                            restore_movie_quality, "Radarr",
+                        )
                     )
 
                 # Plex — independent of Sonarr/Radarr. Fires a lightweight
@@ -1723,7 +1730,8 @@ def _load_post_job_data(job_id: int) -> dict | None:
 
         cfg = get_app_settings(db)
 
-        def _arr_data(id_attr, enabled_key, url_key, api_key_setting, service_name):
+        def _arr_data(id_attr, enabled_key, url_key, api_key_setting,
+                      local_prefix_key, remote_prefix_key, service_name):
             if not getattr(job, id_attr):
                 return None
             if not cfg.get(enabled_key, False):
@@ -1736,19 +1744,31 @@ def _load_post_job_data(job_id: int) -> dict | None:
                     service_name, job_id, url_key, api_key_setting,
                 )
                 return None
+            # The *arr reports its own view of the path, which is not
+            # Remuxarr's when the two containers mount the library
+            # differently. Sent already translated so the restore can
+            # compare against what the service will report, using the same
+            # prefixes the webhook uses in the opposite direction.
             return {
-                "entity_id": getattr(job, id_attr),
-                "url":       url,
-                "api_key":   api_key,
+                "entity_id":   getattr(job, id_attr),
+                "url":         url,
+                "api_key":     api_key,
+                "output_path": translate_path(
+                    job.output_path or "",
+                    cfg.get(local_prefix_key, "") or "",
+                    cfg.get(remote_prefix_key, "") or "",
+                ) or None,
             }
 
         sonarr = _arr_data(
             "sonarr_series_id", "sonarr_enabled",
-            "sonarr_url", "sonarr_api_key", "Sonarr",
+            "sonarr_url", "sonarr_api_key",
+            "sonarr_path_prefix_local", "sonarr_path_prefix_remote", "Sonarr",
         )
         radarr = _arr_data(
             "radarr_movie_id", "radarr_enabled",
-            "radarr_url", "radarr_api_key", "Radarr",
+            "radarr_url", "radarr_api_key",
+            "radarr_path_prefix_local", "radarr_path_prefix_remote", "Radarr",
         )
 
         return {"final": final, "sonarr": sonarr, "radarr": radarr}
@@ -1758,14 +1778,27 @@ async def _trigger_arr_notify(
     data:         dict,
     loop:         asyncio.AbstractEventLoop,
     notify_fn,              # notify_sonarr or notify_radarr
+    restore_fn,             # restore_episode_quality or restore_movie_quality
     service_name: str,
 ) -> None:
-    """Fire-and-forget task: calls the given *arr notify function in the thread pool."""
+    """
+    Fire-and-forget task: rescan, then put the quality back.
+
+    Both run in one executor job so the ordering is not in doubt. The
+    restore polls for the file record the rescan creates, so starting it
+    before the command is queued would spend its whole deadline waiting
+    for work that had not been asked for yet.
+    """
+    def _rescan_then_restore():
+        notify_fn(data["url"], data["api_key"], data["entity_id"])
+        if data.get("output_path"):
+            restore_fn(
+                data["url"], data["api_key"], data["entity_id"],
+                data["output_path"],
+            )
+
     try:
-        await loop.run_in_executor(
-            None, notify_fn,
-            data["url"], data["api_key"], data["entity_id"],
-        )
+        await loop.run_in_executor(None, _rescan_then_restore)
     except Exception:
         logger.exception(
             "%s post-job notification failed for entity %d",
