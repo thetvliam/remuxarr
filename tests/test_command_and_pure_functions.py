@@ -303,8 +303,8 @@ def test_an_existing_mp4_missing_faststart_gets_it_added(settings):
 
 from app.api.routes.webhooks import (  # noqa: E402
     _radarr_movie_id, _radarr_paths, _sonarr_paths, _sonarr_series_id,
-    _translate_path,
 )
+from app.core.pathmap import translate_path as _translate_path  # noqa: E402
 
 
 # ── _translate_path ──────────────────────────────────────────────────────────

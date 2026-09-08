@@ -27,6 +27,7 @@ from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
+from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
@@ -1729,7 +1730,8 @@ def _load_post_job_data(job_id: int) -> dict | None:
 
         cfg = get_app_settings(db)
 
-        def _arr_data(id_attr, enabled_key, url_key, api_key_setting, service_name):
+        def _arr_data(id_attr, enabled_key, url_key, api_key_setting,
+                      local_prefix_key, remote_prefix_key, service_name):
             if not getattr(job, id_attr):
                 return None
             if not cfg.get(enabled_key, False):
@@ -1742,20 +1744,31 @@ def _load_post_job_data(job_id: int) -> dict | None:
                     service_name, job_id, url_key, api_key_setting,
                 )
                 return None
+            # The *arr reports its own view of the path, which is not
+            # Remuxarr's when the two containers mount the library
+            # differently. Sent already translated so the restore can
+            # compare against what the service will report, using the same
+            # prefixes the webhook uses in the opposite direction.
             return {
                 "entity_id":   getattr(job, id_attr),
                 "url":         url,
                 "api_key":     api_key,
-                "output_path": job.output_path,
+                "output_path": translate_path(
+                    job.output_path or "",
+                    cfg.get(local_prefix_key, "") or "",
+                    cfg.get(remote_prefix_key, "") or "",
+                ) or None,
             }
 
         sonarr = _arr_data(
             "sonarr_series_id", "sonarr_enabled",
-            "sonarr_url", "sonarr_api_key", "Sonarr",
+            "sonarr_url", "sonarr_api_key",
+            "sonarr_path_prefix_local", "sonarr_path_prefix_remote", "Sonarr",
         )
         radarr = _arr_data(
             "radarr_movie_id", "radarr_enabled",
-            "radarr_url", "radarr_api_key", "Radarr",
+            "radarr_url", "radarr_api_key",
+            "radarr_path_prefix_local", "radarr_path_prefix_remote", "Radarr",
         )
 
         return {"final": final, "sonarr": sonarr, "radarr": radarr}
