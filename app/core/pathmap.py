@@ -20,19 +20,43 @@ already agree work without configuring anything.
 """
 
 
+def swap_prefix(path: str, src: str, dst: str) -> str | None:
+    """
+    Replace one leading path prefix with another, or return None if the
+    path does not sit under it.
+
+    The rule this exists to hold in one place: the match is on a whole path
+    component, so /media matches /media/Show and /media itself but not
+    /mediaserver, which would otherwise translate a sibling directory that
+    merely starts with the same characters. A trailing slash on either
+    prefix is ignored.
+
+    None rather than the unchanged path, because the callers want different
+    things on a miss and only one of them can be the default. Plex skips
+    the notification entirely; the *arr translation passes the path
+    through. Returning the input would silently give both the second
+    behaviour, and for Plex that means sending a local path the server
+    cannot resolve — a notification that fails quietly.
+    """
+    src_norm = src.rstrip("/")
+    dst_norm = dst.rstrip("/")
+
+    if path == src_norm or path.startswith(src_norm + "/"):
+        return dst_norm + path[len(src_norm):]
+    return None
+
+
 def translate_path(path: str, from_prefix: str, to_prefix: str) -> str:
     """
-    Swap one leading path prefix for another.
+    Swap one leading path prefix for another, leaving the path alone if it
+    does not match.
 
-    A trailing slash on either prefix is ignored, and the match is on a
-    whole path component: /media matches /media/Show but not /mediaserver,
-    which would otherwise translate a sibling directory that merely starts
-    with the same characters.
+    Both prefixes must be non-empty for translation to apply. A single
+    blank half is a half-configured setting, and treating it as a prefix
+    of "" would match every absolute path and rewrite the lot.
     """
-    src = from_prefix.rstrip("/")
-    dst = to_prefix.rstrip("/")
-    if not src or not dst:
+    if not from_prefix.rstrip("/") or not to_prefix.rstrip("/"):
         return path
-    if path.startswith(src + "/") or path == src:
-        return dst + path[len(src):]
-    return path
+
+    swapped = swap_prefix(path, from_prefix, to_prefix)
+    return path if swapped is None else swapped
