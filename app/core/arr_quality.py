@@ -34,6 +34,20 @@ a replacement that happened for some reason other than a container change.
 The cost is two reads per job for Radarr and three for Sonarr where the
 answer turns out to be "nothing to do".
 
+WHY THE EDITOR ENDPOINT
+-----------------------
+Not PUT /api/v3/moviefile/{id} with a quality-only body. Sonarr accepts
+that; Radarr answers 500 with "Nullable object must have a value" from
+MovieFileController.SetMovieFile, because it deserialises into a full
+resource and dereferences a field the partial body left null. Reading the
+resource back and returning it with one field changed works, but costs a
+GET and risks writing back a record that has moved on.
+
+The editor endpoints take a partial body by design and both services
+accept the same shape, so there is one write path rather than a branch.
+Only the field naming the ids differs, and that lives in the descriptor
+with everything else that differs.
+
 WHY NOT MATCH HISTORY ON PATH
 -----------------------------
 Because a path is reused. In the recorded case the movie was an MP4, was
@@ -69,29 +83,35 @@ class ArrService:
     to this file have to be selected by episodeId — which means asking
     which episodes carry it first. episodes_path is set for Sonarr only.
     """
-    name:          str
-    files_path:    str
-    files_param:   str
-    history_path:  str
-    history_param: str
-    episodes_path: str | None = None
+    name:            str
+    files_path:      str
+    files_param:     str
+    history_path:    str
+    history_param:   str
+    editor_path:     str
+    file_ids_field:  str
+    episodes_path:   str | None = None
 
 
 SONARR = ArrService(
-    name          = "Sonarr",
-    files_path    = "/api/v3/episodefile",
-    files_param   = "seriesId",
-    history_path  = "/api/v3/history/series",
-    history_param = "seriesId",
-    episodes_path = "/api/v3/episode",
+    name           = "Sonarr",
+    files_path     = "/api/v3/episodefile",
+    files_param    = "seriesId",
+    history_path   = "/api/v3/history/series",
+    history_param  = "seriesId",
+    editor_path    = "/api/v3/episodefile/editor",
+    file_ids_field = "episodeFileIds",
+    episodes_path  = "/api/v3/episode",
 )
 
 RADARR = ArrService(
-    name          = "Radarr",
-    files_path    = "/api/v3/moviefile",
-    files_param   = "movieId",
-    history_path  = "/api/v3/history/movie",
-    history_param = "movieId",
+    name           = "Radarr",
+    files_path     = "/api/v3/moviefile",
+    files_param    = "movieId",
+    history_path   = "/api/v3/history/movie",
+    history_param  = "movieId",
+    editor_path    = "/api/v3/moviefile/editor",
+    file_ids_field = "movieFileIds",
 )
 
 
@@ -208,8 +228,8 @@ def restore_quality(
         return False
 
     arr_put(
-        base_url, api_key, f"{service.files_path}/{file_id}",
-        {"quality": quality},
+        base_url, api_key, service.editor_path,
+        {service.file_ids_field: [file_id], "quality": quality},
     )
     logger.info(
         "%s: restored quality %s on file %s (%s)",

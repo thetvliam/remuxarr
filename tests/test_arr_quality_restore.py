@@ -286,21 +286,51 @@ def test_sonarr_reads_history_only_for_the_episodes_on_this_file(arr):
 
 # ── The write ─────────────────────────────────────────────────────────────────
 
-def test_the_write_targets_the_new_file_and_sends_the_whole_quality_object(arr):
+def test_the_write_names_the_new_file_and_sends_the_whole_quality_object(arr):
     """
-    Closes: the write aimed at the entity rather than the file, and the
-    quality object rebuilt field by field instead of copied.
+    Closes: the wrong file id written, and the quality object rebuilt
+    field by field instead of copied.
 
-    The object is copied verbatim because the two services do not agree on
-    its shape — Radarr's carries a modifier key that Sonarr's does not —
-    and because revision is part of a valid QualityModel, not an optional
-    extra. Sending it whole means a field added in a future version passes
-    through untouched.
+    The object goes verbatim because the two services do not agree on its
+    shape — Radarr's carries a modifier key Sonarr's does not — and
+    because revision is part of a valid QualityModel rather than an
+    optional extra. Sending it whole means a field added in a future
+    version passes through untouched.
+
+    The editor endpoint rather than PUT on the file itself: Radarr answers
+    500 to a quality-only body on /api/v3/moviefile/{id}, from a null
+    dereference in SetMovieFile, because it deserialises into a full
+    resource. Both services take this shape.
     """
     _restore()
 
-    assert arr["puts"][0]["path"] == f"/api/v3/moviefile/{NEW_FILE}"
-    assert arr["puts"][0]["body"] == {"quality": _quality("WEBRip-1080p")}
+    assert arr["puts"][0]["path"] == "/api/v3/moviefile/editor"
+    assert arr["puts"][0]["body"] == {
+        "movieFileIds": [NEW_FILE],
+        "quality":      _quality("WEBRip-1080p"),
+    }
+
+
+def test_each_service_names_the_ids_field_its_own_api_expects(arr):
+    """
+    Closes: one service's ids field used for the other.
+
+    episodeFileIds against Radarr is not an error it reports — the body
+    parses, the ids field it wanted is absent, and the write silently
+    affects nothing.
+    """
+    arr["files"] = [{"id": 4001, "path": PATH}]
+    arr["episodes"] = [{"id": 900, "episodeFileId": 4001}]
+    arr["history"] = [
+        {"id": 1, "episodeId": 900, "eventType": "downloadFolderImported",
+         "date": "2026-09-07T21:45:00Z", "quality": _quality("WEBDL-1080p"),
+         "data": {"fileId": "3999"}},
+    ]
+
+    _restore(service=SONARR, entity=288)
+
+    assert arr["puts"][0]["path"] == "/api/v3/episodefile/editor"
+    assert arr["puts"][0]["body"]["episodeFileIds"] == [4001]
 
 
 # ── Finding the file ──────────────────────────────────────────────────────────
@@ -391,3 +421,39 @@ def test_a_job_with_no_output_path_is_not_restored():
         loop.close()
 
     assert calls == []
+
+
+# ── Failure reporting ─────────────────────────────────────────────────────────
+
+def test_an_http_failure_logs_what_the_service_said(monkeypatch, caplog):
+    """
+    Closes: the response body dropped from the log line.
+
+    Radarr answers a bad write with 500 and puts the exception and the
+    controller line that threw it in the body. Code and reason alone read
+    "HTTP 500 Internal Server Error", which is indistinguishable from the
+    service being broken and cost a round trip to diagnose once already.
+
+    The file is on disk and correct at this point, so the write is
+    best-effort and must not fail the job — which makes the log the only
+    place this is ever reported.
+    """
+    import io
+    import urllib.error
+
+    from app.core import radarr
+
+    def _explode(*_a, **_kw):
+        raise urllib.error.HTTPError(
+            "http://radarr:7878/api/v3/moviefile/editor", 500,
+            "Internal Server Error", {},
+            io.BytesIO(b'{"message": "Nullable object must have a value."}'),
+        )
+
+    monkeypatch.setattr(radarr, "restore_quality", _explode)
+
+    with caplog.at_level("ERROR"):
+        radarr.restore_movie_quality("http://radarr:7878", "k", 1531, PATH)
+
+    assert "Nullable object must have a value" in caplog.text
+    assert "1531" in caplog.text

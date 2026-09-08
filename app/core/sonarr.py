@@ -70,9 +70,18 @@ def restore_episode_quality(
     try:
         restore_quality(SONARR, base_url, api_key, series_id, path)
     except urllib.error.HTTPError as exc:
+        # The body is where the reason actually is: a quality-only PUT to
+        # the per-file endpoint answers 500 with the exception and the
+        # controller line that threw it, while code and reason say only
+        # "Internal Server Error". Truncated because a stack trace is the
+        # usual payload and the first line is the part that identifies it.
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            detail = "<no body>"
         logger.error(
-            "Sonarr: quality restore HTTP %d for series %d (%s): %s",
-            exc.code, series_id, path, exc.reason,
+            "Sonarr: quality restore HTTP %d for series %d (%s): %s — %s",
+            exc.code, series_id, path, exc.reason, detail,
         )
     except Exception:
         logger.exception(
