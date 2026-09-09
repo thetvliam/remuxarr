@@ -23,7 +23,9 @@ import pytest
 
 
 from app.core.forge import finish_forge_job
-from app.core.subprocess_runner import StagedOutput, _stage_parts
+from app.core.subprocess_runner import (
+    StagedOutput, _stage_parts, staged_part_path,
+)
 
 
 # ── finish_forge_job ─────────────────────────────────────────────────────────
@@ -136,6 +138,78 @@ def test_stale_five_argument_call_raises(db):
 
 # ── _stage_parts ─────────────────────────────────────────────────────────────
 
+def test_a_final_name_near_the_length_limit_can_still_be_staged(tmp_path):
+    """
+    The staged copy must not be longer than the name it is staging for.
+
+    Reported case: 24 episodes of one show, 23 fine and one failed with
+    ENAMETOOLONG on a sidecar the job had already produced. Every final
+    name fitted — the .mkv was 247 bytes and had existed for months, the
+    .mp4 was the same 247, the first subtitle landed at 250. The second
+    English track carries a .2 to disambiguate it, which put its final
+    name at 252 and its staged copy at 257.
+
+    That is the whole failure: appending to the final name makes the
+    temporary longer than the thing it is a temporary for, so any file
+    within five bytes of the limit stages a name the filesystem refuses.
+    The first sidecar in that same job cleared it by one byte.
+
+    Truncating the media name would be the wrong fix — it changes what
+    Plex and Bazarr match on, for files whose real names are fine. The
+    codebase already answered this once: FFmpeg writes to
+    job_35106.remuxarr_tmp rather than a name derived from the file.
+    Staging is the last place that had not been given the same treatment.
+    """
+    # Separate directories, as in production: FFmpeg writes to TEMP_DIR
+    # (tmpfs on Unraid) and the destination is the array. Sharing one here
+    # would hide a staged copy that never left the temp directory.
+    dest = tmp_path / "media"
+    dest.mkdir()
+    temps = tmp_path / "temp"
+    temps.mkdir()
+
+    final = dest / ("L" * 248 + ".srt")             # 252 bytes, fits
+    temp  = temps / "job_35106_srt_4.remuxarr_tmp"
+    temp.write_bytes(b"subtitle payload")
+    parts: list[str] = []
+
+    _stage_parts([StagedOutput(temp_path=str(temp), final_path=str(final))],
+                 parts)
+
+    assert len(parts) == 1
+    assert os.path.exists(parts[0])
+    assert os.path.dirname(parts[0]) == str(dest), \
+        "the staged copy left the destination directory, so os.replace is " \
+        "no longer same-filesystem and the swap is no longer atomic"
+    assert parts[0].endswith(".part"), \
+        "the startup sweep finds orphaned stages by that suffix"
+
+
+def test_the_staged_name_is_built_from_the_temp_not_the_destination(tmp_path):
+    """
+    Closes: the staged name derived from final_path again.
+
+    Stated separately from the length case because it is the rule rather
+    than the symptom, and because a fix that merely shortened the suffix
+    would pass a test written only around 255.
+    """
+    dest = tmp_path / "media"
+    dest.mkdir()
+    temps = tmp_path / "temp"
+    temps.mkdir()
+
+    final = dest / "Some Episode Name.srt"
+    temp  = temps / "job_77_srt_2.remuxarr_tmp"
+    temp.write_bytes(b"x")
+    parts: list[str] = []
+
+    _stage_parts([StagedOutput(temp_path=str(temp), final_path=str(final))],
+                 parts)
+
+    assert parts == [str(dest / "job_77_srt_2.remuxarr_tmp.part")], \
+        "the staged name must be the temp basename, in the destination"
+
+
 def test_stage_parts_copies_and_leaves_final_untouched(tmp_path):
     temp = tmp_path / "src.tmp"
     temp.write_bytes(b"payload" * 1000)
@@ -144,8 +218,10 @@ def test_stage_parts_copies_and_leaves_final_untouched(tmp_path):
     parts: list[str] = []
     _stage_parts([StagedOutput(temp_path=str(temp), final_path=str(final))], parts)
 
-    assert parts == [str(final) + ".part"]
-    assert (tmp_path / "out.mkv.part").read_bytes() == b"payload" * 1000
+    assert parts == [staged_part_path(
+        StagedOutput(temp_path=str(temp), final_path=str(final)))]
+    with open(parts[0], "rb") as f:
+        assert f.read() == b"payload" * 1000
     assert not final.exists(), "staging must not touch the destination"
 
 
@@ -156,21 +232,23 @@ def test_partial_failure_leaves_completed_parts_visible(tmp_path):
     """
     ok = tmp_path / "a.tmp"
     ok.write_bytes(b"x" * 100)
+    third = tmp_path / "c.tmp"          # its own temp: see staged_part_path
+    third.write_bytes(b"x" * 100)
 
     outputs = [
         StagedOutput(temp_path=str(ok), final_path=str(tmp_path / "a.mkv")),
         StagedOutput(temp_path=str(tmp_path / "missing.tmp"),
                      final_path=str(tmp_path / "b.mkv")),
-        StagedOutput(temp_path=str(ok), final_path=str(tmp_path / "c.mkv")),
+        StagedOutput(temp_path=str(third), final_path=str(tmp_path / "c.mkv")),
     ]
 
     parts: list[str] = []
     with pytest.raises(OSError):
         _stage_parts(outputs, parts)
 
-    assert parts == [str(tmp_path / "a.mkv") + ".part"]
+    assert parts == [staged_part_path(outputs[0])]
     assert os.path.exists(parts[0]), "the completed .part must exist for cleanup"
-    assert not os.path.exists(str(tmp_path / "c.mkv") + ".part")
+    assert not os.path.exists(staged_part_path(outputs[2]))
 
 
 def test_stage_parts_runs_off_the_event_loop(tmp_path):
@@ -363,11 +441,11 @@ def test_a_staging_failure_cleans_up_the_part_files(tmp_path, monkeypatch):
 
     def _partial(outputs, part_paths):
         # First output stages fine, second dies mid-copy.
-        p = outputs[0].final_path + ".part"
+        p = staged_part_path(outputs[0])
         with open(p, "wb") as f:
             f.write(b"STAGED")
         part_paths.append(p)
-        with open(outputs[1].final_path + ".part", "wb") as f:
+        with open(staged_part_path(outputs[1]), "wb") as f:
             f.write(b"HALF")
         raise OSError(28, "No space left on device")
 
@@ -410,7 +488,7 @@ def test_cancellation_cleans_up_temps_and_parts(tmp_path, monkeypatch):
     final = tmp_path / "a.mkv"
 
     def _stage_then_cancel(outputs, part_paths):
-        p = outputs[0].final_path + ".part"
+        p = staged_part_path(outputs[0])
         with open(p, "wb") as f:
             f.write(b"STAGED")
         part_paths.append(p)
@@ -422,7 +500,7 @@ def test_cancellation_cleans_up_temps_and_parts(tmp_path, monkeypatch):
         _run(_writer_cmd([(str(temp), "NEW")]),
              [StagedOutput(temp_path=str(temp), final_path=str(final))])
 
-    assert not (tmp_path / "a.mkv.part").exists(), (
+    assert not list(tmp_path.glob("*.part")), (
         "a cancelled job left a full-sized .part file behind"
     )
     assert not temp.exists(), "a cancelled job left its temp file behind"
