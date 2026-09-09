@@ -261,6 +261,11 @@ def list_orphaned(db: Session = Depends(get_db)):
     """
     app_cfg    = get_app_settings(db)
     scan_paths = app_cfg.get("scan_paths", [])
+    if not scan_paths:
+        raise HTTPException(
+            400,
+            "No scan paths configured, so every file would be reported as orphaned. Add a library path first, or use Clear Database if you mean to remove everything.",
+        )
 
     orphaned = find_orphaned_media_files(db, scan_paths)
     return {
@@ -297,17 +302,26 @@ def _remove_orphaned_sync(file_ids: list[int]) -> int:
 
 
 @router.post("/orphaned/remove")
-async def remove_orphaned(body: RemoveOrphanedRequest):
+async def remove_orphaned(
+    body: RemoveOrphanedRequest, db: Session = Depends(get_db)
+):
     """
     Remove specific orphaned MediaFile rows by ID (and every row across
     the codebase that references them — see
     scanner._delete_media_file_and_related).
 
     Deliberately does not re-check scan_paths membership or disk
-    existence here — the row was already surfaced via GET /orphaned as
+    existence per row — the row was already surfaced via GET /orphaned as
     being outside the configured library, which is the only thing that
     matters for this action. Removing the database row never touches
     the actual file on disk, regardless of whether it still exists.
+
+    It does refuse when no scan paths are configured at all, which is the
+    one case where that reasoning stops holding: with none, "outside the
+    configured library" means every row, so the ids in a request cannot
+    have been surfaced by a listing that meant anything. The listing
+    refuses too, so this closes the same request replayed from a page
+    loaded before the paths were removed.
 
     No Depends(get_db) — all database work happens on the executor
     thread inside _remove_orphaned_sync's own session; a request-scoped
@@ -316,6 +330,11 @@ async def remove_orphaned(body: RemoveOrphanedRequest):
     """
     if not body.file_ids:
         raise HTTPException(400, "No file IDs provided")
+    if not get_app_settings(db).get("scan_paths", []):
+        raise HTTPException(
+            400,
+            "No scan paths configured, so every file would be reported as orphaned. Add a library path first, or use Clear Database if you mean to remove everything.",
+        )
 
     loop = asyncio.get_running_loop()
     removed = await loop.run_in_executor(None, _remove_orphaned_sync, body.file_ids)

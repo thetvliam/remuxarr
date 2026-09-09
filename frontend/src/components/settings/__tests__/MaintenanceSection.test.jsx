@@ -38,7 +38,8 @@ const ORPHAN = {
  * URL rather than by call order: the mount reads are a Promise.all, so their
  * order is not something a test should depend on.
  */
-const mockApi = ({ orphaned = [ORPHAN], removeOk = true } = {}) => {
+const mockApi = ({ orphaned = [ORPHAN], removeOk = true,
+                   checkOk = true, detail = "nope" } = {}) => {
   const removeCalls = [];
   vi.stubGlobal("fetch", vi.fn(async (url, opts) => {
     const u = String(url);
@@ -52,10 +53,12 @@ const mockApi = ({ orphaned = [ORPHAN], removeOk = true } = {}) => {
       removeCalls.push(JSON.parse(opts.body));
       return removeOk
         ? { ok: true, json: async () => ({ removed: orphaned.length }) }
-        : { ok: false, json: async () => ({ detail: "nope" }) };
+        : { ok: false, json: async () => (detail ? { detail } : {}) };
     }
     if (u.includes("/api/scan/orphaned"))
-      return { ok: true, json: async () => ({ total: orphaned.length, items: orphaned }) };
+      return checkOk
+        ? { ok: true, json: async () => ({ total: orphaned.length, items: orphaned }) }
+        : { ok: false, json: async () => (detail ? { detail } : {}) };
     return { ok: true, json: async () => ({}) };
   }));
   return { removeCalls };
@@ -109,9 +112,56 @@ describe("MaintenanceSection — orphaned removal", () => {
 
     await removeOrphans(user);
 
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("nope", "error"));
+    expect(onRecordsRemoved).not.toHaveBeenCalled();
+  });
+
+  it("shows why the server refused rather than a generic failure", async () => {
+    /** The server declines both orphan routes when no scan paths are
+     *  configured, because with none every row in the library counts as
+     *  orphaned. Its reason names Clear Database as the action that does
+     *  mean "remove everything" — replacing that with "Failed to remove
+     *  orphaned files" leaves someone with no idea what to do instead, and
+     *  the obvious next move is to add a throwaway scan path and come
+     *  straight back to this button. */
+    const reason = "No scan paths configured, so every file would be " +
+      "reported as orphaned. Add a library path first, or use Clear " +
+      "Database if you mean to remove everything.";
+    mockApi({ removeOk: false, detail: reason });
+    const user = userEvent.setup();
+    const { toast } = setup();
+
+    await removeOrphans(user);
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(reason, "error"));
+  });
+
+  it("falls back to its own message when the server gives no reason", async () => {
+    /** A 502 from a reverse proxy has no JSON body at all. Surfacing the
+     *  server's reason must not mean showing nothing when there is none. */
+    mockApi({ removeOk: false, detail: null });
+    const user = userEvent.setup();
+    const { toast } = setup();
+
+    await removeOrphans(user);
+
     await waitFor(() => expect(toast).toHaveBeenCalledWith(
       "Failed to remove orphaned files", "error"));
-    expect(onRecordsRemoved).not.toHaveBeenCalled();
+  });
+
+  it("shows why the check was refused", async () => {
+    /** The same refusal on the listing, which is the one most people hit
+     *  first — the button that fetches the list is what they press. */
+    const reason = "No scan paths configured, so every file would be " +
+      "reported as orphaned.";
+    mockApi({ checkOk: false, detail: reason });
+    const user = userEvent.setup();
+    const { toast } = setup();
+
+    await user.click(await screen.findByRole("button",
+      { name: /check for orphaned/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(reason, "error"));
   });
 
   it("sends the selected ids and reports what was removed", async () => {
