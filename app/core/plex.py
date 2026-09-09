@@ -45,6 +45,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from app.core.pathmap import swap_prefix
+
 logger = logging.getLogger(__name__)
 
 # ── Section item cache ─────────────────────────────────────────────────────
@@ -129,10 +131,9 @@ def translate_path_to_plex(local_path: str, mappings: list[str]) -> str | None:
     pairs.sort(key=lambda p: len(p[0]), reverse=True)
 
     for local_prefix, plex_prefix in pairs:
-        local_norm = local_prefix.rstrip("/")
-        if local_path == local_norm or local_path.startswith(local_norm + "/"):
-            suffix = local_path[len(local_norm):]
-            return plex_prefix.rstrip("/") + suffix
+        translated = swap_prefix(local_path, local_prefix, plex_prefix)
+        if translated is not None:
+            return translated
 
     return None
 

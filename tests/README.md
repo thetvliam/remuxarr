@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1384 tests across 69 test files, plus 472 frontend tests under
+1410 tests across 71 test files, plus 472 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -20,7 +20,8 @@ see each docstring.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
-`test_clear_database.py`, `test_scan_library.py`, `test_settings_persistence.py`,
+`test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
+`test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`. Real SQLite, real
 temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
@@ -35,6 +36,17 @@ with the first two and stayed invisible for a dozen commits.
 cleanup pass is scoped to the scan paths that are directories right now, which
 is the only thing standing between a share that has not mounted and every row
 under it being deleted.
+`test_scan_routes.py` covers the wiring around that walk: the module-level flag
+that allows one scan at a time, whose documented contract is that whoever sets
+it either hands ownership to a thread that started or rolls it back themselves.
+Break it and every scan, manual and scheduled, is refused until the container
+restarts — which is a state the module's own comments record shipping once.
+`test_scan_maintenance_routes.py` covers the rest of that module: cleanup,
+the orphaned-row endpoints, and the three executor helpers that each open
+their own session rather than carry a request-scoped one across a thread
+boundary. Three copies of one rule, and the incident behind it is that the
+fix was applied to one and missed in another four routes down — so each copy
+has its own mutant and its own test.
 
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,

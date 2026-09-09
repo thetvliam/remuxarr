@@ -47,6 +47,13 @@ assumed:
   • narrowing notify_plex_new_file's `except urllib.error.HTTPError` — the
     bare `except Exception` immediately below it catches the same error, so
     only the log message changes, not the behaviour.
+  • `if translated is not None` becoming `if translated` in
+    translate_path_to_plex, after the prefix rule moved to
+    pathmap.swap_prefix. The two differ only when swap_prefix returns an
+    empty string, which needs a mapping whose Plex half is "/" AND a path
+    equal to the local prefix exactly — and the paths passed here are
+    always files, never the bare prefix. The `is not None` form is kept
+    because it states the contract swap_prefix actually has.
 """
 import urllib.error
 

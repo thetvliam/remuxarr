@@ -9,6 +9,12 @@
 
   <Icon>https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/logo_transparent.png</Icon>
 
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_dashboard.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_detail_panel.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_review.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_forge.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/thetvliam/remuxarr/refs/heads/main/images_and_demo/Screenshot_settings.png</Screenshot>
+
   <!-- The port here is the CONTAINER port, not the host port. -->
   <WebUI>http://[IP]:[PORT:9191]</WebUI>
 
