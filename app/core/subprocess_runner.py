@@ -88,6 +88,39 @@ async def probe_duration(path: str) -> float | None:
 # ── The generic executor ─────────────────────────────────────────────────────
 
 
+def staged_part_path(output: StagedOutput) -> str:
+    """
+    Where a finished copy waits for its atomic swap into place.
+
+    In the destination directory, because os.replace is only atomic on one
+    filesystem and the swap is what guarantees a half-written file never
+    appears under the final name. Named after the temp file rather than the
+    final one, because appending to the final name makes the temporary
+    longer than the thing it stands in for — and a media filename can
+    already be at the 255-byte limit its own extension left it at.
+
+    That failed in the wild on a sidecar: the final name fitted at 252
+    bytes, the .part did not at 257, and the job failed after FFmpeg had
+    already done the work. FFmpeg's own output learned this earlier, which
+    is why it writes job_35106.remuxarr_tmp instead of anything derived
+    from the file. This is the same fix, one step further down.
+
+    The ".part" suffix is load-bearing beyond this module: the startup
+    sweep clears "*.part" under the scan paths, and without it an
+    interrupted run leaves a copy the scanner never surfaces, since .part
+    is not in MEDIA_EXTENSIONS.
+
+    Uniqueness rests on temp paths being distinct, which they are by
+    construction: two outputs of one FFmpeg run cannot share an output
+    file, and the names carry the job id, so neither two outputs of one job
+    nor two jobs staging into the same directory can collide.
+    """
+    return os.path.join(
+        os.path.dirname(output.final_path),
+        os.path.basename(output.temp_path) + ".part",
+    )
+
+
 def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
     """
     Copy every temp output to "<final>.part" and fsync it. Synchronous.
@@ -106,7 +139,7 @@ def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
     Raises OSError (including ENOSPC), handled by the caller.
     """
     for o in outputs:
-        part = o.final_path + ".part"
+        part = staged_part_path(o)
         shutil.copyfile(o.temp_path, part)
         with open(part, "rb") as f:
             os.fsync(f.fileno())
@@ -339,7 +372,7 @@ async def run_staged_subprocess(
                 pass          # already aborting; a staging failure changes nothing
             raise
         except OSError as exc:
-            for p in part_paths + [o.final_path + ".part" for o in outputs]:
+            for p in part_paths + [staged_part_path(o) for o in outputs]:
                 cleanup_temp_file(p)
             for o in outputs:
                 cleanup_temp_file(o.temp_path)
@@ -353,7 +386,7 @@ async def run_staged_subprocess(
             )
 
         for o in outputs:
-            os.replace(o.final_path + ".part", o.final_path)
+            os.replace(staged_part_path(o), o.final_path)
 
         # Temps are no longer consumed by a move — remove them explicitly.
         for o in outputs:
@@ -364,10 +397,10 @@ async def run_staged_subprocess(
     except asyncio.CancelledError:
         for o in outputs:
             cleanup_temp_file(o.temp_path)
-            cleanup_temp_file(o.final_path + ".part")
+            cleanup_temp_file(staged_part_path(o))
         raise
     except Exception:
         for o in outputs:
             cleanup_temp_file(o.temp_path)
-            cleanup_temp_file(o.final_path + ".part")
+            cleanup_temp_file(staged_part_path(o))
         raise
