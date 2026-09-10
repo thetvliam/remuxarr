@@ -841,6 +841,11 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
         "completed_at":   _iso(item.completed_at),
         "error_message":  item.error_message,
         "flagged_subtitles": flagged_subtitles,
+        # Which gate raised the review, so the UI can phrase it and offer
+        # the matching bulk action. Null on items not in review, and on
+        # rows written before the column existed — the UI reads a null
+        # alongside a flagged payload the same way the bulk resolver does.
+        "review_reason":     item.review_reason,
         "file": {
             "id":        media.id,
             "filename":  media.filename,

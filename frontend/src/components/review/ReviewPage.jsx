@@ -27,6 +27,7 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
 export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, reviewRefreshKey = 0 }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
+    const [fontSetting, setFontSetting] = useState("always_ask");
     const [bulkResolving, setBulkResolving] = useState(false);
 
     useEffect(() => {
@@ -34,14 +35,30 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
         .then(r => r.json())
         .then(data => setImgSubSetting(data.value || "always_ask"))
         .catch(() => {});
+        fetch(`${api}/api/settings/font_attachment_handling`)
+        .then(r => r.json())
+        .then(data => setFontSetting(data.value || "always_ask"))
+        .catch(() => {});
     }, [api]);
 
-    const subtitleItemCount = items.filter(i => i.flagged_subtitles?.length > 0).length;
+    /* Two gates flag subtitle tracks, and each is resolved by its own
+     * setting. Counting them together would offer to bulk-resolve font
+     * items under Image-Based Subtitle Handling, which converts away the
+     * styling the review existed to protect — see QueueItem.review_reason.
+     *
+     * A null reason on a flagged item predates that column, and can only be
+     * an image-subtitle review: the font gate did not exist when it was
+     * written. Read the same way here as in the bulk resolver. */
+    const isFontItem = i => i.review_reason === "font_attachments";
+    const isImageItem = i => i.flagged_subtitles?.length > 0 && !isFontItem(i);
 
-    const resolveAllSubtitles = async () => {
+    const subtitleItemCount = items.filter(isImageItem).length;
+    const fontItemCount = items.filter(isFontItem).length;
+
+    const resolveAllOfKind = async (endpoint) => {
         setBulkResolving(true);
         try {
-            const r = await fetch(`${api}/api/queue/resolve-subtitles-bulk`, { method: "POST" });
+            const r = await fetch(`${api}/api/queue/${endpoint}`, { method: "POST" });
             if (r.ok) {
                 const data = await r.json();
                 const stillNeeded = data.still_unresolved
@@ -71,6 +88,9 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
             setBulkResolving(false);
         }
     };
+
+    const resolveAllSubtitles = () => resolveAllOfKind("resolve-subtitles-bulk");
+    const resolveAllFonts = () => resolveAllOfKind("resolve-fonts-bulk");
 
     /* All three check the response. They previously swallowed everything and
      * refreshed regardless, so a failed Approve looked exactly like a
@@ -150,17 +170,34 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
             disabled={bulkResolving}
             />
         )}
+
+        {fontItemCount > 0 && fontSetting !== "always_ask" && (
+            <Btn
+            label={bulkResolving ? "RESOLVING…" : `RESOLVE ALL ${fontItemCount} FONT ITEMS`}
+            color={palette.blue}
+            bg={alpha(palette.blue, ALPHA.low)}
+            onClick={resolveAllFonts}
+            disabled={bulkResolving}
+            />
+        )}
         </div>
         <p style={{ color: palette.muted, fontSize: type.size.md, margin: 0, lineHeight: type.leading.relaxed }}>
-        Files end up here for two reasons: two or more audio tracks with an
+        Files end up here for three reasons: two or more audio tracks with an
         undefined language (approve to process anyway, or skip to dismiss),
-            or subtitle tracks that can't be converted to external SRT — choose
-            KEEP or REMOVE for each flagged track below.
+            subtitle tracks that can't be converted to external SRT, or embedded
+            fonts that only MKV can hold — choose KEEP or REMOVE for each
+            flagged track below.
             {subtitleItemCount > 0 && imgSubSetting !== "always_ask" && (
                 <> Image-Based Subtitle Handling is currently set to{" "}
                 {imgSubSetting === "always_keep" ? "Always Keep" : "Always Remove"} — use
                 the button above to resolve every subtitle-flagged item at once instead
                 of choosing individually.</>
+            )}
+            {fontItemCount > 0 && fontSetting !== "always_ask" && (
+                <> Embedded Font Handling is currently set to{" "}
+                {fontSetting === "always_keep" ? "Always Keep" : "Always Remove"} — use
+                the button above to resolve every font-flagged item at once. Keeping
+                leaves the file as MKV so its styled subtitles still render.</>
             )}
             </p>
             </div>
