@@ -179,11 +179,28 @@ class QueueItem(Base):
     # and was never a value this column could hold.
     current_action = Column(String)
 
-    # JSON list of flagged subtitle tracks for manual_review items caused by
-    # non-convertible (image-based) subtitles. Each entry:
-    #   {stream_index, language, codec, is_forced, title}
-    # Null/empty for other manual_review causes (e.g. undefined-language audio).
+    # JSON list of flagged subtitle tracks for a manual_review item. Each
+    # entry: {stream_index, language, codec, is_forced, title}
+    # Null/empty for causes that flag no track (e.g. undefined-language audio).
     review_subtitles = Column(Text)
+
+    # WHICH gate put this item in manual review, recorded rather than
+    # inferred. One of "image_subtitles", "font_attachments", or null.
+    #
+    # Two separate places used to work this out from review_subtitles being
+    # non-null, which was reliable only while the image-subtitle gate was the
+    # sole trigger that populated it. resolve_subtitles_bulk's docstring said
+    # so explicitly, and the approve endpoint's said that any new
+    # subtitle-review trigger would break the inference. The font-attachment
+    # gate is that trigger: its items are also flagged subtitles, and bulk
+    # resolve would otherwise apply image_subtitle_handling to them —
+    # converting away the styling a review existed to protect.
+    #
+    # Null on rows written before this column existed. Every one of those
+    # predates the font gate, so a null with a non-null review_subtitles can
+    # only be an image-subtitle review, and the bulk endpoints read it that
+    # way.
+    review_reason = Column(String)
 
     # Size tracking (populated after success)
     output_path   = Column(String)

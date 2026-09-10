@@ -410,6 +410,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
+        ("queue_items", "review_reason",
+         "ALTER TABLE queue_items ADD COLUMN review_reason TEXT"),
         ("queue_items", "sonarr_series_id",
          "ALTER TABLE queue_items ADD COLUMN sonarr_series_id INTEGER"),
         ("queue_items", "radarr_movie_id",

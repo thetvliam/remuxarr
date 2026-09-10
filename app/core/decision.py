@@ -166,6 +166,11 @@ class ProcessingDecision:
     #   {stream_index, language, codec, is_forced, title}
     # The UI uses this to render per-track Keep/Remove choices.
     flagged_subtitles: list[dict] | None = None
+    # WHICH gate raised the review, for the caller to persist on the queue
+    # item. Recorded rather than inferred: two endpoints used to work this
+    # out from flagged_subtitles being non-empty, which only held while the
+    # image-subtitle gate was the only trigger that set it.
+    review_reason: str | None = None
     # Set when the file's surviving (kept) audio track needs a human to look
     # at its language tag. Two distinct causes, both landing here:
     #   • a DEFINED but non-preferred language — e.g. "dut" on an English
@@ -684,6 +689,7 @@ def analyze_file(
                         action_type="flag_manual_review",
                         description=msg,
                     )],
+                    review_reason="image_subtitles",
                     flagged_subtitles=flagged,
                 )
 
@@ -763,6 +769,7 @@ def analyze_file(
                         action_type="flag_manual_review",
                         description=msg,
                     )],
+                    review_reason="font_attachments",
                     flagged_subtitles=flagged,
                 )
 
