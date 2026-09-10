@@ -221,3 +221,171 @@ def test_real_mp4_output_from_an_attachment_bearing_source_succeeds(tmp_path, se
     kinds = [s["codec_type"] for s in _streams(out)]
     assert "attachment" not in kinds
     assert kinds.count("video") == 1
+
+
+# ── Detecting fonts, so the decision engine can see them ─────────────────────
+#
+# The tests above pin that a remux keeps attachments. These pin that the
+# pipeline can tell a file HAS fonts in the first place, which is what a
+# policy about styled subtitles has to be built on. extract_tracks() keeps
+# only video, audio and subtitle streams, so an attachment has never
+# reached the decision engine — the count is carried in file_info instead.
+#
+# The fixtures are shaped from a real anime release: 17 font attachments
+# with uppercase filenames, two ASS subtitle tracks, and a cover.jpg that
+# must not be mistaken for one of them.
+
+def _attachment(filename, mimetype=None):
+    tags = {"filename": filename}
+    if mimetype is not None:
+        tags["mimetype"] = mimetype
+    return {"codec_type": "attachment", "tags": tags}
+
+
+def test_fonts_are_counted_from_their_mimetype():
+    """
+    The modern shape: mkvmerge writes font/ttf and font/otf. Both count,
+    which is why the check is a prefix rather than a list of exact types.
+    """
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        _attachment("FTLTLT.TTF", "font/ttf"),
+        _attachment("Dunkirk.otf", "font/otf"),
+        # No usable extension, so only the mimetype can identify it. Without
+        # one of these the mimetype branch is untestable: every font whose
+        # filename ends in .ttf is found by the fallback regardless of what
+        # the mimetype check does.
+        _attachment("embedded_font_0", "font/collection"),
+    ]}
+
+    assert count_font_attachments(probe) == 3
+
+
+def test_the_legacy_font_mimetypes_are_recognised():
+    """
+    Older mkvmerge and other muxers write application/x-truetype-font and
+    relatives. A file muxed years ago is exactly the kind that has styled
+    subtitles worth protecting, so missing these misses the case.
+    """
+    from app.core.probe import count_font_attachments
+
+    # Filenames deliberately carry no font extension, so these can only be
+    # found by their mimetype — otherwise the fallback answers for them and
+    # dropping this whole branch changes nothing observable.
+    probe = {"streams": [
+        _attachment("NotoSans", "application/x-truetype-font"),
+        _attachment("Fontin_Sans_BI", "application/vnd.ms-opentype"),
+        _attachment("augie", "application/x-font-ttf"),
+    ]}
+
+    assert count_font_attachments(probe) == 3
+
+
+def test_a_font_with_no_usable_mimetype_is_found_by_its_filename():
+    """
+    Some muxers write application/octet-stream and leave the filename as
+    the only signal. The real release this is shaped from names its fonts
+    in upper case — GARABD.TTF, FRABK.TTF — so the suffix comparison has
+    to be case-insensitive or every font in that file is missed.
+    """
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        _attachment("GARABD.TTF", "application/octet-stream"),
+        _attachment("Jellyka CuttyCupcakes.ttf"),          # no mimetype at all
+    ]}
+
+    assert count_font_attachments(probe) == 2
+
+
+def test_cover_art_is_not_counted_as_a_font():
+    """
+    The release this is shaped from carries cover.jpg alongside its fonts.
+    It never could be counted — ffprobe reports cover art as
+    codec_type="video" with attached_pic, not as an attachment — but the
+    assertion is here because "the file has attachments" and "the file has
+    fonts" are the two things this must not confuse.
+    """
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        {"codec_type": "video", "disposition": {"attached_pic": 1},
+         "tags": {"filename": "cover.jpg", "mimetype": "image/jpeg"}},
+        _attachment("cover.jpg", "image/jpeg"),
+    ]}
+
+    assert count_font_attachments(probe) == 0
+
+
+def test_a_non_font_attachment_is_not_counted():
+    """
+    Attachments are not only fonts. Counting any of them would put files
+    carrying a release note or a chapter image into a review queue meant
+    for styled subtitles.
+    """
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        _attachment("readme.txt", "text/plain"),
+        _attachment("thumbnail.png", "image/png"),
+    ]}
+
+    assert count_font_attachments(probe) == 0
+
+
+def test_a_stream_that_is_not_an_attachment_is_not_examined():
+    """
+    Recorded as an equivalent mutation rather than pinned: removing the
+    codec_type == "attachment" check changes no count for any real ffprobe
+    output, because only attachment streams ever carry a font mimetype or
+    a font filename. Cover art carries filename cover.jpg, subtitle tracks
+    carry titles rather than filenames, and no muxer writes font/* on a
+    media stream. The check is kept because it states what is being
+    counted, and this test holds the ordinary shape rather than a
+    contrived one built to make the mutant die.
+    """
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        {"codec_type": "subtitle", "codec_name": "ass",
+         "tags": {"title": "Signs and Songs [Saiki]"}},
+        _attachment("FTLTLT.TTF", "font/ttf"),
+    ]}
+
+    assert count_font_attachments(probe) == 1
+
+
+def test_a_file_with_no_attachments_counts_zero():
+    from app.core.probe import count_font_attachments
+
+    probe = {"streams": [
+        {"codec_type": "video", "codec_name": "hevc"},
+        {"codec_type": "audio", "codec_name": "aac"},
+        {"codec_type": "subtitle", "codec_name": "ass"},
+    ]}
+
+    assert count_font_attachments(probe) == 0
+
+
+def test_the_font_count_travels_with_the_container_and_duration():
+    """
+    Carried in extract_format_info so every caller gets it without
+    changing five call sites, and so it reaches analyze_file's file_info
+    where the policy will read it.
+    """
+    from app.core.probe import extract_format_info
+
+    probe = {
+        "format": {"format_name": "matroska,webm", "duration": "1431.018"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "hevc"},
+            _attachment("FTLTLT.TTF", "font/ttf"),
+            _attachment("GARABD.TTF", "font/ttf"),
+        ],
+    }
+
+    info = extract_format_info(probe)
+
+    assert info["container"] == "mkv"
+    assert info["font_attachments"] == 2
