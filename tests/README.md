@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1423 tests across 71 test files, plus 475 frontend tests under
+1434 tests across 72 test files, plus 475 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -113,10 +113,16 @@ nothing.
 
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`,
-`test_subtitle_rename.py`. The last covers what the others cannot reach: an
+`test_subtitle_rename.py`, `test_font_attachment_review.py`.
+`test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
 is what Plex reads.
+`test_font_attachment_review.py` covers the third review gate: a file carrying
+embedded fonts, which only Matroska can hold and which its styled subtitles
+reference by name. Converting it to MP4 drops the fonts and flattens ASS to
+SRT, so text positioned over a sign in the picture ends up at the bottom of
+the screen — and nothing about that fails.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

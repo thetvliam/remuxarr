@@ -147,8 +147,20 @@ def make_track(
 
 
 def make_file_info(path="/media/movies/Test Movie (2020)/Test Movie (2020).mp4",
-                    container="mp4", video_codec="h264"):
-    return {"path": path, "container": container, "video_codec": video_codec}
+                    container="mp4", video_codec="h264", font_attachments=0):
+    """
+    file_info as probe.extract_format_info() builds it.
+
+    font_attachments defaults to 0, which is what nearly every file has —
+    but the key is always present in production, so it is always present
+    here too rather than only in the tests that care about it.
+    """
+    return {
+        "path":             path,
+        "container":        container,
+        "video_codec":      video_codec,
+        "font_attachments": font_attachments,
+    }
 
 
 @pytest.fixture

@@ -59,6 +59,17 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     #   "always_keep"    — leave it embedded, no review needed
     #   "always_remove"  — drop it, no review needed
     "image_subtitle_handling": "always_ask",
+    # What to do with a file carrying embedded FONT attachments, which only
+    # Matroska can hold. Its styled subtitles reference those fonts by name,
+    # so converting to MP4 drops the fonts and flattens ASS to SRT — text
+    # that was positioned over a sign in the frame ends up at the bottom of
+    # the screen with the sign still visible behind it. Nothing fails.
+    #   "always_ask"     — flag for manual review (the default)
+    #   "always_keep"    — leave the ASS/SSA tracks embedded, which keeps the
+    #                      file in Matroska and so keeps the fonts. Audio
+    #                      rules still apply.
+    #   "always_remove"  — convert anyway, losing the fonts and the styling
+    "font_attachment_handling": "always_ask",
     # Detect MP4 files missing the moov atom at the front (i.e. not
     # web-optimised / fast-start) and rewrite them with -movflags +faststart
     # so that players and Plex can begin streaming before the full download.
