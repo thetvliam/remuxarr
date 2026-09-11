@@ -42,6 +42,14 @@ class MediaFile(Base):
     duration    = Column(Float)    # seconds
     video_codec = Column(String)   # first video stream codec
 
+    # Embedded font attachments, from the same probe as the three above.
+    # Null means not probed since this column was added, which is not the
+    # same as 0: the decision engine's font gate keys on it, and reading
+    # null as "no fonts" converts a file whose fonts nobody has counted.
+    # A normal scan skips unchanged files, so a null can outlive many
+    # scans; the worker probes it once at job pickup — see _load_job_data.
+    font_attachments = Column(Integer)
+
     # Lifecycle state
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)

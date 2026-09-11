@@ -23,7 +23,7 @@ below. A per-column test would have caught the missing detached_at and
 sailed straight past the constraint, because a column can be present and
 still wrong.
 
-Verified by mutation, 6 applied, 6 killed:
+Verified by mutation, 8 applied, 8 killed:
 
   • detached_at migration removed              → killed
   • file_id rebuild never called               → killed
@@ -31,6 +31,8 @@ Verified by mutation, 6 applied, 6 killed:
   • rebuild drops rows instead of copying them → killed
   • stale indexes left on the renamed table    → killed
   • scratch table left behind                  → killed
+  • font_attachments migration removed         → killed
+  • font_attachments migrated with DEFAULT 0   → killed
 
 The first initially SURVIVED, and the reason is worth keeping: the
 rebuild recreates revert_points from the model, so it adds detached_at
@@ -490,3 +492,60 @@ def test_a_fresh_database_needs_no_migration(tmp_path, monkeypatch):
         assert before["file_id"]["notnull"] == 0
     finally:
         _restore_the_engine(session_mod)
+
+
+# ── media_files.font_attachments ─────────────────────────────────────────────
+
+@pytest.fixture
+def uncounted(tmp_path, monkeypatch):
+    """
+    A database whose media_files predates font_attachments, holding one file.
+
+    Built from the model with the one column dropped, rather than written
+    out like LEGACY_REVERT_POINTS: the deployed shape is exactly that, and
+    two dozen columns typed by hand would drift from it. The live-schema
+    test above covers everything else about the table.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE media_files DROP COLUMN font_attachments")
+    conn.execute(
+        "INSERT INTO media_files (path, filename, directory, size, mtime, status) "
+        "VALUES ('/m/Show.mkv', 'Show.mkv', '/m', 1, 1.0, 'processed')"
+    )
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    yield path
+
+    _restore_the_engine(session_mod)
+
+
+def test_existing_files_come_out_uncounted_not_font_free(uncounted):
+    """
+    Null is what tells the worker a file's fonts were never counted, so it
+    counts them at pickup. A migration that filled in 0 would record every
+    file already in the library as probed and font-free, and the worker
+    would never look — the font gate would stay blind to exactly the files
+    that were there before it could see.
+    """
+    conn = sqlite3.connect(uncounted)
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(media_files)")}
+        value = conn.execute(
+            "SELECT font_attachments FROM media_files WHERE path = '/m/Show.mkv'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "font_attachments" in columns
+    assert value == (None,)

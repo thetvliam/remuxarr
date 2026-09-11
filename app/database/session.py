@@ -408,6 +408,12 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
         ("media_files", "und_audio_threshold_acknowledged",
          "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
+        # No DEFAULT, deliberately: existing rows must come out null, which
+        # is what tells the worker their fonts were never counted. A
+        # default of 0 would record every existing file as probed and
+        # font-free, and the worker would never look.
+        ("media_files", "font_attachments",
+         "ALTER TABLE media_files ADD COLUMN font_attachments INTEGER"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",

@@ -10,7 +10,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.decision import analyze_file
-from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.probe import is_faststart_mp4
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import get_app_settings, get_db
@@ -171,11 +171,7 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     """
     tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
     tracks = [_track_to_dict(t) for t in tracks_raw]
-    file_info = {
-        "path": media.path, "container": media.container,
-        "video_codec": media.video_codec,
-        "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged,
-    }
+    file_info = _file_info_for(media)
     faststart = (
         is_faststart_mp4(media.path)
         if (media.container or "").lower() == "mp4"

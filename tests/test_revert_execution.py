@@ -22,7 +22,7 @@ Everything else follows from "the bytes are what matter":
   • The database is updated only afterwards, and a bookkeeping failure
     never turns a successful restore into a reported failure.
 
-Verified by mutation, 13 applied, 13 killed. Two initially SURVIVED, and
+Verified by mutation, 14 applied, 14 killed. Two initially SURVIVED, and
 both had the same root cause: no test drove a FAILING FFmpeg run, only
 failing validation. Removing the missing-sidecar check survived because
 FFmpeg's own failure on a missing input surfaces as "temp file(s) missing
@@ -44,6 +44,7 @@ The full list:
   • Sidecars not deleted when points are cleared → killed
   • status left as "processed" after a revert    → killed
   • Track rows not refreshed                     → killed
+  • Font count not refreshed                     → killed
   • Processed file not removed after a container
     change                                        → killed
   • Bookkeeping exception propagated as a failed
@@ -330,6 +331,27 @@ def test_track_rows_are_refreshed_to_the_restored_file(env):
         Track.file_id == env["media"].id).all()
     languages = sorted(t.language for t in tracks if t.track_type == "audio")
     assert languages == ["eng", "fre"], "Track rows still describe the processed file"
+
+
+@ffmpeg_required
+def test_the_font_count_is_refreshed_to_the_restored_file(env):
+    """
+    The same gap as the Track rows above, for the count the decision
+    engine's font gate reads. The sentinels mean the next scan re-probes
+    the file anyway, and until then the row should describe the file on
+    disk, not the one the job produced. The restored original here has no
+    attachments; the count seeded before the revert stands in for a stale
+    one.
+    """
+    from app.database.models import MediaFile
+
+    env["media"].font_attachments = 5
+    env["db"].commit()
+
+    _revert(env["point"].id)
+
+    env["db"].expire_all()
+    assert env["db"].get(MediaFile, env["media"].id).font_attachments == 0
 
 
 # ── Refusing ─────────────────────────────────────────────────────────────────

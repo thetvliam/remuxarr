@@ -302,6 +302,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             ))
 
         media.duration = fmt_info.get("duration")
+        media.font_attachments = fmt_info.get("font_attachments")
         media.video_codec = next(
             (t["codec"] for t in track_list if t["track_type"] == "video"), None
         )

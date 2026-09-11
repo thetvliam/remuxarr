@@ -754,6 +754,7 @@ def _process_file(
         existing.container     = fmt_info.get("container")
         existing.duration      = fmt_info.get("duration")
         existing.video_codec   = primary_video_codec
+        existing.font_attachments = fmt_info.get("font_attachments")
         existing.last_scanned  = utcnow()
         media_file = existing
     else:
@@ -766,6 +767,7 @@ def _process_file(
             container   = fmt_info.get("container"),
             duration    = fmt_info.get("duration"),
             video_codec = primary_video_codec,
+            font_attachments = fmt_info.get("font_attachments"),
             last_scanned = utcnow(),
         )
         db.add(media_file)
@@ -816,12 +818,7 @@ def _process_file(
         db.flush()
 
     # ── Decision engine ────────────────────────────────────────────────────
-    file_info_dict = {
-        "path":        path,
-        "container":   fmt_info.get("container"),
-        "video_codec": primary_video_codec,
-        "und_audio_threshold_acknowledged": media_file.und_audio_threshold_acknowledged,
-    }
+    file_info_dict = _file_info_for(media_file)
     overrides = _load_subtitle_overrides(media_file)
     audio_lang_overrides = _load_audio_language_overrides(media_file)
     subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
@@ -1073,6 +1070,31 @@ def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
     """Subtitle counterpart to _load_audio_language_overrides above — same
     shape, same parsing, different column."""
     return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
+
+
+def _file_info_for(media_file: MediaFile) -> dict:
+    """
+    The file-level input to analyze_file(), from the stored row.
+
+    The only place it is built. There were three — here, the worker at job
+    pickup, and queue.py's re-evaluations — each a hand-written dict of the
+    same keys. When the font gate added font_attachments it reached none of
+    them: the count was probed and then dropped, so the gate never fired in
+    production, while every test of it passed on dicts built by hand. A new
+    key goes here and nowhere else.
+
+    From the row rather than a probe because two of the three callers have
+    only the row. The scanner writes the row from its probe first, so all
+    three see the same values.
+    """
+    return {
+        "path":             media_file.path,
+        "container":        media_file.container,
+        "video_codec":      media_file.video_codec,
+        "font_attachments": media_file.font_attachments,
+        "und_audio_threshold_acknowledged":
+            media_file.und_audio_threshold_acknowledged,
+    }
 
 
 def _track_to_dict(t: Track) -> dict:

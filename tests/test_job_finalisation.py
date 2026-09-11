@@ -16,9 +16,11 @@ one at a time and the pre-existing 334-test suite stayed green for every one:
   • the Track-row refresh removed entirely
 
 So every test below was then checked the same way, not assumed: 18 mutations
-were applied to _finish_job one at a time, and each of the 17 tests here
-fails against at least one of them. That makes this a net rather than a
-coverage number.
+were applied to _finish_job one at a time, and each of the 17 tests written
+then fails against at least one of them. That makes this a net rather than a
+coverage number. test_the_font_count_is_refreshed_to_the_processed_file came
+later, with its own mutant — the refresh's write deleted — which survived the
+full suite until it existed.
 
 Two of those mutations are worth recording because they are the ones a
 plausible "tidy-up" would actually produce, and neither is caught by
@@ -673,3 +675,42 @@ def test_a_crash_during_finalisation_does_not_strand_the_job(worker, Session,
         "show as running forever"
     )
     assert "simulated finalisation failure" in (job.error_message or "")
+
+
+def test_the_font_count_is_refreshed_to_the_processed_file(worker, Session,
+                                                          media_dir,
+                                                          monkeypatch):
+    """
+    The same delta-scan reasoning as the Track rows above, for the count the
+    decision engine's font gate reads.
+
+    A file converted to MP4 has no fonts left, since MP4 cannot hold an
+    attachment. Left at its pre-job count, the row describes fonts that no
+    longer exist, and nothing corrects it: a delta scan skips the file, and
+    the worker only counts rows that have never been counted.
+
+    Only probe_file is replaced, so the real extract_format_info does the
+    counting. _stub_probe replaces extract_format_info itself, with a dict
+    that has no font key, and the other tests here depend on that shape.
+    """
+    from app.database.models import MediaFile
+
+    src = media_dir / "episode.mp4"
+    src.write_bytes(b"x" * 10)
+    media_id, job_id = _seed(Session, src)
+    with Session() as db:
+        db.get(MediaFile, media_id).font_attachments = 3
+        db.commit()
+
+    monkeypatch.setattr(worker, "probe_file", lambda *_a, **_kw: {
+        "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+        "streams": [
+            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {"index": 1, "codec_type": "audio", "codec_name": "aac",
+             "tags": {"language": "eng"}},
+        ],
+    })
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _media(Session, media_id).font_attachments == 0

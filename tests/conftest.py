@@ -149,11 +149,19 @@ def make_track(
 def make_file_info(path="/media/movies/Test Movie (2020)/Test Movie (2020).mp4",
                     container="mp4", video_codec="h264", font_attachments=0):
     """
-    file_info as probe.extract_format_info() builds it.
+    file_info as scanner._file_info_for() builds it, which is the only place
+    production builds it.
 
-    font_attachments defaults to 0, which is what nearly every file has —
-    but the key is always present in production, so it is always present
+    font_attachments defaults to 0, the stored count for a file with no
+    fonts. The key is always present in production, so it is always present
     here too rather than only in the tests that care about it.
+
+    This docstring used to name probe.extract_format_info() as the source.
+    That function does count the fonts, but production never passed its
+    output to analyze_file(): three callers each built their own dict and
+    none included the count, so the font gate never fired while every test
+    of it passed on dicts built here. test_font_attachment_pipeline.py now
+    covers the callers.
     """
     return {
         "path":             path,
