@@ -18,7 +18,7 @@ import logging
 import urllib.error
 
 from app.core.arr_client import arr_post
-from app.core.arr_quality import RADARR, restore_quality
+from app.core.arr_quality import RADARR, restore_quality_best_effort
 
 logger = logging.getLogger(__name__)
 
@@ -55,31 +55,7 @@ def restore_movie_quality(
 ) -> None:
     """
     Put back the quality Radarr re-parsed from the filename after the
-    rescan above replaced the file record.
-
-    Best-effort, like the notification: the file is already on disk and
-    correct, so a failed metadata write must not mark the job failed. It
-    is logged at error rather than swallowed, because the state it leaves
-    behind is a file Radarr has flagged qualityCutoffNotMet and will try
-    to replace.
+    rescan above replaced the file record. Best-effort, and logged here
+    under this module's name: see arr_quality.restore_quality_best_effort.
     """
-    try:
-        restore_quality(RADARR, base_url, api_key, movie_id, path)
-    except urllib.error.HTTPError as exc:
-        # The body is where the reason actually is: a quality-only PUT to
-        # the per-file endpoint answers 500 with the exception and the
-        # controller line that threw it, while code and reason say only
-        # "Internal Server Error". Truncated because a stack trace is the
-        # usual payload and the first line is the part that identifies it.
-        try:
-            detail = exc.read().decode("utf-8", "replace")[:500]
-        except Exception:
-            detail = "<no body>"
-        logger.error(
-            "Radarr: quality restore HTTP %d for movie %d (%s): %s — %s",
-            exc.code, movie_id, path, exc.reason, detail,
-        )
-    except Exception:
-        logger.exception(
-            "Radarr: quality restore failed for movie %d (%s)", movie_id, path
-        )
+    restore_quality_best_effort(RADARR, base_url, api_key, movie_id, path, logger)

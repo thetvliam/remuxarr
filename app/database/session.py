@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.database.models import AppSetting, Base, QueueItem
+from app.database.models import AppSetting, Base
 
 logger = logging.getLogger(__name__)
 
@@ -264,54 +264,9 @@ def init_db() -> None:
     # nothing to do rather than failing on a column it just created.
     _allow_one_subtitle_flag_per_track()
     _migrate_schema()
-    # After _migrate_schema: it reads and writes review_reason, which older
-    # databases only gain there.
-    _label_subtitle_encoding_reviews()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
-
-
-def _label_subtitle_encoding_reviews() -> None:
-    """
-    Label subtitle-encoding reviews written before the worker recorded it.
-
-    The worker raises this review when FFmpeg cannot decode a text subtitle
-    as UTF-8, and it used to leave review_reason null. Both bulk endpoints
-    read a null reason with flagged tracks as an image-subtitle review, so
-    resolving subtitle items in bulk re-decided these files, re-queued the
-    extraction that had just failed, and sent them straight back to review.
-
-    They are told apart exactly by what they flag. The image gate flags
-    only image-based codecs, and an encoding review flags only tracks that
-    were being extracted to SRT, which an image-based codec never is. So a
-    null-reason review whose flagged tracks include no image-based codec is
-    an encoding review. Only rows still in review are touched, and a second
-    run finds nothing to change.
-    """
-    from app.core.decision import IMAGE_BASED_SUBS
-
-    with SessionLocal() as db:
-        candidates = db.query(QueueItem).filter(
-            QueueItem.status == "manual_review",
-            QueueItem.review_reason.is_(None),
-            QueueItem.review_subtitles.isnot(None),
-        ).all()
-        labelled = 0
-        for item in candidates:
-            try:
-                flagged = json.loads(item.review_subtitles) or []
-            except (TypeError, ValueError):
-                continue
-            if flagged and not any(
-                (f.get("codec") or "").lower() in IMAGE_BASED_SUBS
-                for f in flagged
-            ):
-                item.review_reason = "subtitle_encoding"
-                labelled += 1
-        if labelled:
-            db.commit()
-            logger.info("Labelled %d subtitle-encoding review(s)", labelled)
 
 
 def _relax_revert_point_file_id() -> None:
