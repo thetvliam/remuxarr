@@ -193,7 +193,8 @@ class QueueItem(Base):
     review_subtitles = Column(Text)
 
     # WHICH gate put this item in manual review, recorded rather than
-    # inferred. One of "image_subtitles", "font_attachments", or null.
+    # inferred. One of "image_subtitles", "font_attachments",
+    # "subtitle_encoding", or null.
     #
     # Two separate places used to work this out from review_subtitles being
     # non-null, which was reliable only while the image-subtitle gate was the
@@ -208,15 +209,20 @@ class QueueItem(Base):
     # queue endpoints, the scanner, and the worker at job pickup. The
     # scanner and the worker did not at first, so their rows came out null.
     #
+    # The worker's subtitle-encoding review is raised outside the decision
+    # engine and names itself, "subtitle_encoding". No bulk endpoint
+    # collects it: re-deciding the file cannot see an encoding failure, so
+    # it would queue the extraction that just failed. It is answered one
+    # file at a time. Those written null before the worker named them are
+    # relabelled at startup — see session._label_subtitle_encoding_reviews.
+    #
     # Null with a non-null review_subtitles is read by both bulk endpoints
-    # as an image-subtitle review. It is never a font review. It comes
-    # from three places: rows from before this column existed, which
-    # predate the font gate; rows the scanner and the worker wrote before
-    # they recorded this, when the font count did not reach their decisions
-    # and the font gate could not fire from them; and the worker's
-    # subtitle-encoding review, which is raised outside the decision engine
-    # and has no gate to name. The image resolver collects all three; the
-    # font resolver none.
+    # as an image-subtitle review, and after that relabel it always is one.
+    # It comes from rows from before this column existed, which predate the
+    # font gate, and from rows the scanner and the worker wrote before they
+    # recorded this, when the font count did not reach their decisions and
+    # the font gate could not fire from them. The image resolver collects
+    # them; the font resolver does not.
     review_reason = Column(String)
 
     # Size tracking (populated after success)

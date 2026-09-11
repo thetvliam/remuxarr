@@ -410,6 +410,58 @@ def test_the_image_resolver_still_picks_up_unlabelled_rows(db, monkeypatch):
     assert picked == [legacy.media_file.path]
 
 
+def test_the_image_resolver_leaves_subtitle_encoding_reviews_alone(monkeypatch):
+    """
+    Closes: resolving subtitle items in bulk re-queuing an encoding failure.
+
+    The worker raises this review when FFmpeg cannot decode a text subtitle
+    as UTF-8, and re-deciding the file cannot see that. Reproduced on a real
+    MKV with a Latin-1 SRT track: the image resolver reported the review
+    resolved and put it back to pending with the extraction that had just
+    failed, which fails the same way and raises the same review. The review
+    here comes from the real writer, so this breaks if it stops naming
+    itself.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core import worker
+    from app.database.models import Base, MediaFile, QueueItem, Track
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+
+    with factory() as s:
+        media = MediaFile(path="/m/Movie.mkv", filename="Movie.mkv",
+                          directory="/m", size=1, mtime=1.0,
+                          container="mkv", video_codec="h264")
+        s.add(media)
+        s.flush()
+        for index, kind, codec in [(0, "video", "h264"), (1, "audio", "aac"),
+                                   (2, "subtitle", "subrip")]:
+            s.add(Track(file_id=media.id, stream_index=index,
+                        track_type=kind, codec=codec,
+                        language="und" if kind == "video" else "eng",
+                        is_default=(index == 1)))
+        job = QueueItem(file_id=media.id, status="processing")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    worker._flag_subtitle_encoding_review(
+        job_id, [(2, "/m/Movie.en.srt")],
+        [{"stream_index": 2, "track_type": "subtitle",
+          "codec": "subrip", "language": "eng"}],
+    )
+
+    with factory() as s:
+        result = queue_routes.resolve_subtitles_bulk(s)
+        assert s.get(QueueItem, job_id).status == "manual_review"
+        assert result == {"resolved": 0, "still_unresolved": 0, "errors": []}
+
+
 def test_the_font_resolver_leaves_unlabelled_rows_alone(db, monkeypatch):
     """
     Closes: the font resolver including unlabelled rows.

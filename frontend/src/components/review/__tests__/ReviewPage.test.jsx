@@ -3,11 +3,12 @@
  *
  * WHAT THIS PAGE GETS WRONG QUIETLY
  * ---------------------------------
- * Files reach manual review for three reasons now, and two of them flag
- * subtitle tracks: image-based subtitles that cannot become SRT, and
- * embedded fonts that only MKV can hold. They look identical in the payload
- * — both carry flagged_subtitles — and they are resolved by different
- * settings that can be set to opposite values.
+ * Files reach manual review for four reasons now, and three of them flag
+ * subtitle tracks: image-based subtitles that cannot become SRT, embedded
+ * fonts that only MKV can hold, and text subtitles FFmpeg could not decode
+ * as UTF-8. They look identical in the payload — all carry
+ * flagged_subtitles — and the first two are resolved by different settings
+ * that can be set to opposite values. The third has no setting at all.
  *
  * So counting them together offers to bulk-resolve font items under
  * Image-Based Subtitle Handling. With that on Always Remove, one button
@@ -16,15 +17,18 @@
  * subtitles. Nothing fails, and the styling is gone.
  *
  * review_reason is what tells them apart. A null reason on a flagged item
- * predates that column and can only be an image-subtitle review, since the
- * font gate did not exist when it was written; this page reads it the same
- * way the bulk resolver does.
+ * is an image-subtitle review — QueueItem.review_reason says where those
+ * rows come from — and this page reads it the same way the bulk resolver
+ * does. An encoding review gets no bulk action: re-deciding the file
+ * cannot see the encoding failure, so it would queue the extraction that
+ * just failed.
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 6 applied, 6 killed:
+ * Verified by mutation, 7 applied, 7 killed:
  *
  *   • Font items counted as subtitle items                  → killed
+ *   • Encoding items counted as subtitle items              → killed
  *   • Subtitle items counted as font items                  → killed
  *   • Unlabelled items treated as font items                → killed
  *   • Each button posting to the other's endpoint           → killed
@@ -45,8 +49,8 @@ import { ThemeProvider } from "../../../theme";
 
 const API = "http://backend";
 
-/* One of each: an image-subtitle review, a font review, and a row written
- * before review_reason existed. */
+/* One of each: an image-subtitle review, a font review, an unlabelled
+ * image-subtitle review, and a subtitle-encoding review. */
 const IMAGE_ITEM = {
   id: 1, status: "manual_review", review_reason: "image_subtitles",
   flagged_subtitles: [{ stream_index: 2, language: "eng",
@@ -64,6 +68,12 @@ const LEGACY_ITEM = {
   flagged_subtitles: [{ stream_index: 2, language: "eng",
                         codec: "dvd_subtitle", is_forced: false }],
   file: { id: 3, filename: "Old.mkv", path: "/m/Old.mkv" },
+};
+const ENCODING_ITEM = {
+  id: 4, status: "manual_review", review_reason: "subtitle_encoding",
+  flagged_subtitles: [{ stream_index: 2, language: "eng",
+                        codec: "subrip", is_forced: false }],
+  file: { id: 4, filename: "Latin1.mkv", path: "/m/Latin1.mkv" },
 };
 
 let posted;
@@ -114,16 +124,27 @@ describe("ReviewPage — bulk resolving", () => {
   });
 
   it("treats an item with no recorded reason as an image-subtitle one", async () => {
-    /** Every install has these: rows in review from before review_reason
-     *  existed. All predate the font gate, so they are image-subtitle
-     *  reviews — and counting them as font items would resolve them under
-     *  a setting that has nothing to say about them. */
+    /** Every install has these: image-subtitle reviews written before
+     *  every path recorded review_reason. Counting them as font items would
+     *  resolve them under a setting that has nothing to say about them. */
     mockApi({ imgSetting: "always_remove", fontSetting: "always_remove" });
     setup([LEGACY_ITEM]);
 
     expect(await screen.findByRole("button",
       { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /FONT ITEMS/i })).toBeNull();
+  });
+
+  it("offers no bulk action for a subtitle-encoding review", async () => {
+    /** Resolving it in bulk re-decided the file, which cannot see the
+     *  encoding failure, and queued the same failing extraction; the file
+     *  came straight back. Counted as a subtitle item, the button offered
+     *  exactly that. */
+    mockApi({ imgSetting: "always_remove" });
+    setup([IMAGE_ITEM, ENCODING_ITEM]);
+
+    expect(await screen.findByRole("button",
+      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
   });
 
   it("sends each button to its own endpoint", async () => {

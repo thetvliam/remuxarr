@@ -49,9 +49,16 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
      * A null reason on a flagged item is never a font review — see
      * QueueItem.review_reason for where those rows come from — and is read
      * as an image-subtitle item here, the same way the bulk resolver reads
-     * it. */
+     * it.
+     *
+     * A subtitle-encoding review flags tracks too, but no bulk action may
+     * take it: re-deciding the file cannot see the encoding failure, so it
+     * would queue the extraction that just failed and the file would come
+     * straight back. It is answered one file at a time. */
     const isFontItem = i => i.review_reason === "font_attachments";
-    const isImageItem = i => i.flagged_subtitles?.length > 0 && !isFontItem(i);
+    const isEncodingItem = i => i.review_reason === "subtitle_encoding";
+    const isImageItem = i => i.flagged_subtitles?.length > 0
+        && !isFontItem(i) && !isEncodingItem(i);
 
     const subtitleItemCount = items.filter(isImageItem).length;
     const fontItemCount = items.filter(isFontItem).length;
