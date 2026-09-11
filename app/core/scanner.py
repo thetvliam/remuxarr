@@ -881,6 +881,10 @@ def _process_file(
             # The stale reason text is merely confusing; this is incorrect.
             already.reason           = decision.reason
             already.review_subtitles = review_subs
+            # Which gate fired changes for the same reasons, and the bulk
+            # resolvers are scoped by it: a stale value hands the row to the
+            # resolver for a gate that no longer applies to the file.
+            already.review_reason    = decision.review_reason
             already.original_size    = current_size
             # Arr IDs can appear after the row was created (e.g. the file was
             # scanned before Sonarr had imported it), and are never unset.
@@ -896,6 +900,11 @@ def _process_file(
                 reason     = decision.reason,
                 original_size = current_size,
                 review_subtitles = review_subs,
+                # Previously omitted, so every review this branch raised was
+                # null, and a null review with flagged tracks is an
+                # image-subtitle review to the bulk endpoints whatever gate
+                # had actually fired.
+                review_reason = decision.review_reason,
                 # Previously omitted, so the column default (True) applied to
                 # every manual-review row. queue._apply_decision_to_item then
                 # moves that same row to "pending" without correcting it, so a

@@ -196,10 +196,19 @@ class QueueItem(Base):
     # resolve would otherwise apply image_subtitle_handling to them —
     # converting away the styling a review existed to protect.
     #
-    # Null on rows written before this column existed. Every one of those
-    # predates the font gate, so a null with a non-null review_subtitles can
-    # only be an image-subtitle review, and the bulk endpoints read it that
-    # way.
+    # Every path that raises a review from a decision copies it here: the
+    # queue endpoints, the scanner, and the worker at job pickup. The
+    # scanner and the worker did not at first, so their rows came out null.
+    #
+    # Null with a non-null review_subtitles is read by both bulk endpoints
+    # as an image-subtitle review. It is never a font review. It comes
+    # from three places: rows from before this column existed, which
+    # predate the font gate; rows the scanner and the worker wrote before
+    # they recorded this, when the font count did not reach their decisions
+    # and the font gate could not fire from them; and the worker's
+    # subtitle-encoding review, which is raised outside the decision engine
+    # and has no gate to name. The image resolver collects all three; the
+    # font resolver none.
     review_reason = Column(String)
 
     # Size tracking (populated after success)

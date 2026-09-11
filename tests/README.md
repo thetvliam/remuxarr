@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1445 tests across 73 test files, plus 481 frontend tests under
+1449 tests across 73 test files, plus 481 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -127,7 +127,10 @@ the screen. `test_review_reason.py` covers the field that says WHICH gate
 raised a review, after two endpoints were found inferring it from whether a
 flagged-subtitle payload existed — an inference both of their docstrings had
 warned would break the moment a second subtitle-review trigger appeared.
-The font gate is that trigger, and nothing about it fails.
+The font gate is that trigger, and nothing about it fails. The same module
+covers the scanner and the worker recording that field, which they did not at
+first: every review they raised came out unlabelled, and both bulk endpoints
+read an unlabelled review with flagged tracks as an image-subtitle one.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

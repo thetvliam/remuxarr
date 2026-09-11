@@ -1294,6 +1294,11 @@ def _load_job_data(job_id: int):
                 json.dumps(decision.flagged_subtitles)
                 if decision.flagged_subtitles else None
             )
+            # Which gate fired, as queue._apply_decision_to_item and the
+            # scanner record it. Left null, a row with flagged tracks is an
+            # image-subtitle review to the bulk endpoints whatever gate
+            # raised it.
+            job.review_reason = decision.review_reason
             media.status = "manual_review"
             db.commit()
             return None

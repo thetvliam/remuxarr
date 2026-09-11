@@ -625,11 +625,10 @@ def _resolve_review_bulk(db: Session, reason: str, *,
     under image_subtitle_handling — converting away the styling a review
     existed to protect.
 
-    include_unlabelled covers rows written before review_reason existed.
-    Every one of them predates the font gate, so a null reason with a
-    non-null review_subtitles can only be an image-subtitle review. Only the
-    image endpoint passes it; a font resolve must never sweep up a row whose
-    origin it is guessing at.
+    include_unlabelled covers rows with a null reason and a non-null
+    review_subtitles. None of them is a font review; QueueItem.review_reason
+    lists where they come from. Only the image endpoint passes it; a font
+    resolve must never sweep up a row whose origin it is guessing at.
 
     If the gate's setting is still "always_ask", every item re-runs and lands
     straight back in manual_review, unresolved — harmless but pointless, and

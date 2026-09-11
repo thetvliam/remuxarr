@@ -16,13 +16,15 @@ font handling on always_keep would have had every anime file converted, the
 fonts dropped and the typesetting flattened, by pressing a button that said
 it was resolving image subtitles.
 
-QueueItem.review_reason now carries the answer, set by whichever gate fired.
+QueueItem.review_reason now carries the answer. The gate names itself on
+the decision, and every path that raises a review from a decision copies it
+onto the row: the queue endpoints, the scanner, and the worker at job
+pickup. The scanner and the worker did not at first.
 
-The awkward case is rows written before the column existed. Every one of
-them predates the font gate, so a null reason with a non-null
-review_subtitles can only be an image-subtitle review — the image resolver
-includes those, and the font resolver must not, because for it they are a
-guess.
+The awkward case is a null reason on a row with flagged tracks. None of
+those is a font review, and QueueItem.review_reason lists where they come
+from. The image resolver includes them, and the font resolver must not,
+because for it they are a guess.
 
 Ten mutants, all confirmed surviving the full suite before this file
 existed:
@@ -37,6 +39,16 @@ existed:
                the font resolver including unlabelled rows      killed
                the manual_review status filter dropped         killed
                both resolvers reading the same reason           killed
+
+Six more, for the paths that raise reviews outside the queue endpoints, all
+confirmed surviving the full suite before the tests for them were written:
+
+  the paths    the scanner not recording the gate on a new row  killed
+               the scanner writing the image gate on a new row  killed
+               the scanner not updating it on refresh           killed
+               the scanner keeping it when the gate names none  killed
+               the worker not recording it at pickup            killed
+               the worker writing the image gate at pickup      killed
 
 Run from the project root:
     pytest tests/test_review_reason.py -v
@@ -183,6 +195,140 @@ def test_the_reason_is_cleared_when_the_item_leaves_review(db):
     assert item.review_reason is None
 
 
+# ── Every path that raises a review records it ────────────────────────────────
+#
+# The tests above cover the queue endpoints. The scanner and the worker raise
+# reviews on their own, and neither recorded the gate, so every review they
+# raised came out null, and a null review with flagged tracks is an
+# image-subtitle review to both bulk endpoints whatever had actually fired.
+#
+# Each test hands the real path a decision naming a gate and checks the row
+# carries it. The decision is injected because what is under test is the
+# recording, not which gate a given file trips; the gates are pinned above.
+
+def _review(gate, flagged=True):
+    from app.core.decision import Action, ProcessingDecision
+
+    msg = f"needs a look ({gate})"
+    return ProcessingDecision(
+        should_process=False, is_manual_review=True, reason=msg,
+        actions=[Action(action_type="flag_manual_review", description=msg)],
+        flagged_subtitles=(
+            [{"stream_index": 2, "language": "eng", "codec": "ass",
+              "is_forced": False, "title": "Signs and Songs"}]
+            if flagged else None
+        ),
+        review_reason=gate,
+    )
+
+
+_PROBE = {
+    "format": {"format_name": "matroska,webm", "duration": "1.0"},
+    "streams": [
+        {"index": 0, "codec_type": "video", "codec_name": "hevc"},
+        {"index": 1, "codec_type": "audio", "codec_name": "aac",
+         "tags": {"language": "eng"}},
+        {"index": 2, "codec_type": "subtitle", "codec_name": "ass",
+         "tags": {"language": "eng"}},
+    ],
+}
+
+
+def _scan(db, monkeypatch, tmp_path, decision):
+    """
+    The real scanner from the webhook entry point, with only the probe and
+    the decision replaced. Everything between them and the row is the
+    production code, including the refresh-in-place on a second call.
+    """
+    from app.core import scanner
+
+    path = tmp_path / "Show - S01E08.mkv"
+    if not path.exists():
+        path.write_bytes(b"\0" * 64)
+    monkeypatch.setattr(scanner, "probe_file", lambda *_a, **_kw: _PROBE)
+    monkeypatch.setattr(scanner, "analyze_file", lambda *_a, **_kw: decision)
+    return scanner.queue_single_file(db, str(path))
+
+
+def test_a_review_the_scanner_raises_records_its_gate(db, monkeypatch, tmp_path):
+    """
+    Closes: the scanner creating a review row without the gate that raised
+    it. Every scan and every webhook comes through here.
+    """
+    item = _scan(db, monkeypatch, tmp_path, _review("font_attachments"))
+
+    assert item.status == "manual_review"
+    assert item.review_reason == "font_attachments"
+
+
+@pytest.mark.parametrize("before, after", [
+    ("image_subtitles", "font_attachments"),
+    ("font_attachments", None),
+], ids=["image-then-fonts", "fonts-then-a-gate-that-names-none"])
+def test_a_review_the_scanner_refreshes_takes_the_new_gate(
+        db, monkeypatch, tmp_path, before, after):
+    """
+    Closes: an existing review row keeping the gate it was first raised for.
+
+    The scanner refreshes a review row in place rather than adding a second
+    one, and the gate can change between evaluations as the reason can. A
+    stale value leaves the row in the scope of a resolver for a gate that
+    no longer applies to it.
+
+    The second case is the undefined-audio threshold, which flags no track
+    and names no gate. Its null has to replace the old value, not be
+    skipped over.
+    """
+    first = _scan(db, monkeypatch, tmp_path, _review(before))
+    again = _scan(db, monkeypatch, tmp_path,
+                  _review(after, flagged=after is not None))
+
+    assert again.id == first.id
+    assert again.review_reason == after
+
+
+def test_a_review_the_worker_raises_at_pickup_records_its_gate(
+        monkeypatch, tmp_path):
+    """
+    Closes: the worker sending a job to review without the gate.
+
+    The worker re-decides every pending job when it picks it up, and a job
+    whose file now needs review goes there from here, not from the scanner.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core import worker
+    from app.database.models import Base, MediaFile, QueueItem
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+    monkeypatch.setattr(worker, "analyze_file",
+                        lambda *_a, **_kw: _review("font_attachments"))
+
+    path = tmp_path / "Show - S01E08.mkv"
+    path.write_bytes(b"\0" * 64)
+    with factory() as s:
+        media = MediaFile(path=str(path), filename=path.name,
+                          directory=str(tmp_path), size=64, mtime=1.0,
+                          container="mkv", video_codec="hevc")
+        s.add(media)
+        s.flush()
+        job = QueueItem(file_id=media.id, status="pending")
+        s.add(job)
+        s.commit()
+        job_id = job.id
+
+    assert worker._load_job_data(job_id) is None
+
+    with factory() as s:
+        job = s.get(QueueItem, job_id)
+        assert job.status == "manual_review"
+        assert job.review_reason == "font_attachments"
+
+
 # ── Scoping the bulk resolvers ────────────────────────────────────────────────
 
 def _record_scope(monkeypatch):
@@ -247,13 +393,12 @@ def test_the_image_resolver_ignores_font_items(db, monkeypatch):
     assert picked == [image.media_file.path]
 
 
-def test_the_image_resolver_still_picks_up_rows_from_before_the_column(
-        db, monkeypatch):
+def test_the_image_resolver_still_picks_up_unlabelled_rows(db, monkeypatch):
     """
     Closes: the compatibility reading dropped.
 
-    Every existing install has items in review with a null reason. All of
-    them predate the font gate, so they are image-subtitle reviews — and
+    Every existing install has items in review with a null reason. None of
+    them is a font review, and this is the resolver that claims them —
     without this they become permanently unresolvable in bulk, which is
     exactly the backlog the endpoint was built for.
     """
@@ -270,7 +415,7 @@ def test_the_font_resolver_leaves_unlabelled_rows_alone(db, monkeypatch):
     Closes: the font resolver including unlabelled rows.
 
     For the image resolver a null reason is a safe inference. For this one
-    it is a guess about rows written before the gate existed, and guessing
+    it is a guess about a row whose origin was never recorded, and guessing
     wrong converts files the review was protecting.
     """
     _item(db, reason=None, flagged=True)

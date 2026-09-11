@@ -46,9 +46,10 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
      * items under Image-Based Subtitle Handling, which converts away the
      * styling the review existed to protect — see QueueItem.review_reason.
      *
-     * A null reason on a flagged item predates that column, and can only be
-     * an image-subtitle review: the font gate did not exist when it was
-     * written. Read the same way here as in the bulk resolver. */
+     * A null reason on a flagged item is never a font review — see
+     * QueueItem.review_reason for where those rows come from — and is read
+     * as an image-subtitle item here, the same way the bulk resolver reads
+     * it. */
     const isFontItem = i => i.review_reason === "font_attachments";
     const isImageItem = i => i.flagged_subtitles?.length > 0 && !isFontItem(i);
 
