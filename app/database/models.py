@@ -42,6 +42,14 @@ class MediaFile(Base):
     duration    = Column(Float)    # seconds
     video_codec = Column(String)   # first video stream codec
 
+    # Embedded font attachments, from the same probe as the three above.
+    # Null means not probed since this column was added, which is not the
+    # same as 0: the decision engine's font gate keys on it, and reading
+    # null as "no fonts" converts a file whose fonts nobody has counted.
+    # A normal scan skips unchanged files, so a null can outlive many
+    # scans; the worker probes it once at job pickup — see _load_job_data.
+    font_attachments = Column(Integer)
+
     # Lifecycle state
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)
@@ -179,11 +187,37 @@ class QueueItem(Base):
     # and was never a value this column could hold.
     current_action = Column(String)
 
-    # JSON list of flagged subtitle tracks for manual_review items caused by
-    # non-convertible (image-based) subtitles. Each entry:
-    #   {stream_index, language, codec, is_forced, title}
-    # Null/empty for other manual_review causes (e.g. undefined-language audio).
+    # JSON list of flagged subtitle tracks for a manual_review item. Each
+    # entry: {stream_index, language, codec, is_forced, title}
+    # Null/empty for causes that flag no track (e.g. undefined-language audio).
     review_subtitles = Column(Text)
+
+    # WHICH gate put this item in manual review, recorded rather than
+    # inferred. One of "image_subtitles", "font_attachments", or null.
+    #
+    # Two separate places used to work this out from review_subtitles being
+    # non-null, which was reliable only while the image-subtitle gate was the
+    # sole trigger that populated it. resolve_subtitles_bulk's docstring said
+    # so explicitly, and the approve endpoint's said that any new
+    # subtitle-review trigger would break the inference. The font-attachment
+    # gate is that trigger: its items are also flagged subtitles, and bulk
+    # resolve would otherwise apply image_subtitle_handling to them —
+    # converting away the styling a review existed to protect.
+    #
+    # Every path that raises a review from a decision copies it here: the
+    # queue endpoints, the scanner, and the worker at job pickup. The
+    # scanner and the worker did not at first, so their rows came out null.
+    #
+    # Null with a non-null review_subtitles is read by both bulk endpoints
+    # as an image-subtitle review. It is never a font review. It comes
+    # from three places: rows from before this column existed, which
+    # predate the font gate; rows the scanner and the worker wrote before
+    # they recorded this, when the font count did not reach their decisions
+    # and the font gate could not fire from them; and the worker's
+    # subtitle-encoding review, which is raised outside the decision engine
+    # and has no gate to name. The image resolver collects all three; the
+    # font resolver none.
+    review_reason = Column(String)
 
     # Size tracking (populated after success)
     output_path   = Column(String)

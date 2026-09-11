@@ -269,10 +269,11 @@ def test_removing_with_no_ids_is_refused(monkeypatch, sessions):
     that matched no rows — so a UI bug sending an empty selection reads
     as rows that were already gone.
     """
+    _settings(monkeypatch, scan_paths=["/media/tv"])
     body = scan_routes.RemoveOrphanedRequest(file_ids=[])
 
     with pytest.raises(HTTPException) as raised:
-        asyncio.run(scan_routes.remove_orphaned(body))
+        asyncio.run(scan_routes.remove_orphaned(body, db=object()))
 
     assert raised.value.status_code == 400
 
@@ -292,9 +293,77 @@ def test_the_requested_ids_are_the_ones_removed(monkeypatch, sessions):
         return len(file_ids)
 
     monkeypatch.setattr(scan_routes, "remove_orphaned_media_files", _remove)
+    _settings(monkeypatch, scan_paths=["/media/tv"])
     body = scan_routes.RemoveOrphanedRequest(file_ids=[4, 9])
 
-    result = asyncio.run(scan_routes.remove_orphaned(body))
+    result = asyncio.run(scan_routes.remove_orphaned(body, db=object()))
 
     assert seen["ids"] == [4, 9]
     assert result == {"removed": 2}
+
+
+# ── The unconfigured-library guard ────────────────────────────────────────────
+
+def test_listing_orphans_is_refused_with_no_scan_paths(monkeypatch):
+    """
+    Membership is decided by the prefixes handed to the finder, so with
+    none every row in the library is outside it. Without this guard the
+    endpoint reports a user's whole collection under a heading saying
+    these rows are orphaned, beside a button that removes them.
+
+    Asserted on the finder never being called, not only on the status:
+    a 400 raised after the query still means the answer was computed, and
+    the thing being prevented is the answer existing at all.
+    """
+    called = []
+    monkeypatch.setattr(scan_routes, "find_orphaned_media_files",
+                        lambda db, paths: called.append(paths) or [])
+    _settings(monkeypatch)
+
+    with pytest.raises(HTTPException) as raised:
+        scan_routes.list_orphaned(db=object())
+
+    assert raised.value.status_code == 400
+    assert called == []
+
+
+def test_removing_orphans_is_refused_with_no_scan_paths(monkeypatch, sessions):
+    """
+    The listing refuses, so ids can only reach this from a page loaded
+    before the paths were removed — or from something that is not the UI.
+
+    This endpoint deletes MediaFile rows and every row referencing them,
+    and unlike Clear Database it detaches RevertPoint rows rather than
+    deleting them, leaving their sidecars on the recycle volume. Reaching
+    a whole-library wipe by this route gets a worse outcome than the
+    action built for it.
+    """
+    called = []
+    monkeypatch.setattr(scan_routes, "remove_orphaned_media_files",
+                        lambda db, ids: called.append(ids) or 0)
+    _settings(monkeypatch)
+    body = scan_routes.RemoveOrphanedRequest(file_ids=[4, 9])
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(scan_routes.remove_orphaned(body, db=object()))
+
+    assert raised.value.status_code == 400
+    assert called == [], "rows were deleted before the refusal"
+
+
+def test_the_refusal_points_at_the_action_that_does_this_properly(monkeypatch):
+    """
+    Someone hitting this generally does want everything gone. The message
+    has to say where that lives, or the obvious next move is to add a
+    throwaway scan path and come straight back to this button.
+
+    Pinned because it is the whole user-facing value of the guard: a bare
+    400 stops the deletion and leaves the person with no idea what to do
+    instead.
+    """
+    _settings(monkeypatch)
+
+    with pytest.raises(HTTPException) as raised:
+        scan_routes.list_orphaned(db=object())
+
+    assert "Clear Database" in raised.value.detail

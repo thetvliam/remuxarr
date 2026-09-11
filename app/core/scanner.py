@@ -754,6 +754,7 @@ def _process_file(
         existing.container     = fmt_info.get("container")
         existing.duration      = fmt_info.get("duration")
         existing.video_codec   = primary_video_codec
+        existing.font_attachments = fmt_info.get("font_attachments")
         existing.last_scanned  = utcnow()
         media_file = existing
     else:
@@ -766,6 +767,7 @@ def _process_file(
             container   = fmt_info.get("container"),
             duration    = fmt_info.get("duration"),
             video_codec = primary_video_codec,
+            font_attachments = fmt_info.get("font_attachments"),
             last_scanned = utcnow(),
         )
         db.add(media_file)
@@ -816,12 +818,7 @@ def _process_file(
         db.flush()
 
     # ── Decision engine ────────────────────────────────────────────────────
-    file_info_dict = {
-        "path":        path,
-        "container":   fmt_info.get("container"),
-        "video_codec": primary_video_codec,
-        "und_audio_threshold_acknowledged": media_file.und_audio_threshold_acknowledged,
-    }
+    file_info_dict = _file_info_for(media_file)
     overrides = _load_subtitle_overrides(media_file)
     audio_lang_overrides = _load_audio_language_overrides(media_file)
     subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
@@ -881,6 +878,10 @@ def _process_file(
             # The stale reason text is merely confusing; this is incorrect.
             already.reason           = decision.reason
             already.review_subtitles = review_subs
+            # Which gate fired changes for the same reasons, and the bulk
+            # resolvers are scoped by it: a stale value hands the row to the
+            # resolver for a gate that no longer applies to the file.
+            already.review_reason    = decision.review_reason
             already.original_size    = current_size
             # Arr IDs can appear after the row was created (e.g. the file was
             # scanned before Sonarr had imported it), and are never unset.
@@ -896,6 +897,11 @@ def _process_file(
                 reason     = decision.reason,
                 original_size = current_size,
                 review_subtitles = review_subs,
+                # Previously omitted, so every review this branch raised was
+                # null, and a null review with flagged tracks is an
+                # image-subtitle review to the bulk endpoints whatever gate
+                # had actually fired.
+                review_reason = decision.review_reason,
                 # Previously omitted, so the column default (True) applied to
                 # every manual-review row. queue._apply_decision_to_item then
                 # moves that same row to "pending" without correcting it, so a
@@ -1064,6 +1070,31 @@ def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
     """Subtitle counterpart to _load_audio_language_overrides above — same
     shape, same parsing, different column."""
     return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
+
+
+def _file_info_for(media_file: MediaFile) -> dict:
+    """
+    The file-level input to analyze_file(), from the stored row.
+
+    The only place it is built. There were three — here, the worker at job
+    pickup, and queue.py's re-evaluations — each a hand-written dict of the
+    same keys. When the font gate added font_attachments it reached none of
+    them: the count was probed and then dropped, so the gate never fired in
+    production, while every test of it passed on dicts built by hand. A new
+    key goes here and nowhere else.
+
+    From the row rather than a probe because two of the three callers have
+    only the row. The scanner writes the row from its probe first, so all
+    three see the same values.
+    """
+    return {
+        "path":             media_file.path,
+        "container":        media_file.container,
+        "video_codec":      media_file.video_codec,
+        "font_attachments": media_file.font_attachments,
+        "und_audio_threshold_acknowledged":
+            media_file.und_audio_threshold_acknowledged,
+    }
 
 
 def _track_to_dict(t: Track) -> dict:

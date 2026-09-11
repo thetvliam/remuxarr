@@ -6,11 +6,11 @@ from app.core.timeutil import utcnow
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.decision import analyze_file
-from app.core.scanner import ScanStats, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.probe import is_faststart_mp4
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
 from app.database.session import get_app_settings, get_db
@@ -171,11 +171,7 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     """
     tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
     tracks = [_track_to_dict(t) for t in tracks_raw]
-    file_info = {
-        "path": media.path, "container": media.container,
-        "video_codec": media.video_codec,
-        "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged,
-    }
+    file_info = _file_info_for(media)
     faststart = (
         is_faststart_mp4(media.path)
         if (media.container or "").lower() == "mp4"
@@ -225,6 +221,9 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.review_subtitles = (
             json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
         )
+        # Which gate fired, so the bulk resolvers do not have to work it out
+        # from review_subtitles — see QueueItem.review_reason.
+        item.review_reason = decision.review_reason
         return
 
     _upsert_language_flags(db, media, decision)
@@ -233,6 +232,7 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.status = "skipped"
         item.reason = decision.reason
         item.review_subtitles = None
+        item.review_reason = None
         item.completed_at = utcnow()
         media.status = "skipped"
         return
@@ -242,6 +242,7 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
     item.status = "pending"
     item.reason = decision.reason
     item.review_subtitles = None
+    item.review_reason = None
     # Honor dry_run_mode as it stands NOW, not as it was when the file
     # was originally scanned.
     item.is_dry_run = _current_dry_run_mode(db)
@@ -604,39 +605,45 @@ def resolve_subtitles(
     return _serialize(item, include_actions=True)
 
 
-@router.post("/resolve-subtitles-bulk")
-def resolve_subtitles_bulk(db: Session = Depends(get_db)):
+def _resolve_review_bulk(db: Session, reason: str, *,
+                         include_unlabelled: bool) -> dict:
     """
-    Re-run the decision engine for every manual_review item flagged
-    specifically for non-convertible (image-based) subtitle tracks,
-    letting image_subtitle_handling (when set to always_keep or
-    always_remove) resolve them automatically — no per-item choice
-    required. Built for exactly the scenario of a large backlog of these
-    (e.g. hundreds) sitting in review, where clicking through each one
-    individually isn't practical.
+    Re-run the decision engine for every manual_review item raised by one
+    gate, letting that gate's setting resolve them without a per-item
+    choice. Built for the case of a large backlog — hundreds of items — where
+    clicking through each one is not practical.
 
-    Scoped specifically to review_subtitles IS NOT NULL — reliably,
-    exclusively populated by the image-based-subtitle gate and no other
-    manual-review trigger (e.g. the separate undefined-audio-count gate
-    never touches it), so this can never accidentally resolve an
-    unrelated manual-review item.
+    Scoped by review_reason, which the gate records. It used to be scoped by
+    review_subtitles being non-null, and this docstring used to claim that
+    field was populated exclusively by the image-subtitle gate. That was true
+    until the font-attachment gate arrived: its items are flagged subtitles
+    too, so the old filter would have collected them here and resolved them
+    under image_subtitle_handling — converting away the styling a review
+    existed to protect.
 
-    If image_subtitle_handling is still "always_ask", every item re-runs
-    and lands right back in manual_review, unresolved — harmless, but
-    pointless; the frontend only surfaces this action once the setting is
-    actually set to a resolving value.
+    include_unlabelled covers rows with a null reason and a non-null
+    review_subtitles. None of them is a font review; QueueItem.review_reason
+    lists where they come from. Only the image endpoint passes it; a font
+    resolve must never sweep up a row whose origin it is guessing at.
 
-    Commits per-item, same reasoning as retry_all_failed and
-    apply_language: with a batch this size, one bad item raising an
-    exception must not roll back every earlier item that already
-    succeeded.
+    If the gate's setting is still "always_ask", every item re-runs and lands
+    straight back in manual_review, unresolved — harmless but pointless, and
+    the frontend only offers the action once the setting resolves.
+
+    Commits per-item, same reasoning as retry_all_failed and apply_language:
+    with a batch this size, one bad item raising must not roll back every
+    earlier item that already succeeded.
     """
+    scope = [QueueItem.review_reason == reason]
+    if include_unlabelled:
+        scope.append(and_(
+            QueueItem.review_reason.is_(None),
+            QueueItem.review_subtitles.isnot(None),
+        ))
+
     items = (
         db.query(QueueItem)
-        .filter(
-            QueueItem.status == "manual_review",
-            QueueItem.review_subtitles.isnot(None),
-        )
+        .filter(QueueItem.status == "manual_review", or_(*scope))
         .all()
     )
 
@@ -663,11 +670,34 @@ def resolve_subtitles_bulk(db: Session = Depends(get_db)):
             db.commit()
 
         except Exception as exc:
-            logger.exception("Bulk subtitle resolve failed for item %d", item.id)
+            logger.exception("Bulk %s resolve failed for item %d", reason, item.id)
             errors.append({"item_id": item.id, "error": str(exc)})
             db.rollback()
 
     return {"resolved": resolved, "still_unresolved": unresolved, "errors": errors}
+
+
+@router.post("/resolve-subtitles-bulk")
+def resolve_subtitles_bulk(db: Session = Depends(get_db)):
+    """
+    Bulk-resolve items flagged for non-convertible (image-based) subtitles,
+    under image_subtitle_handling. Includes items predating review_reason —
+    see _resolve_review_bulk.
+    """
+    return _resolve_review_bulk(db, "image_subtitles", include_unlabelled=True)
+
+
+@router.post("/resolve-fonts-bulk")
+def resolve_fonts_bulk(db: Session = Depends(get_db)):
+    """
+    Bulk-resolve items flagged for embedded font attachments, under
+    font_attachment_handling.
+
+    Deliberately does not include unlabelled rows: those predate the font
+    gate entirely, so sweeping them in would resolve image-subtitle reviews
+    under the font setting — the same mistake in the opposite direction.
+    """
+    return _resolve_review_bulk(db, "font_attachments", include_unlabelled=False)
 
 
 @router.post("/{item_id}/approve")
@@ -806,6 +836,11 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
         "completed_at":   _iso(item.completed_at),
         "error_message":  item.error_message,
         "flagged_subtitles": flagged_subtitles,
+        # Which gate raised the review, so the UI can phrase it and offer
+        # the matching bulk action. Null on items not in review, and on
+        # rows written before the column existed — the UI reads a null
+        # alongside a flagged payload the same way the bulk resolver does.
+        "review_reason":     item.review_reason,
         "file": {
             "id":        media.id,
             "filename":  media.filename,

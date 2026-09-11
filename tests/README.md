@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1412 tests across 71 test files, plus 472 frontend tests under
+1464 tests across 74 test files, plus 481 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -113,10 +113,28 @@ nothing.
 
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`,
-`test_subtitle_rename.py`. The last covers what the others cannot reach: an
+`test_subtitle_rename.py`, `test_font_attachment_review.py`,
+`test_font_attachment_pipeline.py`, `test_review_reason.py`.
+`test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
 is what Plex reads.
+`test_font_attachment_review.py` covers the third review gate: a file carrying
+embedded fonts, which only Matroska can hold and which its styled subtitles
+reference by name. Converting it to MP4 drops the fonts and flattens ASS to
+SRT, so text positioned over a sign in the picture ends up at the bottom of
+the screen. It tests the gate alone, on dicts built by hand, and that is how
+the gate shipped never firing: the count it keys on was probed and then
+dropped by all three callers. `test_font_attachment_pipeline.py` covers the
+path from the probe to the gate instead — the scanner, the worker at job
+pickup, and the queue endpoints — with only the probe replaced. `test_review_reason.py` covers the field that says WHICH gate
+raised a review, after two endpoints were found inferring it from whether a
+flagged-subtitle payload existed — an inference both of their docstrings had
+warned would break the moment a second subtitle-review trigger appeared.
+The font gate is that trigger, and nothing about it fails. The same module
+covers the scanner and the worker recording that field, which they did not at
+first: every review they raised came out unlabelled, and both bulk endpoints
+read an unlabelled review with flagged tracks as an image-subtitle one.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

@@ -369,12 +369,16 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     setOrphanedSelected(new Set());
     try {
       const r = await fetch(`${api}/api/scan/orphaned`);
+      const data = await r.json().catch(() => null);
       if (r.ok) {
-        const data = await r.json();
-        setOrphanedItems(data.items || []);
+        setOrphanedItems(data?.items || []);
         setOrphanedChecked(true);
       } else {
-        toast?.("Failed to check for orphaned files", "error");
+        // The server refuses this with no scan paths configured, because
+        // every row would be reported as orphaned. Its reason names the
+        // action that does mean "remove everything", so surface it rather
+        // than replacing it with a generic failure.
+        toast?.(data?.detail || "Failed to check for orphaned files", "error");
       }
     } catch (err) {
       console.error("Orphaned-file check failed", err);
@@ -437,7 +441,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
         // than invalidating history alone.
         onRecordsRemoved?.();
       } else {
-        toast?.("Failed to remove orphaned files", "error");
+        // Same refusal as the check above: the server declines this with no
+        // scan paths configured, and its reason is more use than ours.
+        const body = await r.json().catch(() => null);
+        toast?.(body?.detail || "Failed to remove orphaned files", "error");
       }
     } catch (err) {
       console.error("Remove orphaned files failed", err);

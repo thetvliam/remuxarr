@@ -3,7 +3,7 @@ ffprobe wrapper.
 
 probe_file()          → raw dict from ffprobe JSON output
 extract_tracks()      → normalised list of track dicts
-extract_format_info() → container / duration / size
+extract_format_info() → container / duration / font_attachments
 is_faststart_mp4()    → True/False/None (box-level MP4 atom check)
 """
 import json
@@ -162,19 +162,75 @@ def extract_tracks(probe_data: dict) -> list[dict]:
     return tracks
 
 
+# Fonts embedded in a Matroska file. Modern mkvmerge writes a "font/*"
+# mimetype, but older versions and other muxers write one of these, and
+# some write application/octet-stream and leave only the filename to go
+# on — so all three signals are checked.
+_LEGACY_FONT_MIMETYPES = frozenset({
+    "application/x-truetype-font",
+    "application/x-font-ttf",
+    "application/x-font-otf",
+    "application/vnd.ms-opentype",
+    "application/font-sfnt",
+})
+_FONT_SUFFIXES = frozenset({".ttf", ".otf", ".ttc", ".eot", ".woff", ".woff2"})
+
+
+def _is_font_attachment(stream: dict) -> bool:
+    """Whether an attachment stream is a font, by mimetype or by filename."""
+    tags = stream.get("tags") or {}
+    mimetype = (tags.get("mimetype") or "").strip().lower()
+    if mimetype.startswith("font/") or mimetype in _LEGACY_FONT_MIMETYPES:
+        return True
+    filename = (tags.get("filename") or "").strip().lower()
+    return any(filename.endswith(suffix) for suffix in _FONT_SUFFIXES)
+
+
+def count_font_attachments(probe_data: dict) -> int:
+    """
+    How many embedded font attachments the file carries.
+
+    Not derivable from extract_tracks(), which keeps only video, audio and
+    subtitle streams — an attachment has never appeared in the track list
+    and so cannot reach the decision engine through it.
+
+    It has to reach the decision engine because fonts only exist in a file
+    because its styled subtitles reference them by name, and only Matroska
+    can hold them. Converting such a file to MP4 drops every font and
+    flattens the ASS tracks to SRT: the typesetting that placed text over
+    signs in the frame becomes lines at the bottom of the screen, over a
+    sign still visible underneath. Nothing fails, and the only symptom is
+    subtitles rendering in a fallback typeface some time later.
+
+    Cover art is not counted and never could be: ffprobe reports it as
+    codec_type="video" with the attached_pic disposition, not as an
+    attachment, and extract_tracks drops it separately.
+    """
+    return sum(
+        1 for stream in probe_data.get("streams", [])
+        if stream.get("codec_type") == "attachment"
+        and _is_font_attachment(stream)
+    )
+
+
 def extract_format_info(probe_data: dict) -> dict:
     """Extract file-level format metadata.
 
-    Only container and duration — confirmed directly, at every call site
-    across the codebase, that bit_rate and size were never actually read
-    from this dict once computed (previously computed anyway, on every
-    scan, for values nothing consumed).
+    Container, duration, and the embedded font count — confirmed directly,
+    at every call site across the codebase, that bit_rate and size were
+    never actually read from this dict once computed (previously computed
+    anyway, on every scan, for values nothing consumed).
+
+    font_attachments is here rather than in extract_tracks because it is a
+    property of the file, not of a track, and because extract_tracks
+    cannot carry it — see count_font_attachments.
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
     return {
-        "container": _normalise_container(format_names),
-        "duration":  _float_or_none(fmt.get("duration")),
+        "container":        _normalise_container(format_names),
+        "duration":         _float_or_none(fmt.get("duration")),
+        "font_attachments": count_font_attachments(probe_data),
     }
 
 

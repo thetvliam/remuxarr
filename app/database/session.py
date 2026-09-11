@@ -59,6 +59,17 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     #   "always_keep"    — leave it embedded, no review needed
     #   "always_remove"  — drop it, no review needed
     "image_subtitle_handling": "always_ask",
+    # What to do with a file carrying embedded FONT attachments, which only
+    # Matroska can hold. Its styled subtitles reference those fonts by name,
+    # so converting to MP4 drops the fonts and flattens ASS to SRT — text
+    # that was positioned over a sign in the frame ends up at the bottom of
+    # the screen with the sign still visible behind it. Nothing fails.
+    #   "always_ask"     — flag for manual review (the default)
+    #   "always_keep"    — leave the ASS/SSA tracks embedded, which keeps the
+    #                      file in Matroska and so keeps the fonts. Audio
+    #                      rules still apply.
+    #   "always_remove"  — convert anyway, losing the fonts and the styling
+    "font_attachment_handling": "always_ask",
     # Detect MP4 files missing the moov atom at the front (i.e. not
     # web-optimised / fast-start) and rewrite them with -movflags +faststart
     # so that players and Plex can begin streaming before the full download.
@@ -397,8 +408,16 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
         ("media_files", "und_audio_threshold_acknowledged",
          "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
+        # No DEFAULT, deliberately: existing rows must come out null, which
+        # is what tells the worker their fonts were never counted. A
+        # default of 0 would record every existing file as probed and
+        # font-free, and the worker would never look.
+        ("media_files", "font_attachments",
+         "ALTER TABLE media_files ADD COLUMN font_attachments INTEGER"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
+        ("queue_items", "review_reason",
+         "ALTER TABLE queue_items ADD COLUMN review_reason TEXT"),
         ("queue_items", "sonarr_series_id",
          "ALTER TABLE queue_items ADD COLUMN sonarr_series_id INTEGER"),
         ("queue_items", "radarr_movie_id",

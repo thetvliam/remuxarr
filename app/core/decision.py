@@ -34,6 +34,11 @@ MP4_COMPATIBLE_AUDIO = frozenset({
 # Subtitle codecs that CANNOT go into MP4 (image-based or advanced text).
 # If any KEPT subtitle track has one of these codecs, MP4 conversion is
 # blocked entirely — the file stays in its current container.
+# Subtitle codecs that carry styling, positioning and font references. The
+# only ones an embedded font can serve: SRT and friends cannot reference a
+# font, so a file whose fonts serve nothing needs no decision about them.
+STYLED_SUBS = frozenset({"ass", "ssa"})
+
 MP4_INCOMPATIBLE_SUBS = frozenset({
     "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
     "ass", "ssa", "dvb_subtitle", "vobsub",
@@ -161,6 +166,11 @@ class ProcessingDecision:
     #   {stream_index, language, codec, is_forced, title}
     # The UI uses this to render per-track Keep/Remove choices.
     flagged_subtitles: list[dict] | None = None
+    # WHICH gate raised the review, for the caller to persist on the queue
+    # item. Recorded rather than inferred: two endpoints used to work this
+    # out from flagged_subtitles being non-empty, which only held while the
+    # image-subtitle gate was the only trigger that set it.
+    review_reason: str | None = None
     # Set when the file's surviving (kept) audio track needs a human to look
     # at its language tag. Two distinct causes, both landing here:
     #   • a DEFINED but non-preferred language — e.g. "dut" on an English
@@ -679,6 +689,96 @@ def analyze_file(
                         action_type="flag_manual_review",
                         description=msg,
                     )],
+                    review_reason="image_subtitles",
+                    flagged_subtitles=flagged,
+                )
+
+    # ── Manual-review gate: embedded font attachments ────────────────────────
+    # Fonts only exist in a file because its styled subtitles reference them
+    # by name, and only Matroska can hold them. Converting to MP4 therefore
+    # loses both halves at once: the fonts go, and the ASS tracks are
+    # flattened to SRT, so text positioned over a sign in the picture becomes
+    # a line at the bottom of the screen with the sign still visible behind
+    # it. A "Signs and Songs" track is worse off than if it had been dropped.
+    #
+    # Nothing about that fails. The job succeeds, the sizes look right, and
+    # the symptom appears whenever someone next watches the episode.
+    #
+    # Placed AFTER the image-subtitle gate above so that gate's behaviour is
+    # unchanged. A file with both image subs and fonts is asked about the
+    # image subs first, and about fonts on the next evaluation once those are
+    # resolved — two prompts for one file, which is accepted rather than
+    # overlooked.
+    if file_info.get("font_attachments"):
+        # Only tracks the file keeps, by the same rule as the image gate
+        # above. A styled track in a language the keep list drops is deleted
+        # whatever the answer, so asking about it is noise; and under
+        # always_keep its synthetic "keep" would outrank the language rule
+        # and keep it. Without this, one file whose keep list was English
+        # was asked about sixteen styled tracks in thirteen languages, and
+        # Always Keep kept all of them. When no kept track is styled the
+        # fonts serve nothing in the output, and the gate does not fire.
+        styled = [
+            t for t in sub_tracks
+            if _sub_is_kept(t)
+            and (t.get("codec") or "").lower() in STYLED_SUBS
+            and t["stream_index"] not in subtitle_overrides
+        ]
+        font_handling = settings.get("font_attachment_handling", "always_ask")
+
+        if styled and font_handling != "always_remove":
+            if font_handling == "always_keep":
+                # Synthetic overrides into the LOCAL copy, exactly as the
+                # image-subtitle gate above does and for the same reasons:
+                # it reuses the already-correct keep logic instead of
+                # duplicating it, and these are never persisted so they
+                # cannot be mistaken for the user's own choices.
+                #
+                # Injecting "keep" is the whole of always_keep. It emits
+                # copy_track and skips extraction, so the styling survives;
+                # the track then sits in kept_subs, which makes
+                # subs_block_mp4 true; which makes the container gate
+                # decline to convert; which is what keeps the fonts. No new
+                # assignment to target_container — the comment at the
+                # fast-start block depends on there being only one.
+                for t in styled:
+                    subtitle_overrides[t["stream_index"]] = "keep"
+                # Falls through to the normal subtitle loop below.
+            else:
+                n_fonts = file_info["font_attachments"]
+                details = ", ".join(
+                    f"{(t['language'] or 'und').upper()} {t.get('codec', '?')}"
+                    + (f" \u2014 {t['title']}" if t.get("title") else "")
+                    for t in styled
+                )
+                msg = (
+                    f"Carries {n_fonts} embedded font"
+                    f"{'s' if n_fonts > 1 else ''} used by "
+                    f"{len(styled)} styled subtitle track"
+                    f"{'s' if len(styled) > 1 else ''} ({details}). Only MKV "
+                    f"can hold the fonts, so converting to MP4 loses them and "
+                    f"flattens the styling — manual review required to decide "
+                    f"whether to keep the file as MKV or convert it anyway."
+                )
+                flagged = [
+                    {
+                        "stream_index": t["stream_index"],
+                        "language":     t["language"] or "und",
+                        "codec":        t.get("codec") or "",
+                        "is_forced":    t.get("is_forced", False),
+                        "title":        t.get("title"),
+                    }
+                    for t in styled
+                ]
+                return ProcessingDecision(
+                    should_process=False,
+                    is_manual_review=True,
+                    reason=msg,
+                    actions=[Action(
+                        action_type="flag_manual_review",
+                        description=msg,
+                    )],
+                    review_reason="font_attachments",
                     flagged_subtitles=flagged,
                 )
 

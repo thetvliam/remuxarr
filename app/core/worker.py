@@ -21,7 +21,7 @@ from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
-from app.core.probe import is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.probe import count_font_attachments, is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1260,15 +1260,33 @@ def _load_job_data(job_id: int):
             _finish_job(job_id, False, None, None, "File not found on disk")
             return None
 
+        # A row that has never been probed for fonts — every row from before
+        # the count was stored — reads as font-free to the gate below, and a
+        # normal scan skips unchanged files, so it can stay that way through
+        # any number of scans. Here is where a wrong answer converts the
+        # file, so it is counted here, once, and stored.
+        #
+        # A probe failure leaves it null and the job goes on as it would
+        # have before the count existed. Failing the job instead would be a
+        # new way to fail, over a count the file may not need.
+        if media.font_attachments is None:
+            try:
+                media.font_attachments = count_font_attachments(
+                    probe_file(media.path, app_settings.FFPROBE_PATH)
+                )
+            except ProbeError as exc:
+                logger.warning(
+                    "Job %d: could not count embedded fonts in %s (%s) — "
+                    "deciding without them", job_id, media.path, exc,
+                )
+
         tracks_raw: list[Track] = (
             db.query(Track).filter(Track.file_id == media.id).all()
         )
         tracks = [_track_to_dict(t) for t in tracks_raw]
 
         app_cfg    = get_app_settings(db)
-        file_info  = {"path": media.path, "container": media.container,
-                      "video_codec": media.video_codec,
-                      "und_audio_threshold_acknowledged": media.und_audio_threshold_acknowledged}
+        file_info  = _file_info_for(media)
         overrides  = _load_subtitle_overrides(media)
         audio_lang_overrides = _load_audio_language_overrides(media)
         subtitle_lang_overrides = _load_subtitle_language_overrides(media)
@@ -1294,6 +1312,11 @@ def _load_job_data(job_id: int):
                 json.dumps(decision.flagged_subtitles)
                 if decision.flagged_subtitles else None
             )
+            # Which gate fired, as queue._apply_decision_to_item and the
+            # scanner record it. Left null, a row with flagged tracks is an
+            # image-subtitle review to the bulk endpoints whatever gate
+            # raised it.
+            job.review_reason = decision.review_reason
             media.status = "manual_review"
             db.commit()
             return None
@@ -1623,6 +1646,9 @@ def _finish_job(
                         )
                         media.duration    = fmt_info.get("duration")
                         media.video_codec = primary_video_codec
+                        # 0 after a conversion to MP4, which cannot hold
+                        # fonts; unchanged when the file stayed MKV.
+                        media.font_attachments = fmt_info.get("font_attachments")
                         # Always wins over the extension-based guess above
                         # (used when the path changed) — an actual fresh
                         # probe is strictly more reliable than inferring

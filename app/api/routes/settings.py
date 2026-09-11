@@ -335,6 +335,7 @@ KNOWN_KEYS = {
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
     "image_subtitle_handling",
+    "font_attachment_handling",
     "add_faststart_to_mp4",
     "max_concurrent_jobs",
     "auto_start_jobs",
@@ -665,6 +666,34 @@ SETTINGS_SCHEMA = [
                        "sitting in manual review for this reason can be "
                        "resolved in bulk from the Review tab once this is "
                        "set to Always Keep or Always Remove.",
+    },
+    {
+        "key":     "font_attachment_handling",
+        "group":   "Subtitles",
+        "label":   "Embedded Font Handling",
+        "type":    "select",
+        "options": [
+            {
+                "value": "always_ask",
+                "label": "Always ask (flag for manual review)",
+            },
+            {
+                "value": "always_keep",
+                "label": "Always keep (stay in MKV, keep styled subtitles)",
+            },
+            {
+                "value": "always_remove",
+                "label": "Always remove (convert anyway, lose the styling)",
+            },
+        ],
+        "description": "What to do with a file that carries embedded fonts. "
+                       "Only Matroska can hold them, and the file's styled "
+                       "subtitles reference them by name, so converting to "
+                       "MP4 drops the fonts and flattens ASS subtitles to "
+                       "SRT — losing the positioning that places text over "
+                       "signs in the picture. Always Keep leaves those "
+                       "tracks embedded, which keeps the file as MKV; "
+                       "unwanted audio tracks are still removed.",
     },
     # ── Recycle Bin ────────────────────────────────────────────────────────
     {
