@@ -710,9 +710,18 @@ def analyze_file(
     # resolved — two prompts for one file, which is accepted rather than
     # overlooked.
     if file_info.get("font_attachments"):
+        # Only tracks the file keeps, by the same rule as the image gate
+        # above. A styled track in a language the keep list drops is deleted
+        # whatever the answer, so asking about it is noise; and under
+        # always_keep its synthetic "keep" would outrank the language rule
+        # and keep it. Without this, one file whose keep list was English
+        # was asked about sixteen styled tracks in thirteen languages, and
+        # Always Keep kept all of them. When no kept track is styled the
+        # fonts serve nothing in the output, and the gate does not fire.
         styled = [
             t for t in sub_tracks
-            if (t.get("codec") or "").lower() in STYLED_SUBS
+            if _sub_is_kept(t)
+            and (t.get("codec") or "").lower() in STYLED_SUBS
             and t["stream_index"] not in subtitle_overrides
         ]
         font_handling = settings.get("font_attachment_handling", "always_ask")

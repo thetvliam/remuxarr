@@ -50,9 +50,19 @@ existed:
                 the flagged payload omitting the tracks         killed
                 the reason not naming the font count            killed
 
+Three more for the keep rule, added when the gate was found asking about
+every styled track in the file, run against the full suite before their
+tests existed. The rule inverted was already killed by eleven tests here and
+elsewhere, every one of whose tracks is English. The other two survived:
+
+  the keep rule the gate ignoring it                            killed
+                a bare language check instead of the shared rule killed
+
 Run from the project root:
     pytest tests/test_font_attachment_review.py -v
 """
+import pytest
+
 from app.core.decision import analyze_file
 from tests.conftest import make_file_info, make_track
 
@@ -273,3 +283,123 @@ def test_one_resolved_track_still_leaves_the_other_to_ask_about(settings):
 
     assert decision.is_manual_review is True
     assert [f["stream_index"] for f in decision.flagged_subtitles] == [4]
+
+
+# ── Only the tracks the file keeps ────────────────────────────────────────────
+#
+# The gate once collected every styled track in the file, including languages
+# the keep list was about to delete. The reported file carried sixteen ASS
+# tracks in thirteen languages with a keep list of English: the review asked
+# about all sixteen, and Always Keep kept all sixteen, because its synthetic
+# "keep" outranks the language rule. It now asks only about tracks that
+# _sub_is_kept keeps, which is the image gate's rule.
+
+def _multilingual_tracks():
+    """
+    The shape of the SPY x FAMILY report: a forced English signs track, a
+    full English track, and styled tracks in languages the keep list drops.
+    """
+    return [
+        make_track(0, "video", codec="h264", language="und"),
+        make_track(1, "audio", codec="aac", language="eng", is_default=True),
+        make_track(3, "subtitle", codec="ass", language="eng", is_forced=True,
+                   title="Forced"),
+        make_track(4, "subtitle", codec="ass", language="eng"),
+        make_track(6, "subtitle", codec="ass", language="ara",
+                   title="Saudi Arabia"),
+        make_track(7, "subtitle", codec="ass", language="ger"),
+    ]
+
+
+def test_only_styled_tracks_the_file_keeps_are_asked_about(settings):
+    """
+    Closes: the gate ignoring the keep rule.
+
+    The Arabic and German tracks are deleted whatever the answer, so a
+    question about them has no consequence. In the reported file fourteen
+    of them buried the two that mattered.
+    """
+    decision = analyze_file(_mkv(), _multilingual_tracks(), settings)
+
+    assert decision.is_manual_review is True
+    assert [f["stream_index"] for f in decision.flagged_subtitles] == [3, 4]
+
+
+def test_always_keep_keeps_only_the_kept_languages(settings):
+    """
+    Closes: Always Keep overriding the keep list.
+
+    Handed every styled track, its synthetic "keep" kept every language. The
+    English tracks stay embedded and hold the file in MKV; the others go,
+    as they would in a file with no fonts.
+    """
+    settings["font_attachment_handling"] = "always_keep"
+
+    decision = analyze_file(_mkv(), _multilingual_tracks(), settings)
+
+    assert {3, 4} <= {a.stream_index for a in _actions(decision, "copy_track")}
+    assert {6, 7} <= {a.stream_index for a in _actions(decision, "drop_track")}
+    assert decision.target_container == "mkv"
+
+
+def test_no_review_when_every_styled_track_is_being_dropped(settings):
+    """
+    The consequence of asking only about kept tracks, agreed rather than
+    incidental. English survives here only as SRT, and the one styled track
+    is in a dropped language. The fonts serve nothing that stays, so the
+    file converts as any other would.
+    """
+    tracks = [
+        make_track(0, "video", codec="h264", language="und"),
+        make_track(1, "audio", codec="aac", language="eng", is_default=True),
+        make_track(2, "subtitle", codec="subrip", language="eng"),
+        make_track(3, "subtitle", codec="ass", language="ara"),
+    ]
+
+    decision = analyze_file(_mkv(), tracks, settings)
+
+    assert decision.is_manual_review is False
+    assert decision.target_container == "mp4"
+    assert 3 in {a.stream_index for a in _actions(decision, "drop_track")}
+
+
+def test_a_forced_styled_track_in_another_language_is_still_asked_about(settings):
+    """
+    Closes: a bare language check standing in for the shared rule.
+
+    keep_forced_subtitles keeps a forced track whatever its language, so a
+    forced Spanish signs track survives the language filter and its styling
+    is at stake. A check against the keep list alone would leave out the
+    one styled track this file keeps.
+    """
+    tracks = [
+        make_track(0, "video", codec="h264", language="und"),
+        make_track(1, "audio", codec="aac", language="eng", is_default=True),
+        make_track(2, "subtitle", codec="ass", language="spa", is_forced=True),
+        make_track(3, "subtitle", codec="ass", language="ger"),
+    ]
+
+    decision = analyze_file(_mkv(), tracks, settings)
+
+    assert [f["stream_index"] for f in decision.flagged_subtitles] == [2]
+
+
+@pytest.mark.parametrize("answers, container", [
+    ({3: "keep", 4: "remove"}, "mkv"),
+    ({3: "remove", 4: "remove"}, "mp4"),
+], ids=["keeping-a-styled-track-stays-mkv", "removing-them-all-converts"])
+def test_the_review_answers_decide_the_container(settings, answers, container):
+    """
+    Keeping any styled track in the review holds the file in MKV, and
+    removing them all lets it convert. The dropped languages play no part
+    in either, since they are never in the question.
+
+    Nothing pinned this before: the tests above pin that an answered track
+    is not asked about again, not what the answer then does to the file.
+    """
+    decision = analyze_file(_mkv(), _multilingual_tracks(), settings,
+                            subtitle_overrides=answers)
+
+    assert decision.is_manual_review is False
+    assert decision.target_container == container
+    assert {6, 7} <= {a.stream_index for a in _actions(decision, "drop_track")}
