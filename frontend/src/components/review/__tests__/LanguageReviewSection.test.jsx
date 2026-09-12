@@ -53,7 +53,7 @@ const ITEMS = [
 
 let calls;
 
-const setup = (items = ITEMS) => {
+const setup = (items = ITEMS, reviewRefreshKey = 0) => {
   calls = [];
   global.fetch = vi.fn(async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET",
@@ -68,12 +68,16 @@ const setup = (items = ITEMS) => {
     };
   });
 
-  render(
+  return render(
     <ThemeProvider>
-    <SubtitleLanguageReviewSection api={API} toast={vi.fn()} refreshKey={0} />
+    <SubtitleLanguageReviewSection api={API} toast={vi.fn()}
+                                   reviewRefreshKey={reviewRefreshKey} />
     </ThemeProvider>,
   );
 };
+
+/** GET requests issued so far — one per list fetch. */
+const listFetches = () => calls.filter(c => c.method === "GET").length;
 
 const bodyOf = (fragment) =>
 JSON.parse(calls.find(c => c.url.includes(fragment) && c.method === "POST").body);
@@ -336,6 +340,60 @@ describe("grouping", () => {
     await user.click(screen.getByRole("button", { name: /IGNORE/i }));
 
     expect(bodyOf("ignore").file_ids).toEqual([7]);
+  });
+});
+
+
+describe("refresh signals", () => {
+  /* Two independent signals are combined into one key for the shared hook:
+   * `refreshKey` is local and bumped after this section's own Apply/Ignore,
+   * while `reviewRefreshKey` arrives from the WebSocket layer when a scan, a
+   * webhook-queued file or a finished job may have written new flag rows.
+   *
+   * Neither had a test. This file was passing `refreshKey={0}` — not a prop
+   * this component takes — so it was spread through and dropped, and the
+   * suite would not have noticed either half of the key being deleted.
+   *
+   * Mutation, 3 applied against the suite before these tests, 3 survived:
+   *
+   *   • reviewRefreshKey dropped from the combined key → killed
+   *   • The local refreshKey dropped from it           → killed
+   *   • The `reviewRefreshKey = 0` default removed     → EQUIVALENT
+   *
+   * The default is unkillable because omitting the prop yields a combined key
+   * of "undefined:0", which is every bit as stable as "0:0" — nothing reads
+   * the value, only whether it changed. It is defensive rather than
+   * load-bearing, and the only caller passes the prop. */
+
+  it("refetches the list when the external refresh key changes", async () => {
+    /* Without this signal a scan can surface twenty new mismatches while the
+     * section keeps showing whatever it fetched on mount, until the page is
+     * navigated away from and back. */
+    const { rerender } = setup();
+    await waitFor(() => expect(listFetches()).toBe(1));
+
+    rerender(
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={1} />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => expect(listFetches()).toBe(2));
+  });
+
+  it("refetches the list after applying a language", async () => {
+    /* The local half of the same key. The answered rows are deleted server
+     * side, so a list that does not refetch keeps offering tracks whose
+     * question has already been settled. */
+    setup();
+    const user = userEvent.setup();
+
+    const boxes = await screen.findAllByRole("checkbox");
+    await waitFor(() => expect(listFetches()).toBe(1));
+    await user.click(boxes[1]);
+    await user.click(screen.getByRole("button", { name: /SET LANGUAGE/i }));
+
+    await waitFor(() => expect(listFetches()).toBe(2));
   });
 });
 
