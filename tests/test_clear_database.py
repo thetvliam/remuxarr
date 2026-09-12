@@ -45,9 +45,26 @@ def client(tmp_path, monkeypatch):
     engine = memory_engine()
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
-    monkeypatch.setattr(session_mod, "SessionLocal", factory)
 
+    # Imported before the patch, deliberately. app.main pulls in the five
+    # modules that do `from app.database.session import SessionLocal` at
+    # module scope -- worker, scheduler, forge, routes.scan and
+    # routes.webhooks -- and each binds its own copy at that first import.
+    # Importing under the patch gave all five a permanent copy of this
+    # fixture's in-memory factory: monkeypatch restores the attribute on
+    # session_mod at teardown and cannot reach the copies, so they stayed
+    # bound to a dead engine for the rest of the process. It only bit when
+    # this module was the first to import app.main, which is why the full
+    # suite was green while test_clear_database.py followed by
+    # test_scan_and_cancellation.py failed on an unrelated assertion.
+    #
+    # The patch below is still needed and is unaffected by the move: the
+    # path this endpoint reaches (revert_capture._load_existing_point)
+    # imports SessionLocal inside the function, so it reads the patched
+    # name at call time whatever the import order was.
     from app.main import app
+
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
 
     app.dependency_overrides[session_mod.get_db] = lambda: factory()
     try:
