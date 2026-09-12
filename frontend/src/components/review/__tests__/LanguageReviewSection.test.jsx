@@ -29,7 +29,7 @@
  * files, which reads as every mutation dying. The numbers below are from
  * the suite that actually exists.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -78,7 +78,90 @@ const setup = (items = ITEMS) => {
 const bodyOf = (fragment) =>
 JSON.parse(calls.find(c => c.url.includes(fragment) && c.method === "POST").body);
 
-beforeEach(() => { calls = []; });
+/* A second mock rather than a `total` parameter on the one above.
+ *
+ * setup() answers every page with the same body and reports `total` equal to
+ * the rows it returns, so hasMore is always false and the scroll path is
+ * unreachable through it. Teaching it to page would change what every test
+ * above is running against for the sake of the ones below — and those tests
+ * depend on the list being complete: their selections assume the rows on
+ * screen are all the rows there are. */
+/** Resolvers for page requests the mock was told to hold, in request order. */
+let pending;
+
+const setupPaged = ({ total, page, holdAfter = Infinity }) => {
+  calls = [];
+  pending = [];
+  let served = 0;
+  global.fetch = vi.fn(async (url, options = {}) => {
+    const u = String(url);
+    calls.push({ url: u, method: options.method || "GET", body: options.body });
+    if ((options.method || "GET") !== "GET") {
+      return { ok: true, json: async () => ({ applied: 1, ignored: 1 }) };
+    }
+    const offset = Number(new URL(u).searchParams.get("offset") || 0);
+    const items = Array.from(
+      { length: Math.max(0, Math.min(page, total - offset)) },
+      (_, n) => {
+        const index = offset + n;
+        return {
+          id: 100 + index, file_id: 100 + index,
+          filename: `Ep${index}.mkv`, path: `/m/Ep${index}.mkv`,
+          stream_index: 2, detected_language: "und",
+          extracted_path: `/m/Ep${index}.und.srt`,
+        };
+      },
+    );
+    const body = { ok: true, json: async () => ({ total, items,
+      languages: [{ language: "und", count: total }] }) };
+    served += 1;
+    /* An immediately-resolving mock never lets a render commit with `loading`
+     * true: the whole request settles inside one React batch, so the component
+     * goes straight from one loaded list to the next and the transition the
+     * re-arm test is about does not exist in the harness. Holding the page
+     * open is what makes it observable — it is a real network having latency,
+     * which is the ordinary case rather than the exotic one. */
+    if (served > holdAfter) {
+      return new Promise(resolve => pending.push(() => resolve(body)));
+    }
+    return body;
+  });
+
+  return render(
+    <ThemeProvider>
+    <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={0} />
+    </ThemeProvider>,
+  );
+};
+
+/* jsdom has no IntersectionObserver, so the sentinel effect throws a
+ * ReferenceError the moment hasMore goes true and the whole section unmounts.
+ * HistoryPanel.test.jsx carries the only other copy of this; it is duplicated
+ * rather than shared because extracting it would mean editing that file for a
+ * change that has nothing to do with it.
+ *
+ * Stubbed for the whole file, not only the scroll tests below. The tests above
+ * happen not to construct one — they report `total` equal to the rows they
+ * return — but that is a property of their mock, not something they assert,
+ * and without the stub they would start failing with a ReferenceError the day
+ * it changed, for a reason unrelated to what they cover. */
+let observers;
+
+class FakeObserver {
+  constructor(cb) { this.cb = cb; this.targets = []; observers.push(this); }
+  observe(el) { this.targets.push(el); }
+  unobserve(el) { this.targets = this.targets.filter(t => t !== el); }
+  disconnect() { this.targets = []; }
+}
+
+/** Whether anything is currently watching for the end of the list. */
+const watching = () => observers.some(o => o.targets.length > 0);
+
+beforeEach(() => {
+  calls = [];
+  observers = [];
+  vi.stubGlobal("IntersectionObserver", FakeObserver);
+});
 
 describe("per-track rows", () => {
   it("shows every flagged track of a file, not just the first", async () => {
@@ -253,5 +336,130 @@ describe("grouping", () => {
     await user.click(screen.getByRole("button", { name: /IGNORE/i }));
 
     expect(bodyOf("ignore").file_ids).toEqual([7]);
+  });
+});
+
+
+describe("infinite scroll", () => {
+  /* The page size here is 100, chosen so that "search a show name, select all
+   * matching episodes" fits one fetch. A long-running show exceeds it, which
+   * is the only way the rest of a list is ever reached. None of it had
+   * coverage: jsdom has no IntersectionObserver, so any test that let hasMore
+   * go true died in the effect rather than in an assertion.
+   *
+   * Mutation, 8 applied against the unchanged suite. Two were already killed
+   * by usePaginatedFetch's own tests — loadMore refetching offset 0, and
+   * hasMore dropping its empty-page term — so they are recorded here as
+   * already covered rather than claimed below. Of the six that survived:
+   *
+   *   • The `loading` dependency dropped               → killed
+   *   • isIntersecting inverted                        → killed
+   *   • The loadMore() call deleted                    → killed
+   *   • The sentinel's disconnect cleanup removed      → killed
+   *   • observe(scroll) in place of observe(sentinel)  → killed
+   *   • The effect's `!hasMore` term dropped           → EQUIVALENT
+   *
+   * That last one cannot be killed alone, and neither can its mirror: the
+   * sentinel is itself rendered only under `hasMore`, so with either guard
+   * present the other is unreachable — dropping the effect's term leaves
+   * sentinelRef null, and rendering the sentinel unconditionally leaves the
+   * effect returning early. Both were applied separately and both survived.
+   * Removing BOTH is killed by "does not watch when the list is already
+   * complete", which is the test that makes the pair load-bearing rather
+   * than either guard on its own. */
+
+  it("watches the sentinel, not the scroll container", async () => {
+    /* Observing the scroll container instead loads the next page as soon as
+     * the list is on screen at all, so the whole list arrives at once and the
+     * pagination is decorative. Both are "something is being observed", which
+     * is why this asserts on which element. */
+    setupPaged({ total: 300, page: 100 });
+
+    // The observer is armed by a passive effect that runs after the commit
+    // putting the sentinel in the DOM, so wait for the arming rather than for
+    // a row — see the same note in HistoryPanel.test.jsx.
+    await waitFor(() => expect(watching()).toBe(true));
+
+    const [target] = observers.at(-1).targets;
+    // The sentinel sits below the rows and holds none of them.
+    expect(target.querySelector("input[type=checkbox]")).toBeNull();
+    expect(target.textContent).not.toContain("Ep0.mkv");
+  });
+
+  it("loads the next page when the sentinel comes into view", async () => {
+    setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    await waitFor(() => expect(screen.getByText("Ep100.und.srt")).toBeInTheDocument());
+    // Still the first page's rows too — the page appended rather than replaced.
+    expect(screen.getByText("Ep0.und.srt")).toBeInTheDocument();
+  });
+
+  it("loads nothing while the sentinel is out of view", async () => {
+    /* The negative half of the test above. Without it, a callback that called
+     * loadMore() unconditionally would pass every other test here. */
+    setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+    const before = calls.filter(c => c.method === "GET").length;
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: false }]);
+    });
+
+    expect(calls.filter(c => c.method === "GET").length).toBe(before);
+  });
+
+  it("does not watch when the list is already complete", async () => {
+    /* Armed against a list with nothing left to fetch, the sentinel is not
+     * rendered and the observer has nothing to hold — but the guard is what
+     * stops it being constructed at all, and a list that keeps asking for
+     * pages past its end is the failure it prevents. */
+    setupPaged({ total: 3, page: 100 });
+
+    await waitFor(() => expect(screen.getByText("Ep0.und.srt")).toBeInTheDocument());
+    expect(watching()).toBe(false);
+  });
+
+  it("re-arms after a page finishes loading", async () => {
+    /* `loading` is in that effect's dependency array and the effect body never
+     * reads it, so it reads as a stray dep that a tidy-up would remove —
+     * exhaustive-deps is an error in this project and does not flag it either.
+     * It is load-bearing. A real IntersectionObserver reports intersection
+     * when it first observes an element and then only on CHANGES, so a
+     * sentinel that is still in view after a page lands never fires again.
+     * Re-running on the loading transition builds a fresh observer, which
+     * reports the current state, and that is what keeps a long list paging
+     * without the user scrolling further. */
+    setupPaged({ total: 300, page: 100, holdAfter: 1 });
+    await waitFor(() => expect(watching()).toBe(true));
+    const armedFirst = observers.length;
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    // The second page is still in flight, so this is the loading transition
+    // itself rather than the list changing underneath it.
+    await waitFor(() => expect(observers.length).toBeGreaterThan(armedFirst));
+    expect(observers.at(-1).targets).toHaveLength(1);
+
+    await act(async () => { pending.shift()(); });
+    await waitFor(() => expect(screen.getByText("Ep100.und.srt")).toBeInTheDocument());
+  });
+
+  it("stops watching when the section unmounts", async () => {
+    /* Without the disconnect, the observer outlives the component it was
+     * built for and keeps a reference to its callback — which closes over
+     * loadMore, and through it the hook's state. */
+    const { unmount } = setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+
+    unmount();
+
+    expect(watching()).toBe(false);
   });
 });
