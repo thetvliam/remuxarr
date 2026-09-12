@@ -171,10 +171,12 @@ def _cleanup_orphaned_temp_files() -> None:
        This sweep was missing entirely, and it covers the cases most likely to
        accumulate large files:
 
-         • _stage_parts() writes "<final_path>.part" NEXT TO THE TARGET, i.e.
-           inside the media library. A crash during the copy leaves a
-           multi-gigabyte "Movie.mkv.part" there permanently. Nothing surfaces
-           it: ".part" is not in MEDIA_EXTENSIONS, so the scanner skips it.
+         • _stage_parts() writes its staged copies NEXT TO THE TARGET, i.e.
+           inside the media library — named after the temp file, so
+           "job_35106.remuxarr_tmp.part" rather than "Movie.mkv.part". A
+           crash during the copy leaves a multi-gigabyte file there
+           permanently. Nothing surfaces it: ".part" is not in
+           MEDIA_EXTENSIONS, so the scanner skips it.
 
          • _pick_temp_dir() falls back to os.path.dirname(reference_path) when
            TEMP_DIR is short on space — again the media directory. That
@@ -236,9 +238,9 @@ def _cleanup_orphaned_temp_files() -> None:
             scan_paths = []
             logger.warning("Could not read scan_paths for orphan cleanup: %s", exc)
 
-        # 3. The recycle volume. Sidecars are staged as "<final>.part" next
-        #    to their destination like every other output, so a crash during
-        #    a sidecar write leaves one here — and this is the one location
+        # 3. The recycle volume. Sidecars are staged through a .part here
+        #    too — see revert_capture.staged_sidecar_path — so a crash during
+        #    a sidecar write leaves one here, and this is the one location
         #    neither sweep above reaches, since the recycle volume is not
         #    TEMP_DIR and is not in scan_paths. Without this, a leaked
         #    sidecar .part is collected by nothing, ever.

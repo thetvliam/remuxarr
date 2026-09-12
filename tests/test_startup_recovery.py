@@ -26,8 +26,8 @@ JOB RESET
   one test here.
 
 ORPHANED FILE SWEEP
-  Cleanup globbed TEMP_DIR only. _stage_parts writes "<final>.part" inside the
-  media library, and _pick_temp_dir falls back to the media directory when
+  Cleanup globbed TEMP_DIR only. _stage_parts writes its staged .part inside
+  the media library, and _pick_temp_dir falls back to the media directory when
   TEMP_DIR is short on space — so the two places large orphans actually
   accumulate were both unswept. These tests already called
   _cleanup_orphaned_temp_files directly and were not part of the mutation run
@@ -416,9 +416,14 @@ def sweep(tmp_path, monkeypatch):
 
 def test_part_file_in_the_library_is_removed(sweep):
     """
-    The headline gap: a multi-gigabyte "<final>.part" left in the media
-    library by an interrupted staging copy. The scanner ignores it (.part is
-    not a media extension) so nothing else would ever surface it.
+    The headline gap: a multi-gigabyte .part left in the media library by
+    an interrupted staging copy. The scanner ignores it (.part is not a
+    media extension) so nothing else would ever surface it.
+
+    The name here is the one staging used to produce. What the sweep
+    matches is the suffix, so the file it collects is the same either way;
+    a staged copy is named after the temp file now — see
+    subprocess_runner.staged_part_path.
     """
     _temp, library, run = sweep
     orphan = library / "Show" / "S01" / "Episode.mkv.part"
@@ -457,11 +462,12 @@ def test_part_file_on_the_recycle_volume_is_removed(sweep, tmp_path):
     """
     The recycle volume is the one location neither of the original two
     sweep roots reaches: it is not TEMP_DIR and it is not in scan_paths.
-    A sidecar is staged as "<final>.part" like every other output, so a
-    crash mid-write leaves one here with nothing to collect it.
+    A sidecar is staged through a .part here too — see
+    revert_capture.staged_sidecar_path — so a crash mid-write leaves one
+    here with nothing else to collect it.
     """
     _temp, _library, run = sweep
-    orphan = tmp_path / "recycle" / "31.remuxarr_revert.part"
+    orphan = tmp_path / "recycle" / "31_7.part"
     orphan.write_bytes(b"x" * 4096)
     _age(orphan, 3600)
 

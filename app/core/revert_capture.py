@@ -207,6 +207,33 @@ def sidecar_path_for(file_id: int, job_id: int) -> str:
     )
 
 
+def staged_sidecar_path(file_id: int, job_id: int) -> str:
+    """
+    Where a sidecar is written before it is renamed into place.
+
+    Named from the same two ids as the sidecar itself, NOT by appending to
+    the sidecar's name. Appending makes the temporary name longer than the
+    name it stands in for, and that rule already failed once in this
+    codebase: a staged copy named "<final>.part" beside a media file whose
+    own name was at 252 bytes could not be created at 257, and the job
+    failed after FFmpeg had done the work. subprocess_runner.staged_part_path
+    carries the same fix for FFmpeg's outputs.
+
+    Nothing here is at the limit today — both parts are integers — so this
+    is the rule being made uniform rather than a live failure. It is the
+    rule that matters: the moment a sidecar is named after the file it
+    belongs to, which is the obvious next change for anyone debugging a
+    recycle bin full of numbers, the append version starts failing on
+    exactly the long-named files that are hardest to reproduce.
+
+    The ".part" suffix is load-bearing: the startup sweep collects "*.part"
+    from the recycle volume, which is the only thing that collects a
+    sidecar write interrupted by a crash. The retention pass ignores it,
+    because it only touches names ending in SIDECAR_SUFFIX.
+    """
+    return os.path.join(app_settings.RECYCLE_DIR, f"{file_id}_{job_id}.part")
+
+
 async def _off_loop(fn, *args):
     """
     Run blocking work on a thread instead of the event loop.
@@ -468,7 +495,7 @@ async def capture(
         sources = _plan_sources(lost, has_previous_sidecar=extend)
 
         sidecar = sidecar_path_for(file_id, job_id)
-        # Staged through a .part like every other write in this codebase.
+        # Staged through a .part, like FFmpeg's outputs.
         #
         # It was not, and that made two things untrue at once. The startup
         # orphan sweep claims to collect crashed sidecar writes from the
@@ -480,7 +507,7 @@ async def capture(
         #
         # Writing to .part and renaming means a partial sidecar is always
         # named as one, and a complete sidecar appears atomically.
-        staged = sidecar + ".part"
+        staged = staged_sidecar_path(file_id, job_id)
         try:
             cmd = build_sidecar_command(inputs, staged, sources)
         except SidecarUnsupported as exc:

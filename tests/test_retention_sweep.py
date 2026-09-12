@@ -298,7 +298,7 @@ def test_unrelated_files_on_the_volume_are_not_touched(bin_):
     stray.write_text("mine")
     _age_file(stray, 7200)
 
-    part = bin_["root"] / "5_1.remuxarr_revert.part"
+    part = bin_["root"] / "5_1.part"
     part.write_bytes(b"partial")
     _age_file(part, 7200)
 
