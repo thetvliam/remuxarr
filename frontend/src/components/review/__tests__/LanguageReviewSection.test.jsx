@@ -333,7 +333,79 @@ describe("ignoring", () => {
    * the label reverted to selected.size, the request sending flag ids, and
    * the dedup dropped from the shared derivation. The last two are caught by
    * the existing ignore tests as well, which is the point of deriving the
-   * list once — the label and the request now fail together. */
+   * list once — the label and the request now fail together.
+   *
+   * And 5 on the toast, 5 killed: each of the three new branches removed in
+   * turn, the preview tone reduced to neutral, and the ordinary branch
+   * removed. Each dies to exactly one test, which is what four branches
+   * saying four different things should look like. */
+
+  const TWO_FILES = [
+    ITEMS[0],
+    { id: 21, file_id: 8, filename: "Other.mkv", path: "/m/Other.mkv",
+      stream_index: 2, detected_language: "und",
+      extracted_path: "/m/Other.und.srt" },
+  ];
+
+  /** Select every track, click IGNORE, and settle on the refresh it triggers. */
+  const ignoreAll = async (count) => {
+    const user = userEvent.setup();
+    const boxes = await screen.findAllByRole("checkbox");
+    for (let n = 1; n <= count; n += 1) await user.click(boxes[n]);
+    await user.click(screen.getByRole("button", { name: /IGNORE/ }));
+    await waitFor(() => expect(listFetches()).toBe(2));
+  };
+
+  it("says nothing was marked when the backend reports a dry run", async () => {
+    /* Ignoring is gated by Dry Run Mode because it cannot be undone, and that
+     * mode ships ON, so this is a fresh install's default state. The endpoint
+     * marks nothing and returns 0 — reporting that as "Ignoring 0 files —
+     * they won't be flagged again" states the opposite of what happened. */
+    setup(ITEMS, 0, { ignored: 0, dry_run: true });
+
+    await ignoreAll(3);
+
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/dry run/i);
+    expect(message).toMatch(/would stop being flagged/i);
+    expect(tone).toBe("preview");
+  });
+
+  it("says nothing was ignored when no file could be found", async () => {
+    /* A real run returning 0 now means something specific: not one id
+     * resolved to a file, because the endpoint marks every file it finds.
+     * "Ignoring 0 files — they won't be flagged again" promised a suppression
+     * that did not happen to files that are not there. */
+    setup(ITEMS, 0, { ignored: 0 });
+
+    await ignoreAll(3);
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0][0]).toMatch(/nothing to ignore/i);
+    expect(toasts[0][0]).not.toMatch(/won't be flagged/i);
+  });
+
+  it("says how many of the selection it managed when some were gone", async () => {
+    /* The shortfall used to reach a console.warn and nothing else, so the
+     * user was told all of them were handled. */
+    setup(TWO_FILES, 0, { ignored: 1 });
+
+    await ignoreAll(2);
+
+    expect(toasts[0][0]).toMatch(/1 of 2/);
+  });
+
+  it("reports a complete ignore plainly", async () => {
+    /* The positive control: without it the three above would pass against a
+     * component that never gave the ordinary answer. */
+    setup(ITEMS, 0, { ignored: 1 });
+
+    await ignoreAll(3);
+
+    expect(toasts[0]).toEqual([
+      "Ignoring 1 file — they won't be flagged again", "neutral",
+    ]);
+  });
 
   it("counts files on the IGNORE button, not tracks", async () => {
     /* The three rows in ITEMS are three subtitle tracks of ONE file, which is

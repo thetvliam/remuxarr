@@ -338,12 +338,39 @@ export const LanguageReviewSection = ({
                 // reporting selected.size overstated it.
                 const data    = await r.json().catch(() => ({}));
                 const ignored = typeof data.ignored === "number" ? data.ignored : fileIds.length;
-                if (ignored < fileIds.length) {
+                // Absent means a real run, the same safe default applyLanguage
+                // takes: report what happened rather than promise nothing was.
+                const preview = data.dry_run === true;
+
+                /* One message was doing the work of four, and was wrong in
+                 * three of them. "Ignoring 0 files — they won't be flagged
+                 * again" fired unchanged for a dry run that marked nothing, a
+                 * selection where not one file could be found, and a partial
+                 * result whose shortfall only ever reached a console.warn. */
+                if (preview) {
+                    toast?.(
+                        `Dry run — nothing was marked. ${fileIds.length} ` +
+                        `file${fileIds.length === 1 ? "" : "s"} would stop being flagged`,
+                        "preview",
+                    );
+                } else if (ignored === 0) {
+                    // The endpoint marks every file it finds, so zero back
+                    // means not one id resolved — the files are gone from the
+                    // library, not merely un-flagged.
+                    toast?.("Nothing to ignore — those files are no longer in the library",
+                            "neutral");
+                } else if (ignored < fileIds.length) {
                     console.warn(
                         `Language ignore: sent ${fileIds.length} file(s), backend ignored ${ignored}`,
                     );
+                    toast?.(
+                        `Ignoring ${ignored} of ${fileIds.length} files — ` +
+                        `the rest are no longer in the library`,
+                        "neutral",
+                    );
+                } else {
+                    toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
                 }
-                toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
                 /* Only the local refreshKey, unlike applyLanguage which also calls
                  * onRefresh() and bumps the History key. That asymmetry is
                  * deliberate: applying a correction deletes the file's QueueItem
