@@ -94,6 +94,30 @@ const mockApi = ({ imgSetting = "always_ask", fontSetting = "always_ask" } = {})
   });
 };
 
+/* jsdom has no IntersectionObserver, and both language sections below this
+ * page arm one as soon as their list has more rows than the first page. The
+ * effect throws a ReferenceError, React unmounts the whole section, and the
+ * assertions here keep passing because they are about the bulk bar rather
+ * than the sections — so the harness diverges silently from what any user
+ * with more than one page of flagged files actually gets.
+ *
+ * mockApi answers those lists with total 0 today, which is what keeps the
+ * observer out of reach. That is a property of the mock and not something
+ * any test here asserts, so it is not a guarantee.
+ *
+ * Third copy of this stub. HistoryPanel.test.jsx and LanguageReviewSection.
+ * test.jsx hold the others, and three is usually the point at which a shared
+ * helper is worth extracting. Left duplicated here on purpose: this one is
+ * inert scaffolding rather than a recording observer the tests interrogate,
+ * so sharing it would mean exporting the richer version to a file that only
+ * needs the class to exist. Worth revisiting if a fourth appears.
+ */
+class InertObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 const setup = (items) => {
   const onRefresh = vi.fn();
   const toast = vi.fn();
@@ -108,6 +132,7 @@ const setup = (items) => {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.stubGlobal("IntersectionObserver", InertObserver);
 });
 
 describe("ReviewPage — bulk resolving", () => {
@@ -145,6 +170,50 @@ describe("ReviewPage — bulk resolving", () => {
 
     expect(await screen.findByRole("button",
       { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
+  });
+
+  it("counts correctly with a language list long enough to page", async () => {
+    /* The bulk bar and the two language sections share this page, and the
+     * sections page their lists independently. A library where audio or
+     * subtitle review runs past its first page is the ordinary case for
+     * anyone who has just scanned a season, and nothing here covered the
+     * page in that state: the sections happened to be handed empty lists.
+     *
+     * What this guards is the silent version of the failure. If the sections
+     * blow up, the bulk-bar assertions above still pass, because they never
+     * look at the sections. */
+    posted = [];
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (opts.method === "POST") {
+        posted.push(u);
+        return { ok: true, json: async () => ({ resolved: 1, still_unresolved: 0, errors: [] }) };
+      }
+      if (u.includes("image_subtitle_handling"))
+        return { ok: true, json: async () => ({ value: "always_remove" }) };
+      if (u.includes("font_attachment_handling"))
+        return { ok: true, json: async () => ({ value: "always_keep" }) };
+      // A first page far short of the total, so hasMore goes true and the
+      // sentinel effect runs.
+      return { ok: true, json: async () => ({
+        total: 400,
+        items: [{ id: 1, file_id: 9, filename: "X.mkv", path: "/m/X.mkv",
+                  stream_index: 2, detected_language: "und",
+                  extracted_path: null }],
+        languages: [{ language: "und", count: 400 }],
+      }) };
+    });
+    setup([IMAGE_ITEM, FONT_ITEM]);
+
+    expect(await screen.findByRole("button",
+      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
+    expect(await screen.findByRole("button",
+      { name: /RESOLVE ALL 1 FONT ITEMS/i })).toBeTruthy();
+    /* No separate "the sections are still mounted" assertion. One was
+     * written and then removed: with the stub taken away it made no
+     * difference, because a throw in either section tears down this whole
+     * tree and the two button lookups above fail first. It read as though it
+     * guarded something and did not. */
   });
 
   it("sends each button to its own endpoint", async () => {
