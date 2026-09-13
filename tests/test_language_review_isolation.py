@@ -73,9 +73,23 @@ def test_configured_columns_exist_on_mediafile():
 
 # ── Behavioural isolation ────────────────────────────────────────────────────
 
-def test_audio_ignore_leaves_the_subtitle_flag_alone(db, flagged_file):
+def _real_run(monkeypatch):
+    """
+    Declare the mode. ignore_flags reads dry_run_mode and DEFAULT_APP_SETTINGS
+    ships it True, so a bare session takes the dry-run path and marks nothing.
+    These tests are about which table a real ignore touches, not about the
+    mode, so they have to state the one they mean.
+    """
+    import app.api.routes._language_review as lr
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+
+
+def test_audio_ignore_leaves_the_subtitle_flag_alone(db, flagged_file, monkeypatch):
     from app.api.routes.audio_language import ignore_flags
 
+    _real_run(monkeypatch)
     ignore_flags(IgnoreRequest(file_ids=[flagged_file.id]), db)
     db.refresh(flagged_file)
 
@@ -87,9 +101,10 @@ def test_audio_ignore_leaves_the_subtitle_flag_alone(db, flagged_file):
         "audio ignore wrote the SUBTITLE ignored column"
 
 
-def test_subtitle_ignore_leaves_the_audio_flag_alone(db, flagged_file):
+def test_subtitle_ignore_leaves_the_audio_flag_alone(db, flagged_file, monkeypatch):
     from app.api.routes.subtitle_language import ignore_flags
 
+    _real_run(monkeypatch)
     ignore_flags(IgnoreRequest(file_ids=[flagged_file.id]), db)
     db.refresh(flagged_file)
 
@@ -205,7 +220,7 @@ def test_blank_target_language_is_rejected(db):
 # ignore column. Three findings in a row came out of that mismatch, so the
 # unit is pinned on both sides here.
 
-def test_ignoring_a_file_clears_every_one_of_its_flags(db, tmp_path):
+def test_ignoring_a_file_clears_every_one_of_its_flags(db, tmp_path, monkeypatch):
     """
     SubtitleLanguageFlag is UNIQUE(file_id, stream_index), so a file with
     three undefined subtitles has three rows. Clearing one left the file on
@@ -221,6 +236,7 @@ def test_ignoring_a_file_clears_every_one_of_its_flags(db, tmp_path):
     from app.api.routes.subtitle_language import ignore_flags
     from app.database.models import MediaFile, SubtitleLanguageFlag
 
+    _real_run(monkeypatch)
     media = MediaFile(path=str(tmp_path / "S.mkv"), filename="S.mkv",
                       directory=str(tmp_path), size=1, mtime=1.0)
     db.add(media)
@@ -238,7 +254,7 @@ def test_ignoring_a_file_clears_every_one_of_its_flags(db, tmp_path):
     )
     # Files, not rows: the endpoint is given file_ids and the UI compares
     # this number against how many it sent.
-    assert result == {"ignored": 1}
+    assert result == {"ignored": 1, "dry_run": False}
 
 
 def test_applying_to_several_flags_of_one_file_reprocesses_it_once(db,
@@ -429,3 +445,86 @@ def test_only_the_files_that_were_re_evaluated_are_counted(
 
     assert result["applied"] == 1
     assert [e["file_id"] for e in result["errors"]] == [bad_media.id]
+
+
+# ── Ignore under Dry Run Mode ───────────────────────────────────────────────
+#
+# Mutation, 3 applied 3 killed: the gate removed, the gate inverted, and a
+# real run reporting dry_run True. These pin the new gate rather than showing
+# prior exposure — there was no gate to mutate before.
+#
+# The inverted mutant fails nine tests rather than one, which is the point
+# worth recording: every ignore test in the suite was running against a mode
+# it never declared, and DEFAULT_APP_SETTINGS ships dry_run_mode True, so a
+# bare session now takes the dry-run path. They each say which mode they mean
+# now, via _real_run above.
+
+
+def _ignore_under(db, file_ids, dry_run, monkeypatch, kind="subtitle"):
+    import app.api.routes._language_review as lr
+    from app.api.routes._language_review import IgnoreRequest
+
+    if kind == "subtitle":
+        from app.api.routes.subtitle_language import ignore_flags
+    else:
+        from app.api.routes.audio_language import ignore_flags
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": dry_run})
+    return ignore_flags(IgnoreRequest(file_ids=file_ids), db)
+
+
+def test_dry_run_does_not_ignore_anything(db, tmp_path, monkeypatch):
+    """
+    Ignoring writes no files, so Dry Run Mode's "do NOT modify any files" does
+    not obviously reach it. It reaches it because an ignore cannot be undone:
+    the column is written True here and False in exactly one other place,
+    inside apply_language, and ignoring deletes every flag row for the file
+    while the scanner refuses to create new ones for an ignored file. There is
+    no endpoint, no setting and no control that clears it, and the one route
+    back is closed by the same action that creates the state.
+
+    A one-way door has no business being reachable in the mode that ships on
+    and promises nothing will change.
+    """
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+
+    media = MediaFile(path="/m/a.mkv", filename="a.mkv", directory="/m",
+                      size=1, mtime=1.0)
+    db.add(media)
+    db.commit()
+    db.add(SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und"))
+    db.commit()
+
+    result = _ignore_under(db, [media.id], dry_run=True, monkeypatch=monkeypatch)
+
+    db.refresh(media)
+    assert media.subtitle_language_ignored is not True, (
+        "a dry run marked a file ignored, which nothing can undo"
+    )
+    assert db.query(SubtitleLanguageFlag).count() == 1
+    assert result == {"ignored": 0, "dry_run": True}
+
+
+def test_a_real_ignore_still_marks_and_clears(db, tmp_path, monkeypatch):
+    """
+    The positive control. Without it the test above would pass against an
+    endpoint that had stopped ignoring in every mode.
+    """
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+
+    media = MediaFile(path="/m/b.mkv", filename="b.mkv", directory="/m",
+                      size=1, mtime=1.0)
+    db.add(media)
+    db.commit()
+    db.add(SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und"))
+    db.commit()
+
+    result = _ignore_under(db, [media.id], dry_run=False, monkeypatch=monkeypatch)
+
+    db.refresh(media)
+    assert media.subtitle_language_ignored is True
+    assert db.query(SubtitleLanguageFlag).count() == 0
+    assert result == {"ignored": 1, "dry_run": False}

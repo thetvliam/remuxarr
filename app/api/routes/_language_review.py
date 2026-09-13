@@ -552,6 +552,30 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
 
     @router.post("/ignore", description=kind.ignore_description)
     def ignore_flags(body: IgnoreRequest, db: Session = Depends(get_db)):
+        dry_run = get_app_settings(db).get("dry_run_mode", False)
+        if dry_run:
+            # Dry Run Mode covers this too, which is not obvious: ignoring
+            # writes no files and runs no FFmpeg, so "do NOT modify any files"
+            # does not reach it on the wording alone.
+            #
+            # It reaches it because an ignore cannot be undone. The column is
+            # written True here and False in exactly one other place, inside
+            # apply_language — and ignoring deletes every flag row for the
+            # file, while the scanner refuses to create new ones for a file
+            # already marked. So the one route back is closed by the same
+            # action that opens the door. No endpoint, no setting and no
+            # control clears it.
+            #
+            # A one-way door has no business being reachable in the mode that
+            # ships ON and promises nothing will change.
+            #
+            # Reports 0 rather than a would-be count, so "ignored" keeps one
+            # meaning in both modes: files this call marked. dry_run is what
+            # explains the zero. Apply differs on purpose — it still creates
+            # its queue items, because previewing them is what dry run is FOR,
+            # so its count still describes work that happened.
+            return {"ignored": 0, "dry_run": True}
+
         count = 0
         for file_id in body.file_ids:
             media = db.get(MediaFile, file_id)
@@ -599,7 +623,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 db.delete(flag)
 
         db.commit()
-        return {"ignored": count}
+        return {"ignored": count, "dry_run": False}
 
     # Exposed so each module can re-export them under their original names.
     #

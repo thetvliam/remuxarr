@@ -146,6 +146,19 @@ def test_completed_jobs_still_sort_newest_first(db):
     assert [r["output_size"] for r in rows] == [300, 200, 100]
 
 
+def _real_run(monkeypatch):
+    """
+    Declare the mode. ignore_flags reads dry_run_mode, and DEFAULT_APP_SETTINGS
+    ships it True, so a bare session takes the dry-run path and marks nothing.
+    These tests are about what a real ignore counts, so they have to say so —
+    they were relying on a mode they never stated.
+    """
+    import app.api.routes._language_review as lr
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+
+
 # ── The ignore count ─────────────────────────────────────────────────────────
 #
 # Mutation, 4 applied 4 killed: the count moved back inside the rows check,
@@ -154,7 +167,7 @@ def test_completed_jobs_still_sort_newest_first(db):
 # those is the previous behaviour, so it is also the regression this section
 # exists to catch.
 
-def test_ignore_still_marks_unflagged_files_as_ignored(db):
+def test_ignore_still_marks_unflagged_files_as_ignored(db, monkeypatch):
     """
     Not counting them must not mean skipping them: setting the column is
     idempotent and is what stops the file being flagged by a future scan.
@@ -162,13 +175,14 @@ def test_ignore_still_marks_unflagged_files_as_ignored(db):
     from app.api.routes._language_review import IgnoreRequest
     from app.api.routes.audio_language import ignore_flags
 
+    _real_run(monkeypatch)
     media = _media(db)
     ignore_flags(IgnoreRequest(file_ids=[media.id]), db)
     db.refresh(media)
     assert media.audio_language_ignored is True
 
 
-def test_ignore_counts_the_files_it_marked_not_the_rows_it_cleared(db):
+def test_ignore_counts_the_files_it_marked_not_the_rows_it_cleared(db, monkeypatch):
     """
     The count has to describe what the endpoint did, and what it does is mark
     files. Marking is unconditional — test_ignore_still_marks_unflagged_files_
@@ -186,6 +200,7 @@ def test_ignore_counts_the_files_it_marked_not_the_rows_it_cleared(db):
     from app.api.routes.audio_language import ignore_flags
     from app.database.models import AudioLanguageFlag
 
+    _real_run(monkeypatch)
     flagged = _media(db, "flagged.mkv")
     stale_a = _media(db, "a.mkv")
     stale_b = _media(db, "b.mkv")
@@ -197,7 +212,7 @@ def test_ignore_counts_the_files_it_marked_not_the_rows_it_cleared(db):
         IgnoreRequest(file_ids=[flagged.id, stale_a.id, stale_b.id]), db
     )
 
-    assert result == {"ignored": 3}, (
+    assert result == {"ignored": 3, "dry_run": False}, (
         "reported fewer files than it marked ignored"
     )
     for media in (flagged, stale_a, stale_b):
@@ -205,7 +220,7 @@ def test_ignore_counts_the_files_it_marked_not_the_rows_it_cleared(db):
         assert media.audio_language_ignored is True
 
 
-def test_ignore_reports_zero_when_no_file_in_the_selection_exists(db):
+def test_ignore_reports_zero_when_no_file_in_the_selection_exists(db, monkeypatch):
     """
     Ids that resolve to nothing are the one case left where the count can
     fall short of what was sent, and it is what the frontend's mismatch
@@ -215,16 +230,20 @@ def test_ignore_reports_zero_when_no_file_in_the_selection_exists(db):
     from app.api.routes._language_review import IgnoreRequest
     from app.api.routes.subtitle_language import ignore_flags
 
-    assert ignore_flags(IgnoreRequest(file_ids=[9999, 8888]), db) == {"ignored": 0}
+    _real_run(monkeypatch)
+    assert ignore_flags(IgnoreRequest(file_ids=[9999, 8888]), db) == {
+        "ignored": 0, "dry_run": False}
 
 
-def test_ignore_counts_only_the_ids_that_resolved(db):
+def test_ignore_counts_only_the_ids_that_resolved(db, monkeypatch):
     """A partial selection: one real file, one id that is gone."""
     from app.api.routes._language_review import IgnoreRequest
     from app.api.routes.subtitle_language import ignore_flags
 
+    _real_run(monkeypatch)
     media = _media(db)
-    assert ignore_flags(IgnoreRequest(file_ids=[media.id, 9999]), db) == {"ignored": 1}
+    assert ignore_flags(IgnoreRequest(file_ids=[media.id, 9999]), db) == {
+        "ignored": 1, "dry_run": False}
 
 
 # ── Plex Analyze backlog dedup ───────────────────────────────────────────────
