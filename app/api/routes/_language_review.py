@@ -407,9 +407,13 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # Plex reads. Renaming here is the only point at which the
                 # correction can reach it.
                 for flag in flags:
-                    renamed = _rename_extracted_subtitle(flag, lang, db)
-                    if renamed:
-                        results.setdefault("renamed", []).append(renamed)
+                    # The return value is deliberately discarded. It used to
+                    # be collected into results["renamed"], which nothing has
+                    # ever read — not the two callers, not the frontend, not
+                    # a test, and no endpoint description mentions it. The
+                    # helper logs every outcome itself: the rename, the
+                    # collision it declined, and the OSError it swallowed.
+                    _rename_extracted_subtitle(flag, lang, db)
 
                 # The questions have been answered, so stop asking them. Left
                 # in place the rows would survive every later scan — rows
