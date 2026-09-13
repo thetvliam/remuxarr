@@ -328,6 +328,37 @@ describe("applying", () => {
 });
 
 describe("ignoring", () => {
+  /* Mutation on the button count, 4 applied 4 killed: the count removed
+   * entirely (which survived before this test existed, against all 494),
+   * the label reverted to selected.size, the request sending flag ids, and
+   * the dedup dropped from the shared derivation. The last two are caught by
+   * the existing ignore tests as well, which is the point of deriving the
+   * list once — the label and the request now fail together. */
+
+  it("counts files on the IGNORE button, not tracks", async () => {
+    /* The three rows in ITEMS are three subtitle tracks of ONE file, which is
+     * the ordinary case: a release with forced, dub and SDH subtitles all
+     * tagged und. Ignore is a per-file decision — ignoreSelected reduces the
+     * selected tracks to their files before sending, and the endpoint counts
+     * files — so a label reading IGNORE (3) beside a toast reading
+     * "Ignoring 1 file" describes two different units for one click.
+     *
+     * SET LANGUAGE keeps the track count on purpose: applying really is
+     * per-track, and that button sends the flag ids untouched. */
+    setup();
+    const user = userEvent.setup();
+
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+    await user.click(boxes[2]);
+    await user.click(boxes[3]);
+
+    expect(screen.getByRole("button", { name: /IGNORE/ }).textContent)
+      .toContain("IGNORE (1)");
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ }).textContent)
+      .toContain("SET LANGUAGE (3)");
+  });
+
   it("sends file ids, not flag ids", async () => {
     /**
      * Ignore is a per-file decision. Sending the selected flag ids would

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
@@ -181,6 +181,24 @@ export const LanguageReviewSection = ({
             }
         }
 
+        /* The files behind the selected tracks, derived once and used by both
+         * the IGNORE button's count and the request it sends.
+         *
+         * They were computed separately, and the label used selected.size —
+         * the number of TRACKS. Three und subtitles on one release, which is
+         * the ordinary case for forced/dub/SDH, offered IGNORE (3) and then
+         * said "Ignoring 1 file". Both numbers were right about their own
+         * unit and the pair was unreadable.
+         *
+         * SET LANGUAGE deliberately keeps selected.size. Applying really is
+         * per-track and that button sends the flag ids untouched, so the two
+         * buttons count different things on purpose. */
+        const selectedFileIds = useMemo(
+            () => Array.from(new Set(
+                items.filter(i => selected.has(i.id)).map(i => i.file_id))),
+            [items, selected],
+        );
+
         const applyLanguage = async () => {
             if (selected.size === 0) return;
             const lang = targetLang.trim().toLowerCase();
@@ -293,7 +311,10 @@ export const LanguageReviewSection = ({
             if (selected.size === 0) return;
             setBusy(true);
             try {
-                /* Ignore is a per-file decision, so the selected TRACKS are
+                /* The same list the IGNORE button counts, so the label and the
+                 * request cannot describe different things.
+                 *
+                 * Ignore is a per-file decision, so the selected TRACKS are
                  * reduced to the files they belong to. Sending flag ids here
                  * would silence one track and leave the rest of the file
                  * still asking.
@@ -302,8 +323,7 @@ export const LanguageReviewSection = ({
                  * below. Comparing the response against selected.size measured
                  * flags against files and warned on requests that had fully
                  * succeeded — visibly, in this component's own passing tests. */
-                const fileIds = Array.from(new Set(
-                    items.filter(i => selected.has(i.id)).map(i => i.file_id)));
+                const fileIds = selectedFileIds;
                 const r = await fetch(`${api}${endpoint}ignore`, {
                     method:  "POST",
                     headers: { "Content-Type": "application/json" },
@@ -328,9 +348,10 @@ export const LanguageReviewSection = ({
                  * onRefresh() and bumps the History key. That asymmetry is
                  * deliberate: applying a correction deletes the file's QueueItem
                  * and creates a new one, which the dashboard queue and History
-                 * tabs both need to know about. Ignoring only writes an override
-                 * row — no queue item changes hands, so there is nothing for
-                 * those views to re-read. */
+                 * tabs both need to know about. Ignoring writes a boolean on
+                 * the file and deletes its flag rows — no override, and no
+                 * queue item changes hands, so there is nothing for those
+                 * views to re-read. */
                 setRefreshKey(k => k + 1);
             } catch (err) {
                 console.error("Language review: ignore request failed", err);
@@ -448,7 +469,7 @@ export const LanguageReviewSection = ({
                 disabled={busy || selected.size === 0 || !targetLang.trim()}
                 />
                 <Btn
-                label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
+                label={busy ? "WORKING…" : `IGNORE (${selectedFileIds.length})`}
                 color={palette.dim}
                 bg="transparent"
                 onClick={ignoreSelected}
