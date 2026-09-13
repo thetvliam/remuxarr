@@ -112,6 +112,21 @@ export const LanguageReviewSection = ({
      * No need to ask which filters are active. total_unfiltered is the same
      * query with the filters taken off, so it can only exceed `total` when
      * one of them is doing something. */
+    /* The same shape the endpoint enforces, checked here so the feedback is
+     * specific instead of a 400 arriving as "Failed to set subtitle language
+     * on 1 file", which says nothing about why.
+     *
+     * Deliberately duplicated rather than derived: there is no shared
+     * vocabulary between the Python and the JS, and a check that only exists
+     * on the client is not a check at all. The endpoint is authoritative — if
+     * the rule there changes, this has to change with it. Both spell out two
+     * or three ASCII letters, which covers every ISO 639-1 and 639-2 code
+     * while excluding what has no business in a filename. */
+    const trimmedLang = targetLang.trim().toLowerCase();
+    const langValid   = /^[a-z]{2,3}$/.test(trimmedLang);
+    // Empty is the starting state, not a mistake worth scolding.
+    const langWrong   = trimmedLang.length > 0 && !langValid;
+
     const badgeLabel = total < flaggedTotal ? `${total} of ${flaggedTotal}` : `${total}`;
 
     const [facets, setFacets] = useState([]);
@@ -511,13 +526,19 @@ export const LanguageReviewSection = ({
                     fontSize: type.size.md,
                     textTransform: "lowercase",
                 }}
+                aria-invalid={langWrong}
                 />
+                {langWrong && (
+                    <span style={{ color: palette.red, fontSize: type.size.xs }}>
+                    Use a 2- or 3-letter language code
+                    </span>
+                )}
                 <Btn
                 label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
                 color={palette.green}
                 bg={alpha(palette.green, ALPHA.low)}
                 onClick={applyLanguage}
-                disabled={busy || selected.size === 0 || !targetLang.trim()}
+                disabled={busy || selected.size === 0 || !langValid}
                 />
                 <Btn
                 label={busy ? "WORKING…" : `IGNORE (${selectedFileIds.length})`}

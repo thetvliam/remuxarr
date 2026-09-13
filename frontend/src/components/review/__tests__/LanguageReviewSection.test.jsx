@@ -595,6 +595,86 @@ describe("refresh signals", () => {
 });
 
 
+describe("the language code box", () => {
+  /* A free-text box with placeholder "eng" and no pattern. Whatever was typed
+   * was sent, saved as the override, written into the extracted subtitle's
+   * filename and set as the track's language in the file — which is what Plex
+   * reads. The backend refuses a bad code now, but a 400 surfaces here as
+   * "Failed to set subtitle language on 1 file", which says nothing about
+   * why, so the box has to say it before the request goes out.
+   *
+   * Mutation, 4 applied 4 killed: the validity check dropped from the
+   * button's disabled condition, the pattern loosened to search, the hint
+   * shown whenever the code is invalid including empty, and the hint removed. */
+
+  const selectOne = async (user) => {
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+  };
+
+  /* The box is pre-filled with "eng", so typing appends. Without the clear,
+   * "english" becomes "engenglish" — still invalid, so the refusal tests
+   * passed while exercising a different string than the one they name, and
+   * the acceptance tests produced "engeng" and failed. */
+  const enterCode = async (user, code) => {
+    const box = await screen.findByPlaceholderText("eng");
+    await user.clear(box);
+    if (code) await user.type(box, code);
+  };
+
+  it("will not send a code that is not one", async () => {
+    setup();
+    const user = userEvent.setup();
+    await selectOne(user);
+
+    await enterCode(user, "english");
+
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeDisabled();
+  });
+
+  it.each([["eng"], ["en"], ["cym"]])("allows %s", async (code) => {
+    /* cym is not in ISO_639_2_TO_1, which is a 49-entry convenience map
+     * rather than the standard — the check is on shape, not membership. */
+    setup();
+    const user = userEvent.setup();
+    await selectOne(user);
+
+    await enterCode(user, code);
+
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeEnabled();
+  });
+
+  it("says why the button is dead", async () => {
+    /* A disabled control with no explanation is the thing this is meant to
+     * avoid — the user would be left retyping a code that is already right
+     * as far as they can tell. */
+    setup();
+    const user = userEvent.setup();
+
+    await enterCode(user, "en-GB");
+
+    expect(screen.getByText(/2- or 3-letter/i)).toBeTruthy();
+  });
+
+  it("stays quiet for the default value and for an emptied box", async () => {
+    /* The box ships holding "eng", which is valid, and clearing it is how a
+     * user starts typing another code — neither is a mistake. Scolding
+     * someone mid-keystroke is worse than saying nothing. */
+    setup();
+    const user = userEvent.setup();
+
+    await screen.findByPlaceholderText("eng");
+    expect(screen.queryByText(/2- or 3-letter/i)).toBeNull();
+
+    await enterCode(user, "");
+
+    expect(screen.queryByText(/2- or 3-letter/i)).toBeNull();
+    // Empty is not valid either, so the button is still dead — just quietly.
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeDisabled();
+  });
+});
+
+
 describe("the heading badge", () => {
   /* The badge read `total`, which is the FILTERED figure, so typing a show
    * name took it from the size of the backlog to the size of the match and
