@@ -65,6 +65,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- The language box in the Review tab now only accepts a real language code. It was free text, so `english`, `en-GB` or a typo was accepted, saved as the override, written into the extracted subtitle's filename and set as the track's language in the file itself — which is what Plex reads, so a mistyped code quietly mislabelled the track it was meant to correct. Two- and three-letter codes are both fine, including ones Remuxarr has no name for. Values saved before this are still in place: if a track looks wrongly tagged, set it again with a valid code.
+
 - The count beside the Audio and Subtitle Language Review headings now shows both figures while a search or language filter is applied, as "2 of 57". It previously showed only the filtered number, so searching for a show took the badge from the size of your backlog to the size of the match and the backlog figure was then nowhere on the page — the count on the Review tab itself is files held for manual review, which is a different thing.
 
 - Approving or skipping a file in Review now updates the Audio and Subtitle Language Review sections on the same page. Re-deciding a file can turn up a language mismatch and record it, but those two sections only refetched on their own actions, so the new entry sat in the database while the page showed the list it had loaded on arrival. It appeared after switching tabs and back. The same applies to resolving subtitles and to the bulk resolve buttons.

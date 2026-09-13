@@ -528,3 +528,112 @@ def test_a_real_ignore_still_marks_and_clears(db, tmp_path, monkeypatch):
     assert media.subtitle_language_ignored is True
     assert db.query(SubtitleLanguageFlag).count() == 0
     assert result == {"ignored": 1, "dry_run": False}
+
+
+# ── The language code the endpoint accepts ──────────────────────────────────
+#
+# Mutation, 5 applied 5 killed: the check removed, fullmatch loosened to
+# search, the upper bound widened, the lower bound dropped, and digits
+# admitted. Each of the last three dies to exactly one parametrized case,
+# which is what the case list is for — a single "bad input" example would
+# have left three of them alive.
+#
+# These call apply_language directly, unlike the pagination-bound tests in
+# test_subtitle_language_review.py which need TestClient. The difference is
+# where the check lives: a Query() constraint is applied by FastAPI while it
+# parses a request and a direct call skips it, but this validation is in the
+# function body and runs either way.
+
+
+def _apply_lang(db, flag_id, value, monkeypatch):
+    import app.api.routes._language_review as lr
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.subtitle_language import apply_language
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+    return apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language=value), db)
+
+
+def _one_flag(db, tmp_path):
+    """
+    A real file on disk. apply_language checks for it and reports "File no
+    longer exists on disk" otherwise, so a made-up path takes the error branch
+    and never reaches the code under test.
+    """
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+
+    path = tmp_path / "v.mkv"
+    path.write_bytes(b"video")
+    media = MediaFile(path=str(path), filename="v.mkv", directory=str(tmp_path),
+                      size=5, mtime=1.0)
+    db.add(media)
+    db.commit()
+    flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und")
+    db.add(flag)
+    db.commit()
+    return media, flag
+
+
+@pytest.mark.parametrize("value", [
+    "english",          # the spelt-out name, the likeliest typo of the lot
+    "en-GB",            # a locale rather than a language
+    "e",                # too short to be either standard
+    "../../etc/passwd", # not reachable as a traversal, but no business here
+    "eng eng",
+    "3ng",
+])
+def test_a_language_code_that_is_not_one_is_refused(db, value, tmp_path, monkeypatch):
+    """
+    The field behind this is a free-text box with placeholder "eng" and no
+    pattern, so anything typed into it was accepted, persisted as an override,
+    written into the extracted subtitle's filename and handed to FFmpeg as
+    -metadata:s:a:N language=... . That filename is what Plex reads.
+
+    Nothing here was exploitable — the value goes in as an argv element, not
+    through a shell, and a path separator makes os.rename fail rather than
+    escape. It is the ordinary typo that does the damage, quietly.
+    """
+    from fastapi import HTTPException
+
+    _media, flag = _one_flag(db, tmp_path)
+
+    with pytest.raises(HTTPException) as caught:
+        _apply_lang(db, flag.id, value, monkeypatch)
+
+    assert caught.value.status_code == 400
+
+
+def test_an_empty_language_is_still_refused(db, tmp_path, monkeypatch):
+    """Unchanged, and kept so the new check cannot swallow the old one."""
+    from fastapi import HTTPException
+
+    _media, flag = _one_flag(db, tmp_path)
+
+    with pytest.raises(HTTPException) as caught:
+        _apply_lang(db, flag.id, "   ", monkeypatch)
+
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.parametrize("value,stored", [
+    ("eng", "eng"),     # ISO 639-2, what the scanner writes
+    ("en", "en"),       # ISO 639-1, equally valid
+    ("  ENG ", "eng"),  # still stripped and lowercased
+    ("cym", "cym"),     # not in ISO_639_2_TO_1, which is a 49-entry
+                        # convenience map rather than the standard — a
+                        # whitelist would have refused Welsh
+])
+def test_a_real_language_code_is_accepted(db, value, stored, tmp_path, monkeypatch):
+    import json
+
+    media, flag = _one_flag(db, tmp_path)
+
+    result = _apply_lang(db, flag.id, value, monkeypatch)
+
+    assert result["applied"] == 1
+    db.refresh(media)
+    assert json.loads(media.subtitle_language_overrides) == {"2": stored}

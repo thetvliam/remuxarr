@@ -32,6 +32,7 @@ own terms rather than generically.
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -337,6 +338,24 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         lang = body.target_language.strip().lower()
         if not lang:
             raise HTTPException(400, "target_language cannot be empty")
+        # The field behind this is a free-text box with placeholder "eng" and
+        # no pattern, so whatever was typed went straight through: persisted
+        # as the override, interpolated into the extracted subtitle's
+        # filename, and handed to FFmpeg as -metadata:s:a:N language=... .
+        # That filename is what Plex reads, so "english" quietly mislabels
+        # the track it was meant to fix.
+        #
+        # A shape check rather than a whitelist. ISO_639_2_TO_1 is a 49-entry
+        # convenience map for the common codes, not the standard — checking
+        # against it would refuse Welsh. Two or three ASCII letters covers
+        # every valid ISO 639-1 and 639-2 code and excludes everything that
+        # has no business in a filename.
+        if not re.fullmatch(r"[a-z]{2,3}", lang):
+            raise HTTPException(
+                400,
+                "target_language must be a 2- or 3-letter language code, "
+                f"not {body.target_language!r}",
+            )
 
         app_cfg = get_app_settings(db)
         dry_run = app_cfg.get("dry_run_mode", False)
