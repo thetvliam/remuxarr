@@ -318,7 +318,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
 
         app_cfg = get_app_settings(db)
         dry_run = app_cfg.get("dry_run_mode", False)
-        results = {"applied": 0, "errors": []}
+        # Reported back so the caller can say so. Everything below still
+        # happens under dry run except the two steps that touch the disk or
+        # discard the question, which leaves an apply that looks from the
+        # response alone exactly like a real one.
+        results = {"applied": 0, "errors": [], "dry_run": dry_run}
 
         # Group the flags by file before doing anything.
         #
@@ -370,27 +374,51 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             setattr(media, kind.ignored_attr, False)
             db.commit()
 
-            # Rename the extracted sidecars, if these tracks have any.
+            # Both of the steps below are skipped under dry run, and they
+            # have to be skipped together.
             #
-            # The override alone cannot fix it. An extracted subtitle has
-            # been taken OUT of the mux, so the reprocess below has no
-            # track left to re-extract under the corrected name — the
-            # file keeps "und" in its name permanently, which is what
-            # Plex reads. Renaming here is the only point at which the
-            # correction can reach it.
-            for flag in flags:
-                renamed = _rename_extracted_subtitle(flag, lang, db)
-                if renamed:
-                    results.setdefault("renamed", []).append(renamed)
+            # The rename is the obvious half: Dry Run Mode's own description
+            # is "do NOT execute FFmpeg or modify any files", and it ships
+            # ON so a new install's first scan is a complete preview. dry_run
+            # used to reach _process_file and nothing else, so answering a
+            # language renamed a sidecar on disk in the one mode that
+            # promises not to.
+            #
+            # Deleting the rows is the half that is easy to leave behind, and
+            # skipping only the rename is worse than doing neither. The row
+            # is what keeps the question being asked, and by review time the
+            # track has been extracted OUT of the mux — a rescan reports no
+            # mismatch, so nothing recreates it. The sidecar would keep "und"
+            # in its name permanently with no remaining way to correct it,
+            # which is a preview quietly consuming the thing it previewed.
+            #
+            # The override a few lines up is deliberately NOT gated. It is a
+            # decision rather than a file, it is already committed on its
+            # own, and it is what makes the correction land once dry run is
+            # turned off. Nor is the _process_file call below: populating the
+            # queue with planned actions is what dry run is FOR.
+            if not dry_run:
+                # Rename the extracted sidecars, if these tracks have any.
+                #
+                # The override alone cannot fix it. An extracted subtitle has
+                # been taken OUT of the mux, so the reprocess below has no
+                # track left to re-extract under the corrected name — the
+                # file keeps "und" in its name permanently, which is what
+                # Plex reads. Renaming here is the only point at which the
+                # correction can reach it.
+                for flag in flags:
+                    renamed = _rename_extracted_subtitle(flag, lang, db)
+                    if renamed:
+                        results.setdefault("renamed", []).append(renamed)
 
-            # The questions have been answered, so stop asking them. Left in
-            # place the rows would survive every later scan — rows whose
-            # sidecar still exists are deliberately kept now, because the
-            # track itself is gone from the file and only the filename is
-            # still correctable.
-            for flag in flags:
-                db.delete(flag)
-            db.commit()
+                # The questions have been answered, so stop asking them. Left
+                # in place the rows would survive every later scan — rows
+                # whose sidecar still exists are deliberately kept now,
+                # because the track itself is gone from the file and only the
+                # filename is still correctable.
+                for flag in flags:
+                    db.delete(flag)
+                db.commit()
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the
