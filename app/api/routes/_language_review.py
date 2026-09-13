@@ -36,7 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -234,8 +234,13 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
     def list_flags(
         search:   str = "",
         language: str = "",
-        limit:    int = 50,
-        offset:   int = 0,
+        # Bounded, as history.py, forge.py and logs.py all bound theirs.
+        # Unbounded, limit=-1 reached SQLAlchemy's .limit(), which reads a
+        # negative as no limit at all, so one request returned every flagged
+        # row in the library. The ceiling matters as much as the floor: the
+        # page size is the only thing between one request and the whole table.
+        limit:    int = Query(default=50, ge=1, le=10000),
+        offset:   int = Query(default=0, ge=0),
         db: Session = Depends(get_db),
     ):
         base = (
