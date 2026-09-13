@@ -332,6 +332,29 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         for flag in flags:
             media = flag.media_file
             if not media:
+                # Not dead code, though it reads that way: `base` inner-joins
+                # media_file, so an orphan flag that already existed is
+                # excluded from total, items and languages alike.
+                #
+                # What this catches is narrower. `total` is one query, the page
+                # is a second, and media_file is NOT eager-loaded by either —
+                # it lazy-loads here, on attribute access, a third query. A
+                # delete landing in that window leaves the row counted in
+                # total and resolving to None right here, and without the
+                # guard the next line raises AttributeError on NoneType.
+                # Demonstrated: total says 1, the page returns 0.
+                #
+                # usePaginatedFetch's `newItems.length > 0` guard cites this
+                # case by name, and is right to: it is exactly how a page
+                # comes back empty while total still counts the row.
+                #
+                # Deliberately untested, which is why this comment is long.
+                # The window needs a delete to land between two queries inside
+                # one request, and nothing in the suite can hold it open. A
+                # mutant that deletes this guard passes every test. A test was
+                # written asserting media_file stays unloaded, and dropped: it
+                # built its own query, so making THIS one eager-load left it
+                # green. It looked like cover for the premise and was not.
                 continue
             items.append({
                 "id":                flag.id,
