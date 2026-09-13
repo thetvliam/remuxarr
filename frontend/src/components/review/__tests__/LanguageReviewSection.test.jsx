@@ -246,6 +246,12 @@ describe("applying", () => {
    *   • The message ternary collapsed to success    → killed
    *   • The tone ternary collapsed to success       → killed
    *   • `preview` inverted                          → killed
+   *
+   * And 3 more on the nothing-to-do branch, 3 killed: the branch removed,
+   * the branch firing regardless of errors, and the success branch disabled
+   * so that everything fell through to it. Those pin new code; the baseline
+   * for that one is that the zero case produced no toast at all against the
+   * unchanged component, which is what the test failure said.
    */
 
   const applyOne = async () => {
@@ -253,7 +259,13 @@ describe("applying", () => {
     const boxes = await screen.findAllByRole("checkbox");
     await user.click(boxes[1]);
     await user.click(screen.getByRole("button", { name: /SET LANGUAGE/ }));
-    await waitFor(() => expect(toasts.length).toBeGreaterThan(0));
+    /* Settles on the refresh rather than on a toast arriving. The case below
+     * where nothing was left to answer is precisely the one that used to
+     * produce no toast at all, so waiting for one would hang instead of
+     * failing with something readable. The handler toasts before bumping the
+     * refresh key, so a second list fetch means every toast decision has
+     * already been made. */
+    await waitFor(() => expect(listFetches()).toBe(2));
   };
 
   it("says nothing changed when the backend reports a dry run", async () => {
@@ -283,6 +295,35 @@ describe("applying", () => {
     const [message, tone] = toasts[0];
     expect(message).toBe("Set subtitle language to ENG on 1 file");
     expect(tone).toBe("success");
+  });
+
+  it("says so when there was nothing left to answer", async () => {
+    /* Both toasts were gated: the success one on applied > 0, the error one
+     * on a non-empty errors list. A response of applied 0 with no errors
+     * satisfied neither, so the click produced silence — the same silence as
+     * a click that failed to register. It is a real response and it means
+     * something specific: every track selected had already been answered,
+     * usually from another tab or another device. The rows then vanish on
+     * the refresh, which without a word looks like the action half-worked. */
+    setup(ITEMS, 0, { applied: 0, errors: [] });
+
+    await applyOne();
+
+    expect(toasts).toHaveLength(1);
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/already been answered/i);
+    expect(tone).toBe("neutral");
+  });
+
+  it("does not add the nothing-to-do message when something failed", async () => {
+    /* applied 0 with errors is a different story and already has its own
+     * toast. Two messages for one click would be worse than the silence. */
+    setup(ITEMS, 0, { applied: 0, errors: [{ file_id: 7, error: "unreadable" }] });
+
+    await applyOne();
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0][0]).not.toMatch(/already been answered/i);
   });
 });
 

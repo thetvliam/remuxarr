@@ -237,6 +237,20 @@ export const LanguageReviewSection = ({
                         : `Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`,
                         preview ? "preview" : "success",
                     );
+                } else if (!problems.length) {
+                    /* Both toasts above and below are gated — one on applied
+                     * being non-zero, the other on there being errors — so a
+                     * response of applied 0 with an empty errors list
+                     * satisfied neither and the click said nothing at all.
+                     * That is indistinguishable from a click that never
+                     * registered, and it is a real answer with a specific
+                     * meaning: every flag id sent had already gone, so the
+                     * endpoint skipped them all. Usually another tab, another
+                     * device, or a scan that resolved them in between. The
+                     * rows disappear on the refresh either way, which without
+                     * a word reads as the action having half-worked. */
+                    toast?.("Nothing to update — those tracks had already been answered",
+                            "neutral");
                 }
                 if (problems.length) {
                     // Deliberately not called "failed". One of the outcomes the
