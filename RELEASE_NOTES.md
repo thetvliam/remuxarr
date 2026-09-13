@@ -65,6 +65,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Setting a language from the Review tab now counts only the files it actually re-processed. A file Remuxarr could not read — a malformed or truncated video, or one that disappeared mid-request — was counted as a success anyway, so selecting fifty episodes could report all fifty re-tagged when some of them produced no job at all and nothing had changed. Those files are now reported as errors, with the details in the log, and the count beside them is the number that really went through.
+
 - Setting a subtitle's language from the Review tab no longer renames files while Dry Run Mode is on. Dry Run Mode ships on and says it does not modify any files, but the rename of the extracted `.srt` ran before that setting was consulted, so a new install previewing its library could still have subtitle files renamed on disk. The flagged track is also kept in the Review list now instead of disappearing: the subtitle has been extracted out of the video by that point, so nothing would ever raise the question again and the file would keep `und` in its name permanently. The language you choose is recorded either way, and applies on the next scan once Dry Run Mode is off.
 
 - Resolving all subtitle items at once in the Review tab no longer re-queues files whose text subtitles could not be read as UTF-8. Re-deciding such a file cannot see the encoding problem, so it planned the same subtitle extraction, the job failed the same way, and the file came straight back to Review. Those files are now left out of the bulk action and answered one file at a time. Ones already waiting in Review are recognised when Remuxarr starts.

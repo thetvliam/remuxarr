@@ -501,7 +501,34 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                     sonarr_series_id=sonarr_series_id,
                     radarr_movie_id=radarr_movie_id,
                 )
-                results["applied"] += 1
+                # _process_file handles its own failures rather than raising:
+                # a file it cannot stat or cannot probe is logged, recorded in
+                # the ScanStats it was handed, and returned from. Nothing
+                # reaches the except below, so incrementing unconditionally
+                # reported a clean {"applied": 1, "errors": []} for a file
+                # where no queue item was created and nothing happened. The
+                # ScanStats was constructed, passed in, and never read — this
+                # is the signal that was being discarded.
+                #
+                # "applied" feeds a toast that says "on N files", so it has to
+                # mean files that were really re-evaluated.
+                #
+                # Exact rather than approximate: both of _process_file's error
+                # branches return immediately, and its "unchanged" early
+                # returns sit inside `if existing and not force_probe`, which
+                # this caller never reaches. So on return the file has either
+                # errored or genuinely landed on queued, manual_review or
+                # skipped.
+                if stats.errors:
+                    # Deliberately generic. _process_file puts the real reason
+                    # in the log and returns nothing, so the alternative is
+                    # changing a contract the whole scan path shares.
+                    results["errors"].append({
+                        "file_id": file_id,
+                        "error": "Could not re-read the file — see the log for details",
+                    })
+                else:
+                    results["applied"] += 1
             except Exception as exc:
                 # Without this, one bad file (e.g. the ValueError decision.py
                 # raises for genuinely unknown container info) kills the whole

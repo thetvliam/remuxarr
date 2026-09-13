@@ -325,3 +325,107 @@ def test_the_manual_rename_uses_the_same_code_as_the_automatic_path(tmp_path):
     assert manual == automatic, (
         "the manual and automatic fixes name the same track differently"
     )
+
+
+# ── What the apply endpoint reports ─────────────────────────────────────────
+#
+# Mutation, 3 applied 3 killed: the stats.errors check inverted, the error
+# recorded but applied still incremented, and stats.queued read in place of
+# stats.errors. These pin the new check rather than showing prior exposure —
+# there was no branch to mutate before it. The baseline is that both tests
+# below failed against the unchanged endpoint for the reason each states,
+# while the rest of the suite was green.
+#
+# The inverted mutant is also caught by
+# test_applying_to_several_flags_of_one_file_reprocesses_it_once, which
+# already pinned the real-run count.
+
+
+def _flagged_on_disk(db, tmp_path, name="Show.mkv"):
+    """A flagged file that really exists, so os.stat inside _process_file passes."""
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+
+    path = tmp_path / name
+    path.write_bytes(b"video")
+    media = MediaFile(path=str(path), filename=name, directory=str(tmp_path),
+                      size=5, mtime=1.0)
+    db.add(media)
+    db.commit()
+    flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und")
+    db.add(flag)
+    db.commit()
+    return media, flag
+
+
+def test_a_file_that_cannot_be_probed_is_not_counted_as_applied(
+        db, tmp_path, monkeypatch):
+    """
+    "applied" feeds a toast that says "on N files", so it has to mean files
+    that were actually re-evaluated.
+
+    _process_file handles ProbeError itself — it logs, records the error in
+    the ScanStats it was handed, and returns — so nothing propagates for the
+    endpoint's except block to catch. The count was incremented regardless,
+    and the ScanStats carrying the one signal that would have prevented it
+    was constructed, passed in, and never read. The result was a clean
+    {'applied': 1, 'errors': []} for a file where no queue item was created
+    and nothing happened at all.
+
+    Patches probe_file rather than _process_file, so the real handler runs
+    and the test cannot drift from what that handler actually records.
+    """
+    import app.api.routes._language_review as lr
+    import app.core.scanner as scanner
+    from app.core.probe import ProbeError
+    from app.api.routes.subtitle_language import apply_language
+    from app.database.models import QueueItem
+
+    _media, flag = _flagged_on_disk(db, tmp_path)
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(scanner, "probe_file",
+                        lambda *a, **k: (_ for _ in ()).throw(ProbeError("no streams")))
+
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag.id], target_language="eng"), db)
+
+    assert result["applied"] == 0, (
+        "counted a file that was never re-evaluated as applied"
+    )
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["file_id"] == flag.file_id
+    assert db.query(QueueItem).count() == 0
+
+
+def test_only_the_files_that_were_re_evaluated_are_counted(
+        db, tmp_path, monkeypatch):
+    """
+    The mixed selection, which is the shape the feature is built for: search
+    a show name and answer every episode at once. One bad file among fifty
+    must not make the other forty-nine uncountable, and must not be counted
+    itself.
+    """
+    import app.api.routes._language_review as lr
+    from app.api.routes.subtitle_language import apply_language
+
+    _good_media, good = _flagged_on_disk(db, tmp_path, "Good.mkv")
+    bad_media, bad = _flagged_on_disk(db, tmp_path, "Bad.mkv")
+
+    def fake_process(_db, path, _cfg, **kwargs):
+        # Mirrors _process_file's own ProbeError branch: record and return.
+        if path == bad_media.path:
+            kwargs["stats"].errors += 1
+            return
+        kwargs["stats"].queued += 1
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", fake_process)
+
+    result = apply_language(
+        ApplyRequest(flag_ids=[good.id, bad.id], target_language="eng"), db)
+
+    assert result["applied"] == 1
+    assert [e["file_id"] for e in result["errors"]] == [bad_media.id]
