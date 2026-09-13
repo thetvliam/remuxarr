@@ -168,6 +168,65 @@ def test_untagged_flags_are_reported_as_und():
     assert langs == {"und": 1}
 
 
+# Mutation on the und widening, 3 applied 3 killed: the widening removed, the
+# literal-"und" arm dropped so only nulls matched, and the widening applied to
+# every language. The third is also caught by five pre-existing filter tests —
+# test_another_language_does_not_sweep_up_untagged_rows is the one that names
+# the reason rather than noticing the damage.
+
+
+def test_an_untagged_flag_can_be_selected_by_the_option_it_is_offered_under():
+    """
+    The other half of the test above, which had none.
+
+    A null detected_language is REPORTED as "und" in the facets, so the
+    dropdown offers "und (1)". The filter compared the column to the string
+    "und", and in SQL a null is not equal to anything — so picking the option
+    the endpoint had just advertised returned nothing, with the count beside
+    it still saying 1.
+
+    Latent, and expected to stay latent: the scanner writes "und" literally
+    for subtitles and `t["language"] or "und"` for audio, so production has no
+    null rows to find. It is the facet and the filter disagreeing about the
+    same row that is worth closing, since the facet is what tells the user the
+    option is worth clicking.
+    """
+    db = _db()
+    _flag(db, "Mystery.mkv", None, 9)
+
+    offered = {e["language"]: e["count"] for e in _list(db)["languages"]}
+    picked  = _list(db, language="und")
+
+    assert offered == {"und": 1}
+    assert picked["total"] == 1, "the option the dropdown offered found nothing"
+    assert [i["filename"] for i in picked["items"]] == ["Mystery.mkv"]
+
+
+def test_a_real_und_is_still_matched_on_its_own():
+    """
+    The positive control. Widening the und case must not turn it into a filter
+    that matches everything — the literal rows are the ones production has.
+    """
+    db = _db()
+    _flag(db, "Tagged.mkv", "und", 10)
+    _flag(db, "Dutch.mkv", "dut", 11)
+
+    picked = _list(db, language="und")
+
+    assert [i["filename"] for i in picked["items"]] == ["Tagged.mkv"]
+
+
+def test_another_language_does_not_sweep_up_untagged_rows():
+    """Only "und" widens; "dut" must not pick up a null."""
+    db = _db()
+    _flag(db, "Mystery.mkv", None, 9)
+    _flag(db, "Dutch.mkv", "dut", 11)
+
+    picked = _list(db, language="dut")
+
+    assert [i["filename"] for i in picked["items"]] == ["Dutch.mkv"]
+
+
 def test_pagination_reflects_the_filtered_total():
     """
     total drives "select all" and the result count. If it counted unfiltered

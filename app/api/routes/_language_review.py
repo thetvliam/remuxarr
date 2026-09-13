@@ -39,7 +39,7 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file
@@ -294,10 +294,27 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         ]
 
         query = base
-        if language.strip():
-            query = query.filter(
-                Flag.detected_language == language.strip().lower()
-            )
+        wanted = language.strip().lower()
+        if wanted:
+            if wanted == "und":
+                # The facets report a null detected_language as "und", so the
+                # dropdown offers "und (1)" for it. In SQL a null is not equal
+                # to anything, so comparing the column to the string returned
+                # nothing while the count beside the option still said 1 —
+                # the endpoint advertising a choice it would not honour.
+                #
+                # Latent, and expected to stay that way: the scanner writes
+                # "und" literally for subtitles and `t["language"] or "und"`
+                # for audio, so production has no null rows. Closed because
+                # the facet and the filter disagreeing about the same row is
+                # the kind of thing that only surfaces once something else
+                # starts writing nulls.
+                query = query.filter(
+                    or_(Flag.detected_language == "und",
+                        Flag.detected_language.is_(None))
+                )
+            else:
+                query = query.filter(Flag.detected_language == wanted)
 
         total = query.count()
         flags = (
