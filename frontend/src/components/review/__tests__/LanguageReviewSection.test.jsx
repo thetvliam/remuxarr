@@ -290,7 +290,7 @@ describe("grouping", () => {
 });
 
 
-describe("grouping", () => {
+describe("grouping — non-adjacent rows", () => {
   /* Rows for one file are not guaranteed to arrive next to each other.
    *
    * They normally do — the backend orders by (filename, stream_index), and
