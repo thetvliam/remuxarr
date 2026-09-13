@@ -213,9 +213,30 @@ export const LanguageReviewSection = ({
                 const data     = await r.json().catch(() => ({}));
                 const applied  = typeof data.applied === "number" ? data.applied : selected.size;
                 const problems = Array.isArray(data.errors) ? data.errors : [];
+                // Absent means a real run. That is the safe default of the
+                // two: it reports what happened rather than promising nothing
+                // was touched, and a wrong promise of safety is the worse
+                // error to make.
+                const preview  = data.dry_run === true;
 
                 if (applied > 0) {
-                    toast?.(`Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`, "success");
+                    /* Dry run gets its own wording and the preview tone,
+                     * which exists for exactly this and is deliberately its
+                     * own colour.
+                     *
+                     * The endpoint does not rename the sidecar or clear the
+                     * flag rows in this mode, so the row just answered is
+                     * still in the list when the refresh lands. "Set subtitle
+                     * language to ENG on 1 file" beside a row that has not
+                     * moved reads as a failure, and it is not one: the choice
+                     * is recorded and applies the moment the mode is off. */
+                    toast?.(
+                        preview
+                        ? `Dry run — no files changed. ${lang.toUpperCase()} saved for ` +
+                          `${applied} file${applied === 1 ? "" : "s"}, applied once Dry Run Mode is off`
+                        : `Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`,
+                        preview ? "preview" : "success",
+                    );
                 }
                 if (problems.length) {
                     // Deliberately not called "failed". One of the outcomes the

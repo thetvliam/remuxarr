@@ -52,14 +52,18 @@ const ITEMS = [
 ];
 
 let calls;
+/** Toast calls made during a test, as [message, tone] pairs. */
+let toasts;
 
-const setup = (items = ITEMS, reviewRefreshKey = 0) => {
+const setup = (items = ITEMS, reviewRefreshKey = 0,
+               postJson = { applied: 1, ignored: 1 }) => {
   calls = [];
+  toasts = [];
   global.fetch = vi.fn(async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET",
       body: options.body });
     if ((options.method || "GET") !== "GET") {
-      return { ok: true, json: async () => ({ applied: 1, ignored: 1 }) };
+      return { ok: true, json: async () => postJson };
     }
     return {
       ok: true,
@@ -70,7 +74,8 @@ const setup = (items = ITEMS, reviewRefreshKey = 0) => {
 
   return render(
     <ThemeProvider>
-    <SubtitleLanguageReviewSection api={API} toast={vi.fn()}
+    <SubtitleLanguageReviewSection api={API}
+                                   toast={(msg, tone) => toasts.push([msg, tone])}
                                    reviewRefreshKey={reviewRefreshKey} />
     </ThemeProvider>,
   );
@@ -230,6 +235,54 @@ describe("applying", () => {
 
     await waitFor(() => expect(calls.some(c => c.url.includes("/apply"))).toBe(true));
     expect(bodyOf("/apply").flag_ids.sort()).toEqual([11, 13]);
+  });
+
+  /* Mutation on the two toast tests below, 4 applied 4 killed. They pin the
+   * dry-run branch rather than showing it was once exposed, since the branch
+   * is new — but the success toast itself WAS unprotected before them:
+   * deleting it outright passed all 490 tests.
+   *
+   *   • The success toast deleted                  → killed
+   *   • The message ternary collapsed to success    → killed
+   *   • The tone ternary collapsed to success       → killed
+   *   • `preview` inverted                          → killed
+   */
+
+  const applyOne = async () => {
+    const user = userEvent.setup();
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+    await user.click(screen.getByRole("button", { name: /SET LANGUAGE/ }));
+    await waitFor(() => expect(toasts.length).toBeGreaterThan(0));
+  };
+
+  it("says nothing changed when the backend reports a dry run", async () => {
+    /* The endpoint keeps the flag rows in this mode, so the answered row is
+     * still on screen when the list refreshes. Reporting it as a success
+     * beside a row that has not moved reads as a failure, and it is not one:
+     * the choice is recorded and lands as soon as the mode is off. */
+    setup(ITEMS, 0, { applied: 1, errors: [], dry_run: true });
+
+    await applyOne();
+
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/dry run/i);
+    expect(message).toMatch(/no files changed/i);
+    // The theme carries a `preview` tone for dry-run output, in its own
+    // colour, rather than this borrowing the success green.
+    expect(tone).toBe("preview");
+  });
+
+  it("reports a real apply as a success", async () => {
+    /* The positive control. Without it the test above would pass against a
+     * component that called everything a dry run. */
+    setup(ITEMS, 0, { applied: 1, errors: [], dry_run: false });
+
+    await applyOne();
+
+    const [message, tone] = toasts[0];
+    expect(message).toBe("Set subtitle language to ENG on 1 file");
+    expect(tone).toBe("success");
   });
 });
 
