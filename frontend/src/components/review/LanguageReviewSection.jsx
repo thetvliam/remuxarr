@@ -90,6 +90,30 @@ export const LanguageReviewSection = ({
     // every keystroke and every filter change — including the change that
     // is currently being made, so the control would lose its own options
     // mid-interaction.
+    /* Held rather than read straight off the response, for the same reason
+     * the facets below are: `raw` is null while a fetch is in flight, so the
+     * badge would drop back to the bare number on every keystroke — including
+     * the keystroke that made the second figure worth showing. */
+    const [flaggedTotal, setFlaggedTotal] = useState(0);
+    useEffect(() => {
+        if (typeof raw?.total_unfiltered === "number") setFlaggedTotal(raw.total_unfiltered);
+    }, [raw]);
+
+    /* Both figures while something is narrowing the list, rather than
+     * swapping one number for another in the same place.
+     *
+     * The badge read `total`, which is the FILTERED figure — pagination needs
+     * it that way and the select-all row's "n of m" is built from it. So
+     * typing a show name took the badge from the size of the backlog to the
+     * size of the match, and the backlog number was then nowhere on the page:
+     * the nav tab's count is manual-review QUEUE items, which is a different
+     * thing entirely.
+     *
+     * No need to ask which filters are active. total_unfiltered is the same
+     * query with the filters taken off, so it can only exceed `total` when
+     * one of them is doing something. */
+    const badgeLabel = total < flaggedTotal ? `${total} of ${flaggedTotal}` : `${total}`;
+
     const [facets, setFacets] = useState([]);
     useEffect(() => {
         if (raw?.languages) setFacets(raw.languages);
@@ -414,7 +438,7 @@ export const LanguageReviewSection = ({
                 color: accent,
                 fontSize: type.size.xs,
             }}>
-            {total}
+            {badgeLabel}
             </span>
             </div>
             <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>

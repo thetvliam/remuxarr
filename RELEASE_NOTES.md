@@ -65,6 +65,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- The count beside the Audio and Subtitle Language Review headings now shows both figures while a search or language filter is applied, as "2 of 57". It previously showed only the filtered number, so searching for a show took the badge from the size of your backlog to the size of the match and the backlog figure was then nowhere on the page — the count on the Review tab itself is files held for manual review, which is a different thing.
+
 - Approving or skipping a file in Review now updates the Audio and Subtitle Language Review sections on the same page. Re-deciding a file can turn up a language mismatch and record it, but those two sections only refetched on their own actions, so the new entry sat in the database while the page showed the list it had loaded on arrival. It appeared after switching tabs and back. The same applies to resolving subtitles and to the bulk resolve buttons.
 
 - Ignoring files from the Review tab now reports the number it actually marked. Ignoring a file has always set a flag that stops future scans raising it, whether or not the file still had anything outstanding at the time — but the count only included files that still had something to clear. Re-submitting a list that a rescan or another browser tab had already worked through said "Ignoring 0 files" while marking every file in it, so the action looked like it had missed when it had not. The count now matches what was marked. If you have previously ignored a batch and been surprised that those files stopped appearing, this is why.

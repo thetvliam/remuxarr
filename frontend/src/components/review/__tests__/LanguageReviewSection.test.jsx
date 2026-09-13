@@ -595,6 +595,121 @@ describe("refresh signals", () => {
 });
 
 
+describe("the heading badge", () => {
+  /* The badge read `total`, which is the FILTERED figure, so typing a show
+   * name took it from the size of the backlog to the size of the match and
+   * the backlog number was then nowhere on the page. The nav tab's count is
+   * manual-review queue items, a different thing entirely.
+   *
+   * It now shows both while a filter is active, rather than swapping one
+   * number for another in the same place: a badge that silently means two
+   * different things depending on the search box is worse than a longer one.
+   *
+   * Mutation, 4 applied 4 killed: the pair shown unconditionally, the plain
+   * number shown unconditionally, the two operands swapped, and
+   * total_unfiltered read straight off `raw` instead of being held. The last
+   * of those survived the first three tests and needed the in-flight one
+   * below — `raw` is null during a fetch, and an immediately-resolving mock
+   * never lets a render commit in that state. */
+
+  let held;
+
+  /* Holds by URL rather than by call count: how many fetches a mount fires
+   * is an implementation detail of the hook, and a count-based hold silently
+   * held the wrong one. */
+  const mountWith = ({ total, totalUnfiltered, items = ITEMS,
+                       holdIf = () => false }) => {
+    held = [];
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if ((options.method || "GET") !== "GET") return { ok: true, json: async () => ({}) };
+      const body = { ok: true, json: async () => ({
+        total, total_unfiltered: totalUnfiltered, items,
+        languages: [{ language: "und", count: total }] }) };
+      if (holdIf(String(url))) return new Promise(r => held.push(() => r(body)));
+      return body;
+    });
+    render(
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={0} />
+      </ThemeProvider>,
+    );
+  };
+
+  it("shows the plain count when nothing is filtered", async () => {
+    mountWith({ total: 57, totalUnfiltered: 57 });
+
+    // The badge itself, not the select-all row, which carries its own
+    // "3 of 57" and would match a looser query.
+    expect((await screen.findByText("57", { selector: "span" })).textContent)
+      .toBe("57");
+  });
+
+  it("shows both figures once a search narrows the list", async () => {
+    mountWith({ total: 2, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "abc");
+
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("shows both figures once a language is picked", async () => {
+    /* The other filter. It narrows `total` the same way, and a badge that
+     * only noticed the search box would go quiet for half the controls. */
+    mountWith({ total: 2, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    // The options are built from the facets, which arrive with the response.
+    await screen.findByRole("option", { name: /und/ });
+    await user.selectOptions(screen.getByRole("combobox"), "und");
+
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("keeps both figures while the next page is still in flight", async () => {
+    /* `raw` is null during a fetch, so reading total_unfiltered straight off
+     * it drops the badge back to the bare number on every keystroke —
+     * including the keystroke that made the second figure worth showing, so
+     * it would flicker away exactly when it started to matter. Held in state
+     * for the same reason the facets are. */
+    mountWith({ total: 2, totalUnfiltered: 57,
+                holdIf: url => url.includes("language=und") });
+    const user = userEvent.setup();
+
+    // Get the pair on screen first, from a fetch that completes.
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "abc");
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+
+    // Now a fetch that does not complete.
+    await screen.findByRole("option", { name: /und/ });
+    await user.selectOptions(screen.getByRole("combobox"), "und");
+    await waitFor(() => expect(held.length).toBeGreaterThan(0));
+
+    /* Mid-flight the hook has reset `total` to 0, so the badge reads
+     * "0 of 57" rather than holding the old pair — that part is the hook's
+     * business. What matters here is that 57 is still on it: reading
+     * total_unfiltered straight off `raw`, which is null during the fetch,
+     * loses the figure entirely and leaves a bare "0". */
+    expect(screen.getByText(/of 57$/, { selector: "span" })).toBeTruthy();
+
+    await act(async () => { held.shift()(); });
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("does not show the pair when a filter matches everything", async () => {
+    /* Searching for something every file matches leaves the two equal, and
+     * "57 of 57" is noise. */
+    mountWith({ total: 57, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "mkv");
+
+    expect((await screen.findByText("57", { selector: "span" })).textContent)
+      .toBe("57");
+  });
+});
+
+
 describe("infinite scroll", () => {
   /* The page size here is 100, chosen so that "search a show name, select all
    * matching episodes" fits one fetch. A long-running show exceeds it, which

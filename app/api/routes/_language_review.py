@@ -242,6 +242,22 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             db.query(Flag)
             .join(Flag.media_file)
         )
+
+        # Counted before anything narrows it, so it is the size of the
+        # backlog rather than the size of the current match.
+        #
+        # `total` below is the filtered figure and has to be: pagination
+        # depends on it, and the "n of m" on the select-all row is built from
+        # it. The section heading's badge was reading the same number, so
+        # typing a show name took the badge from 57 to 2 and the overall
+        # figure was then nowhere on the page — the nav tab's count is
+        # manual-review QUEUE items, which is a different thing.
+        #
+        # The facets cannot stand in for this. They honour `search` on
+        # purpose, so the dropdown only offers tags the current search has,
+        # and summing them returns the filtered total again.
+        total_unfiltered = base.count()
+
         # icontains(autoescape=True) rather than an ilike f-string
         # pattern — see history.py's list_history for the full reasoning.
         # It matters more here: the facet counts below are built from
@@ -308,7 +324,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 "extracted_path":    getattr(flag, "extracted_path", None),
             })
 
-        return {"total": total, "items": items, "languages": languages}
+        return {"total": total, "total_unfiltered": total_unfiltered,
+                "items": items, "languages": languages}
 
     @router.post("/apply", description=kind.apply_description)
     def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):

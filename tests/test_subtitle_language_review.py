@@ -181,3 +181,57 @@ def test_pagination_reflects_the_filtered_total():
 
     assert result["total"] == 2, "total should count all matches, not the page"
     assert len(result["items"]) == 1, "items should honour the limit"
+
+
+def test_the_unfiltered_total_survives_a_search():
+    """
+    `total` is the filtered figure — pagination needs it, and the "n of m" on
+    the select-all row is built from it. It is also what the section heading's
+    badge showed, so typing a show name took the badge from the size of the
+    backlog to the size of the match, and the backlog figure then appeared
+    nowhere at all.
+
+    The facets cannot stand in for it: they honour `search` on purpose, so the
+    dropdown only ever offers tags the current search actually has. Summing
+    them gives the filtered total back again.
+    """
+    db = _db()
+    _seed(db)
+
+    wide   = _list(db)
+    narrow = _list(db, search="king of the hill")
+
+    assert wide["total"] == 5
+    assert narrow["total"] == 3
+    assert narrow["total_unfiltered"] == 5, (
+        "the overall figure did not survive the search"
+    )
+
+
+def test_the_unfiltered_total_survives_a_language_filter():
+    """The other filter, which narrows `total` the same way."""
+    db = _db()
+    _seed(db)
+
+    filtered = _list(db, language="jpn")
+
+    assert filtered["total"] == 2
+    assert filtered["total_unfiltered"] == 5
+
+
+def test_the_unfiltered_total_still_moves_when_rows_do():
+    """
+    Not a constant. It ignores the filters, not the table — a row cleared by
+    an apply or an ignore has to come off it, or the badge becomes a number
+    that only ever goes stale.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db = _db()
+    _seed(db)
+    assert _list(db)["total_unfiltered"] == 5
+
+    db.delete(db.query(SubtitleLanguageFlag).first())
+    db.commit()
+
+    assert _list(db)["total_unfiltered"] == 4
