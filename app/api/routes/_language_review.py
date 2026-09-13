@@ -558,6 +558,27 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             if not media:
                 continue
             setattr(media, kind.ignored_attr, True)
+            # Counted here, with the write, because this is the thing the
+            # endpoint does. Marking is unconditional and deliberate: the
+            # column is idempotent and is what stops a future scan flagging
+            # the file, so a file the user selected is honoured whether or not
+            # it still has rows to clear.
+            #
+            # This reverses an earlier decision, so the reasoning that was
+            # here is worth stating rather than deleting. The count used to
+            # sit inside the `if flags:` below, on the view that a file with
+            # no rows "was not ignored" and counting it reported work that had
+            # not happened. But the write above happens regardless, so the
+            # endpoint was marking three files and reporting one — a page left
+            # open across a rescan answered "Ignoring 0 files" while
+            # permanently suppressing every file in the list. Zero is the
+            # reading a user acts on: click again, or assume it missed. The
+            # two halves disagreed, and the write is the defensible one.
+            #
+            # Counts FILES, matching the file_ids this endpoint is given.
+            # Counting rows would report "ignored 3" for one ignored file and
+            # put the caller back in a units mismatch.
+            count += 1
 
             # Every flag for this file, not the first one.
             #
@@ -574,20 +595,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 .filter(Flag.file_id == file_id)
                 .all()
             )
-            # count only when a flag was actually cleared. It previously
-            # incremented for any file that merely existed, so re-submitting a
-            # stale selection — a list another client had already resolved, or
-            # a page left open across a rescan — reported "Ignoring 12 files"
-            # having ignored none of them. The count is the only feedback this
-            # action gives, so an inflated one is the whole signal being wrong.
-            #
-            # Counts FILES, matching the file_ids this endpoint is given.
-            # Counting rows would report "ignored 3" for one ignored file and
-            # put the caller back in the units mismatch this is fixing.
-            if flags:
-                for flag in flags:
-                    db.delete(flag)
-                count += 1
+            for flag in flags:
+                db.delete(flag)
 
         db.commit()
         return {"ignored": count}
