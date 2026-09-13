@@ -487,6 +487,57 @@ describe("useAppData — navigation guard", () => {
  * the same reasoning as invalidateHistory, whose incantation four call sites
  * had already got wrong.
  */
+describe("useAppData — refreshAfterReviewResolved", () => {
+  /* The narrow sibling of refreshAllPanels. ReviewPage had fetchAll plus
+   * invalidateHistory(null) written out by hand at four call sites and all
+   * four were missing the same third line — the reviewRefreshKey bump. That
+   * is the shape the comment on refreshAllPanels warns about, arrived at
+   * independently.
+   *
+   * Mutation, 4 applied 4 killed: the review key bump dropped from the
+   * callback, the callback widened to bump forge and revert too, approve()
+   * reverted to the hand-written pair, and invalidateHistory given a status
+   * instead of null. */
+
+  it("bumps the review key, so a re-decided file's language row shows up", async () => {
+    /* Resolving calls _apply_decision_to_item, which calls
+     * _upsert_language_flags for the skipped and pending outcomes, so a row
+     * can appear in a section on the page that was just acted on. */
+    const { result } = await mount();
+    const before = result.current.reviewRefreshKey;
+
+    act(() => { result.current.refreshAfterReviewResolved(); });
+
+    expect(result.current.reviewRefreshKey).toBe(before + 1);
+  });
+
+  it("marks history stale for every tab", async () => {
+    // Resolving can land the item on skipped, cancelled or pending, which
+    // different tabs count, so no tab may decide this refresh is unrelated.
+    const { result } = await mount();
+    const before = result.current.historyRefreshKey;
+
+    act(() => { result.current.refreshAfterReviewResolved(); });
+
+    expect(result.current.historyRefreshKey.key).toBe(before.key + 1);
+    expect(result.current.historyRefreshKey.status).toBeNull();
+  });
+
+  it("leaves the forge and revert keys alone", async () => {
+    /* The narrowness is the point. Resolving one review item does not touch
+     * forge_jobs or revert_points, and refetching them would be work nothing
+     * asked for — this is why it is not just a call to refreshAllPanels. */
+    const { result } = await mount();
+    const forge = result.current.forgeRefreshKey;
+    const revert = result.current.revertRefreshKey;
+
+    act(() => { result.current.refreshAfterReviewResolved(); });
+
+    expect(result.current.forgeRefreshKey).toBe(forge);
+    expect(result.current.revertRefreshKey).toBe(revert);
+  });
+});
+
 describe("useAppData — refreshAllPanels", () => {
   it("marks history stale for every tab, not just one", async () => {
     const { result } = await mount();

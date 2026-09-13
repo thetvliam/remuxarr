@@ -440,6 +440,32 @@ export function useAppData() {
    * they refresh less because they invalidate less, and widening them is a
    * separate question from wiring up a caller that needs all of it.
    */
+  /**
+   * A manual-review item was resolved: approved, skipped, or had its
+   * subtitles decided.
+   *
+   * Narrower than refreshAllPanels on purpose — resolving one item does not
+   * touch forge_jobs or revert_points, and refetching those would be work
+   * nothing asked for.
+   *
+   * The reviewRefreshKey bump is the part that was missing. Resolving calls
+   * _apply_decision_to_item, which calls _upsert_language_flags for both the
+   * skipped and pending outcomes — deliberately, so a mismatch the engine
+   * noticed while re-deciding is not lost. That row belongs to a section on
+   * the same page, driven by usePaginatedFetch, which watches this key and
+   * nothing else. Without the bump the row existed and the page did not move.
+   *
+   * Exists rather than exporting setReviewRefreshKey for callers to combine
+   * themselves, for the reason recorded on refreshAllPanels below: ReviewPage
+   * had fetchAll + invalidateHistory(null) written out by hand at four call
+   * sites, and all four were missing the same third line.
+   */
+  const refreshAfterReviewResolved = useCallback(() => {
+    fetchAll();
+    invalidateHistory(null);
+    setReviewRefreshKey(k => k + 1);
+  }, [fetchAll, invalidateHistory]);
+
   const refreshAllPanels = useCallback(() => {
     fetchAll();
     fetchForge();
@@ -658,7 +684,7 @@ export function useAppData() {
         workerPaused, setWorkerPaused,
         autoStart, setAutoStart,
         historyRefreshKey, invalidateHistory,
-        reviewRefreshKey,
+        reviewRefreshKey, refreshAfterReviewResolved,
         revertRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge, refreshAllPanels,

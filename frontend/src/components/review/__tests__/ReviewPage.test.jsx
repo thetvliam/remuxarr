@@ -42,6 +42,7 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewPage } from "../ReviewPage";
@@ -74,6 +75,16 @@ const ENCODING_ITEM = {
   flagged_subtitles: [{ stream_index: 2, language: "eng",
                         codec: "subrip", is_forced: false }],
   file: { id: 4, filename: "Latin1.mkv", path: "/m/Latin1.mkv" },
+};
+
+/* An audio-type review: no flagged subtitles, so the row offers the plain
+ * APPROVE / SKIP pair rather than the per-subtitle controls. This is the
+ * shape that matters here — re-deciding it is what can write an
+ * AudioLanguageFlag for the section further down the page. */
+const AUDIO_ITEM = {
+  id: 5, status: "manual_review", review_reason: null,
+  flagged_subtitles: null,
+  file: { id: 5, filename: "Dubbed.mkv", path: "/m/Dubbed.mkv" },
 };
 
 let posted;
@@ -133,6 +144,51 @@ const setup = (items) => {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.stubGlobal("IntersectionObserver", InertObserver);
+});
+
+describe("ReviewPage — refreshing the language lists", () => {
+  /* Resolving a manual-review item can CREATE a language review row.
+   * _apply_decision_to_item calls _upsert_language_flags for both the skipped
+   * and pending outcomes, deliberately, so that a mismatch the engine noticed
+   * while re-deciding is not lost. The two sections sit further down this
+   * same page.
+   *
+   * They are paginated lists driven by usePaginatedFetch, which refetches on
+   * reviewRefreshKey and on nothing else here. approve() called onRefresh()
+   * and invalidateHistory(null) — the queue and History — so the row appeared
+   * in the database, the page did not move, and the section only showed it
+   * after navigating away and back. */
+
+  const LANGUAGE_GET = /(audio|subtitle)-language-review/;
+
+  /** Stands in for App.jsx: holds the key and bumps it on the callback. */
+  const Harness = ({ items }) => {
+    const [key, setKey] = useState(0);
+    return (
+      <ThemeProvider>
+        <ReviewPage api={API} items={items} onRefresh={vi.fn()} toast={vi.fn()}
+                    invalidateHistory={vi.fn()} reviewRefreshKey={key}
+                    onReviewResolved={() => setKey(k => k + 1)} />
+      </ThemeProvider>
+    );
+  };
+
+  const languageGets = () =>
+    global.fetch.mock.calls.filter(
+      ([url, opts = {}]) => (opts.method || "GET") === "GET"
+                            && LANGUAGE_GET.test(String(url))).length;
+
+  it("refetches both language lists when an item is approved", async () => {
+    mockApi();
+    render(<Harness items={[AUDIO_ITEM]} />);
+
+    await waitFor(() => expect(languageGets()).toBe(2));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+
+    await waitFor(() => expect(languageGets()).toBe(4));
+  });
 });
 
 describe("ReviewPage — bulk resolving", () => {
