@@ -263,7 +263,17 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
                             * file returns on the next scan. Read cold, "Skip"
                             * looks like the cautious, more reversible choice —
                             * it is the other way round, and that is worth one
-                            * line to prevent. */}
+                            * line to prevent.
+                            *
+                            * Approve is also not a promise to process. It only
+                            * clears the und-audio gate; whether the file is then
+                            * converted depends on whether anything ELSE is
+                            * outstanding. A file already at the target container
+                            * with nothing to strip comes back "File already meets
+                            * all configured criteria" and lands in Skipped. This
+                            * line used to say Approve "processes it now, keeping
+                            * every audio track", which was wrong for exactly that
+                            * case — the one the threshold most often holds. */}
                             {!flagged && (
                                 <div style={{
                                     color: palette.dim,
@@ -272,7 +282,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
                                     marginTop: space.xs,
                                 }}>
                                 <b style={{ color: palette.green, fontWeight: type.weight.semibold }}>Approve</b>
-                                {" processes it now, keeping every audio track — and won't ask again. "}
+                                {" accepts this file's undefined audio tracks and stops asking. It is processed if anything else needs doing, and skipped if not. "}
                                 <b style={{ color: palette.red, fontWeight: type.weight.semibold }}>Skip</b>
                                 {" leaves it untouched; it returns on the next scan."}
                                 </div>

@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 7 applied, 7 killed:
+ * Verified by mutation, 9 applied, 9 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -34,6 +34,16 @@
  *   • Each button posting to the other's endpoint           → killed
  *   • The font button shown while its setting is always_ask → killed
  *   • Both buttons reading the same setting                 → killed
+ *   • The Approve/Skip explanation replaced wholesale       → killed
+ *   • That explanation's render gate inverted               → killed
+ *
+ * The last two both SURVIVED before the tests below were written: no test
+ * anywhere asserted that copy, so it was free to say anything, and it did
+ * — see the note on the "what Approve claims it will do" block. A third
+ * mutant, inverting the gate on the APPROVE / SKIP buttons themselves, is
+ * already killed by "refetches both language lists when an item is
+ * approved", which cannot find the button to click. It is covered
+ * incidentally rather than deliberately, so it is not listed above.
  *
  * A mutation run here must confirm the file was collected: `vitest run
  * <path>` exits non-zero when it finds NO test files, which is
@@ -322,5 +332,48 @@ describe("ReviewPage — bulk resolving", () => {
     expect(await screen.findByRole("button",
       { name: /FONT ITEMS/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /SUBTITLE ITEMS/i })).toBeNull();
+  });
+});
+
+describe("ReviewPage — what Approve claims it will do", () => {
+  /* Approve clears the und-audio gate. It does NOT mean the file gets
+   * converted: whether anything happens afterwards depends on whether
+   * something else is still outstanding.
+   *
+   * Verified against the decision engine rather than inferred. A file
+   * already at the target container with two und audio tracks and nothing
+   * else to do returns should_process=False and "File already meets all
+   * configured criteria — no changes needed", so it lands in Skipped. The
+   * same file as MKV, with a container conversion pending, returns
+   * should_process=True. Both halves of the sentence below are real.
+   *
+   * The copy used to say Approve "processes it now, keeping every audio
+   * track", which was wrong for the first case — the common one, since the
+   * threshold most often holds files that need nothing else. Nothing
+   * asserted this text, so it was free to say anything. */
+  it("says the file may be skipped rather than promising to process it", async () => {
+    mockApi();
+    setup([AUDIO_ITEM]);
+
+    await screen.findByRole("button", { name: /^APPROVE$/i });
+    const shown = document.body.textContent;
+
+    expect(shown).toMatch(/accepts this file's undefined audio tracks/i);
+    expect(shown).toMatch(/skipped if not/i);
+    expect(shown).not.toMatch(/processes it now/i);
+  });
+
+  /* The explanation belongs to the APPROVE / SKIP pair, so it has to appear
+   * on the same cards those buttons do. A subtitle-flagged card offers
+   * per-track controls instead, and describing a pair of buttons that are
+   * not on screen is worse than saying nothing. */
+  it("explains the pair only on the cards that offer it", async () => {
+    mockApi();
+    setup([IMAGE_ITEM]);
+
+    await screen.findByText("Movie.mkv");
+
+    expect(document.body.textContent).not.toMatch(/skipped if not/i);
+    expect(screen.queryByRole("button", { name: /^APPROVE$/i })).toBeNull();
   });
 });
