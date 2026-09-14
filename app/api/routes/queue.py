@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from app.core.decision import analyze_file
 from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.probe import is_faststart_mp4
-from app.database.models import MediaFile, PlannedAction, QueueItem, Track
+from app.database.models import (
+    AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
+    SubtitleLanguageFlag, Track,
+)
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
@@ -300,13 +303,42 @@ def list_manual_review(db: Session = Depends(get_db)):
 
 @router.get("/stats")
 def queue_stats(db: Session = Depends(get_db)):
-    """Quick counts for the UI header badges."""
+    """
+    Quick counts for the UI header badges.
+
+    Queue statuses come back at the top level keyed by status. The
+    language-review backlog is nested under "language_review" rather than
+    added as two more top-level keys, because it counts FLAG ROWS and not
+    QueueItems: a caller walking this dict as a status map must not pick
+    them up as though they were statuses.
+
+    Those figures may be added to the manual_review count without double
+    counting a file. Every is_manual_review decision returns early (see the
+    three gates in decision.py) and constructs its ProcessingDecision
+    without audio_language_mismatch or subtitle_language_mismatches, so
+    both default to empty — and _upsert_language_flags deletes any existing
+    rows when they are. A file is therefore either in manual review or
+    carrying language flags, never both. That is what makes the sum the UI
+    does a count of files rather than an overcount.
+
+    Counted in SQL rather than by loading rows: the caller wants a number,
+    and the list endpoints that return the rows themselves are paginated,
+    so their totals are not free to reuse here.
+    """
     rows = (
         db.query(QueueItem.status, func.count(QueueItem.id))
         .group_by(QueueItem.status)
         .all()
     )
-    return {status: count for status, count in rows}
+    # No "or 0" fallback: count() returns 0 on an empty table, never None,
+    # so the fallback was unreachable — it survived mutation as an
+    # equivalent, which is what flagged it as dead.
+    audio = db.query(func.count(AudioLanguageFlag.id)).scalar()
+    subtitle = db.query(func.count(SubtitleLanguageFlag.id)).scalar()
+    return {
+        **{status: count for status, count in rows},
+        "language_review": {"audio": audio, "subtitle": subtitle},
+    }
 
 
 @router.get("/{item_id}")

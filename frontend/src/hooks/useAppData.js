@@ -82,6 +82,14 @@ export function useAppData() {
   const [activeJobs, setActiveJobs] = useState([]);
   const [queue,      setQueue]      = useState([]);
   const [review,     setReview]     = useState([]);
+  /* Flag-row counts from /api/queue/stats, not a list. The Review tab badge
+   * has to include these: a file can carry a language flag without ever
+   * entering manual review (one undefined audio track under a threshold of
+   * two, an undefined subtitle that gets extracted), so review.length alone
+   * reads zero while the page below has rows waiting. Kept as a count
+   * rather than fetching the lists because those endpoints are paginated
+   * and the badge only ever needs the number. */
+  const [languageReviewCount, setLanguageReviewCount] = useState(0);
   const [modal,      setModalState] = useState(null);
   const [toasts,     setToasts]     = useState([]);
   const [dryRun,     setDryRun]     = useState(false);
@@ -363,7 +371,7 @@ export function useAppData() {
     // calls that out as "the difference between a preview and an
     // irreversible write" for the failure path; staleness produced the same
     // visible outcome by another route.
-    const [a, q, r, w, s, sc, dr] = await Promise.allSettled([
+    const [a, q, r, w, s, sc, dr, st] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
                                                              fetch(`${api}/api/queue/`).then(r => r.json()),
                                                              fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
@@ -371,6 +379,7 @@ export function useAppData() {
                                                              fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
                                                              fetch(`${api}/api/scan/status`).then(r => r.json()),
                                                              fetch(`${api}/api/settings/dry_run_mode`).then(r => r.json()),
+                                                             fetch(`${api}/api/queue/stats`).then(r => r.json()),
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);
@@ -378,6 +387,23 @@ export function useAppData() {
     if (w.status  === "fulfilled") setWorkerPaused(w.value?.paused ?? false);
     if (s.status  === "fulfilled") setAutoStart(s.value?.value ?? true);
     if (dr.status === "fulfilled") setDryRun(!!dr.value?.value);
+    /* Audio and subtitle backlogs are summed here rather than kept apart:
+     * the badge is one number, and the two sections are two views of the
+     * same "languages still to answer" pile. A dropped poll leaves the
+     * previous value alone, like every other branch here — st is simply
+     * not fulfilled and nothing below runs.
+     *
+     * Optional chaining all the way down rather than an `if (lr)` guard,
+     * which reads as equivalent and is not. A guard turns a response
+     * without the key into a CRASH once removed, and a crash inside this
+     * floating promise surfaces as an unhandled rejection: the run goes
+     * red while every test still passes, so no assertion is actually
+     * holding the behaviour. Written this way, the same mistake produces
+     * NaN instead — a wrong number the badge test can catch. */
+    if (st.status === "fulfilled") {
+      const lr = st.value?.language_review;
+      setLanguageReviewCount((lr?.audio ?? 0) + (lr?.subtitle ?? 0));
+    }
     if (sc.status === "fulfilled") {
       setScanning(sc.value?.running ?? false);
       if (sc.value?.running && sc.value?.total > 0) {
@@ -672,10 +698,22 @@ export function useAppData() {
 
       const pendingQueue = queue.filter(i => i.status !== "processing");
 
+      /* What the Review tab badge shows. Derived here rather than in App.jsx
+       * so it can be tested: App.jsx has no test file, and this sum is the
+       * whole point of fetching the stats.
+       *
+       * The two terms cannot double-count a file. Every is_manual_review
+       * decision returns early without an audio_language_mismatch or
+       * subtitle_language_mismatches, and _upsert_language_flags clears any
+       * existing rows when those are empty, so a file is either in manual
+       * review or carrying language flags — never both. See queue_stats'
+       * docstring. */
+      const reviewBadgeCount = review.length + languageReviewCount;
+
       return {
         api, setApi, page, setPage,
         registerNavGuard, leaveGuarded,
-        activeJobs, queue, review,
+        activeJobs, queue, review, languageReviewCount, reviewBadgeCount,
         modal, setModal,
         toasts,
         dryRun, setDryRun,

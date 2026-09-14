@@ -1118,3 +1118,88 @@ def test_approving_returns_the_serialised_item_with_its_actions(db):
     assert payload["id"] == 1
     assert "planned_actions" in payload
     assert payload["planned_actions"], "returned no actions to render"
+
+
+# ── Stats: the Review badge's backlog ────────────────────────────────────────
+#
+# The Review tab badge was review.length — manual-review QueueItems only —
+# so it read zero while the Audio and Subtitle Language Review sections had
+# rows waiting. A file can carry a language flag without ever entering
+# manual review: one undefined audio track under a threshold of two, or an
+# undefined subtitle that gets extracted. queue_stats now reports that
+# backlog so the badge can include it.
+
+def _audio_flag(db, flag_id=1, file_id=1, stream_index=1):
+    from app.database.models import AudioLanguageFlag
+
+    f = AudioLanguageFlag(id=flag_id, file_id=file_id,
+                          stream_index=stream_index, detected_language="und")
+    db.add(f)
+    db.commit()
+    return f
+
+
+def _subtitle_flag(db, flag_id=1, file_id=1, stream_index=2):
+    from app.database.models import SubtitleLanguageFlag
+
+    f = SubtitleLanguageFlag(id=flag_id, file_id=file_id,
+                             stream_index=stream_index, detected_language="und")
+    db.add(f)
+    db.commit()
+    return f
+
+
+def test_stats_reports_the_language_review_backlog(db):
+    from app.api.routes.queue import queue_stats
+
+    _file(db)
+    _audio_flag(db)
+    _subtitle_flag(db, flag_id=2)
+    _subtitle_flag(db, flag_id=3, stream_index=3)
+
+    stats = queue_stats(db=db)
+
+    assert stats["language_review"] == {"audio": 1, "subtitle": 2}
+
+
+def test_stats_counts_flags_not_the_files_they_sit_on(db):
+    """Three flags on one file are three answers the user still owes."""
+    from app.api.routes.queue import queue_stats
+
+    _file(db)
+    _subtitle_flag(db, flag_id=1, stream_index=2)
+    _subtitle_flag(db, flag_id=2, stream_index=3)
+    _subtitle_flag(db, flag_id=3, stream_index=4)
+
+    assert queue_stats(db=db)["language_review"]["subtitle"] == 3
+
+
+def test_stats_reports_an_empty_backlog_as_zero_not_a_missing_key(db):
+    """
+    The UI adds these to review.length. A missing key would read as NaN and
+    blank the badge, which is the failure this endpoint exists to prevent.
+    """
+    from app.api.routes.queue import queue_stats
+
+    stats = queue_stats(db=db)
+
+    assert stats["language_review"] == {"audio": 0, "subtitle": 0}
+
+
+def test_stats_keeps_queue_statuses_out_of_the_language_review_key(db):
+    """
+    Statuses stay top-level and the backlog stays nested, so a caller
+    walking this dict as a status map cannot mistake a flag count for one.
+    """
+    from app.api.routes.queue import queue_stats
+
+    _file(db)
+    _item(db, status="manual_review")
+    _audio_flag(db)
+
+    stats = queue_stats(db=db)
+
+    assert stats["manual_review"] == 1
+    assert "audio" not in stats
+    assert "subtitle" not in stats
+    assert stats["language_review"]["audio"] == 1
