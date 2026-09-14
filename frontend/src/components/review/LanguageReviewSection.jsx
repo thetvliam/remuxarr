@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
@@ -90,6 +90,45 @@ export const LanguageReviewSection = ({
     // every keystroke and every filter change — including the change that
     // is currently being made, so the control would lose its own options
     // mid-interaction.
+    /* Held rather than read straight off the response, for the same reason
+     * the facets below are: `raw` is null while a fetch is in flight, so the
+     * badge would drop back to the bare number on every keystroke — including
+     * the keystroke that made the second figure worth showing. */
+    const [flaggedTotal, setFlaggedTotal] = useState(0);
+    useEffect(() => {
+        if (typeof raw?.total_unfiltered === "number") setFlaggedTotal(raw.total_unfiltered);
+    }, [raw]);
+
+    /* Both figures while something is narrowing the list, rather than
+     * swapping one number for another in the same place.
+     *
+     * The badge read `total`, which is the FILTERED figure — pagination needs
+     * it that way and the select-all row's "n of m" is built from it. So
+     * typing a show name took the badge from the size of the backlog to the
+     * size of the match, and the backlog number was then nowhere on the page:
+     * the nav tab's count is manual-review QUEUE items, which is a different
+     * thing entirely.
+     *
+     * No need to ask which filters are active. total_unfiltered is the same
+     * query with the filters taken off, so it can only exceed `total` when
+     * one of them is doing something. */
+    /* The same shape the endpoint enforces, checked here so the feedback is
+     * specific instead of a 400 arriving as "Failed to set subtitle language
+     * on 1 file", which says nothing about why.
+     *
+     * Deliberately duplicated rather than derived: there is no shared
+     * vocabulary between the Python and the JS, and a check that only exists
+     * on the client is not a check at all. The endpoint is authoritative — if
+     * the rule there changes, this has to change with it. Both spell out two
+     * or three ASCII letters, which covers every ISO 639-1 and 639-2 code
+     * while excluding what has no business in a filename. */
+    const trimmedLang = targetLang.trim().toLowerCase();
+    const langValid   = /^[a-z]{2,3}$/.test(trimmedLang);
+    // Empty is the starting state, not a mistake worth scolding.
+    const langWrong   = trimmedLang.length > 0 && !langValid;
+
+    const badgeLabel = total < flaggedTotal ? `${total} of ${flaggedTotal}` : `${total}`;
+
     const [facets, setFacets] = useState([]);
     useEffect(() => {
         if (raw?.languages) setFacets(raw.languages);
@@ -181,6 +220,24 @@ export const LanguageReviewSection = ({
             }
         }
 
+        /* The files behind the selected tracks, derived once and used by both
+         * the IGNORE button's count and the request it sends.
+         *
+         * They were computed separately, and the label used selected.size —
+         * the number of TRACKS. Three und subtitles on one release, which is
+         * the ordinary case for forced/dub/SDH, offered IGNORE (3) and then
+         * said "Ignoring 1 file". Both numbers were right about their own
+         * unit and the pair was unreadable.
+         *
+         * SET LANGUAGE deliberately keeps selected.size. Applying really is
+         * per-track and that button sends the flag ids untouched, so the two
+         * buttons count different things on purpose. */
+        const selectedFileIds = useMemo(
+            () => Array.from(new Set(
+                items.filter(i => selected.has(i.id)).map(i => i.file_id))),
+            [items, selected],
+        );
+
         const applyLanguage = async () => {
             if (selected.size === 0) return;
             const lang = targetLang.trim().toLowerCase();
@@ -213,9 +270,44 @@ export const LanguageReviewSection = ({
                 const data     = await r.json().catch(() => ({}));
                 const applied  = typeof data.applied === "number" ? data.applied : selected.size;
                 const problems = Array.isArray(data.errors) ? data.errors : [];
+                // Absent means a real run. That is the safe default of the
+                // two: it reports what happened rather than promising nothing
+                // was touched, and a wrong promise of safety is the worse
+                // error to make.
+                const preview  = data.dry_run === true;
 
                 if (applied > 0) {
-                    toast?.(`Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`, "success");
+                    /* Dry run gets its own wording and the preview tone,
+                     * which exists for exactly this and is deliberately its
+                     * own colour.
+                     *
+                     * The endpoint does not rename the sidecar or clear the
+                     * flag rows in this mode, so the row just answered is
+                     * still in the list when the refresh lands. "Set subtitle
+                     * language to ENG on 1 file" beside a row that has not
+                     * moved reads as a failure, and it is not one: the choice
+                     * is recorded and applies the moment the mode is off. */
+                    toast?.(
+                        preview
+                        ? `Dry run — no files changed. ${lang.toUpperCase()} saved for ` +
+                          `${applied} file${applied === 1 ? "" : "s"}, applied once Dry Run Mode is off`
+                        : `Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`,
+                        preview ? "preview" : "success",
+                    );
+                } else if (!problems.length) {
+                    /* Both toasts above and below are gated — one on applied
+                     * being non-zero, the other on there being errors — so a
+                     * response of applied 0 with an empty errors list
+                     * satisfied neither and the click said nothing at all.
+                     * That is indistinguishable from a click that never
+                     * registered, and it is a real answer with a specific
+                     * meaning: every flag id sent had already gone, so the
+                     * endpoint skipped them all. Usually another tab, another
+                     * device, or a scan that resolved them in between. The
+                     * rows disappear on the refresh either way, which without
+                     * a word reads as the action having half-worked. */
+                    toast?.("Nothing to update — those tracks had already been answered",
+                            "neutral");
                 }
                 if (problems.length) {
                     // Deliberately not called "failed". One of the outcomes the
@@ -258,7 +350,10 @@ export const LanguageReviewSection = ({
             if (selected.size === 0) return;
             setBusy(true);
             try {
-                /* Ignore is a per-file decision, so the selected TRACKS are
+                /* The same list the IGNORE button counts, so the label and the
+                 * request cannot describe different things.
+                 *
+                 * Ignore is a per-file decision, so the selected TRACKS are
                  * reduced to the files they belong to. Sending flag ids here
                  * would silence one track and leave the rest of the file
                  * still asking.
@@ -267,8 +362,7 @@ export const LanguageReviewSection = ({
                  * below. Comparing the response against selected.size measured
                  * flags against files and warned on requests that had fully
                  * succeeded — visibly, in this component's own passing tests. */
-                const fileIds = Array.from(new Set(
-                    items.filter(i => selected.has(i.id)).map(i => i.file_id)));
+                const fileIds = selectedFileIds;
                 const r = await fetch(`${api}${endpoint}ignore`, {
                     method:  "POST",
                     headers: { "Content-Type": "application/json" },
@@ -283,19 +377,47 @@ export const LanguageReviewSection = ({
                 // reporting selected.size overstated it.
                 const data    = await r.json().catch(() => ({}));
                 const ignored = typeof data.ignored === "number" ? data.ignored : fileIds.length;
-                if (ignored < fileIds.length) {
+                // Absent means a real run, the same safe default applyLanguage
+                // takes: report what happened rather than promise nothing was.
+                const preview = data.dry_run === true;
+
+                /* One message was doing the work of four, and was wrong in
+                 * three of them. "Ignoring 0 files — they won't be flagged
+                 * again" fired unchanged for a dry run that marked nothing, a
+                 * selection where not one file could be found, and a partial
+                 * result whose shortfall only ever reached a console.warn. */
+                if (preview) {
+                    toast?.(
+                        `Dry run — nothing was marked. ${fileIds.length} ` +
+                        `file${fileIds.length === 1 ? "" : "s"} would stop being flagged`,
+                        "preview",
+                    );
+                } else if (ignored === 0) {
+                    // The endpoint marks every file it finds, so zero back
+                    // means not one id resolved — the files are gone from the
+                    // library, not merely un-flagged.
+                    toast?.("Nothing to ignore — those files are no longer in the library",
+                            "neutral");
+                } else if (ignored < fileIds.length) {
                     console.warn(
                         `Language ignore: sent ${fileIds.length} file(s), backend ignored ${ignored}`,
                     );
+                    toast?.(
+                        `Ignoring ${ignored} of ${fileIds.length} files — ` +
+                        `the rest are no longer in the library`,
+                        "neutral",
+                    );
+                } else {
+                    toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
                 }
-                toast?.(`Ignoring ${ignored} file${ignored === 1 ? "" : "s"} — they won't be flagged again`, "neutral");
                 /* Only the local refreshKey, unlike applyLanguage which also calls
                  * onRefresh() and bumps the History key. That asymmetry is
                  * deliberate: applying a correction deletes the file's QueueItem
                  * and creates a new one, which the dashboard queue and History
-                 * tabs both need to know about. Ignoring only writes an override
-                 * row — no queue item changes hands, so there is nothing for
-                 * those views to re-read. */
+                 * tabs both need to know about. Ignoring writes a boolean on
+                 * the file and deletes its flag rows — no override, and no
+                 * queue item changes hands, so there is nothing for those
+                 * views to re-read. */
                 setRefreshKey(k => k + 1);
             } catch (err) {
                 console.error("Language review: ignore request failed", err);
@@ -331,7 +453,7 @@ export const LanguageReviewSection = ({
                 color: accent,
                 fontSize: type.size.xs,
             }}>
-            {total}
+            {badgeLabel}
             </span>
             </div>
             <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
@@ -404,16 +526,22 @@ export const LanguageReviewSection = ({
                     fontSize: type.size.md,
                     textTransform: "lowercase",
                 }}
+                aria-invalid={langWrong}
                 />
+                {langWrong && (
+                    <span style={{ color: palette.red, fontSize: type.size.xs }}>
+                    Use a 2- or 3-letter language code
+                    </span>
+                )}
                 <Btn
                 label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
                 color={palette.green}
                 bg={alpha(palette.green, ALPHA.low)}
                 onClick={applyLanguage}
-                disabled={busy || selected.size === 0 || !targetLang.trim()}
+                disabled={busy || selected.size === 0 || !langValid}
                 />
                 <Btn
-                label={busy ? "WORKING…" : `IGNORE (${selected.size})`}
+                label={busy ? "WORKING…" : `IGNORE (${selectedFileIds.length})`}
                 color={palette.dim}
                 bg="transparent"
                 onClick={ignoreSelected}

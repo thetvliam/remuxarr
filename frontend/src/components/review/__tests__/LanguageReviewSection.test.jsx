@@ -29,7 +29,7 @@
  * files, which reads as every mutation dying. The numbers below are from
  * the suite that actually exists.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,14 +52,18 @@ const ITEMS = [
 ];
 
 let calls;
+/** Toast calls made during a test, as [message, tone] pairs. */
+let toasts;
 
-const setup = (items = ITEMS) => {
+const setup = (items = ITEMS, reviewRefreshKey = 0,
+               postJson = { applied: 1, ignored: 1 }) => {
   calls = [];
+  toasts = [];
   global.fetch = vi.fn(async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET",
       body: options.body });
     if ((options.method || "GET") !== "GET") {
-      return { ok: true, json: async () => ({ applied: 1, ignored: 1 }) };
+      return { ok: true, json: async () => postJson };
     }
     return {
       ok: true,
@@ -68,17 +72,105 @@ const setup = (items = ITEMS) => {
     };
   });
 
-  render(
+  return render(
     <ThemeProvider>
-    <SubtitleLanguageReviewSection api={API} toast={vi.fn()} refreshKey={0} />
+    <SubtitleLanguageReviewSection api={API}
+                                   toast={(msg, tone) => toasts.push([msg, tone])}
+                                   reviewRefreshKey={reviewRefreshKey} />
     </ThemeProvider>,
   );
 };
 
+/** GET requests issued so far — one per list fetch. */
+const listFetches = () => calls.filter(c => c.method === "GET").length;
+
 const bodyOf = (fragment) =>
 JSON.parse(calls.find(c => c.url.includes(fragment) && c.method === "POST").body);
 
-beforeEach(() => { calls = []; });
+/* A second mock rather than a `total` parameter on the one above.
+ *
+ * setup() answers every page with the same body and reports `total` equal to
+ * the rows it returns, so hasMore is always false and the scroll path is
+ * unreachable through it. Teaching it to page would change what every test
+ * above is running against for the sake of the ones below — and those tests
+ * depend on the list being complete: their selections assume the rows on
+ * screen are all the rows there are. */
+/** Resolvers for page requests the mock was told to hold, in request order. */
+let pending;
+
+const setupPaged = ({ total, page, holdAfter = Infinity }) => {
+  calls = [];
+  pending = [];
+  let served = 0;
+  global.fetch = vi.fn(async (url, options = {}) => {
+    const u = String(url);
+    calls.push({ url: u, method: options.method || "GET", body: options.body });
+    if ((options.method || "GET") !== "GET") {
+      return { ok: true, json: async () => ({ applied: 1, ignored: 1 }) };
+    }
+    const offset = Number(new URL(u).searchParams.get("offset") || 0);
+    const items = Array.from(
+      { length: Math.max(0, Math.min(page, total - offset)) },
+      (_, n) => {
+        const index = offset + n;
+        return {
+          id: 100 + index, file_id: 100 + index,
+          filename: `Ep${index}.mkv`, path: `/m/Ep${index}.mkv`,
+          stream_index: 2, detected_language: "und",
+          extracted_path: `/m/Ep${index}.und.srt`,
+        };
+      },
+    );
+    const body = { ok: true, json: async () => ({ total, items,
+      languages: [{ language: "und", count: total }] }) };
+    served += 1;
+    /* An immediately-resolving mock never lets a render commit with `loading`
+     * true: the whole request settles inside one React batch, so the component
+     * goes straight from one loaded list to the next and the transition the
+     * re-arm test is about does not exist in the harness. Holding the page
+     * open is what makes it observable — it is a real network having latency,
+     * which is the ordinary case rather than the exotic one. */
+    if (served > holdAfter) {
+      return new Promise(resolve => pending.push(() => resolve(body)));
+    }
+    return body;
+  });
+
+  return render(
+    <ThemeProvider>
+    <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={0} />
+    </ThemeProvider>,
+  );
+};
+
+/* jsdom has no IntersectionObserver, so the sentinel effect throws a
+ * ReferenceError the moment hasMore goes true and the whole section unmounts.
+ * HistoryPanel.test.jsx carries the only other copy of this; it is duplicated
+ * rather than shared because extracting it would mean editing that file for a
+ * change that has nothing to do with it.
+ *
+ * Stubbed for the whole file, not only the scroll tests below. The tests above
+ * happen not to construct one — they report `total` equal to the rows they
+ * return — but that is a property of their mock, not something they assert,
+ * and without the stub they would start failing with a ReferenceError the day
+ * it changed, for a reason unrelated to what they cover. */
+let observers;
+
+class FakeObserver {
+  constructor(cb) { this.cb = cb; this.targets = []; observers.push(this); }
+  observe(el) { this.targets.push(el); }
+  unobserve(el) { this.targets = this.targets.filter(t => t !== el); }
+  disconnect() { this.targets = []; }
+}
+
+/** Whether anything is currently watching for the end of the list. */
+const watching = () => observers.some(o => o.targets.length > 0);
+
+beforeEach(() => {
+  calls = [];
+  observers = [];
+  vi.stubGlobal("IntersectionObserver", FakeObserver);
+});
 
 describe("per-track rows", () => {
   it("shows every flagged track of a file, not just the first", async () => {
@@ -144,9 +236,201 @@ describe("applying", () => {
     await waitFor(() => expect(calls.some(c => c.url.includes("/apply"))).toBe(true));
     expect(bodyOf("/apply").flag_ids.sort()).toEqual([11, 13]);
   });
+
+  /* Mutation on the two toast tests below, 4 applied 4 killed. They pin the
+   * dry-run branch rather than showing it was once exposed, since the branch
+   * is new — but the success toast itself WAS unprotected before them:
+   * deleting it outright passed all 490 tests.
+   *
+   *   • The success toast deleted                  → killed
+   *   • The message ternary collapsed to success    → killed
+   *   • The tone ternary collapsed to success       → killed
+   *   • `preview` inverted                          → killed
+   *
+   * And 3 more on the nothing-to-do branch, 3 killed: the branch removed,
+   * the branch firing regardless of errors, and the success branch disabled
+   * so that everything fell through to it. Those pin new code; the baseline
+   * for that one is that the zero case produced no toast at all against the
+   * unchanged component, which is what the test failure said.
+   */
+
+  const applyOne = async () => {
+    const user = userEvent.setup();
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+    await user.click(screen.getByRole("button", { name: /SET LANGUAGE/ }));
+    /* Settles on the refresh rather than on a toast arriving. The case below
+     * where nothing was left to answer is precisely the one that used to
+     * produce no toast at all, so waiting for one would hang instead of
+     * failing with something readable. The handler toasts before bumping the
+     * refresh key, so a second list fetch means every toast decision has
+     * already been made. */
+    await waitFor(() => expect(listFetches()).toBe(2));
+  };
+
+  it("says nothing changed when the backend reports a dry run", async () => {
+    /* The endpoint keeps the flag rows in this mode, so the answered row is
+     * still on screen when the list refreshes. Reporting it as a success
+     * beside a row that has not moved reads as a failure, and it is not one:
+     * the choice is recorded and lands as soon as the mode is off. */
+    setup(ITEMS, 0, { applied: 1, errors: [], dry_run: true });
+
+    await applyOne();
+
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/dry run/i);
+    expect(message).toMatch(/no files changed/i);
+    // The theme carries a `preview` tone for dry-run output, in its own
+    // colour, rather than this borrowing the success green.
+    expect(tone).toBe("preview");
+  });
+
+  it("reports a real apply as a success", async () => {
+    /* The positive control. Without it the test above would pass against a
+     * component that called everything a dry run. */
+    setup(ITEMS, 0, { applied: 1, errors: [], dry_run: false });
+
+    await applyOne();
+
+    const [message, tone] = toasts[0];
+    expect(message).toBe("Set subtitle language to ENG on 1 file");
+    expect(tone).toBe("success");
+  });
+
+  it("says so when there was nothing left to answer", async () => {
+    /* Both toasts were gated: the success one on applied > 0, the error one
+     * on a non-empty errors list. A response of applied 0 with no errors
+     * satisfied neither, so the click produced silence — the same silence as
+     * a click that failed to register. It is a real response and it means
+     * something specific: every track selected had already been answered,
+     * usually from another tab or another device. The rows then vanish on
+     * the refresh, which without a word looks like the action half-worked. */
+    setup(ITEMS, 0, { applied: 0, errors: [] });
+
+    await applyOne();
+
+    expect(toasts).toHaveLength(1);
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/already been answered/i);
+    expect(tone).toBe("neutral");
+  });
+
+  it("does not add the nothing-to-do message when something failed", async () => {
+    /* applied 0 with errors is a different story and already has its own
+     * toast. Two messages for one click would be worse than the silence. */
+    setup(ITEMS, 0, { applied: 0, errors: [{ file_id: 7, error: "unreadable" }] });
+
+    await applyOne();
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0][0]).not.toMatch(/already been answered/i);
+  });
 });
 
 describe("ignoring", () => {
+  /* Mutation on the button count, 4 applied 4 killed: the count removed
+   * entirely (which survived before this test existed, against all 494),
+   * the label reverted to selected.size, the request sending flag ids, and
+   * the dedup dropped from the shared derivation. The last two are caught by
+   * the existing ignore tests as well, which is the point of deriving the
+   * list once — the label and the request now fail together.
+   *
+   * And 5 on the toast, 5 killed: each of the three new branches removed in
+   * turn, the preview tone reduced to neutral, and the ordinary branch
+   * removed. Each dies to exactly one test, which is what four branches
+   * saying four different things should look like. */
+
+  const TWO_FILES = [
+    ITEMS[0],
+    { id: 21, file_id: 8, filename: "Other.mkv", path: "/m/Other.mkv",
+      stream_index: 2, detected_language: "und",
+      extracted_path: "/m/Other.und.srt" },
+  ];
+
+  /** Select every track, click IGNORE, and settle on the refresh it triggers. */
+  const ignoreAll = async (count) => {
+    const user = userEvent.setup();
+    const boxes = await screen.findAllByRole("checkbox");
+    for (let n = 1; n <= count; n += 1) await user.click(boxes[n]);
+    await user.click(screen.getByRole("button", { name: /IGNORE/ }));
+    await waitFor(() => expect(listFetches()).toBe(2));
+  };
+
+  it("says nothing was marked when the backend reports a dry run", async () => {
+    /* Ignoring is gated by Dry Run Mode because it cannot be undone, and that
+     * mode ships ON, so this is a fresh install's default state. The endpoint
+     * marks nothing and returns 0 — reporting that as "Ignoring 0 files —
+     * they won't be flagged again" states the opposite of what happened. */
+    setup(ITEMS, 0, { ignored: 0, dry_run: true });
+
+    await ignoreAll(3);
+
+    const [message, tone] = toasts[0];
+    expect(message).toMatch(/dry run/i);
+    expect(message).toMatch(/would stop being flagged/i);
+    expect(tone).toBe("preview");
+  });
+
+  it("says nothing was ignored when no file could be found", async () => {
+    /* A real run returning 0 now means something specific: not one id
+     * resolved to a file, because the endpoint marks every file it finds.
+     * "Ignoring 0 files — they won't be flagged again" promised a suppression
+     * that did not happen to files that are not there. */
+    setup(ITEMS, 0, { ignored: 0 });
+
+    await ignoreAll(3);
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0][0]).toMatch(/nothing to ignore/i);
+    expect(toasts[0][0]).not.toMatch(/won't be flagged/i);
+  });
+
+  it("says how many of the selection it managed when some were gone", async () => {
+    /* The shortfall used to reach a console.warn and nothing else, so the
+     * user was told all of them were handled. */
+    setup(TWO_FILES, 0, { ignored: 1 });
+
+    await ignoreAll(2);
+
+    expect(toasts[0][0]).toMatch(/1 of 2/);
+  });
+
+  it("reports a complete ignore plainly", async () => {
+    /* The positive control: without it the three above would pass against a
+     * component that never gave the ordinary answer. */
+    setup(ITEMS, 0, { ignored: 1 });
+
+    await ignoreAll(3);
+
+    expect(toasts[0]).toEqual([
+      "Ignoring 1 file — they won't be flagged again", "neutral",
+    ]);
+  });
+
+  it("counts files on the IGNORE button, not tracks", async () => {
+    /* The three rows in ITEMS are three subtitle tracks of ONE file, which is
+     * the ordinary case: a release with forced, dub and SDH subtitles all
+     * tagged und. Ignore is a per-file decision — ignoreSelected reduces the
+     * selected tracks to their files before sending, and the endpoint counts
+     * files — so a label reading IGNORE (3) beside a toast reading
+     * "Ignoring 1 file" describes two different units for one click.
+     *
+     * SET LANGUAGE keeps the track count on purpose: applying really is
+     * per-track, and that button sends the flag ids untouched. */
+    setup();
+    const user = userEvent.setup();
+
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+    await user.click(boxes[2]);
+    await user.click(boxes[3]);
+
+    expect(screen.getByRole("button", { name: /IGNORE/ }).textContent)
+      .toContain("IGNORE (1)");
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ }).textContent)
+      .toContain("SET LANGUAGE (3)");
+  });
+
   it("sends file ids, not flag ids", async () => {
     /**
      * Ignore is a per-file decision. Sending the selected flag ids would
@@ -203,7 +487,7 @@ describe("grouping", () => {
 });
 
 
-describe("grouping", () => {
+describe("grouping — non-adjacent rows", () => {
   /* Rows for one file are not guaranteed to arrive next to each other.
    *
    * They normally do — the backend orders by (filename, stream_index), and
@@ -253,5 +537,379 @@ describe("grouping", () => {
     await user.click(screen.getByRole("button", { name: /IGNORE/i }));
 
     expect(bodyOf("ignore").file_ids).toEqual([7]);
+  });
+});
+
+
+describe("refresh signals", () => {
+  /* Two independent signals are combined into one key for the shared hook:
+   * `refreshKey` is local and bumped after this section's own Apply/Ignore,
+   * while `reviewRefreshKey` arrives from the WebSocket layer when a scan, a
+   * webhook-queued file or a finished job may have written new flag rows.
+   *
+   * Neither had a test. This file was passing `refreshKey={0}` — not a prop
+   * this component takes — so it was spread through and dropped, and the
+   * suite would not have noticed either half of the key being deleted.
+   *
+   * Mutation, 3 applied against the suite before these tests, 3 survived:
+   *
+   *   • reviewRefreshKey dropped from the combined key → killed
+   *   • The local refreshKey dropped from it           → killed
+   *   • The `reviewRefreshKey = 0` default removed     → EQUIVALENT
+   *
+   * The default is unkillable because omitting the prop yields a combined key
+   * of "undefined:0", which is every bit as stable as "0:0" — nothing reads
+   * the value, only whether it changed. It is defensive rather than
+   * load-bearing, and the only caller passes the prop. */
+
+  it("refetches the list when the external refresh key changes", async () => {
+    /* Without this signal a scan can surface twenty new mismatches while the
+     * section keeps showing whatever it fetched on mount, until the page is
+     * navigated away from and back. */
+    const { rerender } = setup();
+    await waitFor(() => expect(listFetches()).toBe(1));
+
+    rerender(
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={1} />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => expect(listFetches()).toBe(2));
+  });
+
+  it("refetches the list after applying a language", async () => {
+    /* The local half of the same key. The answered rows are deleted server
+     * side, so a list that does not refetch keeps offering tracks whose
+     * question has already been settled. */
+    setup();
+    const user = userEvent.setup();
+
+    const boxes = await screen.findAllByRole("checkbox");
+    await waitFor(() => expect(listFetches()).toBe(1));
+    await user.click(boxes[1]);
+    await user.click(screen.getByRole("button", { name: /SET LANGUAGE/i }));
+
+    await waitFor(() => expect(listFetches()).toBe(2));
+  });
+});
+
+
+describe("the language code box", () => {
+  /* A free-text box with placeholder "eng" and no pattern. Whatever was typed
+   * was sent, saved as the override, written into the extracted subtitle's
+   * filename and set as the track's language in the file — which is what Plex
+   * reads. The backend refuses a bad code now, but a 400 surfaces here as
+   * "Failed to set subtitle language on 1 file", which says nothing about
+   * why, so the box has to say it before the request goes out.
+   *
+   * Mutation, 4 applied 4 killed: the validity check dropped from the
+   * button's disabled condition, the pattern loosened to search, the hint
+   * shown whenever the code is invalid including empty, and the hint removed. */
+
+  const selectOne = async (user) => {
+    const boxes = await screen.findAllByRole("checkbox");
+    await user.click(boxes[1]);
+  };
+
+  /* The box is pre-filled with "eng", so typing appends. Without the clear,
+   * "english" becomes "engenglish" — still invalid, so the refusal tests
+   * passed while exercising a different string than the one they name, and
+   * the acceptance tests produced "engeng" and failed. */
+  const enterCode = async (user, code) => {
+    const box = await screen.findByPlaceholderText("eng");
+    await user.clear(box);
+    if (code) await user.type(box, code);
+  };
+
+  it("will not send a code that is not one", async () => {
+    setup();
+    const user = userEvent.setup();
+    await selectOne(user);
+
+    await enterCode(user, "english");
+
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeDisabled();
+  });
+
+  it.each([["eng"], ["en"], ["cym"]])("allows %s", async (code) => {
+    /* cym is not in ISO_639_2_TO_1, which is a 49-entry convenience map
+     * rather than the standard — the check is on shape, not membership. */
+    setup();
+    const user = userEvent.setup();
+    await selectOne(user);
+
+    await enterCode(user, code);
+
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeEnabled();
+  });
+
+  it("says why the button is dead", async () => {
+    /* A disabled control with no explanation is the thing this is meant to
+     * avoid — the user would be left retyping a code that is already right
+     * as far as they can tell. */
+    setup();
+    const user = userEvent.setup();
+
+    await enterCode(user, "en-GB");
+
+    expect(screen.getByText(/2- or 3-letter/i)).toBeTruthy();
+  });
+
+  it("stays quiet for the default value and for an emptied box", async () => {
+    /* The box ships holding "eng", which is valid, and clearing it is how a
+     * user starts typing another code — neither is a mistake. Scolding
+     * someone mid-keystroke is worse than saying nothing. */
+    setup();
+    const user = userEvent.setup();
+
+    await screen.findByPlaceholderText("eng");
+    expect(screen.queryByText(/2- or 3-letter/i)).toBeNull();
+
+    await enterCode(user, "");
+
+    expect(screen.queryByText(/2- or 3-letter/i)).toBeNull();
+    // Empty is not valid either, so the button is still dead — just quietly.
+    expect(screen.getByRole("button", { name: /SET LANGUAGE/ })).toBeDisabled();
+  });
+});
+
+
+describe("the heading badge", () => {
+  /* The badge read `total`, which is the FILTERED figure, so typing a show
+   * name took it from the size of the backlog to the size of the match and
+   * the backlog number was then nowhere on the page. The nav tab's count is
+   * manual-review queue items, a different thing entirely.
+   *
+   * It now shows both while a filter is active, rather than swapping one
+   * number for another in the same place: a badge that silently means two
+   * different things depending on the search box is worse than a longer one.
+   *
+   * Mutation, 4 applied 4 killed: the pair shown unconditionally, the plain
+   * number shown unconditionally, the two operands swapped, and
+   * total_unfiltered read straight off `raw` instead of being held. The last
+   * of those survived the first three tests and needed the in-flight one
+   * below — `raw` is null during a fetch, and an immediately-resolving mock
+   * never lets a render commit in that state. */
+
+  let held;
+
+  /* Holds by URL rather than by call count: how many fetches a mount fires
+   * is an implementation detail of the hook, and a count-based hold silently
+   * held the wrong one. */
+  const mountWith = ({ total, totalUnfiltered, items = ITEMS,
+                       holdIf = () => false }) => {
+    held = [];
+    global.fetch = vi.fn(async (url, options = {}) => {
+      if ((options.method || "GET") !== "GET") return { ok: true, json: async () => ({}) };
+      const body = { ok: true, json: async () => ({
+        total, total_unfiltered: totalUnfiltered, items,
+        languages: [{ language: "und", count: total }] }) };
+      if (holdIf(String(url))) return new Promise(r => held.push(() => r(body)));
+      return body;
+    });
+    render(
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={0} />
+      </ThemeProvider>,
+    );
+  };
+
+  it("shows the plain count when nothing is filtered", async () => {
+    mountWith({ total: 57, totalUnfiltered: 57 });
+
+    // The badge itself, not the select-all row, which carries its own
+    // "3 of 57" and would match a looser query.
+    expect((await screen.findByText("57", { selector: "span" })).textContent)
+      .toBe("57");
+  });
+
+  it("shows both figures once a search narrows the list", async () => {
+    mountWith({ total: 2, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "abc");
+
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("shows both figures once a language is picked", async () => {
+    /* The other filter. It narrows `total` the same way, and a badge that
+     * only noticed the search box would go quiet for half the controls. */
+    mountWith({ total: 2, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    // The options are built from the facets, which arrive with the response.
+    await screen.findByRole("option", { name: /und/ });
+    await user.selectOptions(screen.getByRole("combobox"), "und");
+
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("keeps both figures while the next page is still in flight", async () => {
+    /* `raw` is null during a fetch, so reading total_unfiltered straight off
+     * it drops the badge back to the bare number on every keystroke —
+     * including the keystroke that made the second figure worth showing, so
+     * it would flicker away exactly when it started to matter. Held in state
+     * for the same reason the facets are. */
+    mountWith({ total: 2, totalUnfiltered: 57,
+                holdIf: url => url.includes("language=und") });
+    const user = userEvent.setup();
+
+    // Get the pair on screen first, from a fetch that completes.
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "abc");
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+
+    // Now a fetch that does not complete.
+    await screen.findByRole("option", { name: /und/ });
+    await user.selectOptions(screen.getByRole("combobox"), "und");
+    await waitFor(() => expect(held.length).toBeGreaterThan(0));
+
+    /* Mid-flight the hook has reset `total` to 0, so the badge reads
+     * "0 of 57" rather than holding the old pair — that part is the hook's
+     * business. What matters here is that 57 is still on it: reading
+     * total_unfiltered straight off `raw`, which is null during the fetch,
+     * loses the figure entirely and leaves a bare "0". */
+    expect(screen.getByText(/of 57$/, { selector: "span" })).toBeTruthy();
+
+    await act(async () => { held.shift()(); });
+    expect(await screen.findByText("2 of 57", { selector: "span" })).toBeTruthy();
+  });
+
+  it("does not show the pair when a filter matches everything", async () => {
+    /* Searching for something every file matches leaves the two equal, and
+     * "57 of 57" is noise. */
+    mountWith({ total: 57, totalUnfiltered: 57 });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByPlaceholderText(/Search by filename/i), "mkv");
+
+    expect((await screen.findByText("57", { selector: "span" })).textContent)
+      .toBe("57");
+  });
+});
+
+
+describe("infinite scroll", () => {
+  /* The page size here is 100, chosen so that "search a show name, select all
+   * matching episodes" fits one fetch. A long-running show exceeds it, which
+   * is the only way the rest of a list is ever reached. None of it had
+   * coverage: jsdom has no IntersectionObserver, so any test that let hasMore
+   * go true died in the effect rather than in an assertion.
+   *
+   * Mutation, 8 applied against the unchanged suite. Two were already killed
+   * by usePaginatedFetch's own tests — loadMore refetching offset 0, and
+   * hasMore dropping its empty-page term — so they are recorded here as
+   * already covered rather than claimed below. Of the six that survived:
+   *
+   *   • The `loading` dependency dropped               → killed
+   *   • isIntersecting inverted                        → killed
+   *   • The loadMore() call deleted                    → killed
+   *   • The sentinel's disconnect cleanup removed      → killed
+   *   • observe(scroll) in place of observe(sentinel)  → killed
+   *   • The effect's `!hasMore` term dropped           → EQUIVALENT
+   *
+   * That last one cannot be killed alone, and neither can its mirror: the
+   * sentinel is itself rendered only under `hasMore`, so with either guard
+   * present the other is unreachable — dropping the effect's term leaves
+   * sentinelRef null, and rendering the sentinel unconditionally leaves the
+   * effect returning early. Both were applied separately and both survived.
+   * Removing BOTH is killed by "does not watch when the list is already
+   * complete", which is the test that makes the pair load-bearing rather
+   * than either guard on its own. */
+
+  it("watches the sentinel, not the scroll container", async () => {
+    /* Observing the scroll container instead loads the next page as soon as
+     * the list is on screen at all, so the whole list arrives at once and the
+     * pagination is decorative. Both are "something is being observed", which
+     * is why this asserts on which element. */
+    setupPaged({ total: 300, page: 100 });
+
+    // The observer is armed by a passive effect that runs after the commit
+    // putting the sentinel in the DOM, so wait for the arming rather than for
+    // a row — see the same note in HistoryPanel.test.jsx.
+    await waitFor(() => expect(watching()).toBe(true));
+
+    const [target] = observers.at(-1).targets;
+    // The sentinel sits below the rows and holds none of them.
+    expect(target.querySelector("input[type=checkbox]")).toBeNull();
+    expect(target.textContent).not.toContain("Ep0.mkv");
+  });
+
+  it("loads the next page when the sentinel comes into view", async () => {
+    setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    await waitFor(() => expect(screen.getByText("Ep100.und.srt")).toBeInTheDocument());
+    // Still the first page's rows too — the page appended rather than replaced.
+    expect(screen.getByText("Ep0.und.srt")).toBeInTheDocument();
+  });
+
+  it("loads nothing while the sentinel is out of view", async () => {
+    /* The negative half of the test above. Without it, a callback that called
+     * loadMore() unconditionally would pass every other test here. */
+    setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+    const before = calls.filter(c => c.method === "GET").length;
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: false }]);
+    });
+
+    expect(calls.filter(c => c.method === "GET").length).toBe(before);
+  });
+
+  it("does not watch when the list is already complete", async () => {
+    /* Armed against a list with nothing left to fetch, the sentinel is not
+     * rendered and the observer has nothing to hold — but the guard is what
+     * stops it being constructed at all, and a list that keeps asking for
+     * pages past its end is the failure it prevents. */
+    setupPaged({ total: 3, page: 100 });
+
+    await waitFor(() => expect(screen.getByText("Ep0.und.srt")).toBeInTheDocument());
+    expect(watching()).toBe(false);
+  });
+
+  it("re-arms after a page finishes loading", async () => {
+    /* `loading` is in that effect's dependency array and the effect body never
+     * reads it, so it reads as a stray dep that a tidy-up would remove —
+     * exhaustive-deps is an error in this project and does not flag it either.
+     * It is load-bearing. A real IntersectionObserver reports intersection
+     * when it first observes an element and then only on CHANGES, so a
+     * sentinel that is still in view after a page lands never fires again.
+     * Re-running on the loading transition builds a fresh observer, which
+     * reports the current state, and that is what keeps a long list paging
+     * without the user scrolling further. */
+    setupPaged({ total: 300, page: 100, holdAfter: 1 });
+    await waitFor(() => expect(watching()).toBe(true));
+    const armedFirst = observers.length;
+
+    await act(async () => {
+      observers.at(-1).cb([{ isIntersecting: true }]);
+    });
+
+    // The second page is still in flight, so this is the loading transition
+    // itself rather than the list changing underneath it.
+    await waitFor(() => expect(observers.length).toBeGreaterThan(armedFirst));
+    expect(observers.at(-1).targets).toHaveLength(1);
+
+    await act(async () => { pending.shift()(); });
+    await waitFor(() => expect(screen.getByText("Ep100.und.srt")).toBeInTheDocument());
+  });
+
+  it("stops watching when the section unmounts", async () => {
+    /* Without the disconnect, the observer outlives the component it was
+     * built for and keeps a reference to its callback — which closes over
+     * loadMore, and through it the hook's state. */
+    const { unmount } = setupPaged({ total: 300, page: 100 });
+    await waitFor(() => expect(watching()).toBe(true));
+
+    unmount();
+
+    expect(watching()).toBe(false);
   });
 });

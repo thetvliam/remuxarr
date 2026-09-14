@@ -157,9 +157,11 @@ def _patch_probes(monkeypatch, original, produced, source_path="/m/Show.mkv"):
     def fake(path, *_a, **_k):
         if path in by_path:
             return by_path[path]
-        # Matches the staged ".remuxarr_revert.part" as well as the final
-        # name: capture probes the staged file, before the rename.
-        if SIDECAR_SUFFIX in path and state["commands"]:
+        # Matches the staged ".part" as well as the final name: capture
+        # probes the staged file, before the rename, and the two are named
+        # independently — see revert_capture.staged_sidecar_path.
+        if (SIDECAR_SUFFIX in path or path.endswith(".part")) \
+                and state["commands"]:
             return _sidecar_probe(state["commands"][-1], by_path, state)
         raise AssertionError(f"unexpected probe of {path!r}")
 
@@ -487,7 +489,9 @@ def _reorder_sidecar_probe(monkeypatch):
 
     def shuffled(path, *a, **k):
         probe = real(path, *a, **k)
-        if SIDECAR_SUFFIX in path:
+        # The staged .part, which is what capture probes, before the
+        # rename — see revert_capture.staged_sidecar_path.
+        if SIDECAR_SUFFIX in path or path.endswith(".part"):
             streams = list(reversed(probe["streams"]))
             return {**probe,
                     "streams": [{**st, "index": i}
@@ -1329,3 +1333,65 @@ def test_a_retry_does_not_leave_the_first_attempts_sidecar_behind(job):
     assert second.exists()
     assert len(state["recorded"]) == 1
     assert state["recorded"][0][1].sidecar_path == str(second)
+
+
+# ── How the staged sidecar is named ──────────────────────────────────────────
+
+def test_the_staged_name_is_never_longer_than_the_sidecar_it_stands_in_for():
+    """
+    Closes: staging by appending to the final name.
+
+    That rule failed in the wild one level up, on a staged copy named
+    "<final>.part" beside a media file already at 252 bytes: the temporary
+    name needed 257 and the job failed after FFmpeg had done the work.
+    Sidecar names are two integers, so nothing here is near the limit and
+    this is the rule being made uniform rather than a live failure — but a
+    sidecar named after its media file is the obvious next change, and the
+    append version would start failing on exactly the long-named files
+    that are hardest to reproduce.
+
+    Both ids are pushed well past any real library to show the bound holds
+    on length, not on the values happening to be small.
+    """
+    import os
+
+    from app.core.revert_capture import sidecar_path_for, staged_sidecar_path
+
+    for file_id, job_id in [(1, 1), (999999999, 999999999)]:
+        final = os.path.basename(sidecar_path_for(file_id, job_id))
+        staged = os.path.basename(staged_sidecar_path(file_id, job_id))
+
+        assert len(staged) <= len(final), (
+            f"the staged name {staged!r} is longer than the sidecar "
+            f"{final!r} it stands in for"
+        )
+
+
+def test_the_staged_sidecar_is_a_part_file_on_the_recycle_volume():
+    """
+    Both halves are load-bearing and neither is cosmetic.
+
+    ".part" is what the startup sweep collects, and it is the only thing
+    that collects a sidecar write interrupted by a crash. The recycle
+    volume is where it has to happen, because the rename into place must
+    be same-filesystem to be atomic.
+    """
+    import os
+
+    from app.core.revert_capture import sidecar_path_for, staged_sidecar_path
+
+    staged = staged_sidecar_path(4, 9)
+
+    assert staged.endswith(".part")
+    assert os.path.dirname(staged) == os.path.dirname(sidecar_path_for(4, 9))
+
+
+def test_two_jobs_on_one_file_stage_to_different_names():
+    """
+    The same reason sidecar_path_for needs both ids: a file processed twice
+    before retention sweeps the first sidecar has two writes in flight, and
+    one staged name would have the second overwrite the first.
+    """
+    from app.core.revert_capture import staged_sidecar_path
+
+    assert staged_sidecar_path(7, 1) != staged_sidecar_path(7, 2)

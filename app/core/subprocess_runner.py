@@ -123,7 +123,9 @@ def staged_part_path(output: StagedOutput) -> str:
 
 def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
     """
-    Copy every temp output to "<final>.part" and fsync it. Synchronous.
+    Copy every temp output to its staged .part and fsync it. Synchronous.
+
+    staged_part_path names each one; it is not "<final>.part".
 
     MUST be called through run_in_executor, never directly from a coroutine.
     These are potentially multi-gigabyte cross-filesystem copies (tmpfs → array):
@@ -320,7 +322,7 @@ async def run_staged_subprocess(
         # deleted-and-replaced and later ones deleted with nothing staged,
         # and the outer exception handler then deleted the temps too.
         #
-        # The first pass copies every temp to "<final>.part" on the DESTINATION
+        # The first pass copies every temp to its staged .part on the DESTINATION
         # filesystem — originals untouched, any failure (incl. ENOSPC)
         # cleans up the .part files and fails the job with every original
         # exactly as it was. The worker's disk-space preflight already

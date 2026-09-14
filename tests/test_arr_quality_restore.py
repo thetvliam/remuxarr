@@ -44,6 +44,21 @@ Mutants, all confirmed surviving the suite before this file existed:
   the wiring  the restore run before the rescan is queued     killed
               a job with no output path still restored        killed
 
+One more group, from merging the two post-job wrappers into
+restore_quality_best_effort, all run against the full suite before their
+tests existed. The HTTP branch and the body in its log line were already
+killed by test_an_http_failure_logs_what_the_service_said; the other
+twelve survived:
+
+  the logging the unreadable-body fallback text changed       killed
+              the body no longer truncated                    killed
+              an unreadable body not caught                   killed
+              any other failure escaping                      killed
+              the path dropped from either line               killed
+              a delegation passing the other service          killed
+              either service's noun wrong                     killed
+              either line logged under arr_quality's name     killed
+
 WHAT DECIDES THAT THERE IS NOTHING TO DO
 ----------------------------------------
 Not a filename comparison — see the module docstring in arr_quality.py.
@@ -441,7 +456,7 @@ def test_an_http_failure_logs_what_the_service_said(monkeypatch, caplog):
     import io
     import urllib.error
 
-    from app.core import radarr
+    from app.core import arr_quality, radarr
 
     def _explode(*_a, **_kw):
         raise urllib.error.HTTPError(
@@ -450,10 +465,132 @@ def test_an_http_failure_logs_what_the_service_said(monkeypatch, caplog):
             io.BytesIO(b'{"message": "Nullable object must have a value."}'),
         )
 
-    monkeypatch.setattr(radarr, "restore_quality", _explode)
+    monkeypatch.setattr(arr_quality, "restore_quality", _explode)
 
     with caplog.at_level("ERROR"):
         radarr.restore_movie_quality("http://radarr:7878", "k", 1531, PATH)
 
     assert "Nullable object must have a value" in caplog.text
     assert "1531" in caplog.text
+
+
+# ── The post-job wrappers ─────────────────────────────────────────────────────
+#
+# sonarr.restore_episode_quality and radarr.restore_movie_quality were two
+# copies of the same error handling, and only Radarr's HTTP branch ever ran
+# in a test. They now delegate to arr_quality.restore_quality_best_effort,
+# passing their own logger so every line keeps the module name it had.
+
+def _http_error(body=b"Nullable object must have a value.", unreadable=False):
+    import io
+    import urllib.error
+
+    class _Unreadable(urllib.error.HTTPError):
+        def read(self, *_a, **_kw):
+            raise OSError("connection reset while reading the body")
+
+    cls = _Unreadable if unreadable else urllib.error.HTTPError
+    return cls("http://arr/api/v3/editor", 500, "Internal Server Error", {},
+               io.BytesIO(body))
+
+
+@pytest.mark.parametrize("module, wrapper, service, name, noun", [
+    ("sonarr", "restore_episode_quality", "SONARR", "Sonarr", "series"),
+    ("radarr", "restore_movie_quality",   "RADARR", "Radarr", "movie"),
+])
+def test_each_service_logs_a_failed_write_as_it_always_has(
+        monkeypatch, caplog, module, wrapper, service, name, noun):
+    """
+    Closes: a delegation passing the other service, a wrong noun, and the
+    line moving to arr_quality's logger.
+
+    The exact line each module wrote before the merge, under that module's
+    name, which is what the log view shows beside it.
+    """
+    import importlib
+
+    from app.core import arr_quality
+
+    seen = []
+
+    def _refuse(svc, *_a, **_kw):
+        seen.append(svc)
+        raise _http_error()
+
+    monkeypatch.setattr(arr_quality, "restore_quality", _refuse)
+    mod = importlib.import_module(f"app.core.{module}")
+
+    with caplog.at_level("ERROR"):
+        getattr(mod, wrapper)("http://arr", "k", 42, PATH)
+
+    assert seen == [getattr(arr_quality, service)]
+    [record] = caplog.records
+    assert record.name == f"app.core.{module}"
+    assert record.getMessage() == (
+        f"{name}: quality restore HTTP 500 for {noun} 42 ({PATH}): "
+        "Internal Server Error — Nullable object must have a value."
+    )
+
+
+def _best_effort(monkeypatch, caplog, failure):
+    import logging
+
+    from app.core import arr_quality
+
+    def _fail(*_a, **_kw):
+        raise failure
+
+    monkeypatch.setattr(arr_quality, "restore_quality", _fail)
+    with caplog.at_level("ERROR"):
+        arr_quality.restore_quality_best_effort(
+            arr_quality.RADARR, "http://arr", "k", 42, PATH,
+            logging.getLogger("app.core.radarr"),
+        )
+    [record] = caplog.records
+    return record
+
+
+def test_a_long_error_body_is_cut_to_its_first_500_characters(monkeypatch, caplog):
+    """
+    Closes: the body logged whole.
+
+    The usual body is a stack trace, and the first line is the part that
+    identifies it. The rest fills the log view with frames nobody reads.
+    """
+    body = "".join(f"frame {n:04d} " for n in range(60))
+
+    record = _best_effort(monkeypatch, caplog, _http_error(body.encode()))
+
+    assert record.getMessage().endswith("— " + body[:500])
+
+
+def test_an_unreadable_error_body_is_logged_as_missing(monkeypatch, caplog):
+    """
+    Closes: a failure to read the body escaping the handler meant for it.
+
+    The connection can drop between the status line and the body. An
+    exception raised inside an except clause is not caught by the clause
+    beside it, so without its own guard this would escape the wrapper and
+    reach the job.
+    """
+    record = _best_effort(monkeypatch, caplog, _http_error(unreadable=True))
+
+    assert record.getMessage().endswith("Internal Server Error — <no body>")
+
+
+def test_any_other_failure_is_logged_with_the_path_and_goes_no_further(
+        monkeypatch, caplog):
+    """
+    Closes: a non-HTTP failure escaping, and its line losing the path.
+
+    The file is on disk and correct by now, so nothing here may fail the
+    job. The traceback goes to the log with the path, under the caller's
+    name, because the log is the only place this is ever reported.
+    """
+    record = _best_effort(monkeypatch, caplog, ValueError("no quality in history"))
+
+    assert record.name == "app.core.radarr"
+    assert record.getMessage() == (
+        f"Radarr: quality restore failed for movie 42 ({PATH})"
+    )
+    assert record.exc_info is not None

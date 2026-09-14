@@ -32,13 +32,14 @@ own terms rather than generically.
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.scanner import ScanStats, _process_file
@@ -234,14 +235,35 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
     def list_flags(
         search:   str = "",
         language: str = "",
-        limit:    int = 50,
-        offset:   int = 0,
+        # Bounded, as history.py, forge.py and logs.py all bound theirs.
+        # Unbounded, limit=-1 reached SQLAlchemy's .limit(), which reads a
+        # negative as no limit at all, so one request returned every flagged
+        # row in the library. The ceiling matters as much as the floor: the
+        # page size is the only thing between one request and the whole table.
+        limit:    int = Query(default=50, ge=1, le=10000),
+        offset:   int = Query(default=0, ge=0),
         db: Session = Depends(get_db),
     ):
         base = (
             db.query(Flag)
             .join(Flag.media_file)
         )
+
+        # Counted before anything narrows it, so it is the size of the
+        # backlog rather than the size of the current match.
+        #
+        # `total` below is the filtered figure and has to be: pagination
+        # depends on it, and the "n of m" on the select-all row is built from
+        # it. The section heading's badge was reading the same number, so
+        # typing a show name took the badge from 57 to 2 and the overall
+        # figure was then nowhere on the page — the nav tab's count is
+        # manual-review QUEUE items, which is a different thing.
+        #
+        # The facets cannot stand in for this. They honour `search` on
+        # purpose, so the dropdown only offers tags the current search has,
+        # and summing them returns the filtered total again.
+        total_unfiltered = base.count()
+
         # icontains(autoescape=True) rather than an ilike f-string
         # pattern — see history.py's list_history for the full reasoning.
         # It matters more here: the facet counts below are built from
@@ -272,10 +294,27 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         ]
 
         query = base
-        if language.strip():
-            query = query.filter(
-                Flag.detected_language == language.strip().lower()
-            )
+        wanted = language.strip().lower()
+        if wanted:
+            if wanted == "und":
+                # The facets report a null detected_language as "und", so the
+                # dropdown offers "und (1)" for it. In SQL a null is not equal
+                # to anything, so comparing the column to the string returned
+                # nothing while the count beside the option still said 1 —
+                # the endpoint advertising a choice it would not honour.
+                #
+                # Latent, and expected to stay that way: the scanner writes
+                # "und" literally for subtitles and `t["language"] or "und"`
+                # for audio, so production has no null rows. Closed because
+                # the facet and the filter disagreeing about the same row is
+                # the kind of thing that only surfaces once something else
+                # starts writing nulls.
+                query = query.filter(
+                    or_(Flag.detected_language == "und",
+                        Flag.detected_language.is_(None))
+                )
+            else:
+                query = query.filter(Flag.detected_language == wanted)
 
         total = query.count()
         flags = (
@@ -293,6 +332,29 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         for flag in flags:
             media = flag.media_file
             if not media:
+                # Not dead code, though it reads that way: `base` inner-joins
+                # media_file, so an orphan flag that already existed is
+                # excluded from total, items and languages alike.
+                #
+                # What this catches is narrower. `total` is one query, the page
+                # is a second, and media_file is NOT eager-loaded by either —
+                # it lazy-loads here, on attribute access, a third query. A
+                # delete landing in that window leaves the row counted in
+                # total and resolving to None right here, and without the
+                # guard the next line raises AttributeError on NoneType.
+                # Demonstrated: total says 1, the page returns 0.
+                #
+                # usePaginatedFetch's `newItems.length > 0` guard cites this
+                # case by name, and is right to: it is exactly how a page
+                # comes back empty while total still counts the row.
+                #
+                # Deliberately untested, which is why this comment is long.
+                # The window needs a delete to land between two queries inside
+                # one request, and nothing in the suite can hold it open. A
+                # mutant that deletes this guard passes every test. A test was
+                # written asserting media_file stays unloaded, and dropped: it
+                # built its own query, so making THIS one eager-load left it
+                # green. It looked like cover for the premise and was not.
                 continue
             items.append({
                 "id":                flag.id,
@@ -308,17 +370,40 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 "extracted_path":    getattr(flag, "extracted_path", None),
             })
 
-        return {"total": total, "items": items, "languages": languages}
+        return {"total": total, "total_unfiltered": total_unfiltered,
+                "items": items, "languages": languages}
 
     @router.post("/apply", description=kind.apply_description)
     def apply_language(body: ApplyRequest, db: Session = Depends(get_db)):
         lang = body.target_language.strip().lower()
         if not lang:
             raise HTTPException(400, "target_language cannot be empty")
+        # The field behind this is a free-text box with placeholder "eng" and
+        # no pattern, so whatever was typed went straight through: persisted
+        # as the override, interpolated into the extracted subtitle's
+        # filename, and handed to FFmpeg as -metadata:s:a:N language=... .
+        # That filename is what Plex reads, so "english" quietly mislabels
+        # the track it was meant to fix.
+        #
+        # A shape check rather than a whitelist. ISO_639_2_TO_1 is a 49-entry
+        # convenience map for the common codes, not the standard — checking
+        # against it would refuse Welsh. Two or three ASCII letters covers
+        # every valid ISO 639-1 and 639-2 code and excludes everything that
+        # has no business in a filename.
+        if not re.fullmatch(r"[a-z]{2,3}", lang):
+            raise HTTPException(
+                400,
+                "target_language must be a 2- or 3-letter language code, "
+                f"not {body.target_language!r}",
+            )
 
         app_cfg = get_app_settings(db)
         dry_run = app_cfg.get("dry_run_mode", False)
-        results = {"applied": 0, "errors": []}
+        # Reported back so the caller can say so. Everything below still
+        # happens under dry run except the two steps that touch the disk or
+        # discard the question, which leaves an apply that looks from the
+        # response alone exactly like a real one.
+        results = {"applied": 0, "errors": [], "dry_run": dry_run}
 
         # Group the flags by file before doing anything.
         #
@@ -370,27 +455,55 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             setattr(media, kind.ignored_attr, False)
             db.commit()
 
-            # Rename the extracted sidecars, if these tracks have any.
+            # Both of the steps below are skipped under dry run, and they
+            # have to be skipped together.
             #
-            # The override alone cannot fix it. An extracted subtitle has
-            # been taken OUT of the mux, so the reprocess below has no
-            # track left to re-extract under the corrected name — the
-            # file keeps "und" in its name permanently, which is what
-            # Plex reads. Renaming here is the only point at which the
-            # correction can reach it.
-            for flag in flags:
-                renamed = _rename_extracted_subtitle(flag, lang, db)
-                if renamed:
-                    results.setdefault("renamed", []).append(renamed)
+            # The rename is the obvious half: Dry Run Mode's own description
+            # is "do NOT execute FFmpeg or modify any files", and it ships
+            # ON so a new install's first scan is a complete preview. dry_run
+            # used to reach _process_file and nothing else, so answering a
+            # language renamed a sidecar on disk in the one mode that
+            # promises not to.
+            #
+            # Deleting the rows is the half that is easy to leave behind, and
+            # skipping only the rename is worse than doing neither. The row
+            # is what keeps the question being asked, and by review time the
+            # track has been extracted OUT of the mux — a rescan reports no
+            # mismatch, so nothing recreates it. The sidecar would keep "und"
+            # in its name permanently with no remaining way to correct it,
+            # which is a preview quietly consuming the thing it previewed.
+            #
+            # The override a few lines up is deliberately NOT gated. It is a
+            # decision rather than a file, it is already committed on its
+            # own, and it is what makes the correction land once dry run is
+            # turned off. Nor is the _process_file call below: populating the
+            # queue with planned actions is what dry run is FOR.
+            if not dry_run:
+                # Rename the extracted sidecars, if these tracks have any.
+                #
+                # The override alone cannot fix it. An extracted subtitle has
+                # been taken OUT of the mux, so the reprocess below has no
+                # track left to re-extract under the corrected name — the
+                # file keeps "und" in its name permanently, which is what
+                # Plex reads. Renaming here is the only point at which the
+                # correction can reach it.
+                for flag in flags:
+                    # The return value is deliberately discarded. It used to
+                    # be collected into results["renamed"], which nothing has
+                    # ever read — not the two callers, not the frontend, not
+                    # a test, and no endpoint description mentions it. The
+                    # helper logs every outcome itself: the rename, the
+                    # collision it declined, and the OSError it swallowed.
+                    _rename_extracted_subtitle(flag, lang, db)
 
-            # The questions have been answered, so stop asking them. Left in
-            # place the rows would survive every later scan — rows whose
-            # sidecar still exists are deliberately kept now, because the
-            # track itself is gone from the file and only the filename is
-            # still correctable.
-            for flag in flags:
-                db.delete(flag)
-            db.commit()
+                # The questions have been answered, so stop asking them. Left
+                # in place the rows would survive every later scan — rows
+                # whose sidecar still exists are deliberately kept now,
+                # because the track itself is gone from the file and only the
+                # filename is still correctable.
+                for flag in flags:
+                    db.delete(flag)
+                db.commit()
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the
@@ -473,7 +586,34 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                     sonarr_series_id=sonarr_series_id,
                     radarr_movie_id=radarr_movie_id,
                 )
-                results["applied"] += 1
+                # _process_file handles its own failures rather than raising:
+                # a file it cannot stat or cannot probe is logged, recorded in
+                # the ScanStats it was handed, and returned from. Nothing
+                # reaches the except below, so incrementing unconditionally
+                # reported a clean {"applied": 1, "errors": []} for a file
+                # where no queue item was created and nothing happened. The
+                # ScanStats was constructed, passed in, and never read — this
+                # is the signal that was being discarded.
+                #
+                # "applied" feeds a toast that says "on N files", so it has to
+                # mean files that were really re-evaluated.
+                #
+                # Exact rather than approximate: both of _process_file's error
+                # branches return immediately, and its "unchanged" early
+                # returns sit inside `if existing and not force_probe`, which
+                # this caller never reaches. So on return the file has either
+                # errored or genuinely landed on queued, manual_review or
+                # skipped.
+                if stats.errors:
+                    # Deliberately generic. _process_file puts the real reason
+                    # in the log and returns nothing, so the alternative is
+                    # changing a contract the whole scan path shares.
+                    results["errors"].append({
+                        "file_id": file_id,
+                        "error": "Could not re-read the file — see the log for details",
+                    })
+                else:
+                    results["applied"] += 1
             except Exception as exc:
                 # Without this, one bad file (e.g. the ValueError decision.py
                 # raises for genuinely unknown container info) kills the whole
@@ -493,12 +633,57 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
 
     @router.post("/ignore", description=kind.ignore_description)
     def ignore_flags(body: IgnoreRequest, db: Session = Depends(get_db)):
+        dry_run = get_app_settings(db).get("dry_run_mode", False)
+        if dry_run:
+            # Dry Run Mode covers this too, which is not obvious: ignoring
+            # writes no files and runs no FFmpeg, so "do NOT modify any files"
+            # does not reach it on the wording alone.
+            #
+            # It reaches it because an ignore cannot be undone. The column is
+            # written True here and False in exactly one other place, inside
+            # apply_language — and ignoring deletes every flag row for the
+            # file, while the scanner refuses to create new ones for a file
+            # already marked. So the one route back is closed by the same
+            # action that opens the door. No endpoint, no setting and no
+            # control clears it.
+            #
+            # A one-way door has no business being reachable in the mode that
+            # ships ON and promises nothing will change.
+            #
+            # Reports 0 rather than a would-be count, so "ignored" keeps one
+            # meaning in both modes: files this call marked. dry_run is what
+            # explains the zero. Apply differs on purpose — it still creates
+            # its queue items, because previewing them is what dry run is FOR,
+            # so its count still describes work that happened.
+            return {"ignored": 0, "dry_run": True}
+
         count = 0
         for file_id in body.file_ids:
             media = db.get(MediaFile, file_id)
             if not media:
                 continue
             setattr(media, kind.ignored_attr, True)
+            # Counted here, with the write, because this is the thing the
+            # endpoint does. Marking is unconditional and deliberate: the
+            # column is idempotent and is what stops a future scan flagging
+            # the file, so a file the user selected is honoured whether or not
+            # it still has rows to clear.
+            #
+            # This reverses an earlier decision, so the reasoning that was
+            # here is worth stating rather than deleting. The count used to
+            # sit inside the `if flags:` below, on the view that a file with
+            # no rows "was not ignored" and counting it reported work that had
+            # not happened. But the write above happens regardless, so the
+            # endpoint was marking three files and reporting one — a page left
+            # open across a rescan answered "Ignoring 0 files" while
+            # permanently suppressing every file in the list. Zero is the
+            # reading a user acts on: click again, or assume it missed. The
+            # two halves disagreed, and the write is the defensible one.
+            #
+            # Counts FILES, matching the file_ids this endpoint is given.
+            # Counting rows would report "ignored 3" for one ignored file and
+            # put the caller back in a units mismatch.
+            count += 1
 
             # Every flag for this file, not the first one.
             #
@@ -515,23 +700,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 .filter(Flag.file_id == file_id)
                 .all()
             )
-            # count only when a flag was actually cleared. It previously
-            # incremented for any file that merely existed, so re-submitting a
-            # stale selection — a list another client had already resolved, or
-            # a page left open across a rescan — reported "Ignoring 12 files"
-            # having ignored none of them. The count is the only feedback this
-            # action gives, so an inflated one is the whole signal being wrong.
-            #
-            # Counts FILES, matching the file_ids this endpoint is given.
-            # Counting rows would report "ignored 3" for one ignored file and
-            # put the caller back in the units mismatch this is fixing.
-            if flags:
-                for flag in flags:
-                    db.delete(flag)
-                count += 1
+            for flag in flags:
+                db.delete(flag)
 
         db.commit()
-        return {"ignored": count}
+        return {"ignored": count, "dry_run": False}
 
     # Exposed so each module can re-export them under their original names.
     #

@@ -154,7 +154,7 @@ export default function App() {
     forgeActive, forgeProcessed, forgeRefreshKey,
       toast, fetchAll, refreshAllPanels,
       pendingQueue, wsConnected, historyRefreshKey, invalidateHistory,
-      reviewRefreshKey,
+      reviewRefreshKey, refreshAfterReviewResolved,
       revertRefreshKey,
   } = data;
 
@@ -390,7 +390,7 @@ export default function App() {
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} />
+            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
             </div>
           )}
 

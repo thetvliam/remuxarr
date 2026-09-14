@@ -193,7 +193,10 @@ class QueueItem(Base):
     review_subtitles = Column(Text)
 
     # WHICH gate put this item in manual review, recorded rather than
-    # inferred. One of "image_subtitles", "font_attachments", or null.
+    # inferred. One of "image_subtitles", "font_attachments",
+    # "subtitle_encoding", or null. The first two name a gate in the decision
+    # engine; the third is raised by the worker, outside the engine, and so
+    # names itself.
     #
     # Two separate places used to work this out from review_subtitles being
     # non-null, which was reliable only while the image-subtitle gate was the
@@ -210,13 +213,20 @@ class QueueItem(Base):
     #
     # Null with a non-null review_subtitles is read by both bulk endpoints
     # as an image-subtitle review. It is never a font review. It comes
-    # from three places: rows from before this column existed, which
-    # predate the font gate; rows the scanner and the worker wrote before
-    # they recorded this, when the font count did not reach their decisions
-    # and the font gate could not fire from them; and the worker's
-    # subtitle-encoding review, which is raised outside the decision engine
-    # and has no gate to name. The image resolver collects all three; the
-    # font resolver none.
+    # from two places: rows from before this column existed, which
+    # predate the font gate; and rows the scanner and the worker wrote
+    # before they recorded this, when the font count did not reach their
+    # decisions and the font gate could not fire from them. The image
+    # resolver collects both; the font resolver neither.
+    #
+    # The worker's subtitle-encoding review was a third source and is not
+    # one now. It names itself — worker.py sets "subtitle_encoding" at the
+    # same point it writes review_subtitles — and
+    # _label_subtitle_encoding_reviews backfills the rows written before it
+    # did, on every start. Left null they were read as image-subtitle
+    # reviews, and resolving those in bulk re-decided the file, which cannot
+    # see an encoding failure: the same extraction was queued, failed the
+    # same way, and the file came straight back.
     review_reason = Column(String)
 
     # Size tracking (populated after success)

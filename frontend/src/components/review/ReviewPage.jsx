@@ -24,7 +24,12 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  *    tracks whose language needs confirming. They fetch their own data and
  *    take reviewRefreshKey to know when to refetch.
  ═══════════════════════════════════════════════════════════════════════════ */
-export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, reviewRefreshKey = 0 }) => {
+/* onRefresh and invalidateHistory are still taken, but only to hand down to
+ * the two language sections for their OWN apply actions. Everything this page
+ * resolves itself goes through onReviewResolved, which bundles those two with
+ * the reviewRefreshKey bump they were each missing. */
+export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
+                             reviewRefreshKey = 0, onReviewResolved }) => {
     const { palette, type, space, radius, size, surface } = useTheme();
     const [imgSubSetting, setImgSubSetting] = useState("always_ask");
     const [fontSetting, setFontSetting] = useState("always_ask");
@@ -49,9 +54,16 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
      * A null reason on a flagged item is never a font review — see
      * QueueItem.review_reason for where those rows come from — and is read
      * as an image-subtitle item here, the same way the bulk resolver reads
-     * it. */
+     * it.
+     *
+     * A subtitle-encoding review flags tracks too, but no bulk action may
+     * take it: re-deciding the file cannot see the encoding failure, so it
+     * would queue the extraction that just failed and the file would come
+     * straight back. It is answered one file at a time. */
     const isFontItem = i => i.review_reason === "font_attachments";
-    const isImageItem = i => i.flagged_subtitles?.length > 0 && !isFontItem(i);
+    const isEncodingItem = i => i.review_reason === "subtitle_encoding";
+    const isImageItem = i => i.flagged_subtitles?.length > 0
+        && !isFontItem(i) && !isEncodingItem(i);
 
     const subtitleItemCount = items.filter(isImageItem).length;
     const fontItemCount = items.filter(isFontItem).length;
@@ -77,8 +89,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
                         "error",
                     );
                 }
-                onRefresh();
-                invalidateHistory?.(null);
+                onReviewResolved?.();
             } else {
                 toast?.("Bulk resolve failed", "error");
             }
@@ -104,12 +115,12 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
             toast?.("Could not approve — the file is still held for review", "error");
             return;
         }
-        onRefresh();
-        // Same reasoning as skip() and resolveSubtitle() either side of this.
-        // Approving re-runs the decision engine, and if the fresh decision
-        // finds nothing to do the item lands on "skipped" — a terminal status
-        // the Skipped tab displays. onRefresh (fetchAll) never touches history.
-        invalidateHistory?.(null);
+        // Approving re-runs the decision engine. If the fresh decision finds
+        // nothing to do the item lands on "skipped", a terminal status the
+        // Skipped tab displays, which fetchAll never touches — and the
+        // re-decide can write a language flag row for the sections below,
+        // which only the reviewRefreshKey bump reaches.
+        onReviewResolved?.();
     };
     const skip = async (id) => {
         const r = await fetch(`${api}/api/queue/${id}`, { method: "DELETE" }).catch(() => null);
@@ -117,13 +128,12 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
             toast?.("Could not skip — the file is still held for review", "error");
             return;
         }
-        onRefresh();
-        // fetchAll (via onRefresh) is blind to useHistoryData's separate
-        // refresh mechanism — DELETE here produces a real, terminal
-        // "cancelled" status, which the Failed tab's own count already
-        // includes, so without this the History panel goes stale until
-        // something else happens to trigger a refresh.
-        invalidateHistory?.(null);
+        // fetchAll alone is blind to useHistoryData's separate refresh
+        // mechanism — DELETE here produces a real, terminal "cancelled"
+        // status, which the Failed tab's own count already includes, so
+        // without this the History panel goes stale until something else
+        // happens to trigger a refresh.
+        onReviewResolved?.();
     };
     const resolveSubtitle = async (id, streamIndex, choice) => {
         const r = await fetch(`${api}/api/queue/${id}/resolve-subtitles`, {
@@ -135,11 +145,10 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory, re
             toast?.("Could not save the subtitle decision", "error");
             return;
         }
-        onRefresh();
         // Same reasoning as skip() above — resolving can move the item to
-        // "skipped" or "pending" (later completed/failed), any of which
-        // the History panel needs to know about.
-        invalidateHistory?.(null);
+        // "skipped" or "pending" (later completed/failed), any of which the
+        // History panel needs to know about.
+        onReviewResolved?.();
     };
 
     return (

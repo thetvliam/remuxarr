@@ -442,3 +442,49 @@ def test_normal_completion_unaffected_by_abort_branch():
 
     asyncio.run(driver())
     assert events == ["broadcast:success"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A fixture's session patch reaching module-level copies of SessionLocal
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_the_clear_database_fixture_does_not_leak_its_session_factory(tmp_path):
+    """
+    Five modules bind their own copy of SessionLocal at import time --
+    worker, scheduler, forge, routes.scan and routes.webhooks all do
+    `from app.database.session import SessionLocal` at module scope. A
+    fixture that patches app.database.session and THEN imports app.main
+    therefore hands all five a permanent copy of its temporary factory:
+    monkeypatch restores the attribute it patched and cannot reach the
+    copies, which stay bound to a dead in-memory engine for the rest of
+    the process. The visible symptom is a later module failing on an
+    unrelated assertion because its writes went to the wrong database.
+
+    Run as a subprocess because the defect only appears when
+    test_clear_database.py is the first module in the process to import
+    app.main, and in this suite's own order test_background_tasks.py gets
+    there first. An in-process assertion would therefore pass whether or
+    not the fixture is correct -- the shape of passing test this project
+    treats as a defect rather than as cover.
+
+    Two details of the child invocation are load-bearing. It selects a
+    single node from test_scan_and_cancellation.py rather than the whole
+    module, so this test is never collected inside its own child. And it
+    gets its own REMUXARR_DATABASE_PATH, because conftest deletes that
+    file on import and the child would otherwise delete the database the
+    parent run is still using.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    result = subprocess.run(
+        ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "tests/test_clear_database.py",
+         "tests/test_scan_and_cancellation.py"
+         "::test_abort_job_resets_delta_sentinels"],
+        cwd=root, capture_output=True, text=True,
+        env={**os.environ, "REMUXARR_DATABASE_PATH": str(tmp_path / "child.db")},
+    )
+    assert result.returncode == 0, (
+        "test_clear_database.py's client fixture leaked its in-memory "
+        "session factory into a module-level SessionLocal copy:\n"
+        + result.stdout[-3000:]
+    )

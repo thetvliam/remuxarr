@@ -61,6 +61,7 @@ the one thing it is reliable for.
 """
 import logging
 import time
+import urllib.error
 from dataclasses import dataclass
 
 from app.core.arr_client import arr_get, arr_put
@@ -84,6 +85,7 @@ class ArrService:
     which episodes carry it first. episodes_path is set for Sonarr only.
     """
     name:            str
+    entity_label:    str   # what the entity is called in a log line
     files_path:      str
     files_param:     str
     history_path:    str
@@ -95,6 +97,7 @@ class ArrService:
 
 SONARR = ArrService(
     name           = "Sonarr",
+    entity_label   = "series",
     files_path     = "/api/v3/episodefile",
     files_param    = "seriesId",
     history_path   = "/api/v3/history/series",
@@ -106,6 +109,7 @@ SONARR = ArrService(
 
 RADARR = ArrService(
     name           = "Radarr",
+    entity_label   = "movie",
     files_path     = "/api/v3/moviefile",
     files_param    = "movieId",
     history_path   = "/api/v3/history/movie",
@@ -238,3 +242,46 @@ def restore_quality(
         file_id, path,
     )
     return True
+
+
+def restore_quality_best_effort(
+    service: ArrService, base_url: str, api_key: str, entity_id: int,
+    path: str, log: logging.Logger,
+) -> None:
+    """
+    restore_quality for the worker's post-job hook, where it must not fail.
+
+    The file is already on disk and correct when this runs, so a failed
+    metadata write must not mark the job failed. It is logged at error
+    rather than swallowed, because what it leaves behind is a file the
+    service has flagged qualityCutoffNotMet and may replace.
+
+    One copy for both services. sonarr.py and radarr.py each carried this
+    body, identical but for three words; Sonarr's never ran in a test, and
+    neither did Radarr's two fallback branches.
+
+    log is the caller's logger, so each service's lines keep the module
+    name they have always shown in the log view.
+    """
+    try:
+        restore_quality(service, base_url, api_key, entity_id, path)
+    except urllib.error.HTTPError as exc:
+        # The body is where the reason actually is: a quality-only PUT to
+        # the per-file endpoint answers 500 with the exception and the
+        # controller line that threw it, while code and reason say only
+        # "Internal Server Error". Truncated because a stack trace is the
+        # usual payload and the first line is the part that identifies it.
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:500]
+        except Exception:
+            detail = "<no body>"
+        log.error(
+            "%s: quality restore HTTP %d for %s %d (%s): %s — %s",
+            service.name, exc.code, service.entity_label, entity_id, path,
+            exc.reason, detail,
+        )
+    except Exception:
+        log.exception(
+            "%s: quality restore failed for %s %d (%s)",
+            service.name, service.entity_label, entity_id, path,
+        )

@@ -633,3 +633,140 @@ def test_a_failed_rename_does_not_raise(tmp_path, monkeypatch):
 
     assert _rename(_Flag(str(srt)), "eng") is None
     assert srt.exists()
+
+
+# ── Dry run ─────────────────────────────────────────────────────────────────
+#
+# Mutation, 5 applied. These pin the guard rather than showing it was once
+# exposed: the guard did not exist before this change, so there was no
+# baseline mutant to run. What the baseline showed instead is that the whole
+# suite was green while a dry run renamed files on disk.
+#
+#   • The guard inverted                          → killed
+#   • The guard neutralised (if True)              → killed
+#   • The rename loop deleted                      → killed
+#   • The flag deletion deleted                    → killed
+#   • dry_run always reported False                → killed
+#
+# The middle two are also killed by test_applying_consumes_only_the_flag_it_
+# answered in test_language_review_isolation.py, which already covered the
+# real-run path; the positive control below is what makes them fail for a
+# reason this file states.
+
+
+def _apply_under(db, flag_ids, dry_run, monkeypatch):
+    """apply_language with dry_run_mode forced, and the reprocess stubbed out."""
+    import app.api.routes._language_review as lr
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.subtitle_language import apply_language
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": dry_run})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+    return apply_language(
+        ApplyRequest(flag_ids=flag_ids, target_language="eng"), db)
+
+
+def _flagged_with_sidecar(tmp_path):
+    """A file whose subtitle has been extracted, plus the row asking about it."""
+    from app.database.models import MediaFile, SubtitleLanguageFlag
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base
+
+    mkv = tmp_path / "Show.mkv"
+    mkv.write_bytes(b"video")
+    srt = tmp_path / "Show.und.forced.srt"
+    srt.write_text("extracted")
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    media = MediaFile(path=str(mkv), filename="Show.mkv",
+                      directory=str(tmp_path), size=5, mtime=1.0)
+    db.add(media)
+    db.commit()
+    flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und",
+                                extracted_path=str(srt))
+    db.add(flag)
+    db.commit()
+    return db, media, flag, srt
+
+
+def test_dry_run_does_not_rename_the_sidecar(tmp_path, monkeypatch):
+    """
+    Dry Run Mode says it does not modify any files, and it ships ON: a new
+    install's first scan is meant to be a complete preview before anything
+    real is touched. The rename ran before dry_run was consulted at all —
+    dry_run reached _process_file and nothing else — so answering a
+    subtitle's language renamed a file on disk in the one mode that
+    promises not to.
+    """
+    db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
+
+    _apply_under(db, [flag.id], dry_run=True, monkeypatch=monkeypatch)
+
+    assert srt.exists(), "the sidecar was renamed while Dry Run Mode was on"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "Show.mkv", "Show.und.forced.srt",
+    ]
+
+
+def test_dry_run_keeps_the_question_it_could_not_answer(tmp_path, monkeypatch):
+    """
+    The other half, and the reason skipping the rename alone is not enough.
+
+    Deleting the row is what makes the question stop being asked. The track
+    is out of the mux by then, so a rescan reports no mismatch and nothing
+    ever recreates it — the sidecar would keep "und" in its name with no
+    remaining way to correct it. Under dry run the row has to survive, or a
+    preview silently consumes the thing it was previewing.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, _media, flag, _srt = _flagged_with_sidecar(tmp_path)
+
+    _apply_under(db, [flag.id], dry_run=True, monkeypatch=monkeypatch)
+
+    assert db.query(SubtitleLanguageFlag).count() == 1, (
+        "the review row was consumed by a dry run that changed nothing"
+    )
+
+
+def test_dry_run_still_records_the_choice(tmp_path, monkeypatch):
+    """
+    The override is a decision, not a file. It is what makes the correction
+    land once dry run is turned off, and the endpoint commits it separately
+    for exactly that reason — so it stays, and the response says which mode
+    it ran in.
+    """
+    import json
+
+    db, media, flag, _srt = _flagged_with_sidecar(tmp_path)
+
+    result = _apply_under(db, [flag.id], dry_run=True, monkeypatch=monkeypatch)
+
+    db.refresh(media)
+    assert json.loads(media.subtitle_language_overrides) == {"2": "eng"}
+    assert result["dry_run"] is True
+
+
+def test_a_real_apply_still_renames_and_clears_the_row(tmp_path, monkeypatch):
+    """
+    The positive control. Without it, the two tests above would pass against
+    an endpoint that had stopped renaming and stopped clearing rows in every
+    mode.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, _media, flag, _srt = _flagged_with_sidecar(tmp_path)
+
+    result = _apply_under(db, [flag.id], dry_run=False, monkeypatch=monkeypatch)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "Show.en.forced.srt", "Show.mkv",
+    ]
+    assert db.query(SubtitleLanguageFlag).count() == 0
+    assert result["dry_run"] is False

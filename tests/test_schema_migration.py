@@ -23,7 +23,7 @@ below. A per-column test would have caught the missing detached_at and
 sailed straight past the constraint, because a column can be present and
 still wrong.
 
-Verified by mutation, 8 applied, 8 killed:
+Verified by mutation, 11 applied, 11 killed:
 
   • detached_at migration removed              → killed
   • file_id rebuild never called               → killed
@@ -33,6 +33,9 @@ Verified by mutation, 8 applied, 8 killed:
   • scratch table left behind                  → killed
   • font_attachments migration removed         → killed
   • font_attachments migrated with DEFAULT 0   → killed
+  • encoding relabel never run                 → killed
+  • encoding relabel labelling image reviews   → killed
+  • encoding relabel touching rows not in review → killed
 
 The first initially SURVIVED, and the reason is worth keeping: the
 rebuild recreates revert_points from the model, so it adds detached_at
@@ -43,6 +46,7 @@ test_the_column_migration_stands_on_its_own pins it against the shape
 the world is in on that day.
 """
 import importlib
+import json
 import sqlite3
 
 import pytest
@@ -549,3 +553,94 @@ def test_existing_files_come_out_uncounted_not_font_free(uncounted):
 
     assert "font_attachments" in columns
     assert value == (None,)
+
+
+# ── Subtitle-encoding reviews written unlabelled ─────────────────────────────
+
+_OLD_REVIEWS = {
+    # name: (status, review_reason, flagged codecs or None)
+    "encoding":      ("manual_review", None, ["subrip"]),
+    "image":         ("manual_review", None, ["hdmv_pgs_subtitle"]),
+    "mixed":         ("manual_review", None, ["subrip", "dvd_subtitle"]),
+    "threshold":     ("manual_review", None, None),
+    "font":          ("manual_review", "font_attachments", ["ass"]),
+    "not_in_review": ("pending",       None, ["subrip"]),
+}
+
+
+@pytest.fixture
+def old_reviews(tmp_path, monkeypatch):
+    """
+    One row of every kind an existing install can hold, then a real startup.
+    Returns each row's review_reason afterwards, by name.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, QueueItem
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    ids = {}
+    with Session(engine) as db:
+        media = MediaFile(path="/m/Movie.mkv", filename="Movie.mkv",
+                          directory="/m", size=1, mtime=1.0)
+        db.add(media)
+        db.flush()
+        for name, (status, reason, codecs) in _OLD_REVIEWS.items():
+            item = QueueItem(
+                file_id=media.id, status=status, review_reason=reason,
+                review_subtitles=(
+                    json.dumps([{"stream_index": 2 + n, "codec": c}
+                                for n, c in enumerate(codecs)])
+                    if codecs is not None else None
+                ),
+            )
+            db.add(item)
+            db.flush()
+            ids[item.id] = name
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        labels = {ids[i]: r for i, r in
+                  conn.execute("SELECT id, review_reason FROM queue_items")}
+    finally:
+        conn.close()
+
+    yield labels
+
+    _restore_the_engine(session_mod)
+
+
+def test_an_unlabelled_encoding_review_is_labelled_and_nothing_else_is(old_reviews):
+    """
+    Closes: the relabel never running, and it labelling image reviews.
+
+    The worker wrote these unlabelled, which the image resolver reads as
+    its own, so resolving subtitle items in bulk re-queued each one's
+    failing extraction. They are told apart by what they flag: an image
+    review flags only image-based codecs, an encoding review only text
+    codecs. A row flagging any image codec is an image review, and a row
+    flagging nothing is the undefined-audio threshold.
+    """
+    assert old_reviews["encoding"] == "subtitle_encoding"
+    assert old_reviews["image"] is None
+    assert old_reviews["mixed"] is None
+    assert old_reviews["threshold"] is None
+    assert old_reviews["font"] == "font_attachments"
+
+
+def test_the_relabel_leaves_rows_that_are_no_longer_in_review(old_reviews):
+    """
+    Closes: the relabel reaching past the review tab.
+
+    A pending row can still carry the review_subtitles of a review it has
+    left. It is not in any bulk resolver's scope, so there is nothing to
+    protect it from, and a label on it would say something untrue.
+    """
+    assert old_reviews["not_in_review"] is None

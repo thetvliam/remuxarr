@@ -717,6 +717,12 @@ def _flag_subtitle_encoding_review(
                 job.status           = "manual_review"
                 job.reason           = reason
                 job.review_subtitles = json.dumps(flagged)
+                # No gate raised this, so it names itself. Left null it was
+                # read as an image-subtitle review, and resolving those in
+                # bulk re-decided the file, which cannot see an encoding
+                # failure: the same extraction was queued, failed the same
+                # way, and the file came straight back here.
+                job.review_reason    = "subtitle_encoding"
                 job.error_message    = None
                 job.progress         = 0.0
                 job.current_action   = None
