@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 12 applied, 12 killed:
+ * Verified by mutation, 13 applied, 13 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -39,15 +39,21 @@
  *   • The intro paragraph replaced wholesale                → killed
  *   • The encoding note shown unconditionally               → killed
  *   • The encoding note's condition inverted                → killed
+ *   • The empty state restored to its "all clear ✓" wording → killed
  *
- * Three of those SURVIVED before the tests below were written — both copy
- * blocks and the intro — because no test anywhere asserted rendered text,
- * so it was free to drift as gates were added. It did: the intro still
- * said three reasons after the fourth gate landed. A further mutant,
- * inverting the gate on the APPROVE / SKIP buttons themselves, is already
- * killed by "refetches both language lists when an item is approved",
- * which cannot find the button to click. It is covered incidentally rather
- * than deliberately, so it is not listed above.
+ * Four of those SURVIVED before the tests below were written — both copy
+ * blocks, the intro, and the empty state — because no test anywhere
+ * asserted rendered text, so it was free to drift as gates were added. It
+ * did: the intro still said three reasons after the fourth gate landed.
+ * The last mutant is the old wording itself rather than a nonsense string,
+ * so it pins that specific regression rather than mere presence.
+ *
+ * Two further mutants are killed only incidentally and are not listed:
+ * inverting the gate on the APPROVE / SKIP buttons, caught by "refetches
+ * both language lists when an item is approved" failing to find a button
+ * to click, and inverting the empty-state branch itself, caught by every
+ * test that renders a card. Neither is a deliberate test of the thing
+ * mutated.
  *
  * A mutation run here must confirm the file was collected: `vitest run
  * <path>` exits non-zero when it finds NO test files, which is
@@ -427,5 +433,27 @@ describe("ReviewPage — how the page describes why files are here", () => {
     await screen.findByRole("button", { name: /^APPROVE$/i });
 
     expect(document.body.textContent).not.toMatch(/no bulk action for them/i);
+  });
+});
+
+describe("ReviewPage — the empty state", () => {
+  /* This branch sees manual-review queue items only. The Audio and Subtitle
+   * Language Review sections below fetch their own rows, and a file can
+   * carry a language flag without being in manual review at all — verified
+   * against the decision engine: one undefined audio track with the
+   * threshold at two gives is_manual_review=False with the mismatch set,
+   * and so does an undefined subtitle track that gets extracted.
+   *
+   * So the old "all clear ✓" was a claim about sections this component
+   * cannot see, and it was rendered directly above them while they had
+   * rows. The message is now scoped to the list it actually knows about. */
+  it("does not claim the whole page is clear", async () => {
+    mockApi();
+    setup([]);
+
+    const shown = await screen.findByText(/No files pending manual review/i);
+
+    expect(shown.textContent).toMatch(/listed below/i);
+    expect(document.body.textContent).not.toMatch(/all clear/i);
   });
 });

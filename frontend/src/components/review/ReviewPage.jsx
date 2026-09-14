@@ -229,8 +229,17 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
             </p>
             </div>
 
+            {/* Scoped deliberately. This branch only knows about manual-review
+              * QUEUE ITEMS, and the two language sections below fetch their
+              * own rows independently — a file can carry a language flag
+              * without ever entering manual review (one undefined audio track
+              * under a threshold of two, for instance, or an undefined
+              * subtitle that gets extracted). So items.length === 0 means
+              * "nothing in this list", not "nothing on this page". It used to
+              * say "all clear ✓", which was a claim about sections this
+              * component cannot see and is wrong whenever either has rows. */}
             {items.length === 0
-                ? <EmptyState msg="No files pending manual review — all clear ✓" />
+                ? <EmptyState msg="No files pending manual review — flagged languages, if any, are listed below." />
                 : items.map(item => {
                     const f = item.file || {};
                     const flagged = item.flagged_subtitles;
