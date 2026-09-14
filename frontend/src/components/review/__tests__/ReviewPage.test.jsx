@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 19 applied, 19 killed:
+ * Verified by mutation, 23 applied, 23 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -46,6 +46,10 @@
  *   • Approve passing reason and status the wrong way round → killed
  *   • Skip reporting nothing on success                     → killed
  *   • Resolve reporting nothing on success                  → killed
+ *   • The dry-run condition inverted                        → killed
+ *   • The dry-run branch removed entirely                   → killed
+ *   • Approve dropping is_dry_run from the call             → killed
+ *   • Resolve dropping is_dry_run from the call             → killed
  *
  * Ten of those SURVIVED before the tests here were written. Four were copy
  * — both explanation blocks, the intro and the empty state — free to drift
@@ -55,9 +59,13 @@
  * direction. The three error toasts survived even after the success-path
  * tests were added, which is why the failure block below exists at all.
  *
- * approve and resolveSubtitle carry separate copies of the same two
- * reporting lines, so they are mutated separately — a mutant on one copy
- * must not be caught by the other's test.
+ * approve and resolveSubtitle carry separate copies of the same reporting
+ * lines, so they are mutated separately — a mutant on one copy must not be
+ * caught by the other's test. That is not hypothetical: dropping is_dry_run
+ * from approve's call was killed while the identical mutation on
+ * resolveSubtitle's copy SURVIVED, because only approve had a dry-run test.
+ * Answering the last flagged track queues the file exactly as Approve does,
+ * so it needed its own.
  *
  * Two further mutants are killed only incidentally and are not listed:
  * inverting the gate on the APPROVE / SKIP buttons, caught by "refetches
@@ -514,6 +522,21 @@ describe("ReviewPage — reporting what happened", () => {
     expect(toast.mock.calls.at(-1)[0]).toMatch(/queued/i);
   });
 
+  it("reports a preview rather than a conversion while dry run is on", async () => {
+    /* is_dry_run rides the same response as the status, so the toast
+     * describes the mode the server was in when it handled the click. */
+    postingStatus({ status: "pending", reason: "Convert MKV \u2192 MP4", is_dry_run: true });
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(/preview/i);
+    expect(tone).toBe("preview");
+  });
+
   it("reports the skip rather than letting the card vanish silently", async () => {
     postingStatus({});
     const { toast } = setup([AUDIO_ITEM]);
@@ -523,6 +546,23 @@ describe("ReviewPage — reporting what happened", () => {
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
     expect(toast.mock.calls.at(-1)[0]).toMatch(/next scan/i);
+  });
+
+  /* resolveSubtitle's copy of the is_dry_run argument survived a mutant
+   * that approve's copy killed: answering the last flagged track queues the
+   * file exactly as Approve does, and in dry-run mode that is a preview
+   * too. Two copies, two tests. */
+  it("reports a preview when resolving the last track under dry run", async () => {
+    postingStatus({ status: "pending", reason: "Convert MKV \u2192 MP4", is_dry_run: true });
+    const { toast } = setup([IMAGE_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click((await screen.findAllByRole("button", { name: /^KEEP$/i }))[0]);
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(/preview/i);
+    expect(tone).toBe("preview");
   });
 
   /* resolveSubtitle carries its own copy of the same two lines, so it gets

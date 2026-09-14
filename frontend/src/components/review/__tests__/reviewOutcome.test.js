@@ -46,6 +46,37 @@ describe("reviewOutcome", () => {
     expect(tone).toBe("neutral");
   });
 
+  it("does not promise a conversion while dry run is on", () => {
+    /* The status is "pending" in both modes - only is_dry_run separates
+     * them - so without this branch a preview gets reported as the real
+     * thing and the user believes a file was converted that was not. */
+    const { message, tone } = reviewOutcome("pending", "Convert MKV \u2192 MP4", true);
+
+    expect(message).toMatch(/preview/i);
+    expect(message).toMatch(/leaves the file alone/i);
+    expect(tone).toBe("preview");
+  });
+
+  it("treats a missing dry-run flag as a real run", () => {
+    /* An older server, or a response that omits the field. Describing a real
+     * conversion as a preview is the safer error of the two: it understates
+     * what happened rather than claiming a file was left alone when it was
+     * not. */
+    expect(reviewOutcome("pending", "r").tone).toBe("info");
+    expect(reviewOutcome("pending", "r", undefined).tone).toBe("info");
+  });
+
+  it.each([
+    ["skipped", "neutral"],
+    ["manual_review", "notice"],
+  ])("does not let dry run change the %s outcome", (status, tone) => {
+    /* Nothing was done to the file in either case, in either mode, so these
+     * must read identically - a preview tone here would imply output that
+     * does not exist. */
+    expect(reviewOutcome(status, "r", true)).toEqual(reviewOutcome(status, "r", false));
+    expect(reviewOutcome(status, "r", true).tone).toBe(tone);
+  });
+
   it("says when the file is still held rather than going quiet", () => {
     const { message, tone } = reviewOutcome("manual_review", "another gate applies");
 

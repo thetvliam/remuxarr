@@ -16,6 +16,13 @@
  *   status=skipped        nothing left to do, the file is not processed
  *   status=manual_review  another gate applies, it is STILL held
  *
+ * Dry run is read off the SAME response rather than from app state. The
+ * status is "pending" whether or not dry-run mode is on — verified by
+ * approving with the setting both ways — and only is_dry_run distinguishes
+ * them. Taking it from the response also means the toast describes the mode
+ * that was in force when the server handled the click, not whatever the
+ * client believed a moment later.
+ *
  * The middle one is the surprise. A file held only by the undefined-audio
  * threshold, already at the target container with nothing to strip, is
  * skipped rather than converted — see the Approve copy on ReviewPage, which
@@ -42,7 +49,7 @@ export const UNKNOWN_OUTCOME = {
     tone: "info",
 };
 
-export function reviewOutcome(status, reason) {
+export function reviewOutcome(status, reason, isDryRun) {
     /* The reason is the decision engine's own text ("Convert MKV → MP4",
      * "File already meets all configured criteria — no changes needed"), so
      * the toast can say why rather than paraphrase it. It is appended only
@@ -50,9 +57,22 @@ export function reviewOutcome(status, reason) {
     const because = reason ? ` — ${reason}` : "";
 
     switch (status) {
-        /* "neutral progress: queued" is exactly this case, per buildToastTone. */
+        /* "neutral progress: queued" is exactly this case, per buildToastTone.
+         *
+         * Dry run splits it, and ONLY it. The status is "pending" either way —
+         * is_dry_run on the response carries the whole difference — so without
+         * this branch the toast promises a conversion that will not happen and
+         * a preview gets reported as the real thing. The other two cases do not
+         * move: "skipped" means nothing was done in either mode, and
+         * "manual_review" means the file is still held in either mode.
+         *
+         * `preview` is its own tone in buildToastTone precisely so dry-run
+         * output does not read as an ordinary success. */
         case "pending":
-            return { message: `Approved and queued${because}`, tone: "info" };
+            return isDryRun
+                ? { message: `Approved — dry run, so this writes a preview and leaves the file alone${because}`,
+                    tone: "preview" }
+                : { message: `Approved and queued${because}`, tone: "info" };
 
         /* Not a failure, so not an error tone — but the user expected the file
          * to be processed, so it cannot be silent either. */

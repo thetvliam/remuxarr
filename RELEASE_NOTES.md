@@ -60,5 +60,5 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- Approving, skipping or resolving a file in Review now reports what happened. Only failures were reported before, so a card just vanished from the list and a failed Approve looked exactly like a successful one.
+- Approving, skipping or resolving a file in Review now reports what happened, including when dry run means a preview is written rather than the file being changed. Only failures were reported before, so a card just vanished from the list and a failed Approve looked exactly like a successful one.
 - Approving a file held only by the undefined-audio threshold now tells you when the file will not be processed. If nothing else needs doing it is marked Skipped rather than converted, which the page previously described the wrong way round.

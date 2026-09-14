@@ -138,7 +138,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         // the card, so reporting after it would describe something gone
         // from the screen.
         const body = await r.json().catch(() => null);
-        const { message, tone } = reviewOutcome(body?.status, body?.reason);
+        const { message, tone } = reviewOutcome(body?.status, body?.reason, body?.is_dry_run);
         toast?.(message, tone);
         onReviewResolved?.();
     };
@@ -179,7 +179,7 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         // "still held" is the outcome most likely to be read as a failure
         // if nothing says otherwise.
         const body = await r.json().catch(() => null);
-        const { message, tone } = reviewOutcome(body?.status, body?.reason);
+        const { message, tone } = reviewOutcome(body?.status, body?.reason, body?.is_dry_run);
         toast?.(message, tone);
         onReviewResolved?.();
     };
