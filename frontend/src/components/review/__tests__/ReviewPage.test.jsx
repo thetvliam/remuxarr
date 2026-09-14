@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 23 applied, 23 killed:
+ * Verified by mutation, 25 applied, 25 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -50,6 +50,8 @@
  *   • The dry-run branch removed entirely                   → killed
  *   • Approve dropping is_dry_run from the call             → killed
  *   • Resolve dropping is_dry_run from the call             → killed
+ *   • The partial-bulk-failure toast deleted                → killed
+ *   • Its guard widened so it fires on clean runs           → killed
  *
  * Ten of those SURVIVED before the tests here were written. Four were copy
  * — both explanation blocks, the intro and the empty state — free to drift
@@ -640,5 +642,54 @@ describe("ReviewPage — reporting failures", () => {
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
     expect(toast).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ReviewPage — where a partial bulk resolve sends you", () => {
+  /* The bulk endpoint commits per item, so one bad file leaves the rest
+   * resolved and comes back in an errors array. Both the toast and its
+   * guard survived mutation before these tests: deleting the toast, and
+   * widening the guard so it fires on clean runs, each left the suite green.
+   *
+   * It used to point at the browser console. The detail is on the SERVER:
+   * _resolve_review_bulk logs each failure with logger.exception, and GET
+   * /api/logs serves it to the LogViewer at ERROR level with the traceback
+   * — driven through and read back off the endpoint to confirm. The console
+   * line has less in it and needs devtools to have been open at the time. */
+  const bulkReturning = (body) => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (opts.method === "POST" && u.includes("bulk"))
+        return { ok: true, json: async () => body };
+      if (u.includes("_handling")) return { ok: true, json: async () => ({ value: "never_ask" }) };
+      return { ok: true, json: async () => ({ items: [], total: 0 }) };
+    });
+  };
+
+  it("sends the user to the log viewer, not the browser console", async () => {
+    bulkReturning({ resolved: 1, still_unresolved: 0, errors: [{ item_id: 9, error: "boom" }] });
+    const { toast } = setup([IMAGE_ITEM, FONT_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i }));
+
+    await waitFor(() =>
+      expect(toast.mock.calls.some(([m]) => /could not be resolved/i.test(m))).toBe(true));
+    const [message] = toast.mock.calls.find(([m]) => /could not be resolved/i.test(m));
+    expect(message).toMatch(/Maintenance & Logs/i);
+    expect(message).not.toMatch(/browser console/i);
+  });
+
+  it("says nothing about failures when every item resolved", async () => {
+    /* The guard is the half that keeps the clean path quiet — widening it
+     * produced "0 items could not be resolved" on a successful run. */
+    bulkReturning({ resolved: 2, still_unresolved: 0, errors: [] });
+    const { toast } = setup([IMAGE_ITEM, FONT_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast.mock.calls.some(([m]) => /could not be resolved/i.test(m))).toBe(false);
   });
 });

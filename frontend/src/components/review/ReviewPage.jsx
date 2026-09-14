@@ -89,14 +89,26 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
                     ? `, ${data.still_unresolved} still needed review`
                     : "";
                 toast?.(`Resolved ${data.resolved}${stillNeeded}`, "info");
-                // The endpoint commits per item so one bad file cannot roll
-                // back the rest, and returns what failed. Discarding that meant
-                // a partially-successful bulk resolve reported as a clean one.
+                /* The endpoint commits per item so one bad file cannot roll
+                 * back the rest, and returns what failed. Discarding that meant
+                 * a partially-successful bulk resolve reported as a clean one.
+                 *
+                 * Points at Settings → Maintenance & Logs rather than the
+                 * browser console. _resolve_review_bulk already logs every
+                 * failure with logger.exception, the root logger's memory
+                 * handler buffers it, and GET /api/logs serves it to the
+                 * LogViewer at ERROR level WITH the traceback — verified by
+                 * driving a failure through and reading it back off the
+                 * endpoint. So the server record is both richer than the
+                 * console line and already persisted, while the console line
+                 * requires devtools to have been open at the moment it
+                 * happened. The console.warn stays anyway: it costs nothing
+                 * and is quicker for anyone who did have devtools open. */
                 if (Array.isArray(data.errors) && data.errors.length) {
                     console.warn("Bulk resolve — items not resolved:", data.errors);
                     toast?.(
                         `${data.errors.length} item${data.errors.length === 1 ? "" : "s"} could not be resolved — ` +
-                        `see the browser console for details`,
+                        `see Settings → Maintenance & Logs for details`,
                         "error",
                     );
                 }
