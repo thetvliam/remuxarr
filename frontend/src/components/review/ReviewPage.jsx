@@ -15,9 +15,14 @@ import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
  * 1. Files that triggered the "multiple undefined audio tracks" gate —
  *    approve (send to queue) or skip (dismiss). The `items` prop.
  *
- * 2. Flagged image subtitles on those same files — resolve one track at a
- *    time, or resolve all of a file's at once. Reads image_subtitle_handling
- *    to phrase what resolving will do.
+ * 2. Flagged subtitle tracks on those same files. Three of the four gates
+ *    put them here: image-based subtitles that cannot become SRT, embedded
+ *    fonts only MKV can hold, and text subtitles FFmpeg could not read as
+ *    UTF-8. Resolve one track at a time, or use a bulk action that answers
+ *    every item of ONE KIND across every file — there is no per-file bulk,
+ *    and encoding items get no bulk action at all. Reads
+ *    image_subtitle_handling and font_attachment_handling to phrase what
+ *    resolving will do, and to decide whether each button is offered.
  *
  * 3. AudioLanguageReviewSection and SubtitleLanguageReviewSection, rendered
  *    at the bottom: separately paginated, separately filtered lists of
@@ -67,6 +72,11 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
 
     const subtitleItemCount = items.filter(isImageItem).length;
     const fontItemCount = items.filter(isFontItem).length;
+    /* Not a bulk-action count like the two above — there is no bulk action
+     * for these. It exists only to decide whether to explain why, since a
+     * standing note about encoding reviews is noise on a page that has
+     * none. */
+    const encodingItemCount = items.filter(isEncodingItem).length;
 
     const resolveAllOfKind = async (endpoint) => {
         setBulkResolving(true);
@@ -192,11 +202,11 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         )}
         </div>
         <p style={{ color: palette.muted, fontSize: type.size.md, margin: 0, lineHeight: type.leading.relaxed }}>
-        Files end up here for three reasons: two or more audio tracks with an
+        Files end up here for four reasons: two or more audio tracks with an
         undefined language (approve to process anyway, or skip to dismiss),
-            subtitle tracks that can't be converted to external SRT, or embedded
-            fonts that only MKV can hold — choose KEEP or REMOVE for each
-            flagged track below.
+            subtitle tracks that can't be converted to external SRT, embedded
+            fonts that only MKV can hold, or text subtitles FFmpeg couldn't
+            read as UTF-8 — choose KEEP or REMOVE for each flagged track below.
             {subtitleItemCount > 0 && imgSubSetting !== "always_ask" && (
                 <> Image-Based Subtitle Handling is currently set to{" "}
                 {imgSubSetting === "always_keep" ? "Always Keep" : "Always Remove"} — use
@@ -208,6 +218,13 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
                 {fontSetting === "always_keep" ? "Always Keep" : "Always Remove"} — use
                 the button above to resolve every font-flagged item at once. Keeping
                 leaves the file as MKV so its styled subtitles still render.</>
+            )}
+            {encodingItemCount > 0 && (
+                <> The {encodingItemCount === 1 ? "subtitle-encoding one" : `${encodingItemCount} subtitle-encoding ones`} must
+                be answered a file at a time — there is no bulk action for them.
+                Re-deciding a file cannot see the encoding failure, so resolving
+                them in a batch would queue the extraction that just failed and
+                bring the file straight back here.</>
             )}
             </p>
             </div>

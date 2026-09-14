@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 9 applied, 9 killed:
+ * Verified by mutation, 12 applied, 12 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -36,14 +36,18 @@
  *   • Both buttons reading the same setting                 → killed
  *   • The Approve/Skip explanation replaced wholesale       → killed
  *   • That explanation's render gate inverted               → killed
+ *   • The intro paragraph replaced wholesale                → killed
+ *   • The encoding note shown unconditionally               → killed
+ *   • The encoding note's condition inverted                → killed
  *
- * The last two both SURVIVED before the tests below were written: no test
- * anywhere asserted that copy, so it was free to say anything, and it did
- * — see the note on the "what Approve claims it will do" block. A third
- * mutant, inverting the gate on the APPROVE / SKIP buttons themselves, is
- * already killed by "refetches both language lists when an item is
- * approved", which cannot find the button to click. It is covered
- * incidentally rather than deliberately, so it is not listed above.
+ * Three of those SURVIVED before the tests below were written — both copy
+ * blocks and the intro — because no test anywhere asserted rendered text,
+ * so it was free to drift as gates were added. It did: the intro still
+ * said three reasons after the fourth gate landed. A further mutant,
+ * inverting the gate on the APPROVE / SKIP buttons themselves, is already
+ * killed by "refetches both language lists when an item is approved",
+ * which cannot find the button to click. It is covered incidentally rather
+ * than deliberately, so it is not listed above.
  *
  * A mutation run here must confirm the file was collected: `vitest run
  * <path>` exits non-zero when it finds NO test files, which is
@@ -375,5 +379,53 @@ describe("ReviewPage — what Approve claims it will do", () => {
 
     expect(document.body.textContent).not.toMatch(/skipped if not/i);
     expect(screen.queryByRole("button", { name: /^APPROVE$/i })).toBeNull();
+  });
+});
+
+describe("ReviewPage — how the page describes why files are here", () => {
+  /* Four gates put files in manual review, not three. image_subtitles,
+   * font_attachments and subtitle_encoding are the only review_reason
+   * values the backend ever sets; the und-audio gate leaves it null. The
+   * intro listed three and omitted the encoding one entirely, so the page
+   * never named the gate for a file sitting in front of the user.
+   *
+   * Nothing asserted this paragraph either, so it was free to drift as
+   * gates were added — which is exactly what happened when the encoding
+   * gate landed. */
+  it("names all four gates, including the encoding one", async () => {
+    mockApi();
+    setup([AUDIO_ITEM]);
+
+    await screen.findByRole("button", { name: /^APPROVE$/i });
+    const shown = document.body.textContent;
+
+    expect(shown).toMatch(/four reasons/i);
+    expect(shown).toMatch(/read as UTF-8/i);
+    expect(shown).not.toMatch(/three reasons/i);
+  });
+
+  /* An encoding review is the one kind with no bulk action: re-deciding the
+   * file cannot see the encoding failure, so a batch would queue the
+   * extraction that just failed. Saying so is only useful when such an item
+   * is on screen — a standing note about a review type the user does not
+   * have is noise, which is why this is conditional rather than part of the
+   * paragraph above. Both directions are pinned; the negative is the half
+   * that makes "only when present" mean anything. */
+  it("explains the missing bulk action when an encoding item is present", async () => {
+    mockApi();
+    setup([ENCODING_ITEM]);
+
+    await screen.findByText("Latin1.mkv");
+
+    expect(document.body.textContent).toMatch(/no bulk action for them/i);
+  });
+
+  it("says nothing about encoding reviews when there are none", async () => {
+    mockApi();
+    setup([AUDIO_ITEM]);
+
+    await screen.findByRole("button", { name: /^APPROVE$/i });
+
+    expect(document.body.textContent).not.toMatch(/no bulk action for them/i);
   });
 });
