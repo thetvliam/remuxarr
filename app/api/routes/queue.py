@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from app.core.timeutil import utcnow
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
@@ -190,6 +190,30 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     return file_info, tracks, kwargs
 
 
+def _force_rescan(media: MediaFile) -> None:
+    """
+    Make the next delta scan re-probe this file, whatever its bytes say.
+
+    A delta scan compares the stored size and mtime against what is on disk
+    and skips anything unchanged. Every path that retires a file WITHOUT
+    touching it therefore has to invalidate that stamp, or the file is never
+    re-evaluated: its bytes are identical to what was stamped, the scan
+    returns immediately, and analyze_file is never called again until
+    something genuinely edits the file on disk.
+
+    That has been fixed twice already, once in clear_pending and once in
+    cancel_item, and the two fixes were separate copies of these two lines.
+    Clearing an acknowledgement is the third caller, so it is a function now
+    rather than a third copy to keep in step.
+
+    Deliberately does not set status: the callers disagree about it
+    ("skipped" for a cancelled item, untouched for a cleared
+    acknowledgement) and folding it in here would make this do two things.
+    """
+    media.size  = -1
+    media.mtime = -1.0
+
+
 def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
                              decision) -> None:
     """
@@ -341,6 +365,112 @@ def queue_stats(db: Session = Depends(get_db)):
     }
 
 
+# ── Acknowledged undefined-audio thresholds ──────────────────────────────────
+#
+# DECLARED BEFORE /{item_id}, and it has to be. FastAPI matches in
+# declaration order, so with these below it a GET of /api/queue/acknowledged
+# is caught by /{item_id}, which tries to parse "acknowledged" as an int and
+# returns 422. /active, /manual-review and /stats sit above it for the same
+# reason. Note that the OpenAPI schema lists both routes either way — the
+# path is registered, just unreachable — so only a real request finds this.
+#
+# Approving a threshold review sets und_audio_threshold_acknowledged, and
+# nothing ever set it back: one write site, True, and no route to False.
+# The file is exempt from the gate for good.
+#
+# That matters more than a stray flag usually would. The Approve button used
+# to say it would "process the file now, keeping every audio track", which
+# was wrong whenever nothing else needed doing — the file was marked Skipped
+# instead. So an unknown number of these acknowledgements were given on a
+# false description, and until now there was no way to see them, let alone
+# take one back.
+
+
+class ClearAcknowledgedRequest(BaseModel):
+    # Files, not queue items. The acknowledgement lives on MediaFile and
+    # outlives every QueueItem the file has ever had, which is the whole
+    # reason it is invisible.
+    file_ids: list[int]
+
+
+@router.get("/acknowledged")
+def list_acknowledged(
+    limit:  int = Query(default=50, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """
+    Files exempted from the undefined-audio threshold by a past Approve.
+
+    Bounded like every other list in this codebase. There is no ceiling on
+    how many files can carry this — it accumulates for the life of the
+    library and nothing ever removes one — so an unbounded version would be
+    the same mistake list_manual_review already carries.
+    """
+    base = db.query(MediaFile).filter(
+        MediaFile.und_audio_threshold_acknowledged.is_(True)
+    )
+    total = base.count()
+    rows = (
+        base.order_by(MediaFile.path)
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+    return {
+        "total": total,
+        "files": [
+            {
+                "id":       m.id,
+                "path":     m.path,
+                "filename": m.filename,
+                "status":   m.status,
+            }
+            for m in rows
+        ],
+    }
+
+
+@router.post("/acknowledged/clear")
+def clear_acknowledged(body: ClearAcknowledgedRequest,
+                       db: Session = Depends(get_db)):
+    """
+    Take back an acknowledgement, so the file faces the threshold again.
+
+    Two steps, and the second is the one that is easy to forget. Clearing
+    the column alone changes nothing a user can see: the file's bytes are
+    untouched, so the next delta scan compares size and mtime, finds them
+    identical, and never calls analyze_file. The acknowledgement would be
+    gone from the database and the file would still never come back. So the
+    scan stamp is invalidated too — the same pairing cancel_item needs, via
+    the same helper.
+
+    The file returns on the next scan rather than immediately. That matches
+    Skip, whose wording users already know, and avoids the queue-item
+    surgery apply_language needs to reprocess a file on the spot.
+
+    Unknown ids are counted as misses rather than raising: this is driven by
+    a multi-select whose list may have moved under the user, and failing the
+    whole call because one row went stale would be worse than reporting it.
+    """
+    cleared = 0
+    missing: list[int] = []
+    for file_id in body.file_ids:
+        media = db.get(MediaFile, file_id)
+        if not media:
+            missing.append(file_id)
+            continue
+        # Counted only when there was something to clear, so the number
+        # describes work done rather than ids received.
+        if media.und_audio_threshold_acknowledged:
+            media.und_audio_threshold_acknowledged = False
+            _force_rescan(media)
+            cleared += 1
+    db.commit()
+    logger.info("Cleared %d undefined-audio acknowledgement(s)", cleared)
+    return {"cleared": cleared, "missing": missing}
+
+
 @router.get("/{item_id}")
 def get_queue_item(item_id: int, db: Session = Depends(get_db)):
     """Single item with full planned-action breakdown (modal detail view)."""
@@ -428,8 +558,7 @@ def clear_dry_run(db: Session = Depends(get_db)):
             # calling analyze_file() again — so the cleared preview would
             # simply never reappear on any future scan until the file's
             # bytes genuinely changed on disk.
-            item.media_file.size   = -1
-            item.media_file.mtime  = -1.0
+            _force_rescan(item.media_file)
             item.media_file.status = "skipped"
         db.delete(item)
     db.commit()
@@ -475,8 +604,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     # were the two "cancelled"-producing paths that missed this.
     item.completed_at = utcnow()
     if item.media_file:
-        item.media_file.size   = -1
-        item.media_file.mtime  = -1.0
+        _force_rescan(item.media_file)
         item.media_file.status = "skipped"
     db.commit()
     return {"success": True}
@@ -730,6 +858,7 @@ def resolve_fonts_bulk(db: Session = Depends(get_db)):
     under the font setting — the same mistake in the opposite direction.
     """
     return _resolve_review_bulk(db, "font_attachments", include_unlabelled=False)
+
 
 
 @router.post("/{item_id}/approve")

@@ -1203,3 +1203,199 @@ def test_stats_keeps_queue_statuses_out_of_the_language_review_key(db):
     assert "audio" not in stats
     assert "subtitle" not in stats
     assert stats["language_review"]["audio"] == 1
+
+
+# ── Acknowledged undefined-audio thresholds ──────────────────────────────────
+#
+# Approving a threshold review sets und_audio_threshold_acknowledged and
+# nothing ever set it back. The file is exempt from the gate for good, and
+# until these endpoints there was no way to see that, let alone undo it.
+#
+# It matters because the Approve button used to claim it would process the
+# file, which was wrong whenever nothing else needed doing. So an unknown
+# number of these were given on a false description.
+
+def _ack_file(db, file_id, path, acknowledged=True, status="skipped"):
+    from app.database.models import MediaFile
+
+    m = MediaFile(id=file_id, path=path, filename=path.rsplit("/", 1)[-1],
+                  directory="/media/tv", size=5000, mtime=1_700_000_000.0,
+                  container="mkv", status=status,
+                  und_audio_threshold_acknowledged=acknowledged)
+    db.add(m)
+    db.commit()
+    return m
+
+
+# The list endpoint goes through TestClient rather than being called
+# directly, following test_subtitle_language_review: FastAPI applies Query()
+# constraints while parsing a REQUEST, and a direct Python call bypasses
+# them entirely — the bound on `limit` would be untested no matter what the
+# signature said. That bound is the point of paginating this at all.
+
+def _threadsafe_db():
+    """
+    The `db` fixture's plain sqlite:// engine cannot be shared with
+    TestClient: the request runs on another thread, takes its own
+    connection, and finds no tables. conftest.memory_engine exists for this.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)()
+
+
+def _ack_client(db):
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    from app.api.routes import queue as queue_routes
+
+    app = FastAPI()
+    app.include_router(queue_routes.router)
+    # Keyed on the object the route closed over, not on an import of get_db
+    # from app.database.session — see the note in
+    # test_subtitle_language_review, where the equivalent-looking version
+    # silently ran against the real database.
+    app.dependency_overrides[queue_routes.get_db] = lambda: db
+    return TestClient(app)
+
+
+def test_acknowledged_lists_only_exempted_files():
+    db = _threadsafe_db()
+    _ack_file(db, 1, "/media/tv/A.mkv", acknowledged=True)
+    _ack_file(db, 2, "/media/tv/B.mkv", acknowledged=False)
+
+    out = _ack_client(db).get("/api/queue/acknowledged").json()
+
+    assert out["total"] == 1
+    assert [f["path"] for f in out["files"]] == ["/media/tv/A.mkv"]
+
+
+def test_acknowledged_reports_the_full_total_not_the_page():
+    """The count drives a UI control, so it must describe the backlog."""
+    db = _threadsafe_db()
+    for i in range(1, 6):
+        _ack_file(db, i, f"/media/tv/{i}.mkv")
+
+    out = _ack_client(db).get("/api/queue/acknowledged?limit=2").json()
+
+    assert out["total"] == 5
+    assert len(out["files"]) == 2
+
+
+def test_acknowledged_rejects_an_unbounded_limit():
+    """
+    Unbounded, limit=-1 reaches SQLAlchemy's .limit(), which reads a
+    negative as no limit at all — one request returning every exempted file
+    in the library. The same hole the language lists already had.
+    """
+    db = _threadsafe_db()
+    _ack_file(db, 1, "/media/tv/A.mkv")
+
+    assert _ack_client(db).get("/api/queue/acknowledged?limit=-1").status_code == 422
+    assert _ack_client(db).get("/api/queue/acknowledged?limit=99999").status_code == 422
+
+
+def test_clearing_lets_the_file_face_the_threshold_again(db):
+    from app.api.routes.queue import ClearAcknowledgedRequest, clear_acknowledged
+    from app.database.models import MediaFile
+
+    _ack_file(db, 1, "/media/tv/A.mkv")
+
+    out = clear_acknowledged(ClearAcknowledgedRequest(file_ids=[1]), db=db)
+
+    assert out["cleared"] == 1
+    assert db.get(MediaFile, 1).und_audio_threshold_acknowledged is False
+
+
+def test_clearing_also_invalidates_the_scan_stamp(db):
+    """
+    The half that is easy to forget. Clearing the column alone changes
+    nothing a user can see: the file's bytes are untouched, so the delta
+    scan finds size and mtime identical, returns early, and analyze_file is
+    never called. The acknowledgement would be gone and the file would
+    still never come back.
+    """
+    from app.api.routes.queue import ClearAcknowledgedRequest, clear_acknowledged
+    from app.database.models import MediaFile
+
+    _ack_file(db, 1, "/media/tv/A.mkv")
+
+    clear_acknowledged(ClearAcknowledgedRequest(file_ids=[1]), db=db)
+
+    media = db.get(MediaFile, 1)
+    assert media.size == -1
+    assert media.mtime == -1.0
+    # The same check scanner.py makes, against the real on-disk values.
+    assert not (media.size == 5000 and abs(media.mtime - 1_700_000_000.0) < 1.0)
+
+
+def test_clearing_touches_only_the_files_named(db):
+    """
+    A mutant that ignores file_ids and clears the table passes any test that
+    only checks the named file, so the untouched one is asserted too.
+    """
+    from app.api.routes.queue import ClearAcknowledgedRequest, clear_acknowledged
+    from app.database.models import MediaFile
+
+    _ack_file(db, 1, "/media/tv/A.mkv")
+    _ack_file(db, 2, "/media/tv/B.mkv")
+
+    clear_acknowledged(ClearAcknowledgedRequest(file_ids=[1]), db=db)
+
+    other = db.get(MediaFile, 2)
+    assert other.und_audio_threshold_acknowledged is True
+    assert other.size == 5000
+    assert other.mtime == 1_700_000_000.0
+
+
+def test_clearing_an_unknown_id_does_not_fail_the_rest(db):
+    """
+    Driven by a multi-select whose list may have moved under the user.
+    Failing the whole call because one row went stale is worse than saying
+    which one did.
+    """
+    from app.api.routes.queue import ClearAcknowledgedRequest, clear_acknowledged
+    from app.database.models import MediaFile
+
+    _ack_file(db, 1, "/media/tv/A.mkv")
+
+    out = clear_acknowledged(ClearAcknowledgedRequest(file_ids=[1, 999]), db=db)
+
+    assert out["cleared"] == 1
+    assert out["missing"] == [999]
+    assert db.get(MediaFile, 1).und_audio_threshold_acknowledged is False
+
+
+def test_clearing_a_file_that_was_never_acknowledged_counts_nothing(db):
+    """"cleared" describes work done, not ids received."""
+    from app.api.routes.queue import ClearAcknowledgedRequest, clear_acknowledged
+
+    _ack_file(db, 1, "/media/tv/A.mkv", acknowledged=False)
+
+    out = clear_acknowledged(ClearAcknowledgedRequest(file_ids=[1]), db=db)
+
+    assert out["cleared"] == 0
+    assert out["missing"] == []
+
+
+def test_acknowledged_is_not_swallowed_by_the_item_id_route():
+    """
+    /{item_id} is declared in the same router and FastAPI matches in
+    declaration order, so with /acknowledged below it the path resolves to
+    the item lookup, which tries to read "acknowledged" as an int and
+    returns 422. The OpenAPI schema lists the route either way — it is
+    registered, just unreachable — so nothing but a real request catches it.
+    """
+    db = _threadsafe_db()
+    _ack_file(db, 1, "/media/tv/A.mkv")
+
+    r = _ack_client(db).get("/api/queue/acknowledged")
+
+    assert r.status_code == 200
+    assert "total" in r.json()
