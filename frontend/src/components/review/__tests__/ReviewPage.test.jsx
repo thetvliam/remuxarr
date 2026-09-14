@@ -25,7 +25,7 @@
  *
  * The component had no tests at all before this file.
  *
- * Verified by mutation, 13 applied, 13 killed:
+ * Verified by mutation, 19 applied, 19 killed:
  *
  *   • Font items counted as subtitle items                  → killed
  *   • Encoding items counted as subtitle items              → killed
@@ -40,13 +40,24 @@
  *   • The encoding note shown unconditionally               → killed
  *   • The encoding note's condition inverted                → killed
  *   • The empty state restored to its "all clear ✓" wording → killed
+ *   • Approve's error toast deleted                         → killed
+ *   • Skip's error toast deleted                            → killed
+ *   • Resolve's error toast deleted                         → killed
+ *   • Approve passing reason and status the wrong way round → killed
+ *   • Skip reporting nothing on success                     → killed
+ *   • Resolve reporting nothing on success                  → killed
  *
- * Four of those SURVIVED before the tests below were written — both copy
- * blocks, the intro, and the empty state — because no test anywhere
- * asserted rendered text, so it was free to drift as gates were added. It
- * did: the intro still said three reasons after the fourth gate landed.
- * The last mutant is the old wording itself rather than a nonsense string,
- * so it pins that specific regression rather than mere presence.
+ * Ten of those SURVIVED before the tests here were written. Four were copy
+ * — both explanation blocks, the intro and the empty state — free to drift
+ * because no test asserted rendered text, and the intro duly still said
+ * three reasons after the fourth gate landed. The other six were the
+ * toasts: this page reported NOTHING that any test held, in either
+ * direction. The three error toasts survived even after the success-path
+ * tests were added, which is why the failure block below exists at all.
+ *
+ * approve and resolveSubtitle carry separate copies of the same two
+ * reporting lines, so they are mutated separately — a mutant on one copy
+ * must not be caught by the other's test.
  *
  * Two further mutants are killed only incidentally and are not listed:
  * inverting the gate on the APPROVE / SKIP buttons, caught by "refetches
@@ -455,5 +466,139 @@ describe("ReviewPage — the empty state", () => {
 
     expect(shown.textContent).toMatch(/listed below/i);
     expect(document.body.textContent).not.toMatch(/all clear/i);
+  });
+});
+
+describe("ReviewPage — reporting what happened", () => {
+  /* Every handler used to report only on failure. Deleting each of the three
+   * error toasts left the whole suite green, so nothing held either
+   * direction. Success was silent: the card vanished and the user inferred
+   * the rest, usually wrongly, because approving branches three ways.
+   *
+   * A local fetch stub rather than mockApi: mockApi answers every POST with
+   * the bulk-resolve shape, which carries no status, and the point here is
+   * the status. */
+  const postingStatus = (body) => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (opts.method === "POST" || opts.method === "DELETE")
+        return { ok: true, json: async () => body };
+      if (u.includes("_handling")) return { ok: true, json: async () => ({ value: "always_ask" }) };
+      return { ok: true, json: async () => ({ items: [], total: 0 }) };
+    });
+  };
+
+  it("tells the user when an approved file will not be processed", async () => {
+    /* The case the card copy used to get wrong. Silence here left the user
+     * believing a file was queued when it had been skipped. */
+    postingStatus({ status: "skipped", reason: "File already meets all configured criteria." });
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(/not changed|nothing left to do/i);
+    expect(tone).toBe("neutral");
+  });
+
+  it("tells the user when an approved file was queued", async () => {
+    postingStatus({ status: "pending", reason: "Convert MKV → MP4" });
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast.mock.calls.at(-1)[0]).toMatch(/queued/i);
+  });
+
+  it("reports the skip rather than letting the card vanish silently", async () => {
+    postingStatus({});
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^SKIP$/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast.mock.calls.at(-1)[0]).toMatch(/next scan/i);
+  });
+
+  /* resolveSubtitle carries its own copy of the same two lines, so it gets
+   * its own test — a mutant on one copy must not be caught by the other's. */
+  it("reports that a file is still held after one track of several", async () => {
+    postingStatus({ status: "manual_review", reason: "1 track still flagged" });
+    const { toast } = setup([IMAGE_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click((await screen.findAllByRole("button", { name: /^KEEP$/i }))[0]);
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(/still held/i);
+    expect(tone).toBe("notice");
+  });
+});
+
+describe("ReviewPage — reporting failures", () => {
+  /* These three toasts predate this work and were never asserted: deleting
+   * any of them left the suite green, both before the outcome reporting was
+   * added and after, because the new tests only drive the success path.
+   *
+   * They matter more than the success ones. The list refreshes either way,
+   * so a failed Approve looks exactly like a successful one — the card
+   * disappears and the file stays held, with the user believing they
+   * cleared it. That is the incident recorded above approve(). */
+  const failing = () => {
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (opts.method === "POST" || opts.method === "DELETE")
+        return { ok: false, status: 500, json: async () => ({}) };
+      if (u.includes("_handling")) return { ok: true, json: async () => ({ value: "always_ask" }) };
+      return { ok: true, json: async () => ({ items: [], total: 0 }) };
+    });
+  };
+
+  it.each([
+    ["APPROVE", /could not approve/i],
+    ["SKIP", /could not skip/i],
+  ])("says so when %s fails", async (label, expected) => {
+    failing();
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: new RegExp(`^${label}$`, "i") }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(expected);
+    expect(tone).toBe("error");
+  });
+
+  it("says so when resolving a subtitle track fails", async () => {
+    failing();
+    const { toast } = setup([IMAGE_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click((await screen.findAllByRole("button", { name: /^KEEP$/i }))[0]);
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    const [message, tone] = toast.mock.calls.at(-1);
+    expect(message).toMatch(/could not save/i);
+    expect(tone).toBe("error");
+  });
+
+  it("does not report an outcome when the call failed", async () => {
+    /* The early return matters: reporting "nothing left to do" after a 500
+     * would be worse than silence. */
+    failing();
+    const { toast } = setup([AUDIO_ITEM]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledTimes(1);
   });
 });

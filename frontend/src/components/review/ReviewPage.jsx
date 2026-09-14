@@ -6,6 +6,7 @@ import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
 import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
+import { reviewOutcome, SKIP_OUTCOME } from "./reviewOutcome";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MANUAL REVIEW PAGE
@@ -130,6 +131,15 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         // Skipped tab displays, which fetchAll never touches — and the
         // re-decide can write a language flag row for the sections below,
         // which only the reviewRefreshKey bump reaches.
+        //
+        // The status that re-decide produced is the only place the user can
+        // learn which of the three outcomes they got, and it is already in
+        // the response. Read before the refresh: onReviewResolved removes
+        // the card, so reporting after it would describe something gone
+        // from the screen.
+        const body = await r.json().catch(() => null);
+        const { message, tone } = reviewOutcome(body?.status, body?.reason);
+        toast?.(message, tone);
         onReviewResolved?.();
     };
     const skip = async (id) => {
@@ -143,6 +153,11 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         // status, which the Failed tab's own count already includes, so
         // without this the History panel goes stale until something else
         // happens to trigger a refresh.
+        //
+        // One outcome, so no classification — but it still has to be said.
+        // Skip is the reversible half of the pair and the file comes back;
+        // silence made it look as permanent as Approve.
+        toast?.(SKIP_OUTCOME.message, SKIP_OUTCOME.tone);
         onReviewResolved?.();
     };
     const resolveSubtitle = async (id, streamIndex, choice) => {
@@ -158,6 +173,14 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
         // Same reasoning as skip() above — resolving can move the item to
         // "skipped" or "pending" (later completed/failed), any of which the
         // History panel needs to know about.
+        //
+        // Branches exactly as approve does: a file with several flagged
+        // tracks stays in manual_review until the last one is answered, and
+        // "still held" is the outcome most likely to be read as a failure
+        // if nothing says otherwise.
+        const body = await r.json().catch(() => null);
+        const { message, tone } = reviewOutcome(body?.status, body?.reason);
+        toast?.(message, tone);
         onReviewResolved?.();
     };
 
