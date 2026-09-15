@@ -6,6 +6,7 @@ import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 import { AudioLanguageReviewSection } from "./AudioLanguageReviewSection";
 import { SubtitleLanguageReviewSection } from "./SubtitleLanguageReviewSection";
+import { AcknowledgedSection } from "./AcknowledgedSection";
 import { reviewOutcome, SKIP_OUTCOME } from "./reviewOutcome";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -29,6 +30,11 @@ import { reviewOutcome, SKIP_OUTCOME } from "./reviewOutcome";
  *    at the bottom: separately paginated, separately filtered lists of
  *    tracks whose language needs confirming. They fetch their own data and
  *    take reviewRefreshKey to know when to refetch.
+ *
+ * 4. AcknowledgedSection, last and hidden when empty: files a past Approve
+ *    exempted from the undefined-audio threshold. Unlike 1–3 it lists
+ *    decisions already made rather than work waiting, which is why it stays
+ *    out of the way when there are none.
  ═══════════════════════════════════════════════════════════════════════════ */
 /* onRefresh and invalidateHistory are still taken, but only to hand down to
  * the two language sections for their OWN apply actions. Everything this page
@@ -425,6 +431,10 @@ export const ReviewPage = ({ api, items, onRefresh, toast, invalidateHistory,
 
             <AudioLanguageReviewSection api={api} onRefresh={onRefresh} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
             <SubtitleLanguageReviewSection api={api} onRefresh={onRefresh} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} toast={toast} />
+            {/* Last, and hidden when empty. It is a record of past decisions
+              * rather than work waiting, so it must not push the two language
+              * lists down the page on the libraries that have none. */}
+            <AcknowledgedSection api={api} refreshKey={reviewRefreshKey} toast={toast} />
             </div>
     );
 };
