@@ -90,11 +90,17 @@ def abort_job(job_id: int) -> bool:
 
     Marks the DB row "cancelled" (reusing the existing status rather than
     inventing a new one, so every existing filter/tab/badge that already
-    understands "cancelled" — e.g. the Failed tab, Retry All — picks this
-    up with no further changes) BEFORE cancelling the task, so that by the
-    time _run_and_broadcast's finally block reads the final state, it
-    already reflects the abort rather than racing to overwrite it with
-    "failed" via the emergency-cleanup safety net.
+    understands "cancelled" — e.g. the Failed tab — picks this up with no
+    further changes) BEFORE cancelling the task, so that by the time
+    _run_and_broadcast's finally block reads the final state, it already
+    reflects the abort rather than racing to overwrite it with "failed" via
+    the emergency-cleanup safety net.
+
+    Retry All is the exception: it re-queues failed rows only, because a
+    cancelled row is otherwise something the user removed on purpose (see
+    queue.retry_all_failed). An aborted file comes back through its own
+    Retry in the detail window, or on the next delta scan once the sentinels
+    below are reset.
 
     Returns True if a matching running task was found and cancelled, False
     if the job wasn't actually running (already finished, or never

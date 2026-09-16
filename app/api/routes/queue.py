@@ -613,7 +613,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
 @router.post("/retry-all")
 def retry_all_failed(db: Session = Depends(get_db)):
     """
-    Re-queue every failed and cancelled item in one call.
+    Re-queue every failed item in one call.
 
     Each item is re-probed with force_probe=True — the same behaviour as
     single-item retry — so the retry picks up any settings changes, code
@@ -621,10 +621,25 @@ def retry_all_failed(db: Session = Depends(get_db)):
 
     Items whose source file no longer exists on disk are silently skipped
     rather than failing the whole operation.
+
+    Failed only, not cancelled, although the Failed tab lists both. A
+    cancelled row is something the user removed on purpose: Skip in Review
+    and dismissing a queued item (cancel_item), Clear queue (clear_pending),
+    and Abort (worker.abort_job). This endpoint used to re-queue those too,
+    so one press put every skipped file back in Review and every cleared file
+    back in the queue — the opposite of what was asked for each of them. A
+    single cancelled row can still be retried from its detail window
+    (history.retry_history_item), and all three of those functions reset the
+    delta-scan sentinels, so the file is re-evaluated on the next scan either
+    way.
+
+    history_summary reports failed_only for the same reason: the Retry All
+    button is gated on it, so a tab holding only cancelled rows does not
+    offer a button that would do nothing.
     """
     items = (
         db.query(QueueItem)
-        .filter(QueueItem.status.in_(["failed", "cancelled"]))
+        .filter(QueueItem.status == "failed")
         .all()
     )
 

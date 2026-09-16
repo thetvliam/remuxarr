@@ -132,6 +132,12 @@ def history_summary(db: Session = Depends(get_db)):
         "success":     counts.get("success",   0),
         # failed includes cancelled — matches what the Failed tab shows
         "failed":      counts.get("failed",    0) + counts.get("cancelled", 0),
+        # What Retry All acts on, which is failed rows only — see
+        # queue.retry_all_failed for why cancelled rows are left alone. A
+        # second number rather than a narrower `failed`: that one is the tab's
+        # badge and header count, and narrowing it would make them disagree
+        # with the rows listed beneath them, which still include cancelled.
+        "failed_only": counts.get("failed",    0),
         "skipped":     counts.get("skipped",   0),
         "dry_run":     counts.get("dry_run",   0),
         "bytes_saved": int(saved_row or 0),

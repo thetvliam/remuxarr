@@ -58,6 +58,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- Retry All in History's Failed tab now retries failed items only. Cancelled items (ones you skipped in Review, removed from the queue or aborted) stay where they are instead of all coming back at once; open one and press Retry to re-queue it. They still return on the next scan, as before.
+
 ## Fixed
 
 - Approving, skipping or resolving a file in Review now reports what happened, including when dry run means a preview is written rather than the file being changed. Only failures were reported before, so a card just vanished from the list and a failed Approve looked exactly like a successful one.

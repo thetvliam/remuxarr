@@ -123,7 +123,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
   const [tab,            setTab]            = useState("success");
   const [search,         setSearch]         = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [counts,         setCounts]         = useState({ success: 0, failed: 0, skipped: 0, dry_run: 0 });
+  const [counts,         setCounts]         = useState({ success: 0, failed: 0, failed_only: 0, skipped: 0, dry_run: 0 });
 
   const scrollRef   = useRef(null);
   const sentinelRef = useRef(null);
@@ -170,6 +170,12 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
         setCounts({
           success: d.success  || 0,
           failed:  d.failed   || 0,   // already includes cancelled
+          /* Failed rows alone, which is all Retry All acts on — it leaves
+           * cancelled rows where they are (queue.retry_all_failed). Only the
+           * button reads this. The badge and the header keep `failed`,
+           * because the tab lists cancelled rows too and its count has to
+           * agree with them. */
+          failed_only: d.failed_only || 0,
           skipped: d.skipped  || 0,
           dry_run: d.dry_run  || 0,
         });
@@ -250,10 +256,12 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       * height and never painted at all. */}
       <div style={{ width: 1, alignSelf: "stretch", background: palette.border }} />
 
-      {tab === "failed" && counts.failed > 0 && !debouncedSearch && (
+      {/* Gated on failed_only rather than failed: over a tab holding only
+        * cancelled rows, the button would do nothing. */}
+      {tab === "failed" && counts.failed_only > 0 && !debouncedSearch && (
         <button
         onClick={onRetryAll}
-        title="Re-probe and re-queue every failed and cancelled item"
+        title="Re-probe and re-queue every failed item. Cancelled items are left alone."
         style={{
           marginLeft: space.sm,
           padding: `${space.hair}px ${space.md}px`,

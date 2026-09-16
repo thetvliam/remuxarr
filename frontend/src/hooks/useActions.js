@@ -315,7 +315,8 @@ export function useActions({
     }
   };
 
-  // Retry all failed and cancelled items in one call
+  // Retry every failed item in one call. Cancelled items are left alone —
+  // see queue.retry_all_failed for why.
   const retryAllFailed = async () => {
     try {
       const r = await fetch(`${api}/api/queue/retry-all`, { method: "POST" });

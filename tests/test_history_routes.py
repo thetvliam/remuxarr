@@ -25,12 +25,24 @@ FAILED MEANS FAILED-OR-CANCELLED
   drifting leaves rows visible in a tab that claims to have cleared them, or a
   count that disagrees with the list under it. All three are pinned here.
 
+  history_summary also reports failed_only, the failed rows alone, because
+  that is all Retry All re-queues: queue.retry_all_failed leaves cancelled
+  rows where they are, since cancelled records a removal the user asked for.
+  It is a second number rather than a narrower `failed`. Narrowing that one
+  would be exactly the count-versus-list disagreement described above.
+
 Verified by mutation: 39 mutations of history.py, of which 38 are killed by at
 least one test here. The survivor is equivalent, checked rather than assumed:
 dropping the TERMINAL_STATUSES filter from history_summary's group-by lets
 pending/processing/manual_review rows into the intermediate counts dict, but
 the return reads only the five terminal keys, so the response is byte-
 identical with rows of every status present.
+
+Two more came with failed_only, each run against the whole 1518-test suite
+before test_the_summary_reports_failed_rows_alone_for_retry_all existed, and
+both survived: counting cancelled rows in failed_only, and reporting it as a
+constant 0. That test kills both. Narrowing `failed` itself to failed rows
+was already killed by test_the_summary_folds_cancelled_into_failed.
 """
 import pytest
 from fastapi import HTTPException
@@ -341,6 +353,28 @@ def test_the_summary_folds_cancelled_into_failed(db):
     assert history_summary(db)["failed"] == 2
 
 
+def test_the_summary_reports_failed_rows_alone_for_retry_all(db):
+    """
+    Retry All re-queues failed rows only, so the button is gated on this
+    number, not on `failed`, which also counts the cancelled rows the tab
+    lists. With one failed row and two cancelled, the tab shows three while
+    Retry All would act on one — and on none at all without the failed row,
+    where a button gated on `failed` would still be offered.
+    """
+    from app.api.routes.history import history_summary
+
+    _file(db, file_id=1)
+    _item(db, item_id=1, file_id=1, status="failed")
+    for i in (2, 3):
+        _file(db, file_id=i)
+        _item(db, item_id=i, file_id=i, status="cancelled")
+
+    s = history_summary(db)
+
+    assert s["failed"] == 3
+    assert s["failed_only"] == 1
+
+
 def test_bytes_saved_sums_only_successful_jobs(db):
     """
     A failed job's recorded sizes describe work that was thrown away, so
@@ -382,7 +416,8 @@ def test_an_empty_history_summarises_as_zeroes(db):
     from app.api.routes.history import history_summary
 
     assert history_summary(db) == {
-        "success": 0, "failed": 0, "skipped": 0, "dry_run": 0, "bytes_saved": 0,
+        "success": 0, "failed": 0, "failed_only": 0, "skipped": 0, "dry_run": 0,
+        "bytes_saved": 0,
     }
 
 

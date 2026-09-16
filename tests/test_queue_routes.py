@@ -28,6 +28,11 @@ COUNTS THAT MEAN WHAT THEY SAY
   straight into UI copy, so they are tested against the ScanStats outcomes
   rather than against the number of items looped over.
 
+  It also used to re-queue cancelled rows along with the failed ones, though
+  cancelled is what Skip, dismiss, Clear queue and Abort write. It takes
+  failed rows only now. Widening the filter back to both survived the whole
+  1518-test suite and is killed by test_cancelled_items_are_left_where_they_are.
+
 Verified by mutation: 37 mutations of queue.py's cancel/clear/prioritise/retry/
 serialise routes, every one killed by at least one test here. The invariant
 test was checked the same way — adding a new dismissal route that sets status
@@ -436,14 +441,40 @@ def test_retrying_with_nothing_failed_is_a_no_op(db, retry):
     assert retry._calls == []
 
 
-@pytest.mark.parametrize("status", ["failed", "cancelled"])
-def test_both_failed_and_cancelled_items_are_retried(db, retry, status):
+def test_failed_items_are_retried(db, retry):
     from app.api.routes.queue import retry_all_failed
 
     _file(db)
-    _item(db, status=status)
+    _item(db, status="failed")
 
     assert retry_all_failed(db)["retried"] == 1
+
+
+def test_cancelled_items_are_left_where_they_are(db, retry):
+    """
+    Cancelled is what Skip in Review, dismissing a queued item, Clear queue
+    and Abort all write, so it records a removal the user asked for. Retry All
+    used to re-queue these alongside the failures, so one press sent every
+    skipped file back to Review and every cleared file back to the queue.
+
+    Mixed with a failed row on purpose: the failed one still has to be
+    retried, so this cannot pass by retrying nothing at all. The cancelled
+    row must survive untouched, because retry deletes each row it takes
+    before re-running it.
+    """
+    from app.api.routes.queue import retry_all_failed
+    from app.database.models import QueueItem
+
+    _file(db, file_id=1)
+    _item(db, item_id=1, file_id=1, status="failed")
+    _file(db, file_id=2)
+    _item(db, item_id=2, file_id=2, status="cancelled")
+
+    result = retry_all_failed(db)
+
+    assert result["retried"] == 1
+    assert [c["path"] for c in retry._calls] == ["/media/f1.mkv"]
+    assert db.get(QueueItem, 2).status == "cancelled"
 
 
 @pytest.mark.parametrize("status", ["pending", "processing", "success",

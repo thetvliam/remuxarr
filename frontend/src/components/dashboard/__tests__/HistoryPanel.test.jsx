@@ -24,7 +24,7 @@
  * These pin the counts on screen rather than the call count, per the
  * frontend testing note in tests/README.md.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HistoryPanel } from "../HistoryPanel";
@@ -274,5 +274,84 @@ describe("HistoryPanel — infinite scroll gate", () => {
     });
 
     await waitFor(() => expect(watching()).toBe(false));
+  });
+});
+
+/**
+ * The Retry All button.
+ *
+ * Retry All re-queues failed rows only — queue.retry_all_failed leaves
+ * cancelled rows alone, since cancelled records a removal the user asked for.
+ * The Failed tab still lists both, so the summary carries two numbers and they
+ * drive different things: the badge and the header show `failed`, which has
+ * to agree with the rows, and the button is gated on `failed_only`. Gated on
+ * `failed`, it is offered over a tab of cancelled rows where pressing it
+ * re-queues nothing.
+ *
+ * Both ways of wiring the wrong number to the button survived the whole
+ * 559-test suite before these were written: gating on `failed`, and reading
+ * `failed` into `failed_only`. The second test kills both, and the first is
+ * its positive control — without it, a panel that never rendered the button
+ * would pass. Reading `failed_only` into the badge was already killed by the
+ * counts tests above, though only because their summaries carry no
+ * `failed_only`. Both tests here catch it too, with the two numbers
+ * different, in openFailedTab's wait for the badge.
+ */
+describe("HistoryPanel — Retry All", () => {
+  const row = (id, status) => ({ id, status, file: { filename: `ep${id}.mkv` } });
+  const retryAll = () => screen.queryByRole("button", { name: /RETRY ALL/ });
+
+  /** Serves `rows` to the Failed tab only; the summary waits to be answered. */
+  function mockFailedTab(rows) {
+    summary = [];
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/api/history/summary")) {
+        return new Promise((resolve) => { summary.push(resolve); });
+      }
+      const status = new URL(u, "http://x").searchParams.get("status");
+      const items = status === "failed" ? rows : [];
+      return { ok: true, status: 200, json: async () => ({ items, total: items.length }) };
+    }));
+  }
+
+  /** Render, load the counts, then switch to the Failed tab. */
+  async function openFailedTab(counts, onRetryAll = () => {}) {
+    render(
+      <ThemeProvider>
+        <HistoryPanel api="" historyRefreshKey={{ key: 1, status: null }}
+                      onSelect={() => {}} onRetryAll={onRetryAll} onClearDryRun={() => {}} />
+      </ThemeProvider>,
+    );
+    await waitFor(() => expect(summary).toHaveLength(1));
+    answer(0, counts);
+    // The counts have to be in before the tab switch, or a missing button
+    // would only mean they had not arrived yet.
+    await waitFor(() => expect(badge("FAILED")).toContain(String(counts.failed)));
+    fireEvent.click(screen.getByRole("button", { name: /^FAILED/ }));
+  }
+
+  it("is offered when the Failed tab holds failed rows", async () => {
+    const onRetryAll = vi.fn();
+    mockFailedTab([row(1, "failed"), row(2, "cancelled")]);
+    await openFailedTab(
+      { success: 0, failed: 2, failed_only: 1, skipped: 0, dry_run: 0 }, onRetryAll,
+    );
+
+    await waitFor(() => expect(retryAll()).toBeInTheDocument());
+    fireEvent.click(retryAll());
+    expect(onRetryAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not offered over cancelled rows alone, which the counts still include", async () => {
+    mockFailedTab([row(1, "cancelled"), row(2, "cancelled")]);
+    await openFailedTab({ success: 0, failed: 2, failed_only: 0, skipped: 0, dry_run: 0 });
+
+    // Only the Failed tab is served these rows, so seeing them means the
+    // switch has happened and the button's absence is the gate's doing.
+    await waitFor(() => expect(screen.getByText("ep2.mkv")).toBeInTheDocument());
+    expect(retryAll()).toBeNull();
+    expect(badge("FAILED")).toContain("2");
+    expect(screen.getByText("HISTORY").nextSibling).toHaveTextContent(/^2$/);
   });
 });
