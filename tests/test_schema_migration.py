@@ -37,6 +37,22 @@ Verified by mutation, 11 applied, 11 killed:
   • encoding relabel labelling image reviews   → killed
   • encoding relabel touching rows not in review → killed
 
+Six more for the per-track reason labels, each run against the full
+1532-test suite before its test existed, and all six survived:
+
+  • per-track labels never run                 → killed
+  • a font review's tracks labelled image      → killed
+  • a null-reason review's tracks labelled styled → killed
+  • a track labelled whatever its codec        → killed
+  • the labels running before the encoding relabel → killed
+  • the labels reaching rows not in review     → killed
+
+A seventh is equivalent, checked rather than assumed: labelling a track that
+already has a reason. It survives these tests too, because no writer
+produces a row where that differs. Every track that already has a reason
+either carries the label its review implies, or is a styled track on a
+mixed image review, and the codec check skips that one first.
+
 The first initially SURVIVED, and the reason is worth keeping: the
 rebuild recreates revert_points from the model, so it adds detached_at
 too and the ADD COLUMN is currently unreachable. That makes it dead
@@ -644,3 +660,115 @@ def test_the_relabel_leaves_rows_that_are_no_longer_in_review(old_reviews):
     protect it from, and a label on it would say something untrue.
     """
     assert old_reviews["not_in_review"] is None
+
+
+# ── Per-track reasons on reviews written before them ─────────────────────────
+
+_UNREASONED_REVIEWS = {
+    # name: (status, review_reason, flagged codecs)
+    "image":           ("manual_review", "image_subtitles",   ["hdmv_pgs_subtitle"]),
+    "font":            ("manual_review", "font_attachments",  ["ass"]),
+    "encoding":        ("manual_review", "subtitle_encoding", ["subrip"]),
+    "unlabelled":      ("manual_review", None,                ["dvd_subtitle"]),
+    "unlabelled_text": ("manual_review", None,                ["subrip"]),
+    "mixed":           ("manual_review", None,                ["subrip", "dvd_subtitle"]),
+    "not_in_review":   ("pending",       "image_subtitles",   ["hdmv_pgs_subtitle"]),
+}
+
+
+@pytest.fixture
+def unreasoned(tmp_path, monkeypatch):
+    """
+    Reviews written before flagged tracks carried a reason, then a real
+    startup. Returns each row's per-track reasons afterwards, by name.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, QueueItem
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    ids = {}
+    with Session(engine) as db:
+        media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",
+                          directory="/m", size=1, mtime=1.0)
+        db.add(media)
+        db.flush()
+        for name, (status, reason, codecs) in _UNREASONED_REVIEWS.items():
+            item = QueueItem(
+                file_id=media.id, status=status, review_reason=reason,
+                review_subtitles=json.dumps(
+                    [{"stream_index": 2 + n, "codec": c}
+                     for n, c in enumerate(codecs)]
+                ),
+            )
+            db.add(item)
+            db.flush()
+            ids[item.id] = name
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        reasons = {
+            ids[i]: [entry.get("reason") for entry in json.loads(flagged)]
+            for i, flagged in conn.execute(
+                "SELECT id, review_subtitles FROM queue_items")
+        }
+    finally:
+        conn.close()
+
+    yield reasons
+
+    _restore_the_engine(session_mod)
+
+
+def test_each_track_takes_the_reason_its_review_was_raised_for(unreasoned):
+    """
+    Closes: the labels never running, and a font or null-reason review
+    mislabelled.
+
+    Before one review could hold both subtitle gates' tracks, every review
+    had one cause, so the item's reason is each track's. A null reason with
+    a bitmap track is an image review — QueueItem.review_reason lists where
+    those rows come from.
+    """
+    assert unreasoned["image"] == ["image"]
+    assert unreasoned["font"] == ["styled"]
+    assert unreasoned["encoding"] == ["encoding"]
+    assert unreasoned["unlabelled"] == ["image"]
+
+
+def test_an_unlabelled_encoding_review_is_named_before_its_tracks(unreasoned):
+    """
+    Closes: the labels running before the encoding relabel.
+
+    A null reason on a text track is an encoding review, but only the
+    encoding relabel says so. Labelling first reads the null as an image
+    review, finds no bitmap to label, and the track stays unlabelled.
+    """
+    assert unreasoned["unlabelled_text"] == ["encoding"]
+
+
+def test_a_track_its_review_could_not_have_flagged_is_left_unlabelled(unreasoned):
+    """
+    Closes: a track labelled whatever its codec.
+
+    The image gate never flags a text track, so a null-reason review holding
+    one alongside a bitmap is not something the labels can explain. Calling
+    the subrip track an image would claim a text track has no text to
+    extract.
+    """
+    assert unreasoned["mixed"] == [None, "image"]
+
+
+def test_the_labels_leave_rows_that_are_no_longer_in_review(unreasoned):
+    """
+    Closes: the labels reaching past the review tab, the same boundary the
+    encoding relabel keeps.
+    """
+    assert unreasoned["not_in_review"] == [None]

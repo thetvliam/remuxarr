@@ -193,7 +193,12 @@ class QueueItem(Base):
     current_action = Column(String)
 
     # JSON list of flagged subtitle tracks for a manual_review item. Each
-    # entry: {stream_index, language, codec, is_forced, title}
+    # entry: {stream_index, language, codec, is_forced, title, reason}
+    # reason is that track's own problem: "image", "styled" or "encoding".
+    # One review can hold tracks from both subtitle gates, so the item-level
+    # review_reason below cannot say which applies to which track. Rows
+    # written before tracks carried it are labelled at startup
+    # (session._label_flagged_track_reasons).
     # Null/empty for causes that flag no track (e.g. undefined-language audio).
     review_subtitles = Column(Text)
 
@@ -202,6 +207,14 @@ class QueueItem(Base):
     # "subtitle_encoding", or null. The first two name a gate in the decision
     # engine; the third is raised by the worker, outside the engine, and so
     # names itself.
+    #
+    # A summary, now that one review can hold tracks from both gates: such a
+    # review is "image_subtitles", and review_subtitles gives each track its
+    # own reason. The summary is what the Review page and both bulk
+    # endpoints read. It is safe for the image endpoint to take a mixed
+    # review, because re-deciding the file applies every setting, including
+    # font_attachment_handling to the styled tracks — see where decision.py
+    # holds the file.
     #
     # Two separate places used to work this out from review_subtitles being
     # non-null, which was reliable only while the image-subtitle gate was the

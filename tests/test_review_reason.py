@@ -50,6 +50,11 @@ confirmed surviving the full suite before the tests for them were written:
                the worker not recording it at pickup            killed
                the worker writing the image gate at pickup      killed
 
+One more once a review could hold tracks from both subtitle gates, run
+against the full 1532-test suite before its test existed. It survived:
+
+  the summary  a mixed review summarised as a font review       killed
+
 Run from the project root:
     pytest tests/test_review_reason.py -v
 """
@@ -113,6 +118,27 @@ def test_the_font_gate_names_itself(settings):
 
     assert decision.is_manual_review is True
     assert decision.review_reason == "font_attachments"
+
+
+def test_a_review_holding_both_kinds_is_an_image_subtitle_review(settings):
+    """
+    One review can hold tracks from both gates, and review_reason is then the
+    summary that the bulk endpoints and the current Review page read. Such a
+    review belongs to the image resolver, which re-decides the whole file
+    under every setting: a font policy still decides the styled tracks, and
+    with font handling on always_ask the file comes back as a font review
+    holding only those.
+    """
+    tracks = _font_tracks() + [
+        make_track(3, "subtitle", codec="hdmv_pgs_subtitle", language="eng"),
+    ]
+
+    decision = analyze_file(
+        make_file_info(container="mkv", font_attachments=17), tracks, settings,
+    )
+
+    assert {f["reason"] for f in decision.flagged_subtitles} == {"image", "styled"}
+    assert decision.review_reason == "image_subtitles"
 
 
 # ── Persisting it ─────────────────────────────────────────────────────────────

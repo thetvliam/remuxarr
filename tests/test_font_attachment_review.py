@@ -66,6 +66,18 @@ suite before its test existed, and all three survived:
                 Extract not overriding the keep list            killed
                 the description not naming the review           killed
 
+Four for one review holding both subtitle gates' tracks, each run against
+the full 1532-test suite before its test existed, and all four survived:
+
+  the merge     the font gate skipped once image tracks exist   killed
+                the font gate replacing the image tracks        killed
+                the tracks in gate order, not file order        killed
+                the review's text losing the image explanation  killed
+
+Labelling image tracks "styled", or styled tracks "image", was already
+killed by the tests that check which gate a review names, because the
+review's summary is worked out from those labels.
+
 Run from the project root:
     pytest tests/test_font_attachment_review.py -v
 """
@@ -365,6 +377,48 @@ def test_an_extract_answer_outranks_the_keep_list(settings):
     assert [a.stream_index for a in _actions(decision, "extract_subtitle")] == [3, 4]
     assert not [a for a in _actions(decision, "drop_track")
                 if a.stream_index in (3, 4)]
+
+
+# ── One review for both subtitle gates ────────────────────────────────────────
+#
+# A file with a kept bitmap track and kept styled tracks used to be asked
+# about the bitmap first and the styling on the evaluation after. That hid
+# how the answers interact: a kept styled track holds the file as MKV, so
+# removing the bitmap track then changes nothing about the container.
+
+def _mixed_tracks():
+    """A styled track BEFORE the bitmap one, so file order and gate order differ."""
+    return [
+        make_track(0, "video", codec="hevc", language="und"),
+        make_track(1, "audio", codec="aac", language="eng", is_default=True),
+        make_track(2, "subtitle", codec="ass", language="eng",
+                   title="Signs and Songs [Saiki]"),
+        make_track(3, "subtitle", codec="hdmv_pgs_subtitle", language="eng"),
+    ]
+
+
+def test_image_and_styled_subtitles_are_asked_about_on_one_review(settings):
+    """
+    Both kinds at once, each track naming its own problem, in the order the
+    file holds them. The image gate runs first, so a list kept in gate order
+    would put stream 3 ahead of stream 2.
+    """
+    decision = analyze_file(_mkv(), _mixed_tracks(), settings)
+
+    assert decision.is_manual_review is True
+    assert [(f["stream_index"], f["reason"])
+            for f in decision.flagged_subtitles] == [(2, "styled"), (3, "image")]
+
+
+def test_one_review_for_both_explains_both(settings):
+    """
+    The review's text is both gates' explanations. Losing one leaves a track
+    on the card that nothing on it accounts for.
+    """
+    decision = analyze_file(_mkv(), _mixed_tracks(), settings)
+
+    assert "image-based subtitle track" in decision.reason
+    assert "17 embedded fonts" in decision.reason
 
 
 # ── Only the tracks the file keeps ────────────────────────────────────────────

@@ -267,6 +267,8 @@ def init_db() -> None:
     # After _migrate_schema: it reads and writes review_reason, which older
     # databases only gain there.
     _label_subtitle_encoding_reviews()
+    # After the encoding backfill: it reads the reason that one writes.
+    _label_flagged_track_reasons()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -312,6 +314,79 @@ def _label_subtitle_encoding_reviews() -> None:
         if labelled:
             db.commit()
             logger.info("Labelled %d subtitle-encoding review(s)", labelled)
+
+
+# The per-track reason for every track on a review raised for one cause,
+# keyed by the item's review_reason. See _label_flagged_track_reasons.
+_TRACK_REASON_FOR_REVIEW = {
+    "image_subtitles":   "image",
+    "font_attachments":  "styled",
+    "subtitle_encoding": "encoding",
+    None:                "image",
+}
+
+
+def _label_flagged_track_reasons() -> None:
+    """
+    Give every flagged track on a waiting review its own reason.
+
+    Reviews record the problem per track ("image", "styled", "encoding") in
+    review_subtitles, because one review can now hold tracks from both
+    subtitle gates. Rows written before that carry no per-track reason, and
+    each was raised for a single cause, so the item's review_reason names it
+    for every track on the row (_TRACK_REASON_FOR_REVIEW).
+
+    A null reason with flagged tracks is read as an image-subtitle review,
+    which is what it is once _label_subtitle_encoding_reviews has run:
+    QueueItem.review_reason lists where those rows come from, and that
+    function names the encoding reviews among them.
+
+    A track is labelled only if its codec is one that cause can flag —
+    bitmap codecs for "image", ass/ssa for "styled", the extractable text
+    codecs for "encoding". Every writer's rows pass that check. A row that
+    does not, such as a null-reason review flagging both a bitmap and a
+    text track, keeps the odd track unlabelled rather than calling a text
+    track an image. An unrecognised review_reason is left alone for the
+    same reason.
+
+    Only rows still in review are touched, a track that already has a
+    reason keeps it, and a second run finds nothing to change.
+    """
+    from app.core.decision import IMAGE_BASED_SUBS, SRT_CONVERTIBLE_SUBS, STYLED_SUBS
+
+    flaggable = {
+        "image":    IMAGE_BASED_SUBS,
+        "styled":   STYLED_SUBS,
+        "encoding": SRT_CONVERTIBLE_SUBS,
+    }
+    with SessionLocal() as db:
+        items = db.query(QueueItem).filter(
+            QueueItem.status == "manual_review",
+            QueueItem.review_subtitles.isnot(None),
+        ).all()
+        labelled = 0
+        for item in items:
+            reason = _TRACK_REASON_FOR_REVIEW.get(item.review_reason)
+            if reason is None:
+                continue
+            try:
+                flagged = json.loads(item.review_subtitles)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(flagged, list):
+                continue
+            changed = False
+            for entry in flagged:
+                if (isinstance(entry, dict) and not entry.get("reason")
+                        and (entry.get("codec") or "").lower() in flaggable[reason]):
+                    entry["reason"] = reason
+                    changed = True
+            if changed:
+                item.review_subtitles = json.dumps(flagged)
+                labelled += 1
+        if labelled:
+            db.commit()
+            logger.info("Labelled the flagged tracks on %d review(s)", labelled)
 
 
 def _relax_revert_point_file_id() -> None:

@@ -159,11 +159,12 @@ def test_resolving_image_subtitles_then_asks_about_the_fonts(factory):
     """
     Closes: queue.py re-deciding without the count.
 
-    decision.py puts the image-subtitle gate first, and says a file with
-    both is asked about fonts on the evaluation after its image subtitles
-    are resolved. That evaluation is this endpoint's, so without the count
-    the second question was never asked: resolving the PGS track moved the
-    file straight to conversion.
+    The review here holds only the PGS track. That is what a file with both
+    kinds got before the two subtitle gates were merged: the image gate
+    asked first, and the fonts on the evaluation after. Reviews like it can
+    still be waiting, and answering one is this endpoint's evaluation, so
+    without the count the fonts were never asked about: resolving the PGS
+    track moved the file straight to conversion.
     """
     with factory() as db:
         media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",

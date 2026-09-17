@@ -61,6 +61,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Changed
 
 - Retry All in History's Failed tab now retries failed items only. Cancelled items (ones you skipped in Review, removed from the queue or aborted) stay where they are instead of all coming back at once; open one and press Retry to re-queue it. They still return on the next scan, as before.
+- A file with both image-based subtitles and embedded fonts now shows all of its flagged subtitle tracks in one review, instead of asking about the image subtitles first and the styled ones only after those were answered.
 
 ## Fixed
 

@@ -645,8 +645,14 @@ def _flag_subtitle_encoding_review(
     failed_stream_indices = {si for si, _ in subtitle_pairs}
 
     # Build the review_subtitles payload from the track metadata we already
-    # have in memory — same structure the Review page's per-track Keep/Remove
-    # UI expects, matching what decision.py produces for image-based subtitles.
+    # have in memory — the same shape decision.py's subtitle gates produce,
+    # which the Review page renders one choice per entry.
+    #
+    # Each entry names its own problem, as the gates' entries do. "encoding"
+    # marks a track that must not be offered Extract, because extracting it
+    # is exactly what just failed. resolve_subtitles enforces that from the
+    # item-level review_reason set below, which is exact for this review: it
+    # only ever holds the tracks whose extraction failed.
     flagged = [
         {
             "stream_index": t["stream_index"],
@@ -654,6 +660,7 @@ def _flag_subtitle_encoding_review(
             "codec":        t.get("codec") or "",
             "is_forced":    bool(t.get("is_forced", False)),
             "title":        t.get("title"),
+            "reason":       "encoding",
         }
         for t in tracks
         if t.get("track_type") == "subtitle"

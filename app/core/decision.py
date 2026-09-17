@@ -161,15 +161,20 @@ class ProcessingDecision:
     # diverging is exactly what caused real silent file renames
     # (.m2ts → .ts, .m4v/.mov → .mp4) on incidental processing — see
     # determine_output_path's docstring.
-    # Populated only for is_manual_review=True decisions caused by
-    # non-convertible (image-based) subtitle tracks. Each entry:
-    #   {stream_index, language, codec, is_forced, title}
-    # The UI uses this to render per-track Keep/Remove choices.
+    # Populated only for is_manual_review=True decisions raised by the
+    # subtitle gates: kept image-based tracks, and kept styled tracks in a
+    # file with embedded fonts. Entries are in stream order, each:
+    #   {stream_index, language, codec, is_forced, title, reason}
+    # reason is the problem with that track: "image" or "styled" here, and
+    # "encoding" on the reviews worker._flag_subtitle_encoding_review raises
+    # after a failed extraction. The UI renders one choice per entry.
     flagged_subtitles: list[dict] | None = None
     # WHICH gate raised the review, for the caller to persist on the queue
     # item. Recorded rather than inferred: two endpoints used to work this
     # out from flagged_subtitles being non-empty, which only held while the
-    # image-subtitle gate was the only trigger that set it.
+    # image-subtitle gate was the only trigger that set it. When both
+    # subtitle gates flag tracks this is a summary, "image_subtitles" — see
+    # where the gates hold the file.
     review_reason: str | None = None
     # Set when the file's surviving (kept) audio track needs a human to look
     # at its language tag. Two distinct causes, both landing here:
@@ -654,6 +659,26 @@ def analyze_file(
                 and (t.get("codec") or "").lower() not in SRT_CONVERTIBLE_SUBS):
             del subtitle_overrides[si]
 
+    # ── Manual-review gates: subtitle tracks ─────────────────────────────────
+    # Two gates hold a file for a person to decide about its subtitles: kept
+    # image-based tracks, and kept styled tracks in a file with embedded
+    # fonts. Each adds its unanswered tracks to review_tracks, tagged with the
+    # problem it found, and the file is held ONCE after both have run, with
+    # every one of those tracks on the same review.
+    #
+    # They used to return one at a time — the image gate first, the font gate
+    # on the evaluation after its tracks were answered — which was two
+    # prompts for one file and hid how the answers interact. Removing a PGS
+    # track gains nothing if a styled track is then kept, because the kept
+    # track holds the file as MKV anyway; asked in sequence, the user cannot
+    # see that.
+    #
+    # IMAGE_BASED_SUBS and STYLED_SUBS share no codec, so no track is tagged
+    # twice. Both gates consider only tracks the file keeps, and both skip a
+    # track that already has an entry in subtitle_overrides.
+    review_tracks:   list[tuple[dict, str]] = []   # (track, its reason)
+    review_messages: list[str] = []
+
     # ── Manual-review gate: non-convertible kept subtitles ───────────────────
     # When SRT extraction is enabled, any KEPT subtitle track using an
     # image-based codec (PGS, VOBSUB, DVD, DVB) cannot be converted to
@@ -700,27 +725,8 @@ def analyze_file(
                     f"manual review required to decide whether to keep or remove "
                     f"{'them' if n > 1 else 'it'}."
                 )
-                flagged = [
-                    {
-                        "stream_index": t["stream_index"],
-                        "language":     t["language"] or "und",
-                        "codec":        t.get("codec") or "",
-                        "is_forced":    t.get("is_forced", False),
-                        "title":        t.get("title"),
-                    }
-                    for t in non_convertible
-                ]
-                return ProcessingDecision(
-                    should_process=False,
-                    is_manual_review=True,
-                    reason=msg,
-                    actions=[Action(
-                        action_type="flag_manual_review",
-                        description=msg,
-                    )],
-                    review_reason="image_subtitles",
-                    flagged_subtitles=flagged,
-                )
+                review_messages.append(msg)
+                review_tracks.extend((t, "image") for t in non_convertible)
 
     # ── Manual-review gate: embedded font attachments ────────────────────────
     # Fonts only exist in a file because its styled subtitles reference them
@@ -732,12 +738,6 @@ def analyze_file(
     #
     # Nothing about that fails. The job succeeds, the sizes look right, and
     # the symptom appears whenever someone next watches the episode.
-    #
-    # Placed AFTER the image-subtitle gate above so that gate's behaviour is
-    # unchanged. A file with both image subs and fonts is asked about the
-    # image subs first, and about fonts on the next evaluation once those are
-    # resolved — two prompts for one file, which is accepted rather than
-    # overlooked.
     if file_info.get("font_attachments"):
         # Only tracks the file keeps, by the same rule as the image gate
         # above. A styled track in a language the keep list drops is deleted
@@ -789,27 +789,48 @@ def analyze_file(
                     f"flattens the styling — manual review required to decide "
                     f"whether to keep the file as MKV or convert it anyway."
                 )
-                flagged = [
-                    {
-                        "stream_index": t["stream_index"],
-                        "language":     t["language"] or "und",
-                        "codec":        t.get("codec") or "",
-                        "is_forced":    t.get("is_forced", False),
-                        "title":        t.get("title"),
-                    }
-                    for t in styled
-                ]
-                return ProcessingDecision(
-                    should_process=False,
-                    is_manual_review=True,
-                    reason=msg,
-                    actions=[Action(
-                        action_type="flag_manual_review",
-                        description=msg,
-                    )],
-                    review_reason="font_attachments",
-                    flagged_subtitles=flagged,
-                )
+                review_messages.append(msg)
+                review_tracks.extend((t, "styled") for t in styled)
+
+    # ── The subtitle review, if either gate found anything ───────────────────
+    if review_tracks:
+        # File order, so a review lists tracks the way a player does rather
+        # than grouped by the gate that found them.
+        review_tracks.sort(key=lambda pair: pair[0]["stream_index"])
+        msg = " ".join(review_messages)
+        return ProcessingDecision(
+            should_process=False,
+            is_manual_review=True,
+            reason=msg,
+            actions=[Action(
+                action_type="flag_manual_review",
+                description=msg,
+            )],
+            # The item-level summary, which the current Review page and both
+            # bulk endpoints read; each track's own reason is in
+            # flagged_subtitles. A review holding any image track is an
+            # image-subtitle review even with styled tracks beside it. That
+            # is safe for the image bulk endpoint, which re-decides the whole
+            # file under every setting: a font policy still applies to the
+            # styled tracks, and with font handling on always_ask the file
+            # comes back as a font review holding only those.
+            review_reason=(
+                "image_subtitles"
+                if any(reason == "image" for _, reason in review_tracks)
+                else "font_attachments"
+            ),
+            flagged_subtitles=[
+                {
+                    "stream_index": t["stream_index"],
+                    "language":     t["language"] or "und",
+                    "codec":        t.get("codec") or "",
+                    "is_forced":    t.get("is_forced", False),
+                    "title":        t.get("title"),
+                    "reason":       reason,
+                }
+                for t, reason in review_tracks
+            ],
+        )
 
     # ── Audio analysis ─────────────────────────────────────────────────────
     actions: list[Action] = []
