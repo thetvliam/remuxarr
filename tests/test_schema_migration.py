@@ -70,6 +70,14 @@ less the test that pinned the old shape), and all five survived:
   • its uniqueness dropped altogether          → killed
   • the rebuild repeated on every startup      → killed
   • the carried-over rows labelled "threshold" → killed
+
+Three for releasing the files the undefined-audio threshold was holding,
+each run against the full suite before the tests at the end of this file
+existed, and all three survived:
+
+  • the release never run                      → killed
+  • it reaching subtitle reviews too           → killed
+  • it re-stamping files already stamped       → killed
 """
 import importlib
 import json
@@ -878,3 +886,98 @@ def test_the_labels_leave_rows_that_are_no_longer_in_review(unreasoned):
     encoding relabel keeps.
     """
     assert unreasoned["not_in_review"] == [None]
+
+
+# ── Files the undefined-audio threshold was holding ──────────────────────────
+
+@pytest.fixture
+def held_files(tmp_path, monkeypatch):
+    """
+    A threshold hold and a subtitle review, then a real startup. Returns each
+    file's scan stamp afterwards, by name.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, QueueItem
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        for name, flagged in (("threshold", None),
+                              ("subtitles", '[{"stream_index": 2}]')):
+            media = MediaFile(path=f"/m/{name}.mkv", filename=f"{name}.mkv",
+                              directory="/m", size=1234, mtime=99.0)
+            db.add(media)
+            db.flush()
+            db.add(QueueItem(file_id=media.id, status="manual_review",
+                             review_subtitles=flagged))
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        stamps = {
+            filename.removesuffix(".mkv"): (size, mtime)
+            for filename, size, mtime in conn.execute(
+                "SELECT filename, size, mtime FROM media_files")
+        }
+    finally:
+        conn.close()
+
+    yield stamps, path, session_mod
+
+    _restore_the_engine(session_mod)
+
+
+def test_a_file_held_by_the_threshold_is_stamped_for_a_rescan(held_files):
+    """
+    Closes: the release never running.
+
+    The threshold no longer holds files, but the ones it held sit in review
+    until something re-decides them, and a scan skips them while their size
+    and mtime match. Clearing the stamp is what brings them back — and with
+    them, their undefined tracks, in Audio Language Review.
+    """
+    stamps, _, _ = held_files
+
+    assert stamps["threshold"] == (-1, -1.0)
+
+
+def test_a_subtitle_review_is_left_where_it_is(held_files):
+    """
+    Closes: the release reaching past the threshold's own holds.
+
+    A subtitle review still holds its file on purpose and has its own way
+    out. Stamping it would re-probe every waiting review on the next scan.
+    Its flagged tracks are what tell the two apart, the same test Approve
+    relies on.
+    """
+    stamps, _, _ = held_files
+
+    assert stamps["subtitles"] == (1234, 99.0)
+
+
+def test_a_file_already_stamped_is_not_stamped_again(held_files, monkeypatch, caplog):
+    """
+    Closes: the release rewriting rows on every startup.
+
+    The hold stays until a scan runs, so this runs again on the next start
+    and every start after. Writing and logging each time would report work
+    that had already been done, on a line a user reads as something new.
+    """
+    import logging
+
+    _, path, _ = held_files
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "undefined-audio threshold" in r.getMessage()]

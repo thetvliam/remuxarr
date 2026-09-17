@@ -79,24 +79,34 @@ class MediaFile(Base):
 
     # Set when a human has explicitly confirmed the file's current audio
     # language is correct despite not matching keep_audio_languages (e.g.
-    # anime that's genuinely, correctly Japanese). Once set, the file is
-    # never re-flagged in Audio Language Review again, regardless of what
-    # else changes about it on future scans.
+    # anime that's genuinely, correctly Japanese). Once set, no mismatch
+    # flag is ever raised for the file again, regardless of what else
+    # changes about it on future scans.
+    #
+    # Mismatch flags only: a flag records where it came from and answers to
+    # its own switch (AudioLanguageFlag.origin), so a file confirmed correct
+    # here is still asked about undefined tracks over the Undefined Audio
+    # Track Threshold, which is a different question with a different
+    # answer.
     audio_language_ignored = Column(Boolean, default=False)
 
-    # Set when a manual-review item caused specifically by the
-    # undefined-audio-count threshold gate (decision.py) is approved via
-    # the generic approve_manual_review endpoint. Unlike the image-subtitle
-    # manual-review gate, which already has its own dedicated resolution
-    # flow (resolve_subtitles) that persists an exemption via
-    # subtitle_overrides, this gate had no persistence mechanism at all —
-    # every fresh analyze_file() call (including the one the worker does
-    # at job-pickup time, after "Keep" was already clicked) would
-    # re-evaluate the track count and re-trigger the same gate forever,
-    # since a track's language tag never changes on its own. Confirmed
-    # this directly: decision.actions ended up as only [flag_manual_review]
-    # at the exact point a retry was being built, which is what silently
-    # produced a no-op retry rather than the intended one.
+    # Set when the user confirms the undefined tracks of a file at or over
+    # the Undefined Audio Track Threshold are correct as they are: Confirm
+    # correct on a threshold flag in Audio Language Review, or Approve on a
+    # review the threshold raised while it still held files. It suppresses
+    # those flags, and it stops fix_undefined_language_audio=always_fix
+    # guessing at the tracks, which it never does over the threshold
+    # anyway. Clear acknowledged takes it back, and the tracks are flagged
+    # again on the next scan.
+    #
+    # The threshold used to hold the file for manual review, and had no
+    # persistence at all: every fresh analyze_file() call, including the
+    # worker's at job-pickup time after Keep was already clicked, re-read
+    # the track count and re-raised the same gate forever, since a track's
+    # language tag never changes on its own. Confirmed directly at the
+    # time: decision.actions ended up as only [flag_manual_review] at the
+    # exact point a retry was being built, which is what silently produced
+    # a no-op retry rather than the intended one.
     und_audio_threshold_acknowledged = Column(Boolean, default=False)
 
     # Parallel fields for subtitle tracks — see Subtitle Language Review.
@@ -487,9 +497,8 @@ class AudioLanguageFlag(Base):
     #                 that is not a preferred one, or an undefined track
     #                 fix_undefined_language_audio=always_ask left for a
     #                 person. Suppressed by audio_language_ignored.
-    #   "threshold" — reserved for the undefined-audio threshold, which does
-    #                 not write flags yet: it still holds the file for
-    #                 manual review instead. Its rows will be suppressed by
+    #   "threshold" — decision.undefined_audio_flags: the file is at or over
+    #                 the Undefined Audio Track Threshold. Suppressed by
     #                 und_audio_threshold_acknowledged.
     #
     # The server default is what the table rebuild relies on: it copies only

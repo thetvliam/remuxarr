@@ -437,8 +437,8 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
 def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None:
     """
     Upsert or clear AudioLanguageFlag/SubtitleLanguageFlag for this file
-    based on a freshly-computed decision's audio_language_mismatch /
-    subtitle_language_mismatch fields.
+    based on a freshly-computed decision's audio_language_mismatch,
+    undefined_audio_flags and subtitle_language_mismatches fields.
 
     This was originally inline within _process_file, called only during
     a scan. Extracted into a shared helper specifically so worker.py can
@@ -455,8 +455,8 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     wrong" warning, didn't show up in Audio Language Review until an
     entirely separate full scan ran afterward.
 
-    Never applies to a file the user has explicitly confirmed is correct
-    via Ignore, and never blocks processing either way — this is purely
+    A kind of flag the user has confirmed correct on this file stays off
+    it, and this never blocks processing either way — it is purely
     bookkeeping for the Audio/Subtitle Language Review sections.
     """
     # Audio flags are per TRACK: the table is unique on (file_id,
@@ -465,10 +465,16 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     #
     # Updated in place rather than deleted and re-added, because the review
     # page selects rows by id: a scan landing while a user is choosing would
-    # otherwise replace the ids they had selected.
+    # otherwise replace the ids they had selected. The origin is updated with
+    # the rest, since a track can move between them — an undefined track
+    # asked about under always_ask becomes a threshold flag once the file
+    # reaches the threshold.
     #
-    # The engine still reports at most one audio flag per file
-    # (audio_language_mismatch), so this writes one row at most for now.
+    # Each origin is suppressed by its own switch only (AudioLanguageFlag.
+    # origin). audio_language_ignored silences mismatch flags here. The
+    # threshold's acknowledgement is applied by the engine, which already
+    # leaves those flags out, so a file confirmed correct on a mismatch is
+    # still asked about its undefined tracks.
     existing_audio_flags = {
         flag.stream_index: flag
         for flag in db.query(AudioLanguageFlag)
@@ -476,21 +482,30 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
                       .all()
     }
     wanted_audio = []
-    if decision.audio_language_mismatch and not media_file.audio_language_ignored:
-        wanted_audio.append(decision.audio_language_mismatch)
+    if decision.audio_language_mismatch:
+        wanted_audio.append({**decision.audio_language_mismatch,
+                             "origin": "mismatch"})
+    wanted_audio += [
+        {"stream_index": f["stream_index"], "language": "und",
+         "origin": f["origin"]}
+        for f in decision.undefined_audio_flags
+    ]
+    if media_file.audio_language_ignored:
+        wanted_audio = [w for w in wanted_audio if w["origin"] != "mismatch"]
 
     for wanted in wanted_audio:
         flag = existing_audio_flags.pop(wanted["stream_index"], None)
         if flag:
             flag.detected_language = wanted["language"]
+            flag.origin            = wanted["origin"]
         else:
             db.add(AudioLanguageFlag(
                 file_id=media_file.id,
                 stream_index=wanted["stream_index"],
                 detected_language=wanted["language"],
-                origin="mismatch",
+                origin=wanted["origin"],
             ))
-    # No longer flagged, or the file is now ignored.
+    # No longer flagged, or silenced by its switch.
     for flag in existing_audio_flags.values():
         db.delete(flag)
 

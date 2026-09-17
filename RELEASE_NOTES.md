@@ -62,6 +62,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 - Retry All in History's Failed tab now retries failed items only. Cancelled items (ones you skipped in Review, removed from the queue or aborted) stay where they are instead of all coming back at once; open one and press Retry to re-queue it. They still return on the next scan, as before.
 - A file with both image-based subtitles and embedded fonts now shows all of its flagged subtitle tracks in one review, instead of asking about the image subtitles first and the styled ones only after those were answered.
+- Undefined audio language tags no longer hold a file for manual review. Every undefined track is flagged in Audio Language Review instead, where you can set each one's language or confirm they are correct as they are, and the file keeps moving through the queue in the meantime. Files already waiting on this move across on the next scan. "Fix Undefined Audio Language Tags" set to Always Fix no longer guesses at a file with several undefined tracks. The list of confirmed files on the Review page is now Confirmed Undefined-Audio Tracks, and its button reads Clear Confirmation.
 
 ## Fixed
 

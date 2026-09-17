@@ -492,11 +492,12 @@ SETTINGS_SCHEMA = [
                        "kept either way, it simply stays untagged, because "
                        "dropping audio on a guess is far more costly than "
                        "dropping an optional subtitle. Video tracks are "
-                       "never affected. Independent of the separate "
-                       "Undefined Audio Track Threshold below, which always "
-                       "sends a file to manual review when it has too many "
-                       "undefined audio tracks to safely guess between, "
-                       "regardless of this setting's value.",
+                       "never affected. Overridden by the separate "
+                       "Undefined Audio Track Threshold below: a file with "
+                       "too many undefined audio tracks to safely guess "
+                       "between has all of them flagged in Audio Language "
+                       "Review and none of them tagged automatically, "
+                       "whatever this setting says.",
     },
     {
         "key":         "undefined_language_value",
@@ -593,8 +594,12 @@ SETTINGS_SCHEMA = [
         "label":       "Undefined Audio Track Threshold",
         "type":        "integer",
         "min":         1,
-        "description": "Flag a file for manual review when it contains this "
-                       "many or more audio tracks with an undefined language. "
+        "description": "When a file has this many or more audio tracks with "
+                       "an undefined language, flag every one of them in "
+                       "Audio Language Review rather than guessing: set each "
+                       "track's language there, or confirm they are correct "
+                       "as they are. Processing is not held up either way, "
+                       "since an undefined audio track is always kept. "
                        "Minimum 1 — a threshold of 0 would match every file, "
                        "including ones with no undefined tracks at all.",
     },

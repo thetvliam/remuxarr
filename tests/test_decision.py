@@ -184,53 +184,65 @@ def test_absolute_fallback_warning_names_the_file_and_the_tag(settings, caplog):
     )
 
 
-def test_manual_review_reason_is_grammatical_and_names_the_threshold(settings):
+def test_a_track_with_a_language_waiting_is_not_flagged_again(settings):
     """
-    The reason string said "Contains 1 audio tracks with undefined
-    language" — ungrammatical exactly at und_audio_threshold's minimum of
-    1, which is the setting most likely to produce it.
-
-    More importantly it never mentioned the threshold, so the message read
-    as a fault in the file rather than a configured policy the user owns.
-    Without that, the only obvious response is to fix the file one at a
-    time; knowing which threshold it hit makes "raise the threshold" a
-    visible option too.
+    Set language re-evaluates the file straight away, before the job writes
+    the new tag, and the threshold counts the raw tags. Without this skip
+    the track just answered is flagged again at once, and the answer looks
+    like it did nothing. Dropping the skip survived the whole suite.
     """
-    settings["und_audio_threshold"] = 1
-    tracks = [
-        make_track(stream_index=0, track_type="video", codec="hevc"),
-        make_track(stream_index=1, track_type="audio", codec="aac",
-                   language="und", is_default=False),
-    ]
-    decision = analyze_file(make_file_info(), tracks, settings)
-
-    assert decision.is_manual_review
-    assert "1 audio track " in decision.reason, (
-        f"Expected singular 'audio track', got: {decision.reason}"
-    )
-    assert "audio tracks" not in decision.reason
-    assert "Undefined Audio Track Threshold of 1" in decision.reason, (
-        f"Reason does not name the setting that caused it: {decision.reason}"
-    )
-
-
-def test_manual_review_reason_pluralises_above_one(settings):
-    """The singular fix must not break the ordinary multi-track case."""
     settings["und_audio_threshold"] = 2
     tracks = [
-        make_track(stream_index=0, track_type="video", codec="hevc"),
-        make_track(stream_index=1, track_type="audio", codec="aac",
-                   language="und", is_default=False),
-        make_track(stream_index=2, track_type="audio", codec="ac3",
-                   language="und", is_default=False),
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
     ]
-    decision = analyze_file(make_file_info(), tracks, settings)
 
-    assert decision.is_manual_review
-    assert "2 audio tracks" in decision.reason, decision.reason
-    assert "Undefined Audio Track Threshold of 2" in decision.reason, decision.reason
+    decision = analyze_file(make_file_info(), tracks, settings,
+                            audio_language_overrides={1: "eng"})
+
+    assert [f["stream_index"] for f in decision.undefined_audio_flags] == [2]
 
 
+@pytest.mark.parametrize("acknowledged", [False, True], ids=["asked", "confirmed"])
+def test_always_fix_does_not_guess_over_the_threshold(settings, acknowledged):
+    """
+    The threshold exists to stop exactly this guess: with several undefined
+    tracks, tagging them all with the primary language is as likely to be
+    wrong as right. Holding the file used to prevent it; nothing holds the
+    file now, so the tagging pass has to leave these tracks alone itself.
+
+    Confirming the tracks does not release the guess either. Confirm
+    correct says the tags are right as they are, and tagging them
+    afterwards would contradict the answer.
+
+    Dropping the skip survived the whole suite: both tracks come back
+    tagged "eng", whichever way the file was answered.
+    """
+    settings["und_audio_threshold"] = 2
+    settings["fix_undefined_language_audio"] = "always_fix"
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
+    ]
+    # An MKV, so the container conversion gives the file something to do:
+    # a plan with nothing in it is discarded whole, and the audio actions
+    # this test reads would go with it.
+    file_info = make_file_info(container="mkv", video_codec="h264")
+    file_info["und_audio_threshold_acknowledged"] = acknowledged
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    audio_actions = [a for a in decision.actions if a.track_type == "audio"]
+    assert len(audio_actions) == 2, "fixture: both audio tracks should be in the plan"
+    assert [a.target_language for a in audio_actions] == [None, None]
+
+
+# The reason string the threshold used to hold files with is gone, and with
+# it the two tests that pinned its grammar and its naming of the setting.
+# The threshold raises no reason text at all now: it flags the tracks, and
+# the setting it belongs to is named in that setting's own description.
 def test_normal_multi_language_file_unaffected(settings):
     """
     Sanity check: the safety net must never activate when a preferred
@@ -404,8 +416,17 @@ def test_und_threshold_zero_does_not_flag_clean_files(settings):
     )
 
 
-def test_multiple_undefined_audio_triggers_manual_review(settings):
-    """The normal, working case the threshold exists for in the first place."""
+def test_multiple_undefined_audio_is_flagged_rather_than_held(settings):
+    """
+    The normal, working case the threshold exists for. It used to hold the
+    file for manual review; it flags each undefined track for Audio
+    Language Review instead, and the file goes on being processed, because
+    undefined audio is kept either way and holding it changed nothing about
+    what the job would do.
+
+    Putting the hold back, and flagging only the lowest track, each
+    survived the whole suite before this test existed.
+    """
     settings["und_audio_threshold"] = 2
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
@@ -413,7 +434,12 @@ def test_multiple_undefined_audio_triggers_manual_review(settings):
         make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
     ]
     decision = analyze_file(make_file_info(), tracks, settings)
-    assert decision.is_manual_review is True
+
+    assert decision.is_manual_review is False
+    assert decision.undefined_audio_flags == [
+        {"stream_index": 1, "origin": "threshold"},
+        {"stream_index": 2, "origin": "threshold"},
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1288,17 +1314,15 @@ def test_kept_mov_text_still_allows_conversion(settings):
 # Each of these pins a mutation that survived the entire 662-test suite.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_an_acknowledged_threshold_gate_actually_exempts_the_file(settings):
+def test_an_acknowledged_threshold_raises_no_flags(settings):
     """
-    The other half of the acknowledgement contract (queue.py's approve
-    endpoint sets the flag; this is what setting it is FOR).
+    The other half of the acknowledgement contract: Confirm correct and
+    queue.py's approve endpoint set the column, and this is what setting it
+    is FOR. Without the acknowledgement the same tracks are flagged again on
+    the next scan, and the answer the user gave is worth nothing.
 
-    Without this, the flag was untested end to end: nothing verified it was
-    set correctly, and nothing verified that setting it exempted anything. A
-    user approving a manual review would watch the file bounce straight back
-    into manual review, forever, with no test failing.
-
-    Audit ref: DEC-03 — dropping the `and not ...acknowledged` term survived.
+    Audit ref: DEC-03 — dropping the `and not ...acknowledged` term
+    survived, and dropping it from the flags survived again.
     """
     settings["und_audio_threshold"] = 2
     tracks = [
@@ -1310,18 +1334,18 @@ def test_an_acknowledged_threshold_gate_actually_exempts_the_file(settings):
     file_info = make_file_info(path="/media/x/show.mkv", container="mkv",
                                video_codec="h264")
 
-    gated = analyze_file(file_info, tracks, settings)
-    assert gated.is_manual_review, (
-        "the threshold gate did not fire — this test cannot prove the "
-        "exemption works if there is nothing to be exempt from"
+    flagged = analyze_file(file_info, tracks, settings)
+    assert flagged.undefined_audio_flags, (
+        "the threshold flagged nothing — this test cannot prove the "
+        "acknowledgement works if there is nothing to be exempt from"
     )
 
     exempt = analyze_file({**file_info, "und_audio_threshold_acknowledged": True},
                           tracks, settings)
 
-    assert not exempt.is_manual_review, (
-        "an acknowledged file still went to manual review — approving it in "
-        "the UI would be a no-op and the file would bounce back forever"
+    assert exempt.undefined_audio_flags == [], (
+        "an acknowledged file was flagged anyway — confirming the tracks in "
+        "the UI would be a no-op and they would come back forever"
     )
 
 

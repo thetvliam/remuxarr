@@ -136,13 +136,19 @@ def test_every_und_subtitle_is_flagged_in_a_stable_order():
     assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2, 10, 18]
 
 
-def test_und_audio_flag_targets_lowest_stream_index():
+def test_und_audio_flags_are_in_stream_order():
     """
-    Same rule on the audio side, where the flag drives AudioLanguageFlag.
+    Same rule on the audio side, where the flags drive AudioLanguageFlag.
 
-    und_audio_threshold is raised so the manual-review gate does not fire
-    first — at the default of 2, three und audio tracks return early as
-    manual_review and never reach the flagging pass at all.
+    Only the lowest index used to be flagged, because the table held one row
+    per file; it holds one per track now, so every track always_ask left for
+    a person is flagged. The order still matters: these come from a set, and
+    hash order for ints is not ascending — sorted({18, 3, 11}) is the
+    difference between a review page listing tracks as a player would and
+    listing them arbitrarily.
+
+    und_audio_threshold is raised so the threshold does not claim these
+    tracks first: over it they are flagged as its own, not as always_ask's.
     """
     cfg = _prod(fix_undefined_language_audio="always_ask",
                 undefined_language_mode_audio="all_undefined",
@@ -151,7 +157,13 @@ def test_und_audio_flag_targets_lowest_stream_index():
               _audio(si=11, lang="und")]
 
     d = analyze_file(_fmt(), tracks, cfg)
-    assert d.audio_language_mismatch["stream_index"] == 3
+
+    assert d.audio_language_mismatch is None
+    assert d.undefined_audio_flags == [
+        {"stream_index": 3,  "origin": "mismatch"},
+        {"stream_index": 11, "origin": "mismatch"},
+        {"stream_index": 18, "origin": "mismatch"},
+    ]
 
 
 # ── The override reaching the sidecar ────────────────────────────────────────

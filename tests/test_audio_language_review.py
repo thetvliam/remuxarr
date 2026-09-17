@@ -33,6 +33,12 @@ the last section:
 Two more were already killed in test_forge_selection_and_counts.py: mismatch
 flags answered on the acknowledgement, and a file with no flags left
 getting no switch at all.
+
+Two more came with the threshold's own flags, both surviving the suite
+before the last two tests in this file existed:
+
+  • audio_language_ignored silencing threshold flags as well as mismatches
+  • a row keeping its old origin when the route that flagged it changes
 """
 
 
@@ -254,14 +260,18 @@ def test_facet_counts_also_honour_wildcard_escaping():
 
 # ── One row per track, kept up to date by the scanner ────────────────────────
 
-def _upsert(db, media, mismatch):
-    """Run the scanner's flag update for a decision reporting `mismatch`."""
+def _upsert(db, media, mismatch, undefined=()):
+    """
+    Run the scanner's flag update for a decision reporting `mismatch` and
+    `undefined` (the per-track entries the threshold and always_ask raise).
+    """
     from types import SimpleNamespace
 
     from app.core.scanner import _upsert_language_flags
 
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=mismatch,
+        undefined_audio_flags=list(undefined),
         subtitle_language_mismatches=[],
     ))
     db.commit()
@@ -438,3 +448,41 @@ def test_choosing_a_language_for_a_threshold_flag_takes_back_only_its_switch(
 
     assert file.und_audio_threshold_acknowledged is False
     assert file.audio_language_ignored is True
+
+
+def test_an_ignored_file_still_gets_its_threshold_flags():
+    """
+    audio_language_ignored answers language mismatches, and only those. The
+    undefined tracks over the threshold are a different question, so
+    confirming a mismatch must not silence them — the two switches exist
+    precisely so one answer cannot stand in for the other.
+    """
+    db = _db()
+    media = _flag(db, "Show S01E01.mkv", "dut", 1)
+    media.audio_language_ignored = True
+    db.commit()
+
+    _upsert(db, media, {"stream_index": 1, "language": "dut"},
+            undefined=[{"stream_index": 2, "origin": "threshold"}])
+
+    assert [(r.stream_index, r.origin) for r in _rows(db, 1)] == [(2, "threshold")]
+
+
+def test_a_rows_origin_follows_the_route_that_flagged_it():
+    """
+    always_ask asks about an undefined track below the threshold; the same
+    track belongs to the threshold once the file reaches it. Left on the old
+    origin, the row would be answered on the wrong switch — Confirm correct
+    would write audio_language_ignored for a threshold question.
+    """
+    db = _db()
+    media = _flag(db, "Show S01E01.mkv", "und", 1)
+    (before,) = _rows(db, 1)
+    assert before.origin == "mismatch"
+
+    _upsert(db, media, None,
+            undefined=[{"stream_index": 1, "origin": "threshold"}])
+
+    (after,) = _rows(db, 1)
+    assert after.id == before.id
+    assert after.origin == "threshold"

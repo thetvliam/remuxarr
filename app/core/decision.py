@@ -177,16 +177,12 @@ class ProcessingDecision:
     # where the gates hold the file.
     review_reason: str | None = None
     # Set when the file's surviving (kept) audio track needs a human to look
-    # at its language tag. Two distinct causes, both landing here:
-    #   • a DEFINED but non-preferred language — e.g. "dut" on an English
-    #     show, gated on has_preferred_audio;
-    #   • an UNDEFINED tag under fix_undefined_language="always_ask", which
-    #     sets {"language": "und"} and is deliberately NOT gated that way
-    #     (see the und_flagged_audio branch below).
-    # Shape: {"stream_index": int, "language": str}. None means no audio
-    # track needs review. This comment used to say None also covered the
-    # "und" case, which stopped being true when always_ask started flagging
-    # audio. The scanner reads this to
+    # at its language tag: a DEFINED but non-preferred language — e.g.
+    # "dut" on an English show, gated on has_preferred_audio. Undefined
+    # tags used to land here too, one track per file; they are in
+    # undefined_audio_flags now, every track on its own.
+    # Shape: {"stream_index": int, "language": str}. None means no track
+    # with a defined language needs review. The scanner reads this to
     # upsert/clear an AudioLanguageFlag row — informational only, never
     # blocks should_process the way is_manual_review does. stream_index is
     # included (not just the language) because the Audio Language Review
@@ -194,6 +190,16 @@ class ProcessingDecision:
     # writing the corrected language — the language alone isn't enough to
     # reliably identify the track again later.
     audio_language_mismatch: dict | None = None
+
+    # Undefined-language audio tracks for Audio Language Review, one entry
+    # per track, in stream order: {"stream_index": int, "origin": str}.
+    #   "threshold" — the file is at or over the Undefined Audio Track
+    #                 Threshold, which is no longer a manual-review gate.
+    #   "mismatch"  — fix_undefined_language_audio=always_ask left the track
+    #                 for a person.
+    # The origin becomes AudioLanguageFlag.origin, which decides the switch
+    # Confirm correct writes. Informational only, like the field above.
+    undefined_audio_flags: list[dict] = field(default_factory=list)
 
     # Subtitle-track counterpart to audio_language_mismatch above. Unlike
     # that field though, this one is ONLY ever populated by an undefined
@@ -408,11 +414,11 @@ def analyze_file(
         Ac3ForgeJob.audio_track_count, the 0-based audio-track-relative
         index the AC3 was appended at. When set, the forge AC3 is
         excluded from the "multiple undefined-language audio tracks"
-        manual-review threshold count: it's a known, intentional
+        threshold count, and from the flags it raises: it's a known, intentional
         duplicate of an existing audio track (added by the AC3 forge
         feature for AVR passthrough), not a new genuinely-ambiguous
         source. Without this exclusion, any file where forge was used on
-        an "und"-language source would trip manual review on every
+        an "und"-language source would trip the threshold on every
         subsequent scan even though both tracks are always meant to be
         kept — there's nothing for a human to actually decide.
 
@@ -440,8 +446,8 @@ def analyze_file(
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
     # or more undefined-language tracks" true for every file, including
-    # ones with none at all, silently forcing the whole pipeline into
-    # manual review. 0 is never a meaningful value for a ">=" comparison
+    # ones with none at all, silently flagging every file in the library.
+    # 0 is never a meaningful value for a ">=" comparison
     # like this one; 1 is the lowest threshold that actually means
     # something. Same defensive pattern already used for
     # max_concurrent_jobs in worker.py's dispatch loop.
@@ -514,7 +520,7 @@ def analyze_file(
 
     sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
-    # ── Manual-review gate: undefined-language audio ─────────────────────────
+    # ── Undefined-language audio: the threshold ──────────────────────────────
     und_audio = [t for t in audio_tracks
                  if (t["language"] or "und") in ("und", "")]
 
@@ -555,32 +561,16 @@ def analyze_file(
         if (last.get("codec") or "").lower() == "ac3" and last.get("channels") == 6:
             und_audio = [t for t in und_audio if t is not last]
 
-    if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
-        # Names the setting that caused this rather than just the count. The
-        # count alone reads like a fault in the file ("Contains 1 audio
-        # tracks" — also ungrammatical at the threshold's minimum of 1,
-        # which is the value most likely to produce this message), when it
-        # is really a configured policy the user owns and can change. Saying
-        # which threshold it hit turns an alarm into something actionable:
-        # either fix this file, or raise the threshold so files like it stop
-        # arriving here.
-        count  = len(und_audio)
-        plural = "" if count == 1 else "s"
-        msg = (
-            f"Contains {count} audio track{plural} with an undefined "
-            f"language — at or above the Undefined Audio Track Threshold "
-            f"of {und_threshold}. Held for review so no track is dropped "
-            f"by mistake."
-        )
-        return ProcessingDecision(
-            should_process=False,
-            is_manual_review=True,
-            reason=msg,
-            actions=[Action(
-                action_type="flag_manual_review",
-                description=msg,
-            )],
-        )
+    # At or over the Undefined Audio Track Threshold, the file's undefined
+    # tracks are a question for a person. The threshold used to hold the
+    # file for manual review right here. It no longer holds anything:
+    # undefined audio is kept unconditionally (the audio keep rule below), so
+    # processing the file first loses no track, and the question goes to
+    # Audio Language Review as a flag on each undefined track instead — see
+    # undefined_audio_flags. The accepted cost is that such a file can be
+    # processed twice, once now and once after its tracks are tagged, which
+    # is what Set language already does.
+    over_und_threshold = len(und_audio) >= und_threshold
 
     # Whether a subtitle track would be retained under the current language/
     # forced settings — shared by the manual-review gate below and the main
@@ -944,9 +934,9 @@ def analyze_file(
             # extra of unknowable relevance. "und" tells us nothing
             # either way, so each side defaults to whichever mistake is
             # cheaper to make: keep the audio, drop the subtitle. The
-            # fix_undefined_language setting and the und_audio_threshold
-            # manual-review gate both exist precisely to let und tags be
-            # resolved properly rather than guessed at here.
+            # fix_undefined_language setting and the Undefined Audio Track
+            # Threshold both exist precisely to let und tags be resolved
+            # properly rather than guessed at here.
             or lang == "und"
             # Only keep the default-flagged track when no preferred-language
             # track exists — preserves audio on edge-case files without
@@ -1239,6 +1229,15 @@ def analyze_file(
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
 
         for track_type in ("audio", "subtitle"):
+            if track_type == "audio" and over_und_threshold:
+                # Over the threshold, the file's undefined audio belongs to
+                # the threshold whatever this setting says. always_fix would
+                # tag every track with the primary language, which is the
+                # guess the threshold exists to stop, and always_ask would
+                # flag the same tracks a second time. Acknowledging the
+                # threshold changes neither: Confirm correct means the tags
+                # are right as they are.
+                continue
             und_mode = und_modes[track_type]
             if und_mode not in ("always_fix", "always_ask"):
                 # This type is always_leave. `continue`, not a narrower
@@ -1357,24 +1356,36 @@ def analyze_file(
                     "language":     lang,
                 }
                 break
-    # Undefined tracks flagged by always_ask above — deliberately NOT
-    # gated by has_preferred_audio the way the defined-but-wrong case is:
-    # a track needing a language decision is worth surfacing regardless of
-    # whether some OTHER track in the same file already happens to match a
-    # preferred language.
-    if audio_language_mismatch is None and und_flagged_audio:
-        # min(), not next(iter(...)). These are sets, so iteration follows
-        # hash-table slot order, which for ints is not ascending —
-        # next(iter({18, 2, 10})) is 18. The index is not cosmetic:
-        # AudioLanguageFlag.stream_index is the track the Review page's
-        # Apply action writes the corrected language to, and the model's
-        # docstring says the detected language alone cannot re-identify the
-        # track. On a file with several und tracks the user's correction
-        # landed on whichever one the hash table happened to yield.
-        # min() also matches the "first track" model used elsewhere —
-        # absolute_fallback_stream_index already does this.
-        si = min(und_flagged_audio)
-        audio_language_mismatch = {"stream_index": si, "language": "und"}
+    # Undefined tracks, each flagged on its own. Deliberately NOT gated by
+    # has_preferred_audio the way the defined-but-wrong case is: a track
+    # needing a language decision is worth surfacing regardless of whether
+    # some OTHER track in the same file already matches a preferred
+    # language.
+    #
+    # Over the threshold, every undefined track the threshold counted is
+    # flagged, unless the user has acknowledged the threshold for this file
+    # or the track already has a language waiting to be written. That last
+    # skip matters because the count reads the raw tags, and Set language
+    # re-evaluates the file before the job writes the new tag: without it,
+    # the track just answered would be flagged again at once.
+    #
+    # Below the threshold, the tracks always_ask left for a person — every
+    # one of them now, not only the first, since the flag table holds a row
+    # per track. The fix pass above already skipped tracks with a pending
+    # language.
+    #
+    # Sorted, because these are sets and the order reaches the review page.
+    if over_und_threshold:
+        undefined_audio_flags = [] if file_info.get("und_audio_threshold_acknowledged") else [
+            {"stream_index": si, "origin": "threshold"}
+            for si in sorted(t["stream_index"] for t in und_audio)
+            if si not in audio_language_overrides
+        ]
+    else:
+        undefined_audio_flags = [
+            {"stream_index": si, "origin": "mismatch"}
+            for si in sorted(und_flagged_audio)
+        ]
 
     # ── Subtitle language mismatch detection (for Subtitle Language Review) ──
     # Subtitle counterpart to the und-flagging half of the block above —
@@ -1456,6 +1467,7 @@ def analyze_file(
             reason="File already meets all configured criteria — no changes needed.",
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
+            undefined_audio_flags=undefined_audio_flags,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
             faststart_enabled=add_faststart,
@@ -1499,6 +1511,7 @@ def analyze_file(
         actions=actions,
         target_container=target_container,
         audio_language_mismatch=audio_language_mismatch,
+        undefined_audio_flags=undefined_audio_flags,
         subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,

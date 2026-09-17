@@ -400,7 +400,10 @@ def list_acknowledged(
     db: Session = Depends(get_db),
 ):
     """
-    Files exempted from the undefined-audio threshold by a past Approve.
+    Files whose undefined audio tracks the user has confirmed are correct
+    as they are: Confirm correct on a threshold flag in Audio Language
+    Review, or a past Approve on a review the threshold raised while it
+    still held files.
 
     Bounded like every other list in this codebase. There is no ceiling on
     how many files can carry this — it accumulates for the life of the
@@ -435,15 +438,20 @@ def list_acknowledged(
 def clear_acknowledged(body: ClearAcknowledgedRequest,
                        db: Session = Depends(get_db)):
     """
-    Take back an acknowledgement, so the file faces the threshold again.
+    Take back an acknowledgement, so the file's undefined audio tracks are
+    flagged again.
 
     Two steps, and the second is the one that is easy to forget. Clearing
     the column alone changes nothing a user can see: the file's bytes are
     untouched, so the next delta scan compares size and mtime, finds them
     identical, and never calls analyze_file. The acknowledgement would be
-    gone from the database and the file would still never come back. So the
-    scan stamp is invalidated too — the same pairing cancel_item needs, via
-    the same helper.
+    gone from the database and the tracks would still never be flagged. So
+    the scan stamp is invalidated too — the same pairing cancel_item needs,
+    via the same helper.
+
+    Only the threshold's answer is taken back. A language mismatch the user
+    confirmed on the same file answers to its own switch and is untouched,
+    which is why the two are kept apart.
 
     The file returns on the next scan rather than immediately. That matches
     Skip, whose wording users already know, and avoids the queue-item
@@ -940,22 +948,19 @@ def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
     this needs manual review") for however long the item sat in the
     queue before the worker actually got to it.
 
-    Also persists an exemption when this item's review was caused
-    specifically by the undefined-audio-count threshold gate
-    (decision.py) — that gate has no per-track override the way the
-    image-subtitle gate does (subtitle_overrides, resolved through the
-    separate resolve_subtitles endpoint instead of this generic one), so
-    without this, the fresh analyze_file() call below would immediately
-    re-trigger the identical gate, since a track's language tag never
-    changes on its own. This has to be set BEFORE the fresh decision is
-    computed — the whole point is that analyze_file() needs to already
-    see it acknowledged to correctly resolve past the gate.
+    Also records the acknowledgement when this item is a review the
+    undefined-audio threshold raised, which only a review from before that
+    threshold stopped holding files can be. Approving one is the old form
+    of Confirm correct, so it says the same thing: the undefined tags are
+    right as they are. Without it, the fresh decision below would flag
+    every one of those tracks in Audio Language Review, asking again what
+    was just answered. Set BEFORE the decision is computed, so
+    analyze_file() sees it.
 
-    review_subtitles being null is the existing, established signal
-    that this item's review came from the threshold gate rather than
-    the image-subtitle one — confirmed via resolve_subtitles_bulk's own
-    docstring, which notes the threshold gate never populates that
-    field.
+    review_subtitles being null is the existing, established signal that
+    this item's review came from the threshold rather than a subtitle
+    gate — confirmed via resolve_subtitles_bulk's own docstring, which
+    notes the threshold never populates that field.
 
     INVARIANT this depends on: every code path that raises a manual review
     for a SUBTITLE reason must write a non-null review_subtitles. There is

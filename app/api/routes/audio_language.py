@@ -88,9 +88,8 @@ on future scans.
 Each flag records the answer on the switch for its origin: a language
 mismatch on audio_language_ignored, and the undefined-audio threshold on
 und_audio_threshold_acknowledged, which Clear acknowledged can take back.
-(The threshold does not write flags yet; it still holds files for manual
-review.) A file whose flags are already gone is marked
-audio_language_ignored, as before flags had an origin.
+A file whose flags are already gone is marked audio_language_ignored, as
+before flags had an origin.
 """.strip(),
 
     origin_switches = (

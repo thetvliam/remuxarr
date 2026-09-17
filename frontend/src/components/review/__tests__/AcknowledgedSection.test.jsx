@@ -1,9 +1,11 @@
 /**
  * ACKNOWLEDGED THRESHOLDS SECTION
  *
- * Files a past Approve exempted from the undefined-audio threshold.
+ * Files whose undefined audio tracks the user confirmed are correct as they
+ * are — from Audio Language Review, or a past Approve on a review the
+ * threshold raised while it still held files.
  *
- * The exemption is set in one place, to True, and nothing ever set it back,
+ * The confirmation is set in one place, to True, and nothing ever set it back,
  * so until these endpoints existed a file could be exempt for good with
  * nowhere to see it. The Approve button that set it used to claim it would
  * process the file, which was wrong whenever nothing else needed doing — so
@@ -103,7 +105,7 @@ describe("AcknowledgedSection", () => {
     await screen.findByText("A.mkv");
     const boxes = screen.getAllByRole("checkbox");
     await user.click(boxes[0]);
-    await user.click(screen.getByRole("button", { name: /CLEAR APPROVAL/i }));
+    await user.click(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }));
 
     await waitFor(() => expect(posted.length).toBe(1));
     expect(posted[0].file_ids).toEqual([1]);
@@ -117,8 +119,8 @@ describe("AcknowledgedSection", () => {
     await screen.findByText("A.mkv");
     await user.click(screen.getAllByRole("checkbox")[0]);
 
-    expect(screen.getByRole("button", { name: /CLEAR APPROVAL/i }).textContent)
-      .toContain("CLEAR APPROVAL (1 file)");
+    expect(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }).textContent)
+      .toContain("CLEAR CONFIRMATION (1 file)");
   });
 
   it("reports what the server cleared, not what was asked for", async () => {
@@ -132,7 +134,7 @@ describe("AcknowledgedSection", () => {
     await screen.findByText("A.mkv");
     await user.click(screen.getAllByRole("checkbox")[0]);
     await user.click(screen.getAllByRole("checkbox")[1]);
-    await user.click(screen.getByRole("button", { name: /CLEAR APPROVAL/i }));
+    await user.click(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }));
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
     const [message] = toast.mock.calls.at(-1);
@@ -151,7 +153,7 @@ describe("AcknowledgedSection", () => {
 
     await screen.findByText("A.mkv");
     await user.click(screen.getAllByRole("checkbox")[0]);
-    await user.click(screen.getByRole("button", { name: /CLEAR APPROVAL/i }));
+    await user.click(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }));
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
     const [message] = toast.mock.calls.at(-1);
@@ -173,7 +175,7 @@ describe("AcknowledgedSection", () => {
       ([u, o]) => String(u).includes("/acknowledged") && !o?.method).length;
 
     await user.click(screen.getAllByRole("checkbox")[0]);
-    await user.click(screen.getByRole("button", { name: /CLEAR APPROVAL/i }));
+    await user.click(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }));
 
     await waitFor(() => {
       const after = global.fetch.mock.calls.filter(
@@ -189,7 +191,7 @@ describe("AcknowledgedSection", () => {
 
     await screen.findByText("A.mkv");
     await user.click(screen.getAllByRole("checkbox")[0]);
-    await user.click(screen.getByRole("button", { name: /CLEAR APPROVAL/i }));
+    await user.click(screen.getByRole("button", { name: /CLEAR CONFIRMATION/i }));
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
     const [message, tone] = toast.mock.calls.at(-1);

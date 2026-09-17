@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.database.models import AppSetting, Base, QueueItem
+from app.database.models import AppSetting, Base, MediaFile, QueueItem
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +270,7 @@ def init_db() -> None:
     _label_subtitle_encoding_reviews()
     # After the encoding backfill: it reads the reason that one writes.
     _label_flagged_track_reasons()
+    _release_threshold_holds()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -388,6 +389,53 @@ def _label_flagged_track_reasons() -> None:
         if labelled:
             db.commit()
             logger.info("Labelled the flagged tracks on %d review(s)", labelled)
+
+
+def _release_threshold_holds() -> None:
+    """
+    Let files the undefined-audio threshold held be re-decided.
+
+    The threshold no longer holds a file for manual review; it flags the
+    file's undefined tracks in Audio Language Review instead. The files it
+    held before that sit in manual review until something re-decides them,
+    and a scan on its own never would: their bytes have not changed, so the
+    delta check skips them. Clearing the scan stamp (size and mtime, as
+    queue._force_rescan does) makes the next scan of any kind re-probe them,
+    and that re-decision drops the review row and raises the flags.
+
+    A threshold hold is a manual_review row with no review_subtitles, the
+    same test approve_manual_review relies on: every subtitle review writes
+    its flagged tracks. The review row itself is left alone, so Approve goes
+    on working on it until then.
+
+    Files already stamped for a rescan are left untouched, so this writes
+    nothing on later startups, or on a fresh install.
+    """
+    with SessionLocal() as db:
+        held = [
+            file_id for (file_id,) in db.query(QueueItem.file_id)
+            .filter(
+                QueueItem.status == "manual_review",
+                QueueItem.review_subtitles.is_(None),
+                QueueItem.file_id.isnot(None),
+            )
+            .distinct()
+        ]
+        if not held:
+            return
+
+        released = (
+            db.query(MediaFile)
+            .filter(MediaFile.id.in_(held), MediaFile.size != -1)
+            .update({"size": -1, "mtime": -1.0}, synchronize_session=False)
+        )
+        if released:
+            db.commit()
+            logger.info(
+                "Releasing %d file(s) held by the undefined-audio threshold: "
+                "their undefined tracks move to Audio Language Review on the "
+                "next scan", released
+            )
 
 
 def _relax_revert_point_file_id() -> None:

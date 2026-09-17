@@ -6,27 +6,30 @@ import { EmptyState } from "../atoms/EmptyState";
 /* ═══════════════════════════════════════════════════════════════════════════
  * ACKNOWLEDGED THRESHOLDS SECTION
  *
- * Files exempted from the undefined-audio threshold by a past Approve.
+ * Files whose undefined audio tracks the user has confirmed are correct as
+ * they are, so those tracks are not flagged again.
  *
- * Approve sets und_audio_threshold_acknowledged and, until the endpoints
- * behind this section existed, nothing ever set it back: one write site,
- * True, and no route to False. The file was exempt for good and there was
- * nowhere to see that it was.
+ * Confirm correct in Audio Language Review writes that now. Approve on a
+ * review the threshold raised also does, which is what every file here was
+ * confirmed by before the threshold stopped holding files.
  *
- * That matters more than a stray flag because the Approve button used to say
- * it would "process the file now, keeping every audio track". It does not,
- * whenever nothing else needs doing — the file is marked Skipped instead. So
- * an unknown number of these exemptions were given on a false description,
- * and this list is how someone finds them.
+ * Until the endpoints behind this section existed nothing ever set it back:
+ * one write site, True, and no route to False. The file was exempt for good
+ * and there was nowhere to see that it was. That mattered more than a stray
+ * flag because the Approve button used to say it would "process the file
+ * now, keeping every audio track". It does not, whenever nothing else needs
+ * doing — the file is marked Skipped instead. So an unknown number of these
+ * were given on a false description, and this list is how someone finds
+ * them.
  *
  * Clearing is per-file with multi-select, deliberately, rather than one
  * button that empties the list. The whole point of the section is that an
  * action people could not see or undo is bad; replacing it with a single
  * irreversible-feeling sweep would repeat the mistake in a new place.
  *
- * The file comes back on the NEXT SCAN, not immediately — the endpoint
- * invalidates the scan stamp rather than reprocessing on the spot. Same as
- * Skip, whose wording this borrows.
+ * The tracks are flagged again on the NEXT SCAN, not immediately — the
+ * endpoint invalidates the scan stamp rather than reprocessing on the spot.
+ * Same as Skip, whose wording this borrows.
  ═══════════════════════════════════════════════════════════════════════════ */
 export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
     const { palette, type, space, radius } = useTheme();
@@ -115,7 +118,7 @@ export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
         }}>
         <span style={{ color: accent, fontSize: type.size.xxl }}>⤺</span>
         <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-        APPROVED UNDEFINED-AUDIO THRESHOLDS
+        CONFIRMED UNDEFINED-AUDIO TRACKS
         </span>
         <span style={{
             padding: `0 ${space.xs}px`,
@@ -130,16 +133,16 @@ export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
         </div>
 
         <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
-        Files you approved past the undefined audio track threshold. They are
-        exempt from that check for good and will not appear in the review list
-        above again. Clearing an approval puts the file back under the
-        threshold — it returns on the next scan, and nothing about the file
-        itself is changed either way.
+        Files whose undefined audio tracks you confirmed are correct as they
+        are, from Audio Language Review or a past Approve here. Those tracks
+        stay untagged and are not flagged again. Clearing brings them back to
+        Audio Language Review — they reappear on the next scan, and nothing
+        about the file itself is changed either way.
         </p>
 
         <div style={{ display: "flex", gap: space.sm, marginBottom: space.md }}>
         <Btn
-        label={busy ? "WORKING…" : `CLEAR APPROVAL (${selected.size} ${selected.size === 1 ? "file" : "files"})`}
+        label={busy ? "WORKING…" : `CLEAR CONFIRMATION (${selected.size} ${selected.size === 1 ? "file" : "files"})`}
         color={accent}
         bg={alpha(accent, ALPHA.low)}
         onClick={clearSelected}

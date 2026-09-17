@@ -93,8 +93,7 @@ def _switches_for(kind: LanguageReviewKind, flags) -> set[str]:
     und_audio_threshold_acknowledged. They are kept apart so that taking
     back one kind of answer — Clear acknowledged, for the threshold — cannot
     undo the other on the same file, such as a Japanese track confirmed as
-    correctly Japanese. (The threshold writes no flags yet; until it does,
-    every audio flag is a mismatch.)
+    correctly Japanese.
 
     With no flags left (the page was open across a rescan that cleared
     them), the answer falls back to ignored_attr, as it did before origins

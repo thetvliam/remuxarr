@@ -162,6 +162,7 @@ def _upsert(db, media, mismatches):
 
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=None,
+        undefined_audio_flags=[],
         subtitle_language_mismatches=mismatches))
     db.commit()
 
@@ -533,6 +534,7 @@ def test_a_rescan_does_not_blank_the_recorded_path(tmp_path, monkeypatch):
     # The scan that extracted it knows the path.
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=None,
+        undefined_audio_flags=[],
         subtitle_language_mismatches=[{"stream_index": 2, "language": "und",
                                        "extracted_path": "/m/Show.und.srt"}]))
     db.commit()
@@ -540,6 +542,7 @@ def test_a_rescan_does_not_blank_the_recorded_path(tmp_path, monkeypatch):
     # A later scan: the track is gone from the mux, so no path this time.
     _upsert_language_flags(db, media, SimpleNamespace(
         audio_language_mismatch=None,
+        undefined_audio_flags=[],
         subtitle_language_mismatches=[{"stream_index": 2, "language": "und"}]))
     db.commit()
 
