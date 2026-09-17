@@ -459,31 +459,44 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     via Ignore, and never blocks processing either way — this is purely
     bookkeeping for the Audio/Subtitle Language Review sections.
     """
-    existing_flag = (
-        db.query(AudioLanguageFlag)
-        .filter(AudioLanguageFlag.file_id == media_file.id)
-        .first()
-    )
+    # Audio flags are per TRACK: the table is unique on (file_id,
+    # stream_index). Each wanted flag updates its track's row or adds one,
+    # and every other row for the file is stale and removed.
+    #
+    # Updated in place rather than deleted and re-added, because the review
+    # page selects rows by id: a scan landing while a user is choosing would
+    # otherwise replace the ids they had selected.
+    #
+    # The engine still reports at most one audio flag per file
+    # (audio_language_mismatch), so this writes one row at most for now.
+    existing_audio_flags = {
+        flag.stream_index: flag
+        for flag in db.query(AudioLanguageFlag)
+                      .filter(AudioLanguageFlag.file_id == media_file.id)
+                      .all()
+    }
+    wanted_audio = []
     if decision.audio_language_mismatch and not media_file.audio_language_ignored:
-        mismatch = decision.audio_language_mismatch
-        if existing_flag:
-            existing_flag.stream_index      = mismatch["stream_index"]
-            existing_flag.detected_language = mismatch["language"]
+        wanted_audio.append(decision.audio_language_mismatch)
+
+    for wanted in wanted_audio:
+        flag = existing_audio_flags.pop(wanted["stream_index"], None)
+        if flag:
+            flag.detected_language = wanted["language"]
         else:
             db.add(AudioLanguageFlag(
                 file_id=media_file.id,
-                stream_index=mismatch["stream_index"],
-                detected_language=mismatch["language"],
+                stream_index=wanted["stream_index"],
+                detected_language=wanted["language"],
+                origin="mismatch",
             ))
-    elif existing_flag:
-        # No longer mismatched (or now ignored) — clear any stale flag.
-        db.delete(existing_flag)
+    # No longer flagged, or the file is now ignored.
+    for flag in existing_audio_flags.values():
+        db.delete(flag)
 
-    # Subtitles are handled per TRACK, not per file. A file can have
-    # several undefined subtitles, each extracted to its own .srt carrying
-    # the language in its filename, so each needs its own answer. Audio
-    # above stays one-per-file: its threshold picks a representative, and
-    # its tracks do not leave the file.
+    # Subtitles are handled per TRACK as well. A file can have several
+    # undefined subtitles, each extracted to its own .srt carrying the
+    # language in its filename, so each needs its own answer.
     existing_sub_flags = {
         flag.stream_index: flag
         for flag in db.query(SubtitleLanguageFlag)

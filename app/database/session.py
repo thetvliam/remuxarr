@@ -263,6 +263,7 @@ def init_db() -> None:
     # already has every current column, so the ADD COLUMN pass then finds
     # nothing to do rather than failing on a column it just created.
     _allow_one_subtitle_flag_per_track()
+    _allow_one_audio_flag_per_track()
     _migrate_schema()
     # After _migrate_schema: it reads and writes review_reason, which older
     # databases only gain there.
@@ -500,6 +501,44 @@ def _allow_one_subtitle_flag_per_track() -> None:
     columns = {c["name"] for c in
                inspector.get_columns("subtitle_language_flags")}
     _rebuild_table(SubtitleLanguageFlag.__table__, columns)
+
+
+def _allow_one_audio_flag_per_track() -> None:
+    """
+    Move audio_language_flags off UNIQUE(file_id) onto
+    UNIQUE(file_id, stream_index), and give it an origin column.
+
+    One row per file could flag only one audio track, while a file with
+    several undefined tracks needs each answered on its own — they often
+    hold different languages.
+
+    The same rebuild as the subtitle table, for the same reason: SQLite
+    cannot drop a UNIQUE constraint. Existing rows carry over, already
+    unique per file and so unique per (file, stream). The rebuild copies
+    only the columns the old shape had, so each row takes origin's server
+    default, "mismatch" — correct for all of them, since until now only
+    decision.audio_language_mismatch wrote to this table.
+
+    No-op once the constraint is right, so it is safe on every startup and
+    on fresh installs.
+    """
+    inspector = inspect(engine)
+    if "audio_language_flags" not in set(inspector.get_table_names()):
+        return
+
+    uniques = inspector.get_unique_constraints("audio_language_flags")
+    if not any(u["column_names"] == ["file_id"] for u in uniques):
+        return
+
+    logger.info(
+        "Migrating database: allowing one audio language flag per track"
+    )
+
+    from app.database.models import AudioLanguageFlag
+
+    columns = {c["name"] for c in
+               inspector.get_columns("audio_language_flags")}
+    _rebuild_table(AudioLanguageFlag.__table__, columns)
 
 
 def _migrate_schema() -> None:

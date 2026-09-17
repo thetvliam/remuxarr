@@ -53,8 +53,7 @@ logger = logging.getLogger(__name__)
 class ApplyRequest(BaseModel):
     # Flags, not files. A file can have several undefined subtitle tracks
     # and each needs its own answer, so a file id can no longer say which
-    # one is meant. Audio has one flag per file and is unaffected in
-    # practice, but shares this router.
+    # one is meant. Audio flags are per track as well.
     flag_ids: list[int]
     target_language: str
 
@@ -77,6 +76,39 @@ class LanguageReviewKind:
     list_description: str
     apply_description: str
     ignore_description: str
+    # (origin, MediaFile boolean column) pairs, for a flag table whose rows
+    # say where they came from. Empty means every flag answers to
+    # ignored_attr. A tuple rather than a dict so the frozen dataclass stays
+    # hashable. See _switches_for.
+    origin_switches: tuple[tuple[str, str], ...] = ()
+
+
+def _switches_for(kind: LanguageReviewKind, flags) -> set[str]:
+    """
+    The MediaFile columns that record an answer to these flags.
+
+    Audio flags record where they came from (AudioLanguageFlag.origin), and
+    each origin has its own switch: a language mismatch answers to
+    audio_language_ignored, the undefined-audio threshold to
+    und_audio_threshold_acknowledged. They are kept apart so that taking
+    back one kind of answer — Clear acknowledged, for the threshold — cannot
+    undo the other on the same file, such as a Japanese track confirmed as
+    correctly Japanese. (The threshold writes no flags yet; until it does,
+    every audio flag is a mismatch.)
+
+    With no flags left (the page was open across a rescan that cleared
+    them), the answer falls back to ignored_attr, as it did before origins
+    existed: there is nothing to say which question the user meant, and the
+    file they selected is still honoured.
+
+    An origin missing from the kind's pairs raises KeyError rather than
+    being guessed at. Only code writes the column, so a new origin arriving
+    without its switch is a bug for the tests to find.
+    """
+    if not kind.origin_switches or not flags:
+        return {kind.ignored_attr}
+    by_origin = dict(kind.origin_switches)
+    return {by_origin[flag.origin] for flag in flags}
 
 
 def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
@@ -368,6 +400,10 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # "which of these three is the forced one" is otherwise
                 # unanswerable from a stream index.
                 "extracted_path":    getattr(flag, "extracted_path", None),
+                # Audio only: where the flag came from, "mismatch" or
+                # "threshold" (AudioLanguageFlag.origin). Subtitle flags have
+                # no such column and report None.
+                "origin":            getattr(flag, "origin", None),
             })
 
         return {"total": total, "total_unfiltered": total_unfiltered,
@@ -452,7 +488,10 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             ))
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
-            setattr(media, kind.ignored_attr, False)
+            # Only the switch for the questions answered here: choosing a
+            # language for a mismatch says nothing about the threshold.
+            for attr in _switches_for(kind, flags):
+                setattr(media, attr, False)
             db.commit()
 
             # Both of the steps below are skipped under dry run, and they
@@ -639,13 +678,15 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # writes no files and runs no FFmpeg, so "do NOT modify any files"
             # does not reach it on the wording alone.
             #
-            # It reaches it because an ignore cannot be undone. The column is
-            # written True here and False in exactly one other place, inside
-            # apply_language — and ignoring deletes every flag row for the
-            # file, while the scanner refuses to create new ones for a file
-            # already marked. So the one route back is closed by the same
-            # action that opens the door. No endpoint, no setting and no
-            # control clears it.
+            # It reaches it because an ignore cannot be undone. The ignored
+            # column is written True here and False in exactly one other
+            # place, inside apply_language — and ignoring deletes every flag
+            # row for the file, while the scanner refuses to create new ones
+            # for a file already marked. So the one route back is closed by
+            # the same action that opens the door. No endpoint, no setting
+            # and no control clears it. (The threshold's switch does have a
+            # way back, Clear acknowledged, but this returns before writing
+            # either.)
             #
             # A one-way door has no business being reachable in the mode that
             # ships ON and promises nothing will change.
@@ -662,7 +703,16 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             media = db.get(MediaFile, file_id)
             if not media:
                 continue
-            setattr(media, kind.ignored_attr, True)
+            # Every flag for this file, not the first one — see below. Read
+            # before marking, because the rows are what say which switch
+            # each answer belongs to.
+            flags = (
+                db.query(Flag)
+                .filter(Flag.file_id == file_id)
+                .all()
+            )
+            for attr in _switches_for(kind, flags):
+                setattr(media, attr, True)
             # Counted here, with the write, because this is the thing the
             # endpoint does. Marking is unconditional and deliberate: the
             # column is idempotent and is what stops a future scan flagging
@@ -685,7 +735,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # put the caller back in a units mismatch.
             count += 1
 
-            # Every flag for this file, not the first one.
+            # Every flag for this file, not the first one: all of them are
+            # deleted.
             #
             # SubtitleLanguageFlag is UNIQUE(file_id, stream_index), so a
             # file with three undefined subtitles has three rows. Taking
@@ -693,13 +744,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # page it had just been ignored from — and worse, applying a
             # language to one of the survivors sets ignored back to False,
             # silently undoing the ignore. The shared router was written
-            # against the audio table, which is one row per file and where
-            # .first() happened to be complete.
-            flags = (
-                db.query(Flag)
-                .filter(Flag.file_id == file_id)
-                .all()
-            )
+            # against the audio table, which was one row per file then, and
+            # where .first() happened to be complete.
             for flag in flags:
                 db.delete(flag)
 

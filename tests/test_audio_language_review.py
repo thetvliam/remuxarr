@@ -1,11 +1,38 @@
 """
-Audio Language Review — filtering and facet counts.
+Audio Language Review — filtering and facet counts, and one flag per track.
 
 The list is server-paginated, so both filters have to run on the server.
 Narrowing only the loaded page would report fewer matches than exist, and
 the section's "select all" acts on what the server returned — so an
 under-reported list means a bulk action silently skips files the user
 believes are included.
+
+The flags are one row per track, written by scanner._upsert_language_flags.
+That function's audio half had no test at all before it moved to that
+shape: each of the mutations below survived the full 1539-test suite, and
+each is killed by the tests at the end of this file.
+
+  • the row for a track still flagged deleted as stale
+  • that row deleted and re-added, under a new id
+  • rows for tracks no longer flagged kept
+  • an ignored file still flagged
+  • the list rows not saying where a flag came from
+
+Each answer is recorded on the switch for its flag's origin, so taking back
+one kind of answer cannot undo the other on the same file. Six mutations of
+that survived the full 1547-test suite, and each is killed by the tests in
+the last section:
+
+  • threshold flags answered on audio_language_ignored
+  • the audio review configured without origin switches
+  • only the first flag's origin counted when confirming a file
+  • Set language clearing every switch
+  • Set language clearing none
+  • Set language clearing only audio_language_ignored, as it used to
+
+Two more were already killed in test_forge_selection_and_counts.py: mismatch
+flags answered on the acknowledgement, and a file with no flags left
+getting no switch at all.
 """
 
 
@@ -223,3 +250,191 @@ def test_facet_counts_also_honour_wildcard_escaping():
     langs = {e["language"]: e["count"] for e in _list(db, search="The_Movie")["languages"]}
 
     assert langs == {"dut": 1}
+
+
+# ── One row per track, kept up to date by the scanner ────────────────────────
+
+def _upsert(db, media, mismatch):
+    """Run the scanner's flag update for a decision reporting `mismatch`."""
+    from types import SimpleNamespace
+
+    from app.core.scanner import _upsert_language_flags
+
+    _upsert_language_flags(db, media, SimpleNamespace(
+        audio_language_mismatch=mismatch,
+        subtitle_language_mismatches=[],
+    ))
+    db.commit()
+
+
+def _rows(db, file_id):
+    from app.database.models import AudioLanguageFlag
+
+    return (db.query(AudioLanguageFlag)
+              .filter(AudioLanguageFlag.file_id == file_id)
+              .order_by(AudioLanguageFlag.stream_index)
+              .all())
+
+
+def test_a_rescan_keeps_the_row_of_a_track_still_flagged():
+    """
+    Updated in place, under the same id. The review page selects rows by id,
+    so a scan landing while someone is choosing must not swap them out. A
+    second file's row sits above this one, so a re-added row could not get
+    its old id back by accident.
+    """
+    db = _db()
+    media = _flag(db, "Show S01E01.mkv", "dut", 1)
+    _flag(db, "Show S01E02.mkv", "dut", 2)
+    (before,) = _rows(db, 1)
+
+    _upsert(db, media, {"stream_index": 1, "language": "dan"})
+
+    (after,) = _rows(db, 1)
+    assert after.id == before.id
+    assert after.detected_language == "dan"
+
+
+def test_a_track_no_longer_flagged_loses_its_row():
+    db = _db()
+    media = _flag(db, "Show S01E01.mkv", "dut", 1)
+
+    _upsert(db, media, {"stream_index": 2, "language": "dut"})
+
+    assert [(r.stream_index, r.origin) for r in _rows(db, 1)] == [(2, "mismatch")]
+
+
+def test_an_ignored_file_keeps_no_audio_flags():
+    """Confirm correct is what set this, and it promises the file stays unflagged."""
+    db = _db()
+    media = _flag(db, "Show S01E01.mkv", "dut", 1)
+    media.audio_language_ignored = True
+    db.commit()
+
+    _upsert(db, media, {"stream_index": 1, "language": "dut"})
+
+    assert _rows(db, 1) == []
+
+
+def test_each_listed_row_says_where_it_came_from():
+    """The origin is what tells a threshold flag from a mismatch flag."""
+    db = _db()
+    _flag(db, "Show S01E01.mkv", "dut", 1)
+
+    (row,) = _list(db)["items"]
+
+    assert row["origin"] == "mismatch"
+
+
+# ── Which switch an answer is recorded on ────────────────────────────────────
+
+def _flagged_file(db, tmp_path, flags, **media):
+    """A real file on disk with audio flags given as (stream_index, origin)."""
+    from app.database.models import AudioLanguageFlag, MediaFile
+
+    path = tmp_path / "Show.mkv"
+    path.write_bytes(b"video")
+    file = MediaFile(path=str(path), filename="Show.mkv",
+                     directory=str(tmp_path), size=5, mtime=1.0, **media)
+    db.add(file)
+    db.commit()
+    for stream_index, origin in flags:
+        db.add(AudioLanguageFlag(file_id=file.id, stream_index=stream_index,
+                                 detected_language="und", origin=origin))
+    db.commit()
+    return file
+
+
+def _real_run(monkeypatch):
+    import app.api.routes._language_review as lr
+
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+
+
+def _confirm(db, file, monkeypatch):
+    from app.api.routes._language_review import IgnoreRequest
+    from app.api.routes.audio_language import ignore_flags
+
+    _real_run(monkeypatch)
+    ignore_flags(IgnoreRequest(file_ids=[file.id]), db)
+    db.refresh(file)
+
+
+def _choose(db, file, stream_index, monkeypatch):
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag
+
+    flag = (db.query(AudioLanguageFlag)
+              .filter(AudioLanguageFlag.file_id == file.id,
+                      AudioLanguageFlag.stream_index == stream_index)
+              .one())
+    _real_run(monkeypatch)
+    apply_language(ApplyRequest(flag_ids=[flag.id], target_language="eng"), db)
+    db.refresh(file)
+
+
+def test_confirming_a_threshold_flag_sets_the_acknowledgement_only(
+        tmp_path, monkeypatch):
+    """
+    The acknowledgement is the threshold's own switch, the one Clear
+    acknowledged takes back. Recorded on audio_language_ignored instead, the
+    answer could not be taken back that way, and it would also silence any
+    unanswered language-mismatch question on the same file.
+    """
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "threshold")])
+
+    _confirm(db, file, monkeypatch)
+
+    assert file.und_audio_threshold_acknowledged is True
+    assert file.audio_language_ignored is not True
+
+
+def test_confirming_a_file_with_both_kinds_sets_both(tmp_path, monkeypatch):
+    """Confirm correct acts on the whole file, so every question on it is answered."""
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch"), (2, "threshold")])
+
+    _confirm(db, file, monkeypatch)
+
+    assert file.audio_language_ignored is True
+    assert file.und_audio_threshold_acknowledged is True
+
+
+def test_choosing_a_language_for_a_mismatch_leaves_the_acknowledgement(
+        tmp_path, monkeypatch):
+    """
+    Choosing a language takes back the switch for the question it answers —
+    a more specific, more recent decision. A mismatch answer says nothing
+    about the threshold, so an acknowledgement on the same file stands.
+    """
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")],
+                         audio_language_ignored=True,
+                         und_audio_threshold_acknowledged=True)
+
+    _choose(db, file, 1, monkeypatch)
+
+    assert file.audio_language_ignored is False
+    assert file.und_audio_threshold_acknowledged is True
+
+
+def test_choosing_a_language_for_a_threshold_flag_takes_back_only_its_switch(
+        tmp_path, monkeypatch):
+    """
+    The mirror of the test above, and the one that catches Set language
+    still resetting only audio_language_ignored, as it did before flags had
+    an origin.
+    """
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "threshold")],
+                         audio_language_ignored=True,
+                         und_audio_threshold_acknowledged=True)
+
+    _choose(db, file, 1, monkeypatch)
+
+    assert file.und_audio_threshold_acknowledged is False
+    assert file.audio_language_ignored is True

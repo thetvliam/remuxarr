@@ -446,15 +446,25 @@ class AudioLanguageFlag(Base):
     or confirms it's already correct (via MediaFile.audio_language_ignored)
     — either action removes this row.
 
-    One row per file (file_id is unique) — re-detecting the same mismatch
-    on a later scan updates detected_language in place rather than creating
-    a duplicate entry.
+    One row per TRACK (unique on file_id and stream_index), like
+    SubtitleLanguageFlag. Re-detecting the same track on a later scan
+    updates its row in place rather than adding another.
+
+    It was one row per file while only one audio track per file was ever
+    flagged. A file with several undefined tracks often holds different
+    languages in them, so flagging them needs a row per track that the user
+    can answer on its own.
     """
     __tablename__ = "audio_language_flags"
 
+    __table_args__ = (
+        UniqueConstraint("file_id", "stream_index",
+                         name="uq_audio_language_flags_file_stream"),
+    )
+
     id      = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
-                     nullable=False, unique=True)
+                     nullable=False, index=True)
 
     # Which audio track this refers to — needed so the "apply" action
     # knows exactly which stream to write the corrected language to; the
@@ -470,6 +480,22 @@ class AudioLanguageFlag(Base):
     # language dropdown needs a DISTINCT ... GROUP BY over this column on
     # every page load to build its options.
     detected_language = Column(String, index=True)
+
+    # Where the flag came from, because each origin is confirmed through its
+    # own switch on MediaFile:
+    #   "mismatch"  — decision.audio_language_mismatch: a defined language
+    #                 that is not a preferred one, or an undefined track
+    #                 fix_undefined_language_audio=always_ask left for a
+    #                 person. Suppressed by audio_language_ignored.
+    #   "threshold" — reserved for the undefined-audio threshold, which does
+    #                 not write flags yet: it still holds the file for
+    #                 manual review instead. Its rows will be suppressed by
+    #                 und_audio_threshold_acknowledged.
+    #
+    # The server default is what the table rebuild relies on: it copies only
+    # the columns the old shape had, and every row from before this column
+    # came from audio_language_mismatch.
+    origin = Column(String, nullable=False, server_default="mismatch")
 
     created_at = Column(DateTime, default=utcnow)
 
@@ -504,9 +530,8 @@ class SubtitleLanguageFlag(Base):
     # One row per file meant a file with several undefined subtitle tracks
     # could only ever offer one of them for review, while extraction wrote
     # a separate .srt for every one — so the rest kept "und" in their
-    # filenames with no way to correct them. The audio table keeps its
-    # one-row-per-file shape deliberately: its threshold picks a single
-    # representative track, and audio tracks do not leave the file.
+    # filenames with no way to correct them. The audio table has since
+    # moved to the same shape.
     __table_args__ = (
         UniqueConstraint("file_id", "stream_index",
                          name="uq_subtitle_language_flags_file_stream"),

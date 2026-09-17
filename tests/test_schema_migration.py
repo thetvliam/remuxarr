@@ -37,6 +37,14 @@ Verified by mutation, 11 applied, 11 killed:
   • encoding relabel labelling image reviews   → killed
   • encoding relabel touching rows not in review → killed
 
+The first initially SURVIVED, and the reason is worth keeping: the
+rebuild recreates revert_points from the model, so it adds detached_at
+too and the ADD COLUMN is currently unreachable. That makes it dead
+code today and load-bearing the day the rebuild is deleted — which is
+the intent, once every deployed install has started once.
+test_the_column_migration_stands_on_its_own pins it against the shape
+the world is in on that day.
+
 Six more for the per-track reason labels, each run against the full
 1532-test suite before its test existed, and all six survived:
 
@@ -53,13 +61,15 @@ produces a row where that differs. Every track that already has a reason
 either carries the label its review implies, or is a styled track on a
 mixed image review, and the codec check skips that one first.
 
-The first initially SURVIVED, and the reason is worth keeping: the
-rebuild recreates revert_points from the model, so it adds detached_at
-too and the ADD COLUMN is currently unreachable. That makes it dead
-code today and load-bearing the day the rebuild is deleted — which is
-the intent, once every deployed install has started once.
-test_the_column_migration_stands_on_its_own pins it against the shape
-the world is in on that day.
+Five more for moving audio flags to one row per track. Each was run against
+the full suite before the tests for it existed (1539 tests: the 1540 then,
+less the test that pinned the old shape), and all five survived:
+
+  • the audio rebuild never run                → killed
+  • its uniqueness left on the file alone      → killed
+  • its uniqueness dropped altogether          → killed
+  • the rebuild repeated on every startup      → killed
+  • the carried-over rows labelled "threshold" → killed
 """
 import importlib
 import json
@@ -430,18 +440,114 @@ def test_the_rebuild_does_not_repeat_on_later_startups(legacy_flags,
     )
 
 
-def test_the_audio_flags_are_left_one_per_file(legacy_flags):
-    """
-    Deliberately not migrated. The audio threshold picks a single
-    representative track, and audio tracks do not leave the file the way
-    extracted subtitles do — there is no second filename to correct.
-    """
-    from sqlalchemy import create_engine, inspect
+# ── One audio flag per track ─────────────────────────────────────────────────
 
-    inspector = inspect(create_engine(f"sqlite:///{legacy_flags}"))
-    uniques = inspector.get_unique_constraints("audio_language_flags")
+LEGACY_AUDIO_FLAGS = [
+    """
+    CREATE TABLE audio_language_flags (
+        id INTEGER NOT NULL PRIMARY KEY,
+        file_id INTEGER NOT NULL,
+        stream_index INTEGER NOT NULL,
+        detected_language VARCHAR,
+        created_at DATETIME,
+        UNIQUE (file_id),
+        FOREIGN KEY(file_id) REFERENCES media_files (id) ON DELETE CASCADE
+    )
+    """,
+    # The indexes the old model created, which the rebuild has to clear out
+    # of the way before recreating them under the same names.
+    "CREATE INDEX ix_audio_language_flags_id ON audio_language_flags (id)",
+    "CREATE INDEX ix_audio_language_flags_detected_language "
+    "ON audio_language_flags (detected_language)",
+]
 
-    assert any(u["column_names"] == ["file_id"] for u in uniques)
+
+@pytest.fixture
+def legacy_audio_flags(tmp_path, monkeypatch):
+    """A database whose audio flags are still one-per-file, with no origin."""
+    path = tmp_path / "remuxarr.db"
+    conn = sqlite3.connect(path)
+    for statement in LEGACY_AUDIO_FLAGS:
+        conn.execute(statement)
+    conn.execute(
+        "INSERT INTO audio_language_flags "
+        "(file_id, stream_index, detected_language) VALUES (7, 2, 'dut')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+    yield path
+    _restore_the_engine(session_mod)
+
+
+def test_a_second_audio_track_of_the_same_file_can_be_flagged(legacy_audio_flags):
+    """
+    Replaces a test that pinned the opposite, on the grounds that only one
+    representative audio track was ever flagged. A file with several
+    undefined audio tracks, often in different languages, needs each one
+    answered on its own.
+    """
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        conn.execute(
+            "INSERT INTO audio_language_flags "
+            "(file_id, stream_index, detected_language) VALUES (7, 3, 'und')")
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audio_language_flags "
+            "WHERE file_id = 7").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 2
+
+
+def test_the_same_audio_track_still_cannot_be_flagged_twice(legacy_audio_flags):
+    """Without uniqueness per (file, stream) every rescan would add another row."""
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO audio_language_flags "
+                "(file_id, stream_index) VALUES (7, 2)")
+    finally:
+        conn.close()
+
+
+def test_existing_audio_flags_survive_the_rebuild_as_mismatches(legacy_audio_flags):
+    """
+    Every row written before the origin column came from
+    audio_language_mismatch — the threshold held files instead of flagging
+    them — so "mismatch" is the true origin of all of them, and the one that
+    keeps them under the switch they were confirmed through.
+    """
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        rows = list(conn.execute(
+            "SELECT file_id, stream_index, detected_language, origin "
+            "FROM audio_language_flags"))
+    finally:
+        conn.close()
+
+    assert rows == [(7, 2, "dut", "mismatch")]
+
+
+def test_the_audio_rebuild_does_not_repeat_on_later_startups(legacy_audio_flags,
+                                                             monkeypatch, caplog):
+    import logging
+
+    session_mod = _point_the_engine_at(legacy_audio_flags, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "audio language flag" in r.getMessage()], (
+        "the table was rebuilt again on a database that was already migrated"
+    )
 
 
 # ── The general check ────────────────────────────────────────────────────────
