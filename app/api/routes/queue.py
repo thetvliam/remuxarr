@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app.core.decision import analyze_file
+from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.probe import is_faststart_mp4
 from app.database.models import (
@@ -721,7 +721,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
 
 
 class SubtitleOverridesRequest(BaseModel):
-    # Maps stream_index -> "keep" | "remove"
+    # Maps stream_index -> "keep" | "remove" | "extract"
     overrides: dict[int, str]
 
 
@@ -732,8 +732,25 @@ def resolve_subtitles(
     db: Session = Depends(get_db),
 ):
     """
-    Apply per-track keep/remove choices for a manual_review item flagged
-    because of non-convertible (image-based) subtitle tracks.
+    Apply per-track answers to a subtitle manual review: "keep" (embed the
+    track as-is), "remove" (drop it), or "extract" (write it to an external
+    SRT and take it out of the file). The review may have been raised by the
+    image-subtitle gate, the font-attachment gate, or a failed extraction.
+
+    "extract" is refused in two cases where it would otherwise be accepted
+    and then not carried out:
+
+      • The stream is not a stored subtitle track with a codec in
+        SRT_CONVERTIBLE_SUBS. The extraction branch cannot take it, and
+        analyze_file treats the track as unanswered, so a success here would
+        report a choice that was never applied.
+      • The review was raised by a failed extraction (subtitle_encoding).
+        Extracting again repeats what just failed, and the job comes
+        straight back to this review; _flag_subtitle_encoding_review in
+        worker.py records that loop. Keep and Remove stay available.
+
+    Every choice is validated before anything is written, so a refused
+    request leaves the stored answers as they were.
 
     The choices are merged into MediaFile.subtitle_overrides (persisted, so
     they survive future re-scans) and the decision engine is re-run
@@ -758,8 +775,29 @@ def resolve_subtitles(
         raise HTTPException(404, "Associated media file not found")
 
     for stream_index, choice in body.overrides.items():
-        if choice not in ("keep", "remove"):
-            raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep' or 'remove')")
+        if choice not in ("keep", "remove", "extract"):
+            raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep', 'remove' or 'extract')")
+        if choice != "extract":
+            continue
+        if item.review_reason == "subtitle_encoding":
+            raise HTTPException(
+                400,
+                f"Cannot extract stream {stream_index}: extracting it is what "
+                f"failed. Choose keep or remove.",
+            )
+        track = (
+            db.query(Track)
+            .filter(Track.file_id == media.id,
+                    Track.stream_index == stream_index,
+                    Track.track_type == "subtitle")
+            .first()
+        )
+        if track is None or (track.codec or "").lower() not in SRT_CONVERTIBLE_SUBS:
+            raise HTTPException(
+                400,
+                f"Cannot extract stream {stream_index}: it is not a text "
+                f"subtitle track that can be converted to SRT.",
+            )
 
     # ── Merge new overrides into the persisted set ──────────────────────────
     # Written to media BEFORE the analysis below — _build_analysis_inputs

@@ -375,12 +375,16 @@ def analyze_file(
     settings : dict
         App settings from session.get_app_settings()
     subtitle_overrides : dict[int, str] | None
-        Per-track resolutions for previously-flagged non-convertible
-        subtitle tracks, keyed by stream_index with value "keep" or
-        "remove". Set by the user via the manual-review UI and persisted
-        on MediaFile.subtitle_overrides. A track with an override skips
-        the non-convertible-subtitle manual-review gate entirely and is
-        either embedded as-is ("keep") or dropped ("remove").
+        Per-track answers to a subtitle manual review, keyed by
+        stream_index with value "keep", "remove" or "extract". Set by the
+        user via the manual-review UI and persisted on
+        MediaFile.subtitle_overrides. A track with an answer skips both
+        subtitle review gates and is embedded as-is ("keep"), dropped
+        ("remove"), or extracted to an external SRT ("extract"), whatever
+        the keep list and extract_text_subtitles_to_srt would otherwise
+        decide. "extract" on a track the extraction branch cannot take is
+        ignored, and the track is treated as unanswered — see the block
+        just above the gates.
     audio_language_overrides : dict[int, str] | None
         Per-track language corrections from the Audio Language Review
         section, keyed by stream_index with value an ISO 639-2/B code
@@ -624,6 +628,31 @@ def analyze_file(
             or (keep_forced_subs and is_forced)
             or (keep_und_subs and lang == "und")
         )
+
+    # ── Answers that cannot be carried out ───────────────────────────────────
+    # An "extract" answer on a track the extraction branch cannot take is
+    # removed from the local copy here, BEFORE the gates below, so the track
+    # is treated as if it had never been answered: with extraction on, a kept
+    # bitmap track is asked about again by the image-subtitle gate, and
+    # everything else takes the normal rules.
+    #
+    # Both gates treat a track with any entry in subtitle_overrides as
+    # answered, whatever the value, and the main loop falls back to the
+    # normal rules for a value it does not act on. Left in place, "extract"
+    # on a PGS track therefore skipped the image-subtitle gate and then kept
+    # the track embedded, holding the file as MKV: an impossible request
+    # silently became Keep. The resolve endpoint refuses such an answer, so
+    # this is the engine's own guard rather than the only one.
+    #
+    # Tested against SRT_CONVERTIBLE_SUBS rather than IMAGE_BASED_SUBS: the
+    # extraction branch below only handles the codecs in that set, and a
+    # text codec outside it (webvtt, say) is no more extractable there than
+    # a bitmap is.
+    for t in sub_tracks:
+        si = t["stream_index"]
+        if (subtitle_overrides.get(si) == "extract"
+                and (t.get("codec") or "").lower() not in SRT_CONVERTIBLE_SUBS):
+            del subtitle_overrides[si]
 
     # ── Manual-review gate: non-convertible kept subtitles ───────────────────
     # When SRT extraction is enabled, any KEPT subtitle track using an
@@ -938,6 +967,9 @@ def analyze_file(
 
     # ── Subtitle keep/drop/extract decision ─────────────────────────────────
     # For each subtitle track:
+    #   • Answered in manual review                  → as answered, and none
+    #     of the rules below apply: "remove" → drop_track, "keep" →
+    #     kept_subs (copied), "extract" → the extraction branch below
     #   • Not in keep list (language/forced)        → drop_track
     #   • Kept, text-based, extraction enabled       → extract_subtitle
     #     (pulled out to an external .srt sidecar and removed from the
@@ -993,7 +1025,17 @@ def analyze_file(
             order += 1
             continue
 
-        if not _sub_is_kept(track):
+        # An explicit "extract" answer skips the keep list, as the two answers
+        # above do, and skips extract_text_subtitles_to_srt as well: it is a
+        # per-track exception to that setting in the way "keep" is a
+        # per-track exception to the keep list. Without that, Extract would
+        # mean Keep for anyone with extraction switched off — the track stays
+        # embedded and nothing says so. Codecs it cannot apply to were removed
+        # before the gates, so every track reaching the branch below with
+        # this set can be extracted.
+        explicit_extract = override == "extract"
+
+        if not explicit_extract and not _sub_is_kept(track):
             # "not in keep list" is accurate for a tagged track and
             # misleading for an untagged one: "und" is not a language that
             # failed to match, it is the absence of one. Saying so, and
@@ -1019,7 +1061,7 @@ def analyze_file(
             order += 1
             continue
 
-        if extract_subs_to_srt and codec in SRT_CONVERTIBLE_SUBS:
+        if explicit_extract or (extract_subs_to_srt and codec in SRT_CONVERTIBLE_SUBS):
             # The sidecar carries the language in its FILENAME, which is how
             # Plex identifies it — so a subtitle_language_overrides entry has
             # to be resolved here, before the path is built.
@@ -1056,6 +1098,7 @@ def analyze_file(
                     f"Extract subtitle [{srt_lang}] {codec}{tag_str} "
                     f"(stream {track['stream_index']}) to external SRT: "
                     f"{Path(srt_path).name}"
+                    + (" — extracted via manual review" if explicit_extract else "")
                 ),
                 track_type="subtitle",
                 stream_index=track["stream_index"],
@@ -1090,11 +1133,13 @@ def analyze_file(
     #   • any kept audio codec outside MP4_COMPATIBLE_AUDIO (post AAC→AC3)
     #   • any kept (embedded, non-extracted) subtitle codec in
     #     MP4_INCOMPATIBLE_SUBS
-    # Note: when SRT extraction is enabled, kept_subs is normally empty —
-    # every text-based kept subtitle was extracted above, and any kept
-    # image-based subtitle would have triggered the manual-review gate.
-    # kept_subs is only non-empty when extraction is disabled, preserving
-    # the original container-blocking behavior.
+    # Note: kept_subs holds every subtitle that stays embedded. With SRT
+    # extraction disabled that is every kept track. With it enabled, it is
+    # the kept tracks the extraction branch cannot take — a codec outside
+    # SRT_CONVERTIBLE_SUBS that no gate asks about, such as webvtt — plus
+    # every track answered "keep", whether by the user or by an always_keep
+    # setting. That last route is how a Keep answer on a styled or image
+    # track holds the file as MKV.
     video_audio_ok = _video_audio_mp4_compatible(video_tracks, kept_audio)
 
     subs_block_mp4 = any(

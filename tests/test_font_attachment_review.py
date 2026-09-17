@@ -58,6 +58,14 @@ elsewhere, every one of whose tracks is English. The other two survived:
   the keep rule the gate ignoring it                            killed
                 a bare language check instead of the shared rule killed
 
+Three more for an explicit Extract answer, which matches always_remove
+where a Remove answer does not. Each was run against the full 1520-test
+suite before its test existed, and all three survived:
+
+  the answer    Extract not overriding the extraction setting   killed
+                Extract not overriding the keep list            killed
+                the description not naming the review           killed
+
 Run from the project root:
     pytest tests/test_font_attachment_review.py -v
 """
@@ -283,6 +291,80 @@ def test_one_resolved_track_still_leaves_the_other_to_ask_about(settings):
 
     assert decision.is_manual_review is True
     assert [f["stream_index"] for f in decision.flagged_subtitles] == [4]
+
+
+# ── An explicit Extract answer ────────────────────────────────────────────────
+#
+# Keep and Remove cannot express what always_remove does. The policy injects
+# no answer for the styled tracks, so they fall through to SRT extraction; a
+# Remove answer drops them with no SRT at all. "extract" is the answer that
+# matches the policy, and like the other two it outranks the rules that would
+# otherwise decide the track.
+
+def _layout(decision):
+    return [(a.action_type, a.stream_index) for a in decision.actions]
+
+
+def test_an_extract_answer_does_what_always_remove_does(settings):
+    """
+    The same plan as the policy, action for action, so a review answered
+    Extract and a library set to always_remove end up with the same files.
+    The description is the one difference, and it is deliberate: like the
+    other two answers, it says the choice came from a review.
+    """
+    answered = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+    policy = analyze_file(
+        _mkv(), _anime_tracks(),
+        settings | {"font_attachment_handling": "always_remove"},
+    )
+
+    assert answered.is_manual_review is False
+    assert _layout(answered) == _layout(policy)
+    extracted = _actions(answered, "extract_subtitle")
+    assert [a.stream_index for a in extracted] == [3, 4]
+    assert all(a.description.endswith("extracted via manual review")
+               for a in extracted)
+
+
+def test_an_extract_answer_holds_with_extraction_switched_off(settings):
+    """
+    Extract is a per-track exception to extract_text_subtitles_to_srt, as
+    Keep is to the keep list. The font gate still fires with extraction
+    off, so a review can be answered Extract there. Without the exception
+    the answer fell through to the default rules: the tracks stayed
+    embedded and held the file as MKV, which is what Keep does.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+
+    decision = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+
+    assert [a.stream_index for a in _actions(decision, "extract_subtitle")] == [3, 4]
+    assert decision.target_container == "mp4"
+
+
+def test_an_extract_answer_outranks_the_keep_list(settings):
+    """
+    The gates only ask about tracks the keep list keeps, so a fresh answer
+    never meets this. A stored one does, once the keep list changes after it
+    was given, and it is still the user's last word on that track — which is
+    why Keep and Remove already take precedence over the language rules.
+    """
+    settings["keep_subtitle_languages"] = ["jpn"]
+
+    decision = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+
+    assert [a.stream_index for a in _actions(decision, "extract_subtitle")] == [3, 4]
+    assert not [a for a in _actions(decision, "drop_track")
+                if a.stream_index in (3, 4)]
 
 
 # ── Only the tracks the file keeps ────────────────────────────────────────────

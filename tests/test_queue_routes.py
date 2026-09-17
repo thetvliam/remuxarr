@@ -1151,6 +1151,103 @@ def test_approving_returns_the_serialised_item_with_its_actions(db):
     assert payload["planned_actions"], "returned no actions to render"
 
 
+# ── resolve_subtitles: the extract answer ────────────────────────────────────
+#
+# "extract" joins keep and remove. The endpoint refuses it where it would be
+# accepted and then not carried out: on a stream the extraction branch cannot
+# take, and on a review raised by a failed extraction, where extracting again
+# repeats the failure and sends the job straight back to review.
+#
+# Six mutants, each run against the whole 1520-test suite before these tests
+# existed, and all six survived: rejecting extract outright, dropping the
+# codec check, checking image codecs instead of extractable ones, accepting a
+# stream with no stored track, dropping the encoding-review check, and
+# applying that check to keep and remove as well. Each is killed below.
+
+_EXTRACTABLE_REVIEW = [
+    (0, "video", "h264", None),
+    (1, "audio", "aac", "eng"),
+    (2, "subtitle", "ass", "eng"),
+]
+
+
+def test_an_extract_answer_is_stored_and_queues_the_extraction(db):
+    from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
+    from app.database.models import PlannedAction
+
+    media, item = _reviewable(db, tracks=_EXTRACTABLE_REVIEW)
+
+    resolve_subtitles(1, SubtitleOverridesRequest(overrides={2: "extract"}), db)
+
+    db.expire_all()
+    assert json.loads(media.subtitle_overrides) == {"2": "extract"}
+    assert item.status == "pending"
+    planned = db.query(PlannedAction).filter(PlannedAction.queue_item_id == 1).all()
+    assert ("extract_subtitle", 2) in [(a.action_type, a.stream_index) for a in planned]
+
+
+@pytest.mark.parametrize("stream_index", [3, 4, 9],
+                         ids=["pgs", "webvtt", "no-such-stream"])
+def test_extract_is_refused_where_there_is_nothing_to_extract(db, stream_index):
+    """
+    PGS is a bitmap, webvtt is text the extraction branch does not handle,
+    and stream 9 does not exist. The decision engine would ignore all three
+    answers, so accepting one would report a choice that was never applied.
+    """
+    from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
+
+    _reviewable(db, tracks=_EXTRACTABLE_REVIEW + [
+        (3, "subtitle", "hdmv_pgs_subtitle", "eng"),
+        (4, "subtitle", "webvtt", "eng"),
+    ])
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_subtitles(
+            1, SubtitleOverridesRequest(overrides={stream_index: "extract"}), db,
+        )
+    assert exc.value.status_code == 400
+
+
+def _encoding_review(db):
+    """A review raised by a failed extraction, on a track that is otherwise extractable."""
+    media, item = _reviewable(db, tracks=[
+        (0, "video", "h264", None),
+        (1, "audio", "aac", "eng"),
+        (2, "subtitle", "subrip", "eng"),
+    ])
+    item.review_reason = "subtitle_encoding"
+    db.commit()
+    return media, item
+
+
+def test_extract_is_refused_on_a_review_raised_by_a_failed_extraction(db):
+    """
+    subrip passes the codec check, so only the review's cause refuses this.
+    The job would run the same extraction, fail the same way, and come
+    straight back here.
+    """
+    from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
+
+    _encoding_review(db)
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_subtitles(1, SubtitleOverridesRequest(overrides={2: "extract"}), db)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("choice", ["keep", "remove"])
+def test_keep_and_remove_still_answer_a_failed_extraction(db, choice):
+    """The only two ways out of that review, so refusing Extract must not reach them."""
+    from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
+
+    media, _ = _encoding_review(db)
+
+    resolve_subtitles(1, SubtitleOverridesRequest(overrides={2: choice}), db)
+
+    db.expire_all()
+    assert json.loads(media.subtitle_overrides) == {"2": choice}
+
+
 # ── Stats: the Review badge's backlog ────────────────────────────────────────
 #
 # The Review tab badge was review.length — manual-review QueueItems only —

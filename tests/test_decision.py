@@ -1075,6 +1075,57 @@ def test_image_subtitle_setting_does_not_affect_text_based_subs(settings):
     )
 
 
+# An "extract" answer for a track the extraction branch cannot take. The
+# resolve endpoint refuses one; these pin the decision engine's own handling,
+# for an answer that reaches it anyway. Both gates treat ANY stored value as
+# an answer, so without the filter above the image gate the PGS answer skipped
+# the gate, and the extraction branch then took the track as though it were
+# text. Removing the filter, moving it below the image gate, and testing it
+# against IMAGE_BASED_SUBS instead of SRT_CONVERTIBLE_SUBS all survived the
+# full suite before these existed; the first two are killed by the PGS test,
+# the first and third by the webvtt one.
+
+def test_an_extract_answer_on_an_image_track_is_asked_again(settings):
+    """
+    A bitmap has no text to extract. Silently keeping the track instead
+    would answer a question the user did not answer, so the image gate asks
+    it again.
+    """
+    decision = analyze_file(
+        make_file_info(), _image_sub_tracks(), settings,
+        subtitle_overrides={2: "extract"},
+    )
+
+    assert decision.is_manual_review is True
+    assert decision.review_reason == "image_subtitles"
+    assert [f["stream_index"] for f in decision.flagged_subtitles] == [2]
+
+
+def test_an_extract_answer_on_a_text_codec_extraction_cannot_take_is_ignored(settings):
+    """
+    webvtt is text, but not in SRT_CONVERTIBLE_SUBS, so the extraction
+    branch has never handled it. No gate asks about it either, so the answer
+    is dropped and the track follows the normal rules — kept, and embedded.
+    The Japanese audio track gives the file something to do, so the plan is
+    not discarded as a no-op before it can be read.
+    """
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="eng"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="jpn"),
+        make_track(stream_index=3, track_type="subtitle", codec="webvtt", language="eng"),
+    ]
+
+    decision = analyze_file(
+        make_file_info(container="mkv"), tracks, settings,
+        subtitle_overrides={3: "extract"},
+    )
+
+    assert not [a for a in decision.actions if a.action_type == "extract_subtitle"]
+    sub_action = next(a for a in decision.actions if a.stream_index == 3)
+    assert sub_action.action_type == "copy_track"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Title-derived forced/SDH flags — legacy DB rows (F-B4 regression)
 # ═══════════════════════════════════════════════════════════════════════════

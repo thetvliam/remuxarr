@@ -58,10 +58,15 @@ class MediaFile(Base):
     last_processed = Column(DateTime)
     created_at     = Column(DateTime, default=utcnow)
 
-    # JSON dict mapping stream_index (as string) -> "keep" | "remove",
-    # set when the user resolves a manual-review flag for a non-convertible
-    # (image-based) subtitle track. Persists the choice across re-scans so
-    # the decision engine can act on it instead of re-flagging the same track.
+    # JSON dict mapping stream_index (as string) -> "keep" | "remove" |
+    # "extract", set when the user answers a subtitle manual review (image
+    # subtitles, embedded fonts, or a failed extraction). Persists the choice
+    # across re-scans so the decision engine can act on it instead of
+    # re-flagging the same track.
+    #
+    # Keyed by stream number, so an answer describes the file as it was when
+    # it was given: nothing re-keys or clears it when processing or a
+    # replacement file renumbers the streams.
     subtitle_overrides = Column(Text)
 
     # JSON dict mapping stream_index (as string) -> ISO 639-2/B language
