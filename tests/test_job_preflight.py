@@ -441,12 +441,23 @@ def test_each_language_override_set_reaches_its_own_parameter(rig):
     relabels audio from the subtitle corrections and vice versa — no
     error, just the wrong languages written into the file.
     """
-    media_row(
-        rig,
-        audio_language_overrides=json.dumps({"1": "eng"}),
-        subtitle_language_overrides=json.dumps({"2": "fre"}),
-        subtitle_overrides=json.dumps({"3": "keep"}),
-    )
+    from app.core.scanner import _track_to_dict, descriptors_by_stream
+    from app.database.models import Track
+
+    media_row(rig)
+    track_row(rig, track_id=1, stream_index=1, track_type="audio", codec="aac")
+    track_row(rig, track_id=2, stream_index=2, track_type="subtitle", codec="subrip")
+    track_row(rig, track_id=3, stream_index=3, track_type="subtitle", codec="ass")
+
+    # The columns are keyed by track descriptor, so the keys come from the
+    # file's own tracks — that is what the loader matches against.
+    keys = descriptors_by_stream(
+        [_track_to_dict(t) for t in rig.db.query(Track).all()])
+    media = file_row(rig)
+    media.audio_language_overrides = json.dumps({keys[1]: "eng"})
+    media.subtitle_language_overrides = json.dumps({keys[2]: "fre"})
+    media.subtitle_overrides = json.dumps({keys[3]: "keep"})
+    rig.db.commit()
     queue_row(rig)
 
     worker._load_job_data(1)

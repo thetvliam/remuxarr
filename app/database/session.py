@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -271,6 +271,7 @@ def init_db() -> None:
     # After the encoding backfill: it reads the reason that one writes.
     _label_flagged_track_reasons()
     _release_threshold_holds()
+    _key_track_answers_by_descriptor()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -435,6 +436,77 @@ def _release_threshold_holds() -> None:
                 "Releasing %d file(s) held by the undefined-audio threshold: "
                 "their undefined tracks move to Audio Language Review on the "
                 "next scan", released
+            )
+
+
+_TRACK_ANSWER_COLUMNS = (
+    "subtitle_overrides",
+    "audio_language_overrides",
+    "subtitle_language_overrides",
+)
+
+
+def _key_track_answers_by_descriptor() -> None:
+    """
+    Re-key the stored answers about tracks from stream_index to descriptor.
+
+    The three columns held {stream_index: answer}. A stream_index is a
+    position in one probe of one file, and positions move: processing drops
+    tracks and renumbers the rest. Answers are keyed by what the track is
+    now, resolved back to a position each time they are used
+    (scanner.descriptors_by_stream).
+
+    Each row's answers are converted against its own Track rows, which are
+    the same probe the answers were given against unless the file has been
+    processed or replaced since. An answer whose stream has no track is
+    dropped: it can no longer be tied to anything, and the question comes
+    back rather than being applied to whatever now sits at that number.
+
+    Only integer keys are converted, so a second start finds nothing to do.
+    """
+    from app.core.scanner import _track_to_dict, descriptors_by_stream
+    from app.database.models import MediaFile, Track
+
+    converted = dropped = 0
+    with SessionLocal() as db:
+        rows = (
+            db.query(MediaFile)
+            .filter(or_(*[getattr(MediaFile, c).isnot(None)
+                          for c in _TRACK_ANSWER_COLUMNS]))
+            .all()
+        )
+        for media in rows:
+            descriptors = None
+            for column in _TRACK_ANSWER_COLUMNS:
+                raw = getattr(media, column)
+                if not raw:
+                    continue
+                try:
+                    stored = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                legacy = {k: v for k, v in stored.items() if str(k).lstrip("-").isdigit()}
+                if not legacy:
+                    continue
+                if descriptors is None:
+                    descriptors = descriptors_by_stream([
+                        _track_to_dict(t) for t in
+                        db.query(Track).filter(Track.file_id == media.id).all()
+                    ])
+                rekeyed = {k: v for k, v in stored.items() if k not in legacy}
+                for stream_index, answer in legacy.items():
+                    key = descriptors.get(int(stream_index))
+                    if key is None:
+                        dropped += 1
+                        continue
+                    rekeyed[key] = answer
+                    converted += 1
+                setattr(media, column, json.dumps(rekeyed))
+        if converted or dropped:
+            db.commit()
+            logger.info(
+                "Re-keyed %d stored track answer(s) by descriptor; dropped %d "
+                "whose track is gone", converted, dropped
             )
 
 

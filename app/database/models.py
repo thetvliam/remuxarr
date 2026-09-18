@@ -58,18 +58,24 @@ class MediaFile(Base):
     last_processed = Column(DateTime)
     created_at     = Column(DateTime, default=utcnow)
 
-    # JSON dict mapping stream_index (as string) -> "keep" | "remove" |
-    # "extract", set when the user answers a subtitle manual review (image
-    # subtitles, embedded fonts, or a failed extraction). Persists the choice
-    # across re-scans so the decision engine can act on it instead of
-    # re-flagging the same track.
+    # JSON dict mapping a track descriptor -> "keep" | "remove" | "extract",
+    # set when the user answers a subtitle manual review (image subtitles,
+    # embedded fonts, or a failed extraction). Persists the choice across
+    # re-scans so the decision engine can act on it instead of re-flagging
+    # the same track.
     #
-    # Keyed by stream number, so an answer describes the file as it was when
-    # it was given: nothing re-keys or clears it when processing or a
-    # replacement file renumbers the streams.
+    # The key says what the track IS, plus which one it is among identical
+    # ones, and is resolved back to a stream_index against the file's tracks
+    # each time it is used — see scanner.descriptors_by_stream for the
+    # fields and why. Keyed by stream number, an answer stopped matching its
+    # track as soon as processing renumbered the streams, and would have
+    # been applied to whatever took that number in a file replaced in place.
+    # An answer that matches no current track is left out, so the question
+    # comes back instead.
     subtitle_overrides = Column(Text)
 
-    # JSON dict mapping stream_index (as string) -> ISO 639-2/B language
+    # JSON dict mapping a track descriptor (as for subtitle_overrides above)
+    # -> ISO 639-2/B language
     # code, set via the Audio Language Review section when a track has a
     # DEFINED but wrong language (e.g. an English show whose only audio
     # track is mistagged "dut"). Distinct from the "fix undefined language"
@@ -111,8 +117,9 @@ class MediaFile(Base):
 
     # Parallel fields for subtitle tracks — see Subtitle Language Review.
     # Distinct table/column set from the audio ones above even though the
-    # shape is identical, since a file can independently have an audio
-    # override, a subtitle override, both, or neither.
+    # shape is identical (descriptor keys included), since a file can
+    # independently have an audio override, a subtitle override, both, or
+    # neither.
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 

@@ -42,6 +42,7 @@ fixture cannot see that, because uncommitted deletes are already invisible to
 the session that made them. The db_factory fixture and the two commit tests
 exist specifically to close that blind spot.
 """
+import json
 import os
 
 import pytest
@@ -626,12 +627,34 @@ def test_removing_orphans_does_not_check_scan_paths(db, tmp_path):
     assert db.query(MediaFile).count() == 0
 
 
-# ── JSON override loading ────────────────────────────────────────────────────
+# ── Stored answers: loading and resolving ────────────────────────────────────
 #
-# Found by an independent mutation audit (Phase 1). Dropping the int(k)
+# Found by an independent mutation audit (Phase 1). Dropping the key
 # conversion survived the entire 662-test suite, as did corrupting the
-# degradation contract. One shared helper backs all three override features
-# (subtitle, audio-language, subtitle-language), so one gap covered three.
+# degradation contract. One shared pair of helpers backs all three answer
+# features (subtitle, audio-language, subtitle-language), so one gap covered
+# three.
+#
+# The columns were keyed by stream_index and the conversion was int(k).
+# They are keyed by a track descriptor now, and the conversion is the match
+# against the file's current tracks — the same contract in a different
+# shape: what analyze_file receives has to be keyed by integer stream_index,
+# or every lookup silently misses.
+#
+# Four mutations of the descriptor itself survived the full 1556-test suite
+# before the tests at the end of this file existed, and each is killed by
+# one of them:
+#
+#   • descriptors numbered in the order the tracks arrive, not stream order
+#   • language put back in, so a corrected tag throws the answer away
+#   • the title dropped, so two same-codec tracks share a shape
+#   • an answer applied to every track of its shape
+#
+# The last is equivalent, checked rather than assumed: the ordinal makes
+# every track's descriptor unique, so mapping "each stored key to its track"
+# and "each track whose key is stored" are the same mapping. It differs only
+# with the ordinal dropped, which the apply test in
+# test_language_review_isolation.py already catches.
 
 def _media_with(db, **cols):
     from app.database.models import MediaFile
@@ -643,28 +666,46 @@ def _media_with(db, **cols):
     return mf
 
 
-def test_override_keys_are_converted_to_integers(db):
-    """
-    JSON object keys are ALWAYS strings; analyze_file looks these up by
-    integer stream_index (subtitle_overrides.get(si) where si comes from
-    track["stream_index"]). Drop the conversion and every lookup silently
-    misses — no exception, no log line. Every decision a user made in manual
-    review, Audio Language Review and Subtitle Language Review is discarded,
-    and the file returns to manual review on the next scan.
+def _tracks():
+    """Two subtitle tracks that differ, so a descriptor picks one of them."""
+    return [
+        {"stream_index": 0, "track_type": "video", "codec": "h264"},
+        {"stream_index": 2, "track_type": "subtitle", "codec": "ass",
+         "title": "Signs", "language": "eng"},
+        {"stream_index": 3, "track_type": "subtitle", "codec": "subrip",
+         "title": None, "language": "eng"},
+    ]
 
-    Asserting equality is sufficient: {2: "keep"} != {"2": "keep"}.
+
+def _stored(answers):
+    """The column value holding `answers`, keyed by descriptor."""
+    from app.core.scanner import descriptors_by_stream
+
+    keys = descriptors_by_stream(_tracks())
+    return json.dumps({keys[si]: answer for si, answer in answers.items()})
+
+
+def test_resolved_answers_are_keyed_by_integer_stream_index(db):
+    """
+    analyze_file looks these up by integer stream_index
+    (subtitle_overrides.get(si) where si comes from track["stream_index"]).
+    Hand it string keys and every lookup silently misses — no exception, no
+    log line. Every decision a user made in manual review, Audio Language
+    Review and Subtitle Language Review is discarded, and the file returns
+    to review on the next scan.
 
     Audit ref: SCN-05.
     """
-    from app.core.scanner import _load_int_keyed_json_overrides
+    from app.core.scanner import _load_track_answers, resolve_track_answers
 
-    media = _media_with(db, subtitle_overrides='{"2": "keep", "3": "drop"}')
+    media = _media_with(db, subtitle_overrides=_stored({2: "keep", 3: "drop"}))
 
-    result = _load_int_keyed_json_overrides(media, "subtitle_overrides")
+    result = resolve_track_answers(
+        _load_track_answers(media, "subtitle_overrides"), _tracks())
 
     assert result == {2: "keep", 3: "drop"}
     assert all(isinstance(k, int) for k in result), (
-        f"override keys left as strings: {list(result)} — every stream_index "
+        f"answer keys left as strings: {list(result)} — every stream_index "
         f"lookup in analyze_file will silently miss"
     )
 
@@ -674,51 +715,161 @@ def test_override_keys_are_converted_to_integers(db):
     "audio_language_overrides",
     "subtitle_language_overrides",
 ])
-def test_every_override_column_shares_the_conversion(db, attr):
-    """All three features route through the one helper — none may drift."""
-    from app.core.scanner import _load_int_keyed_json_overrides
+def test_every_answer_column_shares_the_conversion(db, attr):
+    """All three features route through the one pair of helpers — none may drift."""
+    from app.core.scanner import _load_track_answers, resolve_track_answers
 
-    media = _media_with(db, **{attr: '{"5": "eng"}'})
+    media = _media_with(db, **{attr: _stored({3: "eng"})})
 
-    assert _load_int_keyed_json_overrides(media, attr) == {5: "eng"}
+    assert resolve_track_answers(
+        _load_track_answers(media, attr), _tracks()) == {3: "eng"}
 
 
-def test_corrupt_override_json_degrades_to_an_empty_dict(db):
+def test_an_answer_whose_track_is_gone_is_left_out(db):
+    """
+    The point of keying by descriptor. A track that is no longer in the file
+    — dropped by processing, or never in the replacement written over it —
+    takes its answer with it, instead of the answer landing on whatever now
+    sits at that stream_index.
+    """
+    from app.core.scanner import _load_track_answers, resolve_track_answers
+
+    media = _media_with(db, subtitle_overrides=_stored({2: "keep", 3: "drop"}))
+    remaining = [t for t in _tracks() if t["stream_index"] != 2]
+
+    assert resolve_track_answers(
+        _load_track_answers(media, "subtitle_overrides"), remaining) == {3: "drop"}
+
+
+def test_corrupt_answer_json_degrades_to_an_empty_dict(db):
     """
     The degradation contract: corrupt bookkeeping must not raise. This is
     called during scanning and job pickup, so an exception here would fail
-    the file rather than simply ignoring an unreadable override.
+    the file rather than simply ignoring an unreadable answer.
 
     Audit ref: SCN-06.
     """
-    from app.core.scanner import _load_int_keyed_json_overrides
+    from app.core.scanner import _load_track_answers
 
     media = _media_with(db, subtitle_overrides="{not valid json")
 
-    assert _load_int_keyed_json_overrides(media, "subtitle_overrides") == {}
+    assert _load_track_answers(media, "subtitle_overrides") == {}
 
 
 @pytest.mark.parametrize("stored", [
     '["not", "a", "dict"]',      # valid JSON, wrong shape → .items() missing
-    '{"notanint": "keep"}',      # valid dict, key not int-convertible
     '"a bare string"',
     "42",
 ])
-def test_structurally_wrong_override_json_also_degrades(db, stored):
+def test_structurally_wrong_answer_json_also_degrades(db, stored):
     """
     The except clause catches ValueError, AttributeError and TypeError
     specifically — each corresponds to one of these shapes, and all three
     have to be caught for the contract to hold.
     """
-    from app.core.scanner import _load_int_keyed_json_overrides
+    from app.core.scanner import _load_track_answers
 
     media = _media_with(db, subtitle_overrides=stored)
 
-    assert _load_int_keyed_json_overrides(media, "subtitle_overrides") == {}
+    assert _load_track_answers(media, "subtitle_overrides") == {}
 
 
-def test_an_empty_override_column_is_an_empty_dict(db):
-    from app.core.scanner import _load_int_keyed_json_overrides
+def test_a_key_that_is_not_a_descriptor_resolves_to_nothing(db):
+    """
+    Anything that is not one of this file's descriptors matches no track, so
+    it is left out rather than guessed at. That covers a leftover key from
+    an older shape as much as a corrupt one.
+    """
+    from app.core.scanner import _load_track_answers, resolve_track_answers
 
-    assert _load_int_keyed_json_overrides(
+    media = _media_with(db, subtitle_overrides='{"2": "keep", "notadescriptor": "keep"}')
+
+    assert resolve_track_answers(
+        _load_track_answers(media, "subtitle_overrides"), _tracks()) == {}
+
+
+def test_an_empty_answer_column_is_an_empty_dict(db):
+    from app.core.scanner import _load_track_answers
+
+    assert _load_track_answers(
         _media_with(db, subtitle_overrides=None), "subtitle_overrides") == {}
+
+
+def test_identical_tracks_are_told_apart_by_their_order():
+    """
+    The ordinal is the only thing that can separate two tracks that look the
+    same — two untitled subtitles, or the several undefined audio tracks the
+    threshold exists for. Without it both answers collapse onto one key and
+    one of the two questions answers the other's track.
+    """
+    from app.core.scanner import descriptors_by_stream
+
+    tracks = [
+        {"stream_index": 1, "track_type": "audio", "codec": "aac",
+         "channels": 6, "channel_layout": "5.1"},
+        {"stream_index": 2, "track_type": "audio", "codec": "aac",
+         "channels": 6, "channel_layout": "5.1"},
+    ]
+
+    keys = descriptors_by_stream(tracks)
+
+    assert keys[1] != keys[2]
+
+
+def test_the_order_is_the_file_order_whatever_order_they_arrive_in():
+    """
+    The writer numbers the track it is answering and the reader numbers the
+    tracks it matches against, and the two lists come from different places:
+    a probe, or a query with no ORDER BY. Numbering them as given makes the
+    same file produce different keys depending on which one asked.
+    """
+    from app.core.scanner import descriptors_by_stream
+
+    tracks = [
+        {"stream_index": 1, "track_type": "audio", "codec": "aac"},
+        {"stream_index": 2, "track_type": "audio", "codec": "aac"},
+        {"stream_index": 3, "track_type": "audio", "codec": "aac"},
+    ]
+
+    assert (descriptors_by_stream(list(reversed(tracks)))
+            == descriptors_by_stream(tracks))
+
+
+def test_an_answer_survives_its_track_being_retagged():
+    """
+    Correcting a language tag is a thing this app does on purpose, through
+    Audio and Subtitle Language Review and through the undefined-language
+    fix. With language in the descriptor, a Keep answer would be thrown away
+    the moment the same file's language was corrected, and the review would
+    ask about the track again.
+    """
+    from app.core.scanner import descriptors_by_stream, resolve_track_answers
+
+    before = [{"stream_index": 2, "track_type": "subtitle", "codec": "ass",
+               "title": "Signs", "language": "und"}]
+    after = [dict(before[0], language="jpn")]
+    stored = {descriptors_by_stream(before)[2]: "keep"}
+
+    assert resolve_track_answers(stored, after) == {2: "keep"}
+
+
+def test_an_answer_survives_another_track_being_dropped():
+    """
+    The case this keying exists for: processing removes a track and
+    renumbers what is left, so an answer keyed by position stops matching
+    the track it was given for, and the same question comes back on the next
+    scan. The title is what keeps the two tracks apart here — without it
+    they share a shape and the survivor takes the wrong ordinal.
+    """
+    from app.core.scanner import descriptors_by_stream, resolve_track_answers
+
+    before = [
+        {"stream_index": 2, "track_type": "subtitle", "codec": "ass", "title": "Signs"},
+        {"stream_index": 3, "track_type": "subtitle", "codec": "ass", "title": "Full"},
+    ]
+    stored = {descriptors_by_stream(before)[3]: "keep"}
+    # "Signs" was removed, so "Full" is stream 2 now.
+    after = [{"stream_index": 2, "track_type": "subtitle", "codec": "ass",
+              "title": "Full"}]
+
+    assert resolve_track_answers(stored, after) == {2: "keep"}

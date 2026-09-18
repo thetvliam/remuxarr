@@ -1171,6 +1171,22 @@ _EXTRACTABLE_REVIEW = [
 ]
 
 
+def _stored_answers(db, media, attr="subtitle_overrides"):
+    """
+    The file's stored answers, resolved against its tracks.
+
+    They are keyed by a track descriptor, so a test reads them the way the
+    decision engine does rather than by matching the key format.
+    """
+    from app.core.scanner import (_load_track_answers, _track_to_dict,
+                                  resolve_track_answers)
+    from app.database.models import Track
+
+    tracks = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == media.id).all()]
+    return resolve_track_answers(_load_track_answers(media, attr), tracks)
+
+
 def test_an_extract_answer_is_stored_and_queues_the_extraction(db):
     from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
     from app.database.models import PlannedAction
@@ -1180,7 +1196,7 @@ def test_an_extract_answer_is_stored_and_queues_the_extraction(db):
     resolve_subtitles(1, SubtitleOverridesRequest(overrides={2: "extract"}), db)
 
     db.expire_all()
-    assert json.loads(media.subtitle_overrides) == {"2": "extract"}
+    assert _stored_answers(db, media) == {2: "extract"}
     assert item.status == "pending"
     planned = db.query(PlannedAction).filter(PlannedAction.queue_item_id == 1).all()
     assert ("extract_subtitle", 2) in [(a.action_type, a.stream_index) for a in planned]
@@ -1205,6 +1221,22 @@ def test_extract_is_refused_where_there_is_nothing_to_extract(db, stream_index):
         resolve_subtitles(
             1, SubtitleOverridesRequest(overrides={stream_index: "extract"}), db,
         )
+    assert exc.value.status_code == 400
+
+
+def test_an_answer_for_a_stream_the_file_lacks_is_refused(db):
+    """
+    The request names a position in the file as the page was served it. If
+    the file has been re-probed since, that position is somebody else's
+    track, or nobody's. An answer that cannot be tied to a track is refused
+    rather than stored against whatever is there now.
+    """
+    from app.api.routes.queue import SubtitleOverridesRequest, resolve_subtitles
+
+    _reviewable(db, tracks=_EXTRACTABLE_REVIEW)
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_subtitles(1, SubtitleOverridesRequest(overrides={9: "keep"}), db)
     assert exc.value.status_code == 400
 
 
@@ -1245,7 +1277,7 @@ def test_keep_and_remove_still_answer_a_failed_extraction(db, choice):
     resolve_subtitles(1, SubtitleOverridesRequest(overrides={2: choice}), db)
 
     db.expire_all()
-    assert json.loads(media.subtitle_overrides) == {"2": choice}
+    assert _stored_answers(db, media) == {2: choice}
 
 
 # ── Stats: the Review badge's backlog ────────────────────────────────────────

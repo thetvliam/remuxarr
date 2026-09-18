@@ -40,7 +40,6 @@ from app.api.routes._language_review import (
     LanguageReviewKind,
     build_language_review_router,
 )
-from app.core.scanner import _load_subtitle_language_overrides
 from app.database.models import SubtitleLanguageFlag
 
 SUBTITLE_LANGUAGE_REVIEW = LanguageReviewKind(
@@ -48,7 +47,6 @@ SUBTITLE_LANGUAGE_REVIEW = LanguageReviewKind(
     prefix         = "/api/subtitle-language-review",
     tag            = "subtitle-language-review",
     flag_model     = SubtitleLanguageFlag,
-    load_overrides = _load_subtitle_language_overrides,
     overrides_attr = "subtitle_language_overrides",
     ignored_attr   = "subtitle_language_ignored",
 

@@ -24,7 +24,6 @@ from app.api.routes._language_review import (
     LanguageReviewKind,
     build_language_review_router,
 )
-from app.core.scanner import _load_audio_language_overrides
 from app.database.models import AudioLanguageFlag
 
 AUDIO_LANGUAGE_REVIEW = LanguageReviewKind(
@@ -32,7 +31,6 @@ AUDIO_LANGUAGE_REVIEW = LanguageReviewKind(
     prefix         = "/api/audio-language-review",
     tag            = "audio-language-review",
     flag_model     = AudioLanguageFlag,
-    load_overrides = _load_audio_language_overrides,
     overrides_attr = "audio_language_overrides",
     ignored_attr   = "audio_language_ignored",
 

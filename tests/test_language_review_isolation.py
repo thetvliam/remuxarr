@@ -13,7 +13,6 @@ router in isolation, so a config that pointed both at the same table would
 still pass them individually. These tests specifically assert the two do not
 touch each other.
 """
-import json
 import pathlib
 
 import pytest
@@ -21,7 +20,7 @@ import pytest
 from app.api.routes._language_review import ApplyRequest, IgnoreRequest
 from app.api.routes.audio_language import AUDIO_LANGUAGE_REVIEW
 from app.api.routes.subtitle_language import SUBTITLE_LANGUAGE_REVIEW
-from app.database.models import AudioLanguageFlag, MediaFile, SubtitleLanguageFlag
+from app.database.models import AudioLanguageFlag, MediaFile, SubtitleLanguageFlag, Track
 
 
 @pytest.fixture
@@ -39,15 +38,38 @@ def db():
 @pytest.fixture
 def flagged_file(db):
     """One file carrying BOTH an audio and a subtitle flag — the case that
-    distinguishes a correct config from one with a field crossed over."""
+    distinguishes a correct config from one with a field crossed over.
+
+    With the tracks those flags describe, since an answer is stored against
+    what a track is.
+    """
     mf = MediaFile(path="/m/a.mkv", filename="a.mkv", directory="/m",
                    size=1, mtime=1.0)
     db.add(mf)
     db.commit()
+    db.add(Track(file_id=mf.id, stream_index=1, track_type="audio",
+                 codec="aac", language="dut"))
+    db.add(Track(file_id=mf.id, stream_index=2, track_type="subtitle",
+                 codec="subrip", language="und"))
     db.add(AudioLanguageFlag(file_id=mf.id, stream_index=1, detected_language="dut"))
     db.add(SubtitleLanguageFlag(file_id=mf.id, stream_index=2, detected_language="und"))
     db.commit()
     return mf
+
+
+def _answers(db, media, attr):
+    """
+    The stored answers of one column, resolved against the file's tracks.
+
+    They are keyed by a track descriptor, so a test reads them the way the
+    decision engine does rather than by matching the key format.
+    """
+    from app.core.scanner import (_load_track_answers, _track_to_dict,
+                                  resolve_track_answers)
+
+    tracks = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == media.id).all()]
+    return resolve_track_answers(_load_track_answers(media, attr), tracks)
 
 
 # ── Config sanity ────────────────────────────────────────────────────────────
@@ -55,7 +77,7 @@ def flagged_file(db):
 def test_the_two_kinds_share_no_field():
     """Every distinguishing field must actually distinguish."""
     a, s = AUDIO_LANGUAGE_REVIEW, SUBTITLE_LANGUAGE_REVIEW
-    for field in ("slug", "prefix", "tag", "flag_model", "load_overrides",
+    for field in ("slug", "prefix", "tag", "flag_model",
                   "overrides_attr", "ignored_attr"):
         assert getattr(a, field) != getattr(s, field), (
             f"LanguageReviewKind.{field} is identical for both reviews — "
@@ -184,6 +206,9 @@ def test_applying_consumes_only_the_flag_it_answered(db, monkeypatch, tmp_path):
     for stream_index, suffix in ((2, "forced"), (3, "dub"), (4, "sdh")):
         srt = tmp_path / f"Show.und.{suffix}.srt"
         srt.write_text("subtitle")
+        db.add(Track(file_id=media.id, stream_index=stream_index,
+                     track_type="subtitle", codec="subrip", language="und",
+                     title=suffix))
         db.add(SubtitleLanguageFlag(
             file_id=media.id, stream_index=stream_index,
             detected_language="und", extracted_path=str(srt)))
@@ -272,7 +297,7 @@ def test_applying_to_several_flags_of_one_file_reprocesses_it_once(db,
     """
     import app.api.routes._language_review as lr
     from app.api.routes.subtitle_language import apply_language
-    from app.database.models import MediaFile, SubtitleLanguageFlag
+    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
 
     media_file = tmp_path / "Show.mkv"
     media_file.write_bytes(b"video")
@@ -283,6 +308,8 @@ def test_applying_to_several_flags_of_one_file_reprocesses_it_once(db,
 
     flag_ids = []
     for stream_index in (2, 3, 4):
+        db.add(Track(file_id=media.id, stream_index=stream_index,
+                     track_type="subtitle", codec="subrip", language="und"))
         flag = SubtitleLanguageFlag(file_id=media.id,
                                     stream_index=stream_index,
                                     detected_language="und")
@@ -303,8 +330,8 @@ def test_applying_to_several_flags_of_one_file_reprocesses_it_once(db,
     # All three answers still landed — reprocessing once must not mean
     # applying once.
     db.refresh(media)
-    assert json.loads(media.subtitle_language_overrides) == {
-        "2": "eng", "3": "eng", "4": "eng",
+    assert _answers(db, media, "subtitle_language_overrides") == {
+        2: "eng", 3: "eng", 4: "eng",
     }
 
 
@@ -358,8 +385,14 @@ def test_the_manual_rename_uses_the_same_code_as_the_automatic_path(tmp_path):
 
 
 def _flagged_on_disk(db, tmp_path, name="Show.mkv"):
-    """A flagged file that really exists, so os.stat inside _process_file passes."""
-    from app.database.models import MediaFile, SubtitleLanguageFlag
+    """
+    A flagged file that really exists, so os.stat inside _process_file passes.
+
+    With the track row the flag describes: answers are stored against what a
+    track is, so a flag naming a stream the file's tracks do not have is
+    reported rather than answered.
+    """
+    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
 
     path = tmp_path / name
     path.write_bytes(b"video")
@@ -367,6 +400,8 @@ def _flagged_on_disk(db, tmp_path, name="Show.mkv"):
                       size=5, mtime=1.0)
     db.add(media)
     db.commit()
+    db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                 codec="subrip", language="und"))
     flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
                                 detected_language="und")
     db.add(flag)
@@ -561,9 +596,11 @@ def _one_flag(db, tmp_path):
     """
     A real file on disk. apply_language checks for it and reports "File no
     longer exists on disk" otherwise, so a made-up path takes the error branch
-    and never reaches the code under test.
+    and never reaches the code under test. The flagged track is stored too,
+    for the same reason: a flag naming a stream the file's tracks do not have
+    is reported rather than answered.
     """
-    from app.database.models import MediaFile, SubtitleLanguageFlag
+    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
 
     path = tmp_path / "v.mkv"
     path.write_bytes(b"video")
@@ -571,6 +608,8 @@ def _one_flag(db, tmp_path):
                       size=5, mtime=1.0)
     db.add(media)
     db.commit()
+    db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                 codec="subrip", language="und"))
     flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
                                 detected_language="und")
     db.add(flag)
@@ -628,12 +667,10 @@ def test_an_empty_language_is_still_refused(db, tmp_path, monkeypatch):
                         # whitelist would have refused Welsh
 ])
 def test_a_real_language_code_is_accepted(db, value, stored, tmp_path, monkeypatch):
-    import json
-
     media, flag = _one_flag(db, tmp_path)
 
     result = _apply_lang(db, flag.id, value, monkeypatch)
 
     assert result["applied"] == 1
     db.refresh(media)
-    assert json.loads(media.subtitle_language_overrides) == {"2": stored}
+    assert _answers(db, media, "subtitle_language_overrides") == {2: stored}

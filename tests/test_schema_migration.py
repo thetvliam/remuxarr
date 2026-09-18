@@ -78,6 +78,14 @@ existed, and all three survived:
   • the release never run                      → killed
   • it reaching subtitle reviews too           → killed
   • it re-stamping files already stamped       → killed
+
+Three for re-keying the stored answers from stream numbers to descriptors,
+each run against the full suite before the tests at the end of this file
+existed, and all three survived:
+
+  • the re-keying never run                    → killed
+  • answers it could not match kept anyway     → killed
+  • writing and logging on every startup       → killed
 """
 import importlib
 import json
@@ -981,3 +989,107 @@ def test_a_file_already_stamped_is_not_stamped_again(held_files, monkeypatch, ca
 
     assert not [r for r in caplog.records
                 if "undefined-audio threshold" in r.getMessage()]
+
+
+# ── Answers re-keyed from stream numbers to descriptors ──────────────────────
+
+@pytest.fixture
+def indexed_answers(tmp_path, monkeypatch):
+    """
+    A file whose stored answers are still keyed by stream_index, then a real
+    startup. Returns the answers afterwards, by column.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, Track
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",
+                          directory="/m", size=1, mtime=1.0,
+                          subtitle_overrides=json.dumps({"2": "keep", "9": "remove"}),
+                          audio_language_overrides=json.dumps({"1": "eng"}))
+        db.add(media)
+        db.flush()
+        db.add(Track(file_id=media.id, stream_index=1, track_type="audio",
+                     codec="aac", language="und"))
+        db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                     codec="ass", language="eng", title="Signs"))
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            "SELECT subtitle_overrides, audio_language_overrides "
+            "FROM media_files").fetchone()
+    finally:
+        conn.close()
+
+    yield {"subtitle_overrides": json.loads(row[0]),
+           "audio_language_overrides": json.loads(row[1])}, path, session_mod
+
+    _restore_the_engine(session_mod)
+
+
+def test_stored_answers_are_re_keyed_by_descriptor(indexed_answers):
+    """
+    Closes: the re-keying never running.
+
+    Left as stream numbers, every answer a user has given is read against
+    keys nothing matches, so each one is dropped and every file comes back
+    to review asking what it already asked.
+    """
+    from app.core.scanner import descriptors_by_stream
+
+    answers, _, _ = indexed_answers
+    keys = descriptors_by_stream([
+        {"stream_index": 1, "track_type": "audio", "codec": "aac"},
+        {"stream_index": 2, "track_type": "subtitle", "codec": "ass",
+         "title": "Signs"},
+    ])
+
+    assert answers["subtitle_overrides"] == {keys[2]: "keep"}
+    assert answers["audio_language_overrides"] == {keys[1]: "eng"}
+
+
+def test_an_answer_whose_stream_has_no_track_is_dropped(indexed_answers):
+    """
+    Closes: keeping answers that could not be matched.
+
+    Stream 9 is not a track of this file, so nothing can be said about what
+    that answer was for. Kept under its old key it would sit there forever,
+    matching nothing; kept under some other track's key it would answer a
+    question nobody asked.
+    """
+    answers, _, _ = indexed_answers
+
+    assert len(answers["subtitle_overrides"]) == 1
+
+
+def test_the_re_keying_does_not_repeat_on_later_startups(indexed_answers,
+                                                         monkeypatch, caplog):
+    """
+    Closes: writing and logging on every startup.
+
+    Descriptor keys are not stream numbers, so a second pass finds nothing
+    to convert. Reporting work that was not done is a line a user reads as
+    something new happening to their library.
+    """
+    import logging
+
+    _, path, _ = indexed_answers
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "track answer" in r.getMessage()]

@@ -847,9 +847,9 @@ def _process_file(
 
     # ── Decision engine ────────────────────────────────────────────────────
     file_info_dict = _file_info_for(media_file)
-    overrides = _load_subtitle_overrides(media_file)
-    audio_lang_overrides = _load_audio_language_overrides(media_file)
-    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
+    overrides = _load_subtitle_overrides(media_file, track_list)
+    audio_lang_overrides = _load_audio_language_overrides(media_file, track_list)
+    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file, track_list)
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media_file.id)
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
@@ -1045,30 +1045,97 @@ def _process_file(
     logger.info("Queued [%d] %s — %s", qi.id, os.path.basename(path), decision.reason)
 
 
-def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int, str]:
-    """
-    Shared implementation for _load_subtitle_overrides,
-    _load_audio_language_overrides, and _load_subtitle_language_overrides
-    below — those three were previously byte-identical apart from which
-    MediaFile column they read (their own docstrings already
-    acknowledged this). Consolidated here as thin wrappers rather than
-    updating every importer (worker.py, queue.py, audio_language.py,
-    subtitle_language.py) to call this directly, so every existing call
-    site keeps working unchanged.
+# ── Stored answers: keyed by what a track IS, not where it sits ──────────────
+#
+# The three override columns hold what the user answered about a track. They
+# were keyed by stream_index, which is a position in one probe of one file,
+# and positions move: processing drops tracks and renumbers what is left, so
+# a Keep answer given for stream 3 stopped matching the track it was given
+# for as soon as the file was processed, and the same question came back on
+# the next full scan. Worse, a file replaced in place under the same name
+# would have had that answer applied to whatever now sat at stream 3.
+#
+# They are keyed by a descriptor instead: what the track is, plus which one
+# it is among identical ones. Resolved back to a stream_index against the
+# file's current tracks every time the answer is used.
+#
+# The fields are the ones a remux carries through. ffmpeg.py copies titles
+# and dispositions to the output and rewrites only language tags, so codec,
+# title, forced and hearing-impaired flags, and an audio track's channels and
+# layout all survive. Language is deliberately left out: correcting a
+# language tag is a thing this app does on purpose, and including it would
+# throw away a Keep answer the moment the same file's language was fixed.
+#
+# The ordinal is what tells identical tracks apart — two untitled ASS tracks,
+# or the several undefined audio tracks the threshold exists for. It holds
+# because the remux pipeline copies kept streams in source order and never
+# reorders them, which forge.py's undo resolver relies on for the same
+# reason. An answer whose descriptor matches no current track, or whose
+# ordinal is not there any more, is dropped: the question comes back rather
+# than being applied to a track nobody answered for.
 
-    Parses a JSON dict with string keys (JSON object keys are always
-    strings) into a dict[int, str] keyed by stream_index, as expected by
-    analyze_file(). The warning message is built from `attr` itself,
-    which reproduces each wrapper's own original, distinct wording
-    exactly — preserved deliberately in case anything greps logs for a
-    specific one of these three messages.
+
+def _descriptor_fields(track: dict) -> list:
+    """The parts of a track that survive being remuxed. See the note above."""
+    return [
+        (track.get("track_type") or "").lower(),
+        (track.get("codec") or "").lower(),
+        (track.get("title") or "").strip(),
+        bool(track.get("is_forced")),
+        bool(track.get("is_hearing_impaired")),
+        track.get("channels"),
+        (track.get("channel_layout") or "").lower(),
+    ]
+
+
+def descriptors_by_stream(tracks: list[dict]) -> dict[int, str]:
+    """
+    The descriptor of every track, keyed by its stream_index.
+
+    JSON rather than a delimited string because a title can contain any
+    character, including whatever delimiter would have been picked. Sorted by
+    stream_index so the ordinal counts in file order from both sides: the
+    writer numbering the track it is answering, and the reader numbering the
+    tracks it is matching against.
+    """
+    counts: dict[str, int] = {}
+    out: dict[int, str] = {}
+    for track in sorted(tracks, key=lambda t: t["stream_index"]):
+        fields = _descriptor_fields(track)
+        shape = json.dumps(fields, separators=(",", ":"))
+        counts[shape] = counts.get(shape, 0) + 1
+        out[track["stream_index"]] = json.dumps(
+            fields + [counts[shape]], separators=(",", ":"))
+    return out
+
+
+def resolve_track_answers(stored: dict[str, str], tracks: list[dict]) -> dict[int, str]:
+    """
+    Stored answers, resolved against the tracks the file has now.
+
+    Keyed by stream_index, which is what analyze_file takes. An answer whose
+    descriptor matches nothing is left out — never applied to some other
+    track by falling back to a stored position, which is the failure this
+    keying exists to close.
+    """
+    stream_for = {key: si for si, key in descriptors_by_stream(tracks).items()}
+    return {stream_for[key]: answer
+            for key, answer in stored.items() if key in stream_for}
+
+
+def _load_track_answers(media_file: MediaFile, attr: str) -> dict[str, str]:
+    """
+    The stored answers of one column, exactly as held: descriptor -> answer.
+
+    For writers, which merge a new answer in and write the column back.
+    Readers want resolve_track_answers on top of this.
     """
     value = getattr(media_file, attr)
     if not value:
         return {}
     try:
         raw = json.loads(value)
-        return {int(k): v for k, v in raw.items()}
+        return {str(k): v for k, v in raw.items()}
     except (ValueError, AttributeError, TypeError):
         logger.warning(
             "Invalid %s JSON for file %d — ignoring", attr, media_file.id
@@ -1076,28 +1143,29 @@ def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int
         return {}
 
 
-def _load_subtitle_overrides(media_file: MediaFile) -> dict[int, str]:
+def _load_subtitle_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
     """
-    Parse MediaFile.subtitle_overrides (JSON dict with string keys, since
-    JSON object keys are always strings) into a dict[int, str] keyed by
-    stream_index, as expected by analyze_file().
+    MediaFile.subtitle_overrides, resolved against `tracks` into the
+    dict[int, str] keyed by stream_index that analyze_file() takes.
+
+    The three loaders were one shared parser while all three columns were
+    keyed by stream_index. They are thin wrappers over the same pair of
+    helpers now, for the same reason: every call site keeps its own name.
     """
-    return _load_int_keyed_json_overrides(media_file, "subtitle_overrides")
+    return resolve_track_answers(
+        _load_track_answers(media_file, "subtitle_overrides"), tracks)
 
 
-def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
-    """
-    Parse MediaFile.audio_language_overrides (same JSON-dict-with-string-keys
-    shape as _load_subtitle_overrides above) into a dict[int, str] keyed by
-    stream_index, as expected by analyze_file().
-    """
-    return _load_int_keyed_json_overrides(media_file, "audio_language_overrides")
+def _load_audio_language_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
+    """MediaFile.audio_language_overrides, resolved the same way."""
+    return resolve_track_answers(
+        _load_track_answers(media_file, "audio_language_overrides"), tracks)
 
 
-def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
-    """Subtitle counterpart to _load_audio_language_overrides above — same
-    shape, same parsing, different column."""
-    return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
+def _load_subtitle_language_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
+    """Subtitle counterpart to _load_audio_language_overrides above."""
+    return resolve_track_answers(
+        _load_track_answers(media_file, "subtitle_language_overrides"), tracks)
 
 
 def _file_info_for(media_file: MediaFile) -> dict:

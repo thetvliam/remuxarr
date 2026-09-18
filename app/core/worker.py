@@ -1306,9 +1306,9 @@ def _load_job_data(job_id: int):
 
         app_cfg    = get_app_settings(db)
         file_info  = _file_info_for(media)
-        overrides  = _load_subtitle_overrides(media)
-        audio_lang_overrides = _load_audio_language_overrides(media)
-        subtitle_lang_overrides = _load_subtitle_language_overrides(media)
+        overrides  = _load_subtitle_overrides(media, tracks)
+        audio_lang_overrides = _load_audio_language_overrides(media, tracks)
+        subtitle_lang_overrides = _load_subtitle_language_overrides(media, tracks)
         faststart  = (
             is_faststart_mp4(media.path)
             if (media.container or "").lower() == "mp4"

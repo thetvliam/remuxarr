@@ -10,7 +10,11 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
-from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import (ScanStats, _file_info_for, _process_file,
+                              _load_subtitle_overrides, _load_audio_language_overrides,
+                              _load_subtitle_language_overrides, _load_track_answers,
+                              _get_forged_ac3_audio_index, _track_to_dict,
+                              _upsert_language_flags, descriptors_by_stream)
 from app.core.probe import is_faststart_mp4
 from app.database.models import (
     AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
@@ -181,9 +185,9 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
         else None
     )
     kwargs = dict(
-        subtitle_overrides=_load_subtitle_overrides(media),
-        audio_language_overrides=_load_audio_language_overrides(media),
-        subtitle_language_overrides=_load_subtitle_language_overrides(media),
+        subtitle_overrides=_load_subtitle_overrides(media, tracks),
+        audio_language_overrides=_load_audio_language_overrides(media, tracks),
+        subtitle_language_overrides=_load_subtitle_language_overrides(media, tracks),
         has_faststart=faststart,
         forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
     )
@@ -807,14 +811,33 @@ def resolve_subtitles(
                 f"subtitle track that can be converted to SRT.",
             )
 
-    # ── Merge new overrides into the persisted set ──────────────────────────
+    # ── Merge new answers into the persisted set ────────────────────────────
     # Written to media BEFORE the analysis below — _build_analysis_inputs
     # loads subtitle_overrides back off the media object, so it sees the
     # merged set including these new choices (in-session attribute read,
     # not a DB re-read).
-    existing_overrides = _load_subtitle_overrides(media)
-    existing_overrides.update(body.overrides)
-    media.subtitle_overrides = json.dumps({str(k): v for k, v in existing_overrides.items()})
+    #
+    # Stored against what each track is, not the stream it arrived as: the
+    # request names a position in the file as probed, and positions move
+    # (scanner.descriptors_by_stream). A stream the file does not have gets
+    # no descriptor, and an answer that cannot be recorded is refused rather
+    # than dropped quietly.
+    descriptors = descriptors_by_stream(
+        [_track_to_dict(t) for t in
+         db.query(Track).filter(Track.file_id == media.id).all()]
+    )
+    missing = sorted(set(body.overrides) - set(descriptors))
+    if missing:
+        raise HTTPException(
+            400,
+            f"No such stream on this file: {', '.join(str(i) for i in missing)}. "
+            f"It may have been re-probed since the page loaded.",
+        )
+
+    existing_overrides = _load_track_answers(media, "subtitle_overrides")
+    existing_overrides.update(
+        {descriptors[si]: choice for si, choice in body.overrides.items()})
+    media.subtitle_overrides = json.dumps(existing_overrides)
 
     # ── Re-run the decision engine with the updated overrides ───────────────
     app_cfg = get_app_settings(db)

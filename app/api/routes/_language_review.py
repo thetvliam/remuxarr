@@ -33,7 +33,6 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -42,9 +41,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.scanner import ScanStats, _process_file
+from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
+                              _track_to_dict, descriptors_by_stream)
 from app.core.decision import ISO_639_2_TO_1
-from app.database.models import MediaFile, QueueItem, RevertPoint
+from app.database.models import MediaFile, QueueItem, RevertPoint, Track
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,7 @@ class LanguageReviewKind:
     prefix: str                        # route prefix
     tag: str                           # OpenAPI tag
     flag_model: type                   # AudioLanguageFlag | SubtitleLanguageFlag
-    load_overrides: Callable[[MediaFile], dict[int, str]]
-    overrides_attr: str                # MediaFile column holding the JSON overrides
+    overrides_attr: str                # MediaFile column holding the JSON answers
     ignored_attr: str                  # MediaFile boolean column for "confirmed correct"
     list_description: str
     apply_description: str
@@ -479,12 +478,37 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # file, etc.) — a later retry, or the next scheduled scan, will
             # then pick the override up automatically without the user
             # needing to re-select it.
-            existing_overrides = kind.load_overrides(media)
+            # Stored against what each track is, not the stream it sits at
+            # today: positions move when the file is processed, and an answer
+            # keyed by one would later land on whichever track had taken that
+            # number (scanner.descriptors_by_stream).
+            #
+            # A flag naming a stream the file's tracks no longer have means
+            # the file was re-probed under the page: the answer cannot be
+            # tied to anything, and the flag itself describes a track that
+            # may be gone. The file is reported and left alone, flags and
+            # all, rather than half-answered — the same choice the two
+            # guards above make.
+            descriptors = descriptors_by_stream(
+                [_track_to_dict(t) for t in
+                 db.query(Track).filter(Track.file_id == media.id).all()]
+            )
+            unknown = sorted(f.stream_index for f in flags
+                             if f.stream_index not in descriptors)
+            if unknown:
+                results["errors"].append({
+                    "file_id": file_id,
+                    "error": (
+                        f"Track {', '.join(str(i) for i in unknown)} is not in "
+                        f"this file any more — it may have been re-probed"
+                    ),
+                })
+                continue
+
+            existing_overrides = _load_track_answers(media, kind.overrides_attr)
             for flag in flags:
-                existing_overrides[flag.stream_index] = lang
-            setattr(media, kind.overrides_attr, json.dumps(
-                {str(k): v for k, v in existing_overrides.items()}
-            ))
+                existing_overrides[descriptors[flag.stream_index]] = lang
+            setattr(media, kind.overrides_attr, json.dumps(existing_overrides))
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
             # Only the switch for the questions answered here: choosing a

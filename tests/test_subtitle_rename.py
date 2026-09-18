@@ -672,7 +672,7 @@ def _apply_under(db, flag_ids, dry_run, monkeypatch):
 
 def _flagged_with_sidecar(tmp_path):
     """A file whose subtitle has been extracted, plus the row asking about it."""
-    from app.database.models import MediaFile, SubtitleLanguageFlag
+    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -690,6 +690,11 @@ def _flagged_with_sidecar(tmp_path):
                       directory=str(tmp_path), size=5, mtime=1.0)
     db.add(media)
     db.commit()
+    # The track the flag describes: an answer is stored against what a track
+    # is, so a flag naming a stream the file's tracks do not have is reported
+    # rather than answered.
+    db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                 codec="subrip", language="und", is_forced=True))
     flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
                                 detected_language="und",
                                 extracted_path=str(srt))
@@ -745,14 +750,20 @@ def test_dry_run_still_records_the_choice(tmp_path, monkeypatch):
     for exactly that reason — so it stays, and the response says which mode
     it ran in.
     """
-    import json
+    from app.core.scanner import (_load_track_answers, _track_to_dict,
+                                  resolve_track_answers)
+    from app.database.models import Track
 
     db, media, flag, _srt = _flagged_with_sidecar(tmp_path)
 
     result = _apply_under(db, [flag.id], dry_run=True, monkeypatch=monkeypatch)
 
     db.refresh(media)
-    assert json.loads(media.subtitle_language_overrides) == {"2": "eng"}
+    tracks = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == media.id).all()]
+    assert resolve_track_answers(
+        _load_track_answers(media, "subtitle_language_overrides"), tracks
+    ) == {2: "eng"}
     assert result["dry_run"] is True
 
 

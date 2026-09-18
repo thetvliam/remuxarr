@@ -339,8 +339,13 @@ def test_each_listed_row_says_where_it_came_from():
 # ── Which switch an answer is recorded on ────────────────────────────────────
 
 def _flagged_file(db, tmp_path, flags, **media):
-    """A real file on disk with audio flags given as (stream_index, origin)."""
-    from app.database.models import AudioLanguageFlag, MediaFile
+    """
+    A real file on disk with audio flags given as (stream_index, origin),
+    and the tracks those flags describe: an answer is stored against what a
+    track is, so a flag naming a stream the file's tracks do not have is
+    reported rather than answered.
+    """
+    from app.database.models import AudioLanguageFlag, MediaFile, Track
 
     path = tmp_path / "Show.mkv"
     path.write_bytes(b"video")
@@ -349,6 +354,9 @@ def _flagged_file(db, tmp_path, flags, **media):
     db.add(file)
     db.commit()
     for stream_index, origin in flags:
+        db.add(Track(file_id=file.id, stream_index=stream_index,
+                     track_type="audio", codec="aac", language="und",
+                     channels=6, channel_layout="5.1"))
         db.add(AudioLanguageFlag(file_id=file.id, stream_index=stream_index,
                                  detected_language="und", origin=origin))
     db.commit()
@@ -486,3 +494,32 @@ def test_a_rows_origin_follows_the_route_that_flagged_it():
     (after,) = _rows(db, 1)
     assert after.id == before.id
     assert after.origin == "threshold"
+
+
+def test_a_flag_whose_track_is_gone_is_reported_not_answered(tmp_path, monkeypatch):
+    """
+    The flag names a stream the file's tracks no longer have, so the file was
+    re-probed under the page: the answer cannot be tied to a track, and the
+    flag itself describes one that may be gone. Reported, and the file left
+    alone — flags and all — rather than counted as applied while nothing was
+    recorded.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag, Track
+
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")])
+    db.query(Track).filter(Track.file_id == file.id).delete()
+    db.commit()
+    flag_id = db.query(AudioLanguageFlag).one().id
+
+    _real_run(monkeypatch)
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
+
+    db.expire_all()
+    assert result["applied"] == 0
+    assert [e["file_id"] for e in result["errors"]] == [file.id]
+    assert db.query(AudioLanguageFlag).count() == 1
+    assert db.get(type(file), file.id).audio_language_overrides in (None, "{}")
