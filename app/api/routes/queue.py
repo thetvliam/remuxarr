@@ -329,6 +329,155 @@ def list_manual_review(db: Session = Depends(get_db)):
     return [_serialize(item, include_actions=True) for item in items]
 
 
+def _review_heading(path: str, scan_paths: list[str]) -> str:
+    """
+    What a card calls the folder its files are in.
+
+    Derived from the path, never parsed out of the filename. The longest
+    matching scan path wins, so adding a broader library root later does not
+    silently rewrite every heading: with /media and /media/tv both configured,
+    a file under /media/tv is named relative to /media/tv.
+
+    Matched by whole path components, so /media/tv is not a root for
+    /media/tvshows.
+
+    A file under no scan path at all — webhooks do not check them, and
+    scanner.find_orphaned_media_files reports rows outside every one of them —
+    falls back to the last two segments of its folder. That names the folder
+    without asserting a root nobody configured, at the cost of a film under an
+    unconfigured folder reading "movies / The Movie".
+
+    Display only. Grouping always keys on the full directory, so two folders
+    that render the same heading never merge.
+    """
+    parent = os.path.dirname(path)
+    roots = [r.rstrip(os.sep) for r in scan_paths if r]
+    matching = [r for r in roots
+                if parent == r or parent.startswith(r + os.sep)]
+    if matching:
+        root = max(matching, key=len)
+        relative = parent[len(root):].strip(os.sep)
+        # A file sitting directly in its library root has nothing relative to
+        # show, so the root's own folder name is the most it can be called.
+        parts = relative.split(os.sep) if relative else [os.path.basename(root)]
+    else:
+        parts = [p for p in parent.split(os.sep) if p][-2:]
+    return " / ".join(parts)
+
+
+def _flagged_signature(flagged: list[dict], font_attachments: int | None):
+    """
+    What makes two files the same question.
+
+    The flagged tracks in stream order as (codec, language, forced, reason),
+    plus the file's font count, which decides whether keeping a styled track
+    costs the styling. Episodes 1-10 carrying jpn ass + eng ass and 11-12
+    also carrying a PGS commentary are two questions, and one card cannot
+    offer a toggle for a track half its files do not have.
+
+    Not the track descriptor answers are stored against (scanner.py). That
+    one leaves language out, because language gets corrected, and includes
+    the title, because it identifies a track within its own file. Here
+    language is exactly what makes two cards different questions, and titles
+    vary per episode — including them would split a season into one card per
+    file.
+    """
+    return (
+        tuple((t.get("codec"), t.get("language"), bool(t.get("is_forced")),
+               t.get("reason"))
+              for t in flagged),
+        font_attachments or 0,
+    )
+
+
+@router.get("/review/groups")
+def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
+                       offset: int = Query(default=0, ge=0),
+                       db: Session = Depends(get_db)):
+    """
+    Files waiting in review, grouped into the cards the Review page shows,
+    and paged by card.
+
+    A backlog is thousands of files and a handful of questions: one release
+    of one show is one question asked about twelve files. Paging by file
+    would put a page boundary through the middle of a card, which cannot be
+    rendered honestly — the count would be of what happened to fit.
+
+    Grouped by directory and flagged-track signature; see _flagged_signature.
+    Each group carries every one of its files, with the stream numbers that
+    file has for each track slot the card shows. The slots are shared, the
+    numbers are not: the same question in two files can sit at different
+    stream indices, which is why the apply endpoint takes answers per file.
+
+    Rows with no flagged tracks are not on this page. It asks one thing —
+    which tracks that block MP4 to keep — and a row with nothing flagged is
+    not that question.
+
+    Grouped in Python rather than SQL: the flagged tracks are a JSON column,
+    so a signature in SQL means JSON functions for no gain at this size. It
+    reads the waiting rows once per request, which is a few thousand small
+    rows on a page nobody loads in a loop.
+    """
+    rows = (
+        db.query(QueueItem.file_id, QueueItem.review_subtitles,
+                 MediaFile.path, MediaFile.filename, MediaFile.font_attachments)
+        .join(MediaFile, QueueItem.file_id == MediaFile.id)
+        .filter(QueueItem.status == "manual_review",
+                QueueItem.review_subtitles.isnot(None))
+        .order_by(MediaFile.path.asc())
+        .all()
+    )
+
+    scan_paths = get_app_settings(db).get("scan_paths") or []
+    groups: dict = {}
+    for file_id, flagged_json, path, filename, fonts in rows:
+        try:
+            flagged = json.loads(flagged_json)
+        except (ValueError, TypeError):
+            continue
+        if not flagged:
+            continue
+
+        directory = os.path.dirname(path)
+        key = (directory, _flagged_signature(flagged, fonts))
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = {
+                "key":          f"{len(groups)}:{directory}",
+                "heading":      _review_heading(path, scan_paths),
+                "directory":    directory,
+                "font_attachments": fonts or 0,
+                # The slots the card puts one set of choices on. Titles are
+                # this file's: they are not part of the signature, so files
+                # in one group can name the same track differently.
+                "tracks": [
+                    {"codec":     t.get("codec"),
+                     "language":  t.get("language"),
+                     "is_forced": bool(t.get("is_forced")),
+                     "reason":    t.get("reason"),
+                     "title":     t.get("title")}
+                    for t in flagged
+                ],
+                "files": [],
+            }
+        group["files"].append({
+            "file_id":  file_id,
+            "filename": filename,
+            "path":     path,
+            # One stream number per track slot above, in the same order.
+            "streams":  [t.get("stream_index") for t in flagged],
+        })
+
+    ordered = list(groups.values())
+    for group in ordered:
+        group["file_count"] = len(group["files"])
+    return {
+        "groups":      ordered[offset:offset + limit],
+        "total_groups": len(ordered),
+        "total_files":  sum(g["file_count"] for g in ordered),
+    }
+
+
 class ReviewFileDecision(BaseModel):
     file_id: int
     # Maps stream_index -> "keep" | "remove" | "extract", for every flagged

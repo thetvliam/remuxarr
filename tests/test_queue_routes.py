@@ -1766,3 +1766,191 @@ def test_a_file_answered_and_skipped_at_once_fails_the_whole_request(db):
         _apply(db, files=[(1, {2: "remove"})], skips=[1])
 
     assert exc.value.status_code == 400
+
+
+# ── The review page's cards ──────────────────────────────────────────────────
+#
+# One release of one show is one question asked about twelve files, so the
+# page is paged by card, not by file: a page boundary through the middle of a
+# card cannot be rendered honestly. Every mutation below survived the whole
+# 1575-test suite before these tests existed:
+#
+#   • grouped on the directory alone, or on the signature alone
+#   • the signature ignoring the reason, the language, or the font count
+#   • headings matched by string prefix, or by the shortest scan path
+#   • the fallback heading used even under a configured scan path
+#   • the page limit ignored
+#   • every file given the first file's stream numbers
+#   • a row with nothing flagged listed as a card
+
+def _waiting(db, file_id, path, flagged, *, fonts=0):
+    """A file waiting in review, flagged as given: (stream, codec, lang, reason)."""
+    from app.database.models import MediaFile, QueueItem
+
+    db.add(MediaFile(id=file_id, path=path, filename=path.rsplit("/", 1)[-1],
+                     directory=path.rsplit("/", 1)[0], size=1, mtime=1.0,
+                     container="mkv", font_attachments=fonts))
+    db.add(QueueItem(id=file_id, file_id=file_id, status="manual_review",
+                     review_reason="font_attachments",
+                     review_subtitles=json.dumps(
+                         [{"stream_index": si, "codec": codec, "language": lang,
+                           "is_forced": False, "title": None, "reason": reason}
+                          for si, codec, lang, reason in flagged])))
+    db.commit()
+
+
+def _groups(db, *, limit=25, offset=0):
+    """
+    The handler, called with its paging spelled out: the defaults are Query
+    objects, which only FastAPI fills in.
+    """
+    from app.api.routes.queue import list_review_groups
+
+    return list_review_groups(limit=limit, offset=offset, db=db)
+
+
+_ANIME = [(2, "ass", "jpn", "styled"), (3, "ass", "eng", "styled")]
+
+
+def test_one_card_per_question_not_per_file(db):
+    """
+    Twelve episodes of one release are one question. The card carries every
+    file, because the page stages one answer and applies it to all of them.
+    """
+    for n in (1, 2, 3):
+        _waiting(db, n, f"/media/tv/Show/Season 1/ep0{n}.mkv", _ANIME, fonts=17)
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 1
+    assert result["total_files"] == 3
+    (group,) = result["groups"]
+    assert group["file_count"] == 3
+    assert [t["language"] for t in group["tracks"]] == ["jpn", "eng"]
+
+
+def test_two_releases_in_one_folder_are_two_cards(db):
+    """
+    A season folder holds what it holds. Episodes 11-12 also carrying a PGS
+    commentary cannot share a card with 1-10: half the files would have no
+    track for one of its toggles.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep11.mkv",
+             _ANIME + [(4, "hdmv_pgs_subtitle", "eng", "image")], fonts=17)
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 2
+    assert [g["file_count"] for g in result["groups"]] == [1, 1]
+
+
+@pytest.mark.parametrize("second, expected_groups", [
+    ([(2, "ass", "jpn", "styled"), (3, "ass", "dut", "styled")], 2),
+    ([(2, "ass", "jpn", "styled"), (3, "ass", "eng", "image")], 2),
+    (_ANIME, 1),
+], ids=["different language", "different reason", "identical"])
+def test_the_signature_separates_different_questions(db, second, expected_groups):
+    """
+    Language is what makes two cards different questions — keeping a Japanese
+    track and keeping an English one are not the same decision — and the
+    reason is what decides the choices a track is offered.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep02.mkv", second, fonts=17)
+
+    assert _groups(db)["total_groups"] == expected_groups
+
+
+def test_the_font_count_separates_two_otherwise_identical_cards(db):
+    """
+    Keeping a styled track costs the styling only where there are fonts to
+    lose, so the outcome differs and the files are not one question.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep02.mkv", _ANIME, fonts=0)
+
+    assert _groups(db)["total_groups"] == 2
+
+
+def test_two_folders_that_read_alike_never_merge(db):
+    """
+    The heading is display only. Two shows under different roots can render
+    the same two segments, and merging them would offer one answer for files
+    that have nothing to do with each other.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME)
+    _waiting(db, 2, "/mnt/old/Show/Season 1/ep01.mkv", _ANIME)
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 2
+    assert {g["heading"] for g in result["groups"]} == {"Show / Season 1"}
+
+
+@pytest.mark.parametrize("scan_paths, path, heading", [
+    (["/media/tv"], "/media/tv/Show/Season 1/ep.mkv", "Show / Season 1"),
+    (["/media", "/media/tv"], "/media/tv/Show/Season 1/ep.mkv", "Show / Season 1"),
+    (["/media"], "/media/tv/Show/Season 1/ep.mkv", "tv / Show / Season 1"),
+    (["/media/tv"], "/media/tvshows/Show/Season 1/ep.mkv", "Show / Season 1"),
+    (["/media/movies"], "/media/movies/The Movie/movie.mkv", "The Movie"),
+    ([], "/media/tv/Show/Season 1/ep.mkv", "Show / Season 1"),
+    ([], "/downloads/movie.mkv", "downloads"),
+], ids=["under its root", "longest root wins", "broader root", "not a component",
+        "film under its root", "no roots at all", "outside every root"])
+def test_the_heading_comes_from_the_library_root(db, scan_paths, path, heading):
+    """
+    Longest match, by whole components. Any other rule rewrites every heading
+    the day someone adds a broader library root, and /media/tv is not the
+    root of /media/tvshows however the strings compare.
+    """
+    from app.database.session import update_app_setting
+
+    update_app_setting(db, "scan_paths", scan_paths)
+    _waiting(db, 1, path, _ANIME)
+
+    assert _groups(db)["groups"][0]["heading"] == heading
+
+
+def test_each_file_brings_its_own_stream_numbers(db):
+    """
+    The card's toggles are shared; the streams behind them are not. The same
+    question can sit at different positions in two files, which is why the
+    apply endpoint takes answers per file.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep02.mkv",
+             [(4, "ass", "jpn", "styled"), (5, "ass", "eng", "styled")], fonts=17)
+
+    (group,) = _groups(db)["groups"]
+
+    assert [f["streams"] for f in group["files"]] == [[2, 3], [4, 5]]
+
+
+def test_cards_are_paged_whole(db):
+    """A page of cards, not of files: the limit counts cards."""
+    for n in (1, 2, 3):
+        _waiting(db, n, f"/media/tv/Show {n}/Season 1/ep.mkv", _ANIME)
+
+    page = _groups(db, limit=2)
+
+    assert [g["heading"] for g in page["groups"]] == ["Show 1 / Season 1",
+                                                      "Show 2 / Season 1"]
+    assert page["total_groups"] == 3
+    assert [g["heading"] for g in _groups(db, limit=2, offset=2)["groups"]] == [
+        "Show 3 / Season 1"]
+
+
+def test_a_row_with_nothing_flagged_is_not_a_card(db):
+    """
+    This page asks one thing: which tracks that block MP4 to keep. A row with
+    no flagged tracks is not that question, and a card with no toggles is
+    nothing a person can answer.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep02.mkv", [])
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 1
+    assert result["total_files"] == 1
