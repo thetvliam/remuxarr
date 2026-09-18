@@ -1559,3 +1559,210 @@ def test_acknowledged_is_not_swallowed_by_the_item_id_route():
 
     assert r.status_code == 200
     assert "total" in r.json()
+
+
+# ── A page of review decisions, applied in one call ──────────────────────────
+#
+# Files are named by file_id: item ids do not survive staging, since
+# answering an audio language deletes a file's items and re-runs the scan
+# path. Everything below was run as a mutation against the whole 1567-test
+# suite before these tests existed, and every one survived:
+#
+#   • one commit at the end instead of per file
+#   • answers applied to a file whose flagged tracks have changed
+#   • a file with nothing in review dropped without a word
+#   • skips written by hand rather than through the shared transition
+#   • skips not applied, or missing from the outcomes
+#   • one refusal aborting the whole batch
+#   • the request-level choice check dropped
+#   • a file answered and skipped in the same request allowed
+#   • any of the file's items taken, not only one in review
+
+def _review_file(db, file_id, *, flagged, codec="ass", path=None):
+    """A file waiting in review, flagged for the given subtitle streams."""
+    from app.database.models import MediaFile, QueueItem, Track
+
+    path = path or f"/m/Show {file_id}.mkv"
+    mf = MediaFile(id=file_id, path=path, filename=path.rsplit("/", 1)[-1],
+                   directory="/m", size=1, mtime=1.0, container="mkv",
+                   video_codec="h264")
+    db.add(mf)
+    db.add(Track(file_id=file_id, stream_index=0, track_type="video", codec="h264"))
+    db.add(Track(file_id=file_id, stream_index=1, track_type="audio",
+                 codec="aac", language="eng"))
+    for si in flagged:
+        db.add(Track(file_id=file_id, stream_index=si, track_type="subtitle",
+                     codec=codec, language="eng", title=f"Track {si}"))
+    db.add(QueueItem(id=file_id, file_id=file_id, status="manual_review",
+                     is_dry_run=False, reason="needs review",
+                     review_reason="font_attachments",
+                     review_subtitles=json.dumps(
+                         [{"stream_index": si, "codec": codec,
+                           "reason": "styled"} for si in flagged])))
+    db.commit()
+    return mf
+
+
+def _apply(db, files=(), skips=()):
+    from app.api.routes.queue import (ReviewApplyRequest, ReviewFileDecision,
+                                      apply_review_decisions)
+
+    return apply_review_decisions(
+        ReviewApplyRequest(
+            files=[ReviewFileDecision(file_id=fid, answers=answers)
+                   for fid, answers in files],
+            skips=list(skips),
+        ),
+        db,
+    )
+
+
+def test_each_file_lands_on_its_own_outcome(db):
+    """
+    Two files answered in one call, each re-decided on its own: removing the
+    styled track leaves the first with a conversion to do, keeping it holds
+    the second as MKV with nothing left to change. One call, two different
+    outcomes, and the page builds one summary from them.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2])
+    _review_file(db, 2, flagged=[2])
+
+    result = _apply(db, files=[(1, {2: "remove"}), (2, {2: "keep"})])
+
+    assert result["errors"] == []
+    assert [(o["file_id"], o["status"]) for o in result["outcomes"]] == [
+        (1, "pending"), (2, "skipped"),
+    ]
+    assert db.get(QueueItem, 1).status == "pending"
+    assert db.get(QueueItem, 2).status == "skipped"
+
+
+def test_a_refusal_leaves_the_files_around_it_applied(db):
+    """
+    Committed per file. The middle file asks to extract a bitmap track,
+    which cannot be done, and a page of decisions must not be lost because
+    one of them was refused — the same reasoning retry_all_failed and the
+    language apply already follow.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2])
+    _review_file(db, 2, flagged=[2], codec="hdmv_pgs_subtitle")
+    _review_file(db, 3, flagged=[2])
+
+    result = _apply(db, files=[(1, {2: "remove"}),
+                               (2, {2: "extract"}),
+                               (3, {2: "remove"})])
+
+    assert [o["file_id"] for o in result["outcomes"]] == [1, 3]
+    assert [e["file_id"] for e in result["errors"]] == [2]
+    assert db.get(QueueItem, 1).status == "pending"
+    assert db.get(QueueItem, 2).status == "manual_review"
+    assert db.get(QueueItem, 3).status == "pending"
+
+
+def test_a_skipped_file_is_cancelled_and_comes_back_on_the_next_scan(db):
+    """
+    Skip goes through the same transition as the Skip button: the status the
+    Failed tab reads, a completed_at so the row does not sink to the bottom
+    of it, the file's own status, and the scan-stamp reset that is the only
+    reason a delta scan ever looks at the file again.
+    """
+    from app.database.models import MediaFile, QueueItem
+
+    _review_file(db, 1, flagged=[2])
+
+    result = _apply(db, skips=[1])
+
+    item = db.get(QueueItem, 1)
+    media = db.get(MediaFile, 1)
+    assert [(o["file_id"], o["status"]) for o in result["outcomes"]] == [(1, "cancelled")]
+    assert item.completed_at is not None
+    assert (media.size, media.mtime, media.status) == (-1, -1.0, "skipped")
+
+
+def test_a_file_with_nothing_in_review_is_reported(db):
+    """
+    Answered on another tab, or re-scanned out of review between the page
+    loading and Apply. Reported as its own outcome rather than dropped: the
+    summary would otherwise count decisions that were never recorded.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2])
+    _review_file(db, 2, flagged=[2])
+    # File 2 left review while the page was open; file 9 does not exist.
+    db.get(QueueItem, 2).status = "pending"
+    db.commit()
+
+    result = _apply(db, files=[(2, {2: "remove"})], skips=[9])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [2, 9]
+
+
+def test_answers_for_tracks_that_have_changed_are_not_applied(db):
+    """
+    The file was re-probed since the page was served, so the card the user
+    answered described a different set of tracks. Applying the part that
+    still matches would record an answer to a question nobody was asked.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2, 3])
+
+    result = _apply(db, files=[(1, {2: "remove"})])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [1]
+    assert db.get(QueueItem, 1).status == "manual_review"
+
+
+def test_skipping_a_file_that_is_no_longer_in_review_leaves_its_job_alone(db):
+    """
+    Only an item in review can be answered or skipped here. A file that has
+    already left review for the queue has a job waiting, and cancelling that
+    is not what Skip on a review card means — the user skipped a question,
+    not the work. Answers are protected by the flagged-track check above;
+    a skip carries no tracks, so the lookup itself is what protects it.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2])
+    db.get(QueueItem, 1).status = "pending"
+    db.commit()
+
+    result = _apply(db, skips=[1])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [1]
+    assert db.get(QueueItem, 1).status == "pending"
+
+
+def test_a_choice_the_endpoint_does_not_have_fails_the_whole_request(db):
+    """
+    A caller that has built the request wrong, not one file's problem: it is
+    refused before anything is written, so nothing is half-applied.
+    """
+    from app.database.models import QueueItem
+
+    _review_file(db, 1, flagged=[2])
+    _review_file(db, 2, flagged=[2])
+
+    with pytest.raises(HTTPException) as exc:
+        _apply(db, files=[(1, {2: "remove"}), (2, {2: "banana"})])
+
+    assert exc.value.status_code == 400
+    assert db.get(QueueItem, 1).status == "manual_review"
+
+
+def test_a_file_answered_and_skipped_at_once_fails_the_whole_request(db):
+    """Two contradictory decisions for one file — the page cannot mean both."""
+    _review_file(db, 1, flagged=[2])
+
+    with pytest.raises(HTTPException) as exc:
+        _apply(db, files=[(1, {2: "remove"})], skips=[1])
+
+    assert exc.value.status_code == 400

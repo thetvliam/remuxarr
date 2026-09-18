@@ -329,6 +329,142 @@ def list_manual_review(db: Session = Depends(get_db)):
     return [_serialize(item, include_actions=True) for item in items]
 
 
+class ReviewFileDecision(BaseModel):
+    file_id: int
+    # Maps stream_index -> "keep" | "remove" | "extract", for every flagged
+    # track of that file. See apply_review_decisions.
+    answers: dict[int, str]
+
+
+class ReviewApplyRequest(BaseModel):
+    files: list[ReviewFileDecision] = []
+    skips: list[int] = []
+
+
+@router.post("/review/apply")
+def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_db)):
+    """
+    Apply a page's worth of subtitle-review decisions in one call: the files
+    answered, and the files skipped.
+
+    Files are named by file_id, not by queue item. The decision has always
+    been about the file — subtitle_overrides lives on MediaFile, and the
+    item is only the current evaluation of it — and item ids do not survive
+    staging: answering an audio language deletes a file's items and re-runs
+    the scan path, which creates a new one. Anime routinely has both an
+    audio and a subtitle question, so that is a normal thing to happen
+    between a page loading and its Apply. Each file is resolved to its
+    current manual_review item here instead.
+
+    Returns an outcome per file — the status it landed on, its reason, and
+    whether the job that follows is a dry run — plus refusals. One summary
+    is built from that, rather than a toast per file.
+
+    Answers have to name exactly the tracks the file is flagged for. A file
+    re-probed since the page was served has a different set, which means the
+    card the user answered described tracks this file may not have any more;
+    applying part of it would record answers for a question nobody was
+    asked. That file is reported and left alone.
+
+    Committed per file, for the reason retry_all_failed and the language
+    apply share: with a page of decisions, one refusal must not roll back
+    the files already applied.
+
+    Everything here is a row change, so there is no dry-run guard. A dry run
+    is about what a job writes to disk, and the decision this records is
+    what a later job — dry run or not — will act on.
+    """
+    outcomes: list[dict] = []
+    errors: list[dict] = []
+
+    # Whole-request validation first, before anything is written: a choice
+    # this endpoint does not have, or a file both answered and skipped, is a
+    # caller that has built the request wrong rather than one file's problem.
+    for entry in body.files:
+        for stream_index, choice in entry.answers.items():
+            if choice not in ("keep", "remove", "extract"):
+                raise HTTPException(
+                    400,
+                    f"Invalid choice for file {entry.file_id} stream "
+                    f"{stream_index}: {choice!r} (expected 'keep', 'remove' "
+                    f"or 'extract')")
+    both = sorted({e.file_id for e in body.files} & set(body.skips))
+    if both:
+        raise HTTPException(
+            400,
+            f"Answered and skipped in the same request: "
+            f"{', '.join(str(i) for i in both)}")
+
+    def _review_item(file_id: int):
+        return (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status == "manual_review")
+            .order_by(QueueItem.created_at.asc())
+            .first()
+        )
+
+    for entry in body.files:
+        item = _review_item(entry.file_id)
+        if item is None:
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        flagged = set()
+        if item.review_subtitles:
+            try:
+                flagged = {t["stream_index"] for t in json.loads(item.review_subtitles)}
+            except (ValueError, TypeError, KeyError):
+                flagged = set()
+        if flagged != set(entry.answers):
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "The tracks flagged for this file have changed since "
+                         "it was shown — nothing was applied to it",
+            })
+            continue
+
+        try:
+            _answer_subtitle_review(db, item, item.media_file, entry.answers)
+        except ReviewAnswerRefused as refused:
+            db.rollback()
+            errors.append({"file_id": entry.file_id, "error": str(refused)})
+            continue
+
+        db.commit()
+        outcomes.append({
+            "file_id":    entry.file_id,
+            "status":     item.status,
+            "reason":     item.reason,
+            "is_dry_run": item.is_dry_run,
+        })
+
+    for file_id in body.skips:
+        item = _review_item(file_id)
+        if item is None:
+            errors.append({
+                "file_id": file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        _cancel_item_row(item)
+        db.commit()
+        outcomes.append({
+            "file_id":    file_id,
+            "status":     item.status,
+            "reason":     item.reason,
+            "is_dry_run": item.is_dry_run,
+        })
+
+    return {"outcomes": outcomes, "errors": errors}
+
+
 @router.get("/stats")
 def queue_stats(db: Session = Depends(get_db)):
     """
@@ -607,17 +743,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     if item.status not in ("pending", "manual_review"):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
 
-    item.status = "cancelled"
-    # Stamp completed_at, matching the skipped transition in
-    # _apply_decision_to_item (and abort_job): history orders by
-    # completed_at DESC and SQLite sorts NULLs last, so a cancelled row
-    # without it would sink to the bottom of the Failed tab regardless of
-    # recency and render a "—" timestamp. cancel_item and clear_pending
-    # were the two "cancelled"-producing paths that missed this.
-    item.completed_at = utcnow()
-    if item.media_file:
-        _force_rescan(item.media_file)
-        item.media_file.status = "skipped"
+    _cancel_item_row(item)
     db.commit()
     return {"success": True}
 
@@ -786,17 +912,48 @@ def resolve_subtitles(
     if not media:
         raise HTTPException(404, "Associated media file not found")
 
-    for stream_index, choice in body.overrides.items():
+    try:
+        _answer_subtitle_review(db, item, media, body.overrides)
+    except ReviewAnswerRefused as refused:
+        raise HTTPException(400, str(refused))
+    db.commit()
+    return _serialize(item, include_actions=True)
+
+
+class ReviewAnswerRefused(Exception):
+    """
+    An answer that cannot be carried out, named for the caller to report.
+
+    One file's problem. The single-item endpoint turns it into a 400; the
+    batch endpoint records it against that file and goes on with the rest,
+    which is why it is not an HTTPException itself.
+    """
+
+
+def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
+                            answers: dict[int, str]) -> None:
+    """
+    Record a subtitle review's answers on the file and re-decide it.
+
+    The one path from "the user chose" to "the item moved", shared by the
+    single-item endpoint and the batch one so the two cannot drift: the
+    validation below is what stops an answer being accepted and then not
+    carried out, and it has to hold whichever door the answer came through.
+
+    Does NOT commit. The batch endpoint commits per file, so one refusal
+    cannot roll back the files already applied.
+    """
+    for stream_index, choice in answers.items():
         if choice not in ("keep", "remove", "extract"):
-            raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep', 'remove' or 'extract')")
+            raise ReviewAnswerRefused(
+                f"Invalid choice for stream {stream_index}: {choice!r} "
+                f"(expected 'keep', 'remove' or 'extract')")
         if choice != "extract":
             continue
         if item.review_reason == "subtitle_encoding":
-            raise HTTPException(
-                400,
+            raise ReviewAnswerRefused(
                 f"Cannot extract stream {stream_index}: extracting it is what "
-                f"failed. Choose keep or remove.",
-            )
+                f"failed. Choose keep or remove.")
         track = (
             db.query(Track)
             .filter(Track.file_id == media.id,
@@ -805,11 +962,9 @@ def resolve_subtitles(
             .first()
         )
         if track is None or (track.codec or "").lower() not in SRT_CONVERTIBLE_SUBS:
-            raise HTTPException(
-                400,
+            raise ReviewAnswerRefused(
                 f"Cannot extract stream {stream_index}: it is not a text "
-                f"subtitle track that can be converted to SRT.",
-            )
+                f"subtitle track that can be converted to SRT.")
 
     # ── Merge new answers into the persisted set ────────────────────────────
     # Written to media BEFORE the analysis below — _build_analysis_inputs
@@ -826,17 +981,15 @@ def resolve_subtitles(
         [_track_to_dict(t) for t in
          db.query(Track).filter(Track.file_id == media.id).all()]
     )
-    missing = sorted(set(body.overrides) - set(descriptors))
+    missing = sorted(set(answers) - set(descriptors))
     if missing:
-        raise HTTPException(
-            400,
+        raise ReviewAnswerRefused(
             f"No such stream on this file: {', '.join(str(i) for i in missing)}. "
-            f"It may have been re-probed since the page loaded.",
-        )
+            f"It may have been re-probed since the page loaded.")
 
     existing_overrides = _load_track_answers(media, "subtitle_overrides")
     existing_overrides.update(
-        {descriptors[si]: choice for si, choice in body.overrides.items()})
+        {descriptors[si]: choice for si, choice in answers.items()})
     media.subtitle_overrides = json.dumps(existing_overrides)
 
     # ── Re-run the decision engine with the updated overrides ───────────────
@@ -845,8 +998,24 @@ def resolve_subtitles(
     decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
     _apply_decision_to_item(db, item, media, decision)
-    db.commit()
-    return _serialize(item, include_actions=True)
+
+
+def _cancel_item_row(item: QueueItem) -> None:
+    """
+    The transition Skip and Cancel make on one row. Does NOT commit.
+
+    A helper because the batch review endpoint skips files through it too,
+    and the three parts have to travel together: the status the Failed tab
+    reads, the completed_at without which the row sinks to the bottom of
+    that tab, the scan-stamp reset without which a delta scan never looks
+    at the file again, and the file's own status. See cancel_item for the
+    full story of each.
+    """
+    item.status = "cancelled"
+    item.completed_at = utcnow()
+    if item.media_file:
+        _force_rescan(item.media_file)
+        item.media_file.status = "skipped"
 
 
 def _resolve_review_bulk(db: Session, reason: str, *,
