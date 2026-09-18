@@ -1954,3 +1954,202 @@ def test_a_row_with_nothing_flagged_is_not_a_card(db):
 
     assert result["total_groups"] == 1
     assert result["total_files"] == 1
+
+
+# ── What the staged answers would do ─────────────────────────────────────────
+#
+# The card's outcome line cannot be derived from the answers: keeping a track
+# holds a file as MKV, but so does DTS audio, and a file already in MP4
+# converts to nothing. Every mutation below survived the whole 1592-test
+# suite before these tests existed:
+#
+#   • the staged answers ignored, or losing to the stored ones
+#   • the preview writing what it previewed
+#   • the refusal checks skipped, or reported as outcomes
+#   • the flagged-set check dropped
+#   • the file limit dropped
+#   • the file's current container reported as its target
+#   • the fast-start input dropped
+#   • a file with nothing in review previewed anyway
+
+def _preview(db, files):
+    from app.api.routes.queue import (ReviewApplyRequest, ReviewFileDecision,
+                                      preview_review_decisions)
+
+    return preview_review_decisions(
+        ReviewApplyRequest(files=[ReviewFileDecision(file_id=fid, answers=a)
+                                  for fid, a in files]),
+        db,
+    )
+
+
+def _styled_review(db, file_id=1, *, audio="aac", path="/m/Show.mkv"):
+    """A file held for its styled subtitle, with one audio track."""
+    media, item = _reviewable(db, path=path, tracks=[
+        (0, "video", "h264", None),
+        (1, "audio", audio, "eng"),
+        (2, "subtitle", "ass", "eng"),
+    ])
+    item.review_reason = "font_attachments"
+    item.review_subtitles = json.dumps(
+        [{"stream_index": 2, "codec": "ass", "language": "eng",
+          "is_forced": False, "title": None, "reason": "styled"}])
+    media.font_attachments = 4
+    db.commit()
+    return media, item
+
+
+def test_removing_the_track_converts_but_keeping_it_does_not(db):
+    """
+    The two answers the card offers, and the difference between them is the
+    whole point of the line: the kept track is what holds the file as MKV.
+    """
+    _styled_review(db)
+
+    removed = _preview(db, [(1, {2: "remove"})])["outcomes"][0]
+    kept = _preview(db, [(1, {2: "keep"})])["outcomes"][0]
+
+    assert (removed["target_container"], removed["will_process"]) == ("mp4", True)
+    assert kept["target_container"] != "mp4"
+
+
+def test_audio_that_blocks_mp4_decides_the_line_not_the_answer(db):
+    """
+    Checked against the engine when the mockup was reviewed: deriving the
+    line from the answers alone was wrong for six of seven files. DTS is one
+    of them — removing the subtitle changes nothing about the container,
+    because the audio is what holds it.
+    """
+    _styled_review(db, audio="dts")
+
+    (outcome,) = _preview(db, [(1, {2: "remove"})])["outcomes"]
+
+    assert outcome["target_container"] != "mp4"
+
+
+def test_a_staged_answer_beats_the_one_already_stored(db):
+    """
+    Changing your mind. The file was answered Keep at some point, the card
+    now has Remove staged, and the line has to describe what Apply would do
+    — which is the staged answer, since that is what Apply records.
+    """
+    from app.core.scanner import _track_to_dict, descriptors_by_stream
+    from app.database.models import Track
+
+    media, _ = _styled_review(db)
+    keys = descriptors_by_stream(
+        [_track_to_dict(t) for t in db.query(Track).filter(Track.file_id == 1)])
+    media.subtitle_overrides = json.dumps({keys[2]: "keep"})
+    db.commit()
+
+    (outcome,) = _preview(db, [(1, {2: "remove"})])["outcomes"]
+
+    assert outcome["target_container"] == "mp4"
+
+
+def test_the_preview_writes_nothing(db):
+    """
+    The user is still choosing. Recording the answer here would apply a
+    decision nobody pressed Apply on, and the item would leave review while
+    its card was still on screen.
+    """
+    from app.database.models import MediaFile, QueueItem
+
+    media, item = _styled_review(db)
+
+    _preview(db, [(1, {2: "remove"})])
+
+    db.expire_all()
+    assert db.get(MediaFile, 1).subtitle_overrides is None
+    assert db.get(QueueItem, 1).status == "manual_review"
+
+
+def test_an_answer_that_cannot_be_carried_out_is_refused_before_apply(db):
+    """
+    The same checks Apply uses, run without writing, so the card can say so
+    while the user is choosing rather than at Apply.
+    """
+    media, item = _styled_review(db)
+    item.review_reason = "subtitle_encoding"
+    db.commit()
+
+    result = _preview(db, [(1, {2: "extract"})])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [1]
+
+
+def test_files_with_nothing_to_preview_are_reported(db):
+    """
+    A file answered on another tab, one re-probed since the page was served,
+    and one that never existed. None of them can be given a line, and a card
+    that quietly showed one for the others would be counting files it cannot
+    speak for.
+    """
+    from app.database.models import QueueItem
+
+    _styled_review(db)
+    db.get(QueueItem, 1).status = "pending"
+    db.commit()
+
+    reported = _preview(db, [(1, {2: "remove"}), (9, {2: "remove"})])
+
+    assert reported["outcomes"] == []
+    assert [e["file_id"] for e in reported["errors"]] == [1, 9]
+
+
+def test_answers_that_do_not_match_the_flagged_tracks_are_reported(db):
+    """The card described tracks this file may no longer have."""
+    _styled_review(db)
+
+    result = _preview(db, [(1, {2: "remove", 3: "remove"})])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [1]
+
+
+def test_an_mp4_missing_fast_start_still_has_a_pass_to_do(db, monkeypatch):
+    """
+    The preview reads whether an MP4 source is already fast-start, as every
+    other caller of the engine does. Keeping the track is the one answer
+    that leaves an MP4 with nothing else to do, so fast-start is the only
+    thing that can make work here.
+
+    Confirmed missing is what the engine acts on: unknown means it plans
+    nothing, so dropping the read turns "this file still needs a pass" into
+    "nothing to do" and the card would say the file was already finished.
+    That miss once left MP4s un-optimised until a forced rescan, and it is
+    recorded on _build_analysis_inputs.
+    """
+    import app.api.routes.queue as queue_routes
+
+    media, item = _reviewable(db, path="/m/Show.mp4", container="mp4", tracks=[
+        (0, "video", "h264", None),
+        (1, "audio", "aac", "eng"),
+        (2, "subtitle", "mov_text", "eng"),
+    ])
+    item.review_reason = "subtitle_encoding"
+    item.review_subtitles = json.dumps(
+        [{"stream_index": 2, "codec": "mov_text", "language": "eng",
+          "is_forced": False, "title": None, "reason": "encoding"}])
+    db.commit()
+    monkeypatch.setattr(queue_routes, "is_faststart_mp4", lambda _path: False)
+
+    (outcome,) = _preview(db, [(1, {2: "keep"})])["outcomes"]
+
+    assert outcome["will_process"] is True
+
+
+def test_more_files_than_the_limit_are_refused(db):
+    """
+    A decision per file, each with a query or two and, for an MP4 source, a
+    small read. The page previews the card being edited, not the backlog.
+    """
+    from app.api.routes.queue import PREVIEW_FILE_LIMIT
+
+    _styled_review(db)
+
+    with pytest.raises(HTTPException) as exc:
+        _preview(db, [(1, {2: "remove"})] * (PREVIEW_FILE_LIMIT + 1))
+
+    assert exc.value.status_code == 400

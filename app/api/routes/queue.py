@@ -490,6 +490,123 @@ class ReviewApplyRequest(BaseModel):
     skips: list[int] = []
 
 
+def _flagged_streams(item: QueueItem) -> set:
+    """
+    The streams an item is flagged for, as the page was shown them.
+
+    Answers have to name exactly this set. A file re-probed since then has a
+    different one, which means the card the user answered described tracks
+    this file may not have any more.
+    """
+    if not item.review_subtitles:
+        return set()
+    try:
+        return {t["stream_index"] for t in json.loads(item.review_subtitles)}
+    except (ValueError, TypeError, KeyError):
+        return set()
+
+
+PREVIEW_FILE_LIMIT = 500
+
+
+@router.post("/review/preview")
+def preview_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_db)):
+    """
+    What the staged answers would do to each file, without doing any of it.
+
+    The card's outcome line cannot be worked out from the answers alone.
+    Keeping a track holds a file as MKV, but so does DTS audio, and a file
+    whose container is already MP4 converts to nothing at all: checked
+    against the engine, the rule "any keep means it stays MKV" was wrong for
+    six of seven files. Only analyze_file knows, so the answer comes from
+    analyze_file.
+
+    Returns per file the container it is in, the container it would end in
+    (null when the file would not be processed at all), whether it would be
+    processed, and whether it would still be waiting in review. The sentence
+    on the card is built from that, plus the counts of kept, removed and
+    extracted tracks, which the page already has because it staged them.
+
+    Writes nothing. The staged answers are merged into a copy of the file's
+    stored answers and handed to the engine as an argument; the file's row
+    is not touched and nothing is committed.
+
+    An answer that could never be carried out is refused here rather than at
+    Apply, through the same checks Apply uses, so a card can say so while
+    the user is still choosing. Files with nothing waiting in review, or
+    whose flagged tracks have changed since the page was served, are
+    reported the same way Apply reports them.
+
+    Capped at PREVIEW_FILE_LIMIT files, because this costs a decision per
+    file — a couple of queries, and for an MP4 source a small read to see
+    whether it is already fast-start. That read is kept rather than guessed
+    at: without it the engine plans a fast-start pass for a file that
+    already has one, and the card would promise work that is not needed. The
+    page previews the card being edited, not the whole backlog.
+
+    Skips are not previewed. A skipped file has no outcome to compute, and
+    the page knows what it staged.
+    """
+    if len(body.files) > PREVIEW_FILE_LIMIT:
+        raise HTTPException(
+            400,
+            f"Too many files to preview at once: {len(body.files)} "
+            f"(limit {PREVIEW_FILE_LIMIT}). Preview one card at a time.")
+
+    outcomes: list[dict] = []
+    errors: list[dict] = []
+    app_cfg = get_app_settings(db)
+
+    for entry in body.files:
+        item = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == entry.file_id,
+                    QueueItem.status == "manual_review")
+            .order_by(QueueItem.created_at.asc())
+            .first()
+        )
+        if item is None:
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        media = item.media_file
+        flagged = _flagged_streams(item)
+        if flagged != set(entry.answers):
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "The tracks flagged for this file have changed since "
+                         "it was shown — nothing can be previewed for it",
+            })
+            continue
+
+        try:
+            _refuse_impossible_answers(db, item, media, entry.answers)
+        except ReviewAnswerRefused as refused:
+            errors.append({"file_id": entry.file_id, "error": str(refused)})
+            continue
+
+        file_info, tracks, kwargs = _build_analysis_inputs(db, media)
+        # The staged answers on top of whatever this file already had
+        # answered, as an argument. Nothing is written.
+        kwargs["subtitle_overrides"] = {
+            **kwargs["subtitle_overrides"], **entry.answers}
+        decision = analyze_file(file_info, tracks, app_cfg, **kwargs)
+
+        outcomes.append({
+            "file_id":           entry.file_id,
+            "current_container": (media.container or "").lower() or None,
+            "target_container":  decision.target_container,
+            "will_process":      decision.should_process,
+            "still_in_review":   decision.is_manual_review,
+        })
+
+    return {"outcomes": outcomes, "errors": errors}
+
+
 @router.post("/review/apply")
 def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_db)):
     """
@@ -563,13 +680,7 @@ def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_d
             })
             continue
 
-        flagged = set()
-        if item.review_subtitles:
-            try:
-                flagged = {t["stream_index"] for t in json.loads(item.review_subtitles)}
-            except (ValueError, TypeError, KeyError):
-                flagged = set()
-        if flagged != set(entry.answers):
+        if _flagged_streams(item) != set(entry.answers):
             errors.append({
                 "file_id": entry.file_id,
                 "error": "The tracks flagged for this file have changed since "
@@ -1079,18 +1190,15 @@ class ReviewAnswerRefused(Exception):
     """
 
 
-def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
-                            answers: dict[int, str]) -> None:
+def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
+                               answers: dict[int, str]) -> None:
     """
-    Record a subtitle review's answers on the file and re-decide it.
+    Refuse an answer that would be accepted and then not carried out.
 
-    The one path from "the user chose" to "the item moved", shared by the
-    single-item endpoint and the batch one so the two cannot drift: the
-    validation below is what stops an answer being accepted and then not
-    carried out, and it has to hold whichever door the answer came through.
-
-    Does NOT commit. The batch endpoint commits per file, so one refusal
-    cannot roll back the files already applied.
+    Its own function because the preview runs it without writing anything:
+    a card can say an answer cannot be done while the user is still choosing,
+    rather than at Apply. Recording an answer and checking one are the same
+    rules, so they are the same code.
     """
     for stream_index, choice in answers.items():
         if choice not in ("keep", "remove", "extract"):
@@ -1114,6 +1222,22 @@ def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
             raise ReviewAnswerRefused(
                 f"Cannot extract stream {stream_index}: it is not a text "
                 f"subtitle track that can be converted to SRT.")
+
+
+def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
+                            answers: dict[int, str]) -> None:
+    """
+    Record a subtitle review's answers on the file and re-decide it.
+
+    The one path from "the user chose" to "the item moved", shared by the
+    single-item endpoint and the batch one so the two cannot drift: the
+    validation below is what stops an answer being accepted and then not
+    carried out, and it has to hold whichever door the answer came through.
+
+    Does NOT commit. The batch endpoint commits per file, so one refusal
+    cannot roll back the files already applied.
+    """
+    _refuse_impossible_answers(db, item, media, answers)
 
     # ── Merge new answers into the persisted set ────────────────────────────
     # Written to media BEFORE the analysis below — _build_analysis_inputs
