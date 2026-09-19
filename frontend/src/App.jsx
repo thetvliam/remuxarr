@@ -143,7 +143,7 @@ export default function App() {
     // `queue` is deliberately not taken: QueuePanel renders pendingQueue,
     // the same list with in-progress items filtered out. Destructuring the
     // raw one alongside it invited picking the wrong variable.
-    activeJobs, review, reviewBadgeCount,
+    activeJobs, reviewBadgeCount,
     modal, setModal,
     toasts,
     dryRun,
@@ -394,7 +394,7 @@ export default function App() {
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
+            <ReviewPage api={api} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
             </div>
           )}
 
