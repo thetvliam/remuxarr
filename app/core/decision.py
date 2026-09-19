@@ -191,6 +191,12 @@ class ProcessingDecision:
     # reliably identify the track again later.
     audio_language_mismatch: dict | None = None
 
+    # True when something other than the file's kept subtitles stops it
+    # being an MP4: a video or audio codec MP4 cannot hold, or
+    # prefer_mp4_container being off. Informational, for the Review page's
+    # outcome line — see where the container is decided.
+    mp4_blocked_beyond_subtitles: bool = False
+
     # Undefined-language audio tracks for Audio Language Review, one entry
     # per track, in stream order: {"stream_index": int, "origin": str}.
     #   "threshold" — the file is at or over the Undefined Audio Track
@@ -1153,6 +1159,19 @@ def analyze_file(
     # track holds the file as MKV.
     video_audio_ok = _video_audio_mp4_compatible(video_tracks, kept_audio)
 
+    # Whether anything OTHER than the kept subtitles keeps this file out of
+    # MP4. The Review page needs it to tell two sentences apart: "keeping
+    # this track is what holds the file as MKV" and "this file stays MKV
+    # whatever you choose". Without it, a card offering to delete a subtitle
+    # reads as though deleting it would convert the file, when its audio or
+    # video may make that impossible — the answer a person gives then does
+    # nothing they were led to expect.
+    #
+    # Informational, like audio_language_mismatch: it changes no action and
+    # no outcome here. Computed from the same two conditions the container
+    # decision below uses, so the two cannot disagree.
+    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4
+
     subs_block_mp4 = any(
         (t.get("codec") or "").lower() in MP4_INCOMPATIBLE_SUBS
         for t in kept_subs
@@ -1468,6 +1487,7 @@ def analyze_file(
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             undefined_audio_flags=undefined_audio_flags,
+        mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
             faststart_enabled=add_faststart,
@@ -1512,6 +1532,7 @@ def analyze_file(
         target_container=target_container,
         audio_language_mismatch=audio_language_mismatch,
         undefined_audio_flags=undefined_audio_flags,
+        mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
         subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,

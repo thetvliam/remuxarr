@@ -64,16 +64,35 @@ const isDecided = (group, staged) =>
     !staged?.skipped
     && (group.tracks || []).every((_t, slot) => staged?.answers?.[slot] !== undefined);
 
-/** What Apply would do to this card, from the per-file outcomes the server returned. */
+/**
+ * What Apply would do to this card, from the per-file outcomes the server
+ * returned.
+ *
+ * "Stays MKV, 1 kept" is true and misleading on its own: it reads as cause
+ * and effect, when a file whose audio or video MP4 cannot hold would stay
+ * MKV however these tracks are answered. Deleting a subtitle there does
+ * nothing the line led anyone to expect, so the two cases say different
+ * things. Which one applies is the server's to know, not this function's:
+ * the engine reports it per file.
+ *
+ * No reason is given for why a file cannot be MP4. There can be several,
+ * more than one can apply at once, and none of them is actionable from this
+ * card — what matters is whether answering differently would change the
+ * outcome.
+ */
 export const outcomeLine = (group, staged, previewed) => {
     if (!previewed || previewed.length === 0) return null;
 
-    const converting = previewed.filter(o => o.target_container === "mp4").length;
     const total = previewed.length;
-    const container =
-        converting === total ? "Converts to MP4"
-        : converting === 0   ? "Stays MKV"
-        : `Converts ${converting} of ${total} to MP4, ${total - converting} stay MKV`;
+    const converting = previewed.filter(
+        o => o.target_container === "mp4" && o.current_container !== "mp4").length;
+    /* A source already in MP4 converts to nothing; saying it "converts to
+     * MP4" would describe work that is not happening. */
+    const alreadyMp4 = previewed.filter(o => o.current_container === "mp4").length;
+    const staying = previewed.filter(
+        o => o.current_container !== "mp4" && o.target_container !== "mp4");
+    const stuck = staying.length > 0
+        && staying.every(o => o.blocked_beyond_subtitles);
 
     const answers = staged?.answers || {};
     const count = choice => Object.values(answers).filter(c => c === choice).length;
@@ -82,15 +101,28 @@ export const outcomeLine = (group, staged, previewed) => {
         count("extract") && `${count("extract")} to SRT`,
         count("remove")  && `${count("remove")} deleted`,
     ].filter(Boolean);
+    const tail = parts.length ? `, ${parts.join(", ")}` : "";
 
-    let line = parts.length ? `${container}, ${parts.join(", ")}` : container;
-    /* Deleting a track while another is kept reads as though it changes the
-     * outcome. It does not: the kept track is what holds the container, so
-     * the line says so rather than leaving it to be inferred. */
-    if (converting === 0 && count("keep") > 0 && count("remove") > 0) {
-        line += ". Deleting the rest won't change the container.";
+    if (alreadyMp4 === total) return `Stays MP4${tail}`;
+    if (converting === total) return `Converts to MP4${tail}`;
+
+    if (converting === 0) {
+        const held = `Stays MKV${tail}`;
+        if (stuck) return `${held} — it stays MKV whatever you choose here`;
+        /* Only a kept track can be the thing holding it, so with nothing kept
+         * there is no "delete this and it converts" to offer: the file is not
+         * converting for a reason this card cannot change. */
+        return count("keep")
+            ? `${held} — delete the kept tracks and it converts to MP4`
+            : held;
     }
-    return line;
+
+    /* "stay as they are" rather than "stay MKV": the files in one card share
+     * their subtitle tracks, not their container, so the ones not converting
+     * are not necessarily MKVs. */
+    const line = `Converts ${converting} of ${total} to MP4${tail}. `
+        + `The other ${total - converting} stay as they are`;
+    return stuck ? `${line} whatever you choose here.` : `${line}.`;
 };
 
 export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,

@@ -1884,6 +1884,20 @@ def test_an_mp4_missing_fast_start_still_has_a_pass_to_do(db, monkeypatch):
     assert outcome["will_process"] is True
 
 
+def test_the_preview_says_what_else_keeps_a_file_out_of_mp4(db):
+    """
+    The card cannot tell "delete this and it converts" from "this stays MKV
+    whatever you choose" without it, and the difference is the whole value of
+    the line: on a file whose audio MP4 cannot hold, deleting a subtitle does
+    nothing the card promised.
+    """
+    _styled_review(db, file_id=1, audio="dts")
+
+    (outcome,) = _preview(db, [(1, {2: "remove"})])["outcomes"]
+
+    assert outcome["blocked_beyond_subtitles"] is True
+
+
 def test_more_files_than_the_limit_are_refused(db):
     """
     A decision per file, each with a query or two and, for an MP4 source, a

@@ -511,7 +511,8 @@ def preview_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get
 
     Returns per file the container it is in, the container it would end in
     (null when the file would not be processed at all), whether it would be
-    processed, and whether it would still be waiting in review. The sentence
+    processed, whether it would still be waiting in review, and whether
+    anything other than its subtitles keeps it out of MP4. The sentence
     on the card is built from that, plus the counts of kept, removed and
     extracted tracks, which the page already has because it staged them.
 
@@ -590,6 +591,10 @@ def preview_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get
             "target_container":  decision.target_container,
             "will_process":      decision.should_process,
             "still_in_review":   decision.is_manual_review,
+            # Whether anything other than these subtitles keeps the file out
+            # of MP4, so the card can say "delete it and this converts" only
+            # when that is true.
+            "blocked_beyond_subtitles": decision.mp4_blocked_beyond_subtitles,
         })
 
     return {"outcomes": outcomes, "errors": errors}

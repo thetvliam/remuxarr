@@ -51,7 +51,10 @@ let posted;
 let toast;
 
 function mockApi({ groups = [GROUP], applyBody = null, applyOk = true,
-                   previewContainer = "mp4" } = {}) {
+                   previewContainer = "mp4", currentContainer = "mkv",
+                   blockedBeyondSubtitles = false,
+                   // Per file, for cards whose files do not all end the same way.
+                   previewPerFile = null } = {}) {
   posted = [];
   toast = vi.fn();
   global.fetch = vi.fn(async (url, opts = {}) => {
@@ -61,8 +64,12 @@ function mockApi({ groups = [GROUP], applyBody = null, applyOk = true,
       if (u.includes("/review/preview")) {
         return { ok: true, json: async () => ({
           outcomes: JSON.parse(opts.body).files.map(f => ({
-            file_id: f.file_id, target_container: previewContainer,
+            file_id: f.file_id,
+            current_container: currentContainer,
+            target_container: previewContainer,
             will_process: true, still_in_review: false,
+            blocked_beyond_subtitles: blockedBeyondSubtitles,
+            ...(previewPerFile?.[f.file_id] || {}),
           })),
           errors: [],
         }) };
@@ -258,6 +265,90 @@ describe("the outcome line", () => {
 
     await waitFor(() =>
       expect(screen.queryByText("Converts to MP4, 2 deleted")).toBeNull());
+  });
+
+  it("offers the conversion only when the kept tracks are what hold the file", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    // Keep the styled track, delete the bitmap one.
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[1]);
+
+    expect(await screen.findByText(
+      "Stays MKV, 1 kept, 1 deleted — delete the kept tracks and it converts to MP4",
+    )).toBeInTheDocument();
+  });
+
+  it("says so when the file stays MKV whatever is chosen", async () => {
+    const user = userEvent.setup();
+    // Its audio or video is what holds it, so no answer on this card moves it.
+    mockApi({ previewContainer: "mkv", blockedBeyondSubtitles: true });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[1]);
+
+    expect(await screen.findByText(
+      "Stays MKV, 1 kept, 1 deleted — it stays MKV whatever you choose here",
+    )).toBeInTheDocument();
+  });
+
+  it("promises no conversion when nothing is kept and it still stays MKV", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+
+    await answerCard(user);
+
+    // Deleting everything and still not converting means the reason is not on
+    // this card, so there is nothing to offer deleting.
+    expect(await screen.findByText("Stays MKV, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("does not call an MP4 that stays an MP4 a conversion", async () => {
+    const user = userEvent.setup();
+    mockApi({ currentContainer: "mp4", previewContainer: "mp4" });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText("Stays MP4, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("counts a file that is already MP4 as staying, not converting", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewPerFile: {
+      1: { current_container: "mp4", target_container: "mp4" },
+      2: { current_container: "mkv", target_container: "mp4" },
+    } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "Converts 1 of 2 to MP4, 2 deleted. The other 1 stay as they are.",
+    )).toBeInTheDocument();
+  });
+
+  it("says which of a mixed card's files cannot move whatever is chosen", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewPerFile: {
+      1: { current_container: "mkv", target_container: "mkv",
+           blocked_beyond_subtitles: true },
+      2: { current_container: "mkv", target_container: "mp4" },
+    } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "Converts 1 of 2 to MP4, 2 deleted. The other 1 stay as they are "
+      + "whatever you choose here.",
+    )).toBeInTheDocument();
   });
 
   it("shows no line at all when the preview cannot be had", async () => {

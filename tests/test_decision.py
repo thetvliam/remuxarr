@@ -1416,3 +1416,60 @@ def test_the_absolute_fallback_keeps_the_first_audio_track(settings):
         f"the fallback kept the wrong track — dropped {sorted(dropped)}, "
         f"expected the lowest stream_index (1) to be the survivor"
     )
+
+
+# ── What else keeps a file out of MP4 ────────────────────────────────────────
+#
+# The Review page's outcome line has to tell two sentences apart: keeping
+# this subtitle is what holds the file as MKV, and this file stays MKV
+# whatever you choose. Deleting a track on a file whose audio MP4 cannot hold
+# does nothing the card led anyone to expect.
+#
+# Three mutations of this survived the full suite before these tests existed:
+# reporting nothing as a blocker, ignoring the audio and video check, and
+# ignoring the prefer-MP4 setting.
+
+def _mkv_with(settings, *, audio="aac", video="h264"):
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec=video),
+        make_track(stream_index=1, track_type="audio", codec=audio, language="eng"),
+        make_track(stream_index=2, track_type="subtitle", codec="ass", language="eng"),
+    ]
+    return analyze_file(make_file_info(container="mkv", video_codec=video),
+                        tracks, settings, subtitle_overrides={2: "remove"})
+
+
+def test_a_file_whose_only_obstacle_is_its_subtitles_says_so(settings):
+    """Nothing else in the way: deleting the flagged track really does convert it."""
+    decision = _mkv_with(settings)
+
+    assert decision.target_container == "mp4"
+    assert decision.mp4_blocked_beyond_subtitles is False
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"audio": "dts"},
+    {"video": "vp9"},
+], ids=["audio MP4 cannot hold", "video MP4 cannot hold"])
+def test_a_codec_mp4_cannot_hold_blocks_it_whatever_the_answer(settings, kwargs):
+    """
+    The case the line exists for. Every flagged subtitle is deleted here and
+    the file still stays MKV, so a card promising a conversion would be
+    promising something the answer cannot deliver.
+    """
+    decision = _mkv_with(settings, **kwargs)
+
+    assert decision.target_container != "mp4"
+    assert decision.mp4_blocked_beyond_subtitles is True
+
+
+def test_preferring_mkv_blocks_it_too(settings):
+    """
+    The same for the person who turned conversion off: their files stay MKV
+    by choice, and no answer on this card changes that.
+    """
+    settings["prefer_mp4_container"] = False
+
+    decision = _mkv_with(settings)
+
+    assert decision.mp4_blocked_beyond_subtitles is True
