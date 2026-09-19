@@ -68,6 +68,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Setting the language on an extracted subtitle in Subtitle Language Review failed with "1 file was not updated". Extraction takes the subtitle out of the video, so the file no longer has that track, and a check meant for files that changed under the page was refusing these rows instead. The sidecar is renamed again, and the question clears.
+
 - An answer given in Review stopped applying to the track it was given for once the file had been processed. Processing renumbers the streams it keeps, and answers were stored against the old numbers, so a file you had answered came back asking the same question on the next full scan. Answers are now stored against the track itself, and existing ones are converted when Remuxarr starts.
 
 - Approving, skipping or resolving a file in Review now reports what happened, including when dry run means a preview is written rather than the file being changed. Only failures were reported before, so a card just vanished from the list and a failed Approve looked exactly like a successful one.

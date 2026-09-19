@@ -672,7 +672,7 @@ def _apply_under(db, flag_ids, dry_run, monkeypatch):
 
 def _flagged_with_sidecar(tmp_path):
     """A file whose subtitle has been extracted, plus the row asking about it."""
-    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
+    from app.database.models import MediaFile, SubtitleLanguageFlag
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -690,11 +690,15 @@ def _flagged_with_sidecar(tmp_path):
                       directory=str(tmp_path), size=5, mtime=1.0)
     db.add(media)
     db.commit()
-    # The track the flag describes: an answer is stored against what a track
-    # is, so a flag naming a stream the file's tracks do not have is reported
-    # rather than answered.
-    db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
-                 codec="subrip", language="und", is_forced=True))
+    # No Track row, and that is the point: extraction takes the subtitle out
+    # of the mux, so by the time this question is answered the file has no
+    # such track. The row is kept alive anyway, because the sidecar's name is
+    # then the only thing left that can carry the language.
+    #
+    # A Track row was added here once to get past a guard that refused flags
+    # naming no current track. That made the fixture describe a file this
+    # flow never sees, and hid the guard turning every extracted subtitle's
+    # answer into "1 file was not updated".
     flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
                                 detected_language="und",
                                 extracted_path=str(srt))
@@ -743,18 +747,53 @@ def test_dry_run_keeps_the_question_it_could_not_answer(tmp_path, monkeypatch):
     )
 
 
+def _flagged_in_file(tmp_path):
+    """
+    A flagged subtitle still in the mux, with no sidecar: what an undefined
+    subtitle looks like when SRT extraction is off. This is the shape an
+    answer can be recorded against, since the track is there to describe.
+    """
+    from app.database.models import MediaFile, SubtitleLanguageFlag, Track
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base
+
+    mkv = tmp_path / "Kept.mkv"
+    mkv.write_bytes(b"video")
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    media = MediaFile(path=str(mkv), filename="Kept.mkv",
+                      directory=str(tmp_path), size=5, mtime=1.0)
+    db.add(media)
+    db.commit()
+    db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                 codec="subrip", language="und"))
+    flag = SubtitleLanguageFlag(file_id=media.id, stream_index=2,
+                                detected_language="und")
+    db.add(flag)
+    db.commit()
+    return db, media, flag
+
+
 def test_dry_run_still_records_the_choice(tmp_path, monkeypatch):
     """
     The override is a decision, not a file. It is what makes the correction
     land once dry run is turned off, and the endpoint commits it separately
     for exactly that reason — so it stays, and the response says which mode
     it ran in.
+
+    On a track still in the file, which is the answer an override can carry.
+    An extracted subtitle has no track left to describe, and its answer is
+    the sidecar's name instead — the tests either side of this one.
     """
     from app.core.scanner import (_load_track_answers, _track_to_dict,
                                   resolve_track_answers)
     from app.database.models import Track
 
-    db, media, flag, _srt = _flagged_with_sidecar(tmp_path)
+    db, media, flag = _flagged_in_file(tmp_path)
 
     result = _apply_under(db, [flag.id], dry_run=True, monkeypatch=monkeypatch)
 
@@ -784,3 +823,40 @@ def test_a_real_apply_still_renames_and_clears_the_row(tmp_path, monkeypatch):
     ]
     assert db.query(SubtitleLanguageFlag).count() == 0
     assert result["dry_run"] is False
+
+
+def test_answering_an_extracted_subtitle_records_no_override(tmp_path, monkeypatch):
+    """
+    There is no track left to describe. The answer to an extracted subtitle
+    is its sidecar's name, and the column that carries answers is keyed by
+    what a track IS — so an entry for one that is gone would match nothing,
+    for ever.
+
+    It used to be written under the bare stream number, which the decision
+    engine stopped reading when answers moved to descriptors. Writing one
+    again would be dead weight that looks like a recorded decision.
+    """
+    db, media, flag, _srt = _flagged_with_sidecar(tmp_path)
+
+    _apply_under(db, [flag.id], dry_run=False, monkeypatch=monkeypatch)
+
+    db.refresh(media)
+    assert media.subtitle_language_overrides in (None, "{}")
+
+
+def test_a_sidecar_that_is_gone_is_reported_not_answered(tmp_path, monkeypatch):
+    """
+    A row naming neither a track in the file nor a file on disk describes
+    nothing that can be corrected. Counting it as answered would delete the
+    question and report a rename that never happened.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
+    srt.unlink()
+
+    result = _apply_under(db, [flag.id], dry_run=False, monkeypatch=monkeypatch)
+
+    assert result["applied"] == 0
+    assert [e["file_id"] for e in result["errors"]] == [1]
+    assert db.query(SubtitleLanguageFlag).count() == 1

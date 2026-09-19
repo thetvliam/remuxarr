@@ -493,22 +493,47 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 [_track_to_dict(t) for t in
                  db.query(Track).filter(Track.file_id == media.id).all()]
             )
-            unknown = sorted(f.stream_index for f in flags
-                             if f.stream_index not in descriptors)
-            if unknown:
+            # A flag naming no current track is two different situations, and
+            # only one of them is a problem.
+            #
+            # An extracted subtitle is the ordinary case: extraction takes the
+            # track out of the mux, and the row is kept alive on purpose
+            # because the sidecar's name is then the only thing left that can
+            # carry the language (scanner._upsert_language_flags says so where
+            # it declines to delete these). Answering one renames that file —
+            # the whole point of the question — and stores nothing, because
+            # there is no track in the file for an answer to describe.
+            #
+            # A flag with no track and no sidecar is the stale case: the file
+            # was re-probed under the page and this row describes something
+            # that is not there in any form. That file is reported and left
+            # alone, flags and all.
+            in_file, extracted, stale = [], [], []
+            for flag in flags:
+                sidecar = getattr(flag, "extracted_path", None)
+                if flag.stream_index in descriptors:
+                    in_file.append(flag)
+                elif sidecar and os.path.exists(sidecar):
+                    extracted.append(flag)
+                else:
+                    stale.append(flag)
+
+            if stale:
                 results["errors"].append({
                     "file_id": file_id,
                     "error": (
-                        f"Track {', '.join(str(i) for i in unknown)} is not in "
-                        f"this file any more — it may have been re-probed"
+                        f"Track {', '.join(str(f.stream_index) for f in stale)} "
+                        f"is not in this file any more — it may have been "
+                        f"re-probed"
                     ),
                 })
                 continue
 
-            existing_overrides = _load_track_answers(media, kind.overrides_attr)
-            for flag in flags:
-                existing_overrides[descriptors[flag.stream_index]] = lang
-            setattr(media, kind.overrides_attr, json.dumps(existing_overrides))
+            if in_file:
+                existing_overrides = _load_track_answers(media, kind.overrides_attr)
+                for flag in in_file:
+                    existing_overrides[descriptors[flag.stream_index]] = lang
+                setattr(media, kind.overrides_attr, json.dumps(existing_overrides))
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
             # Only the switch for the questions answered here: choosing a
