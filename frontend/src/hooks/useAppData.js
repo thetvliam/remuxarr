@@ -81,14 +81,16 @@ export function useAppData() {
   const [page,       setPageState]  = useState(_pageFromHash);
   const [activeJobs, setActiveJobs] = useState([]);
   const [queue,      setQueue]      = useState([]);
-  const [review,     setReview]     = useState([]);
-  /* Flag-row counts from /api/queue/stats, not a list. The Review tab badge
-   * has to include these: a file can carry a language flag without ever
-   * entering manual review (one undefined audio track under a threshold of
-   * two, an undefined subtitle that gets extracted), so review.length alone
-   * reads zero while the page below has rows waiting. Kept as a count
-   * rather than fetching the lists because those endpoints are paginated
-   * and the badge only ever needs the number. */
+  /* Both halves of the Review tab's badge come from /api/queue/stats as
+   * counts, not lists. The review page pages by card and the two language
+   * sections page by row, so no list here would be the whole number anyway,
+   * and the badge only ever needs the number.
+   *
+   * The language flags have to be included: a file can carry one without
+   * ever entering manual review (one undefined audio track under a threshold
+   * of two, an undefined subtitle that gets extracted), so the review count
+   * alone reads zero while the page below has rows waiting. */
+  const [manualReviewCount, setManualReviewCount] = useState(0);
   const [languageReviewCount, setLanguageReviewCount] = useState(0);
   const [modal,      setModalState] = useState(null);
   const [toasts,     setToasts]     = useState([]);
@@ -371,10 +373,9 @@ export function useAppData() {
     // calls that out as "the difference between a preview and an
     // irreversible write" for the failure path; staleness produced the same
     // visible outcome by another route.
-    const [a, q, r, w, s, sc, dr, st] = await Promise.allSettled([
+    const [a, q, w, s, sc, dr, st] = await Promise.allSettled([
       fetch(`${api}/api/queue/active`).then(r => r.json()),
                                                              fetch(`${api}/api/queue/`).then(r => r.json()),
-                                                             fetch(`${api}/api/queue/manual-review`).then(r => r.json()),
                                                              fetch(`${api}/api/worker/status`).then(r => r.json()),
                                                              fetch(`${api}/api/settings/auto_start_jobs`).then(r => r.json()),
                                                              fetch(`${api}/api/scan/status`).then(r => r.json()),
@@ -383,7 +384,6 @@ export function useAppData() {
     ]);
     if (a.status  === "fulfilled") setActiveJobs(Array.isArray(a.value) ? a.value : []);
     if (q.status  === "fulfilled") setQueue(Array.isArray(q.value) ? q.value : []);
-    if (r.status  === "fulfilled") setReview(Array.isArray(r.value) ? r.value : []);
     if (w.status  === "fulfilled") setWorkerPaused(w.value?.paused ?? false);
     if (s.status  === "fulfilled") setAutoStart(s.value?.value ?? true);
     if (dr.status === "fulfilled") setDryRun(!!dr.value?.value);
@@ -403,6 +403,10 @@ export function useAppData() {
     if (st.status === "fulfilled") {
       const lr = st.value?.language_review;
       setLanguageReviewCount((lr?.audio ?? 0) + (lr?.subtitle ?? 0));
+      /* Counted in SQL by queue_stats rather than read off a list: the list
+       * this used to come from is gone, and the number is all the badge
+       * wanted from it. */
+      setManualReviewCount(st.value?.manual_review ?? 0);
     }
     if (sc.status === "fulfilled") {
       setScanning(sc.value?.running ?? false);
@@ -708,12 +712,12 @@ export function useAppData() {
        * existing rows when those are empty, so a file is either in manual
        * review or carrying language flags — never both. See queue_stats'
        * docstring. */
-      const reviewBadgeCount = review.length + languageReviewCount;
+      const reviewBadgeCount = manualReviewCount + languageReviewCount;
 
       return {
         api, setApi, page, setPage,
         registerNavGuard, leaveGuarded,
-        activeJobs, queue, review, languageReviewCount, reviewBadgeCount,
+        activeJobs, queue, languageReviewCount, reviewBadgeCount,
         modal, setModal,
         toasts,
         dryRun, setDryRun,

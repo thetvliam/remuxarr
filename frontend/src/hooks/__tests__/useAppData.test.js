@@ -905,11 +905,10 @@ describe("useAppData — revert_complete", () => {
 // App.jsx has no test file.
 
 /** fetch stub that answers each endpoint separately. */
-function stubEndpoints({ review = [], stats = {} } = {}) {
+function stubEndpoints({ stats = {} } = {}) {
   vi.stubGlobal("fetch", vi.fn(async (url) => {
     const body =
-      url.includes("/api/queue/manual-review") ? review
-      : url.includes("/api/queue/stats")       ? stats
+      url.includes("/api/queue/stats")         ? stats
       : url.includes("/api/queue/active")      ? []
       : url.includes("/api/queue/")            ? []
       : { value: false, items: [], total: 0 };
@@ -920,8 +919,7 @@ function stubEndpoints({ review = [], stats = {} } = {}) {
 describe("useAppData — the Review badge count", () => {
   it("adds the language backlog to the manual-review items", async () => {
     stubEndpoints({
-      review: [{ id: 1 }, { id: 2 }],
-      stats: { language_review: { audio: 3, subtitle: 4 } },
+      stats: { manual_review: 2, language_review: { audio: 3, subtitle: 4 } },
     });
 
     const { result } = await mount();
@@ -931,10 +929,7 @@ describe("useAppData — the Review badge count", () => {
 
   it("counts language flags when nothing is in manual review", async () => {
     // The whole bug: this case used to read zero and show no badge.
-    stubEndpoints({
-      review: [],
-      stats: { language_review: { audio: 1, subtitle: 0 } },
-    });
+    stubEndpoints({ stats: { language_review: { audio: 1, subtitle: 0 } } });
 
     const { result } = await mount();
 
@@ -942,7 +937,7 @@ describe("useAppData — the Review badge count", () => {
   });
 
   it("is zero when there is nothing of either kind", async () => {
-    stubEndpoints({ review: [], stats: { language_review: { audio: 0, subtitle: 0 } } });
+    stubEndpoints({ stats: { manual_review: 0, language_review: { audio: 0, subtitle: 0 } } });
 
     const { result } = await mount();
 
@@ -950,10 +945,11 @@ describe("useAppData — the Review badge count", () => {
   });
 
   it("still counts manual-review items when stats omits the backlog", async () => {
-    /* An older backend, or a failed stats fetch. The badge must fall back to
-     * what it always showed rather than becoming NaN and rendering nothing —
+    /* An older backend, or a stats response missing a key. Both halves of
+     * the badge come from this one response now, so a missing key must read
+     * as zero rather than turning the badge into NaN and rendering nothing —
      * undercounting is survivable, a blank badge on a full queue is not. */
-    stubEndpoints({ review: [{ id: 1 }, { id: 2 }], stats: {} });
+    stubEndpoints({ stats: { manual_review: 2 } });
 
     const { result } = await mount();
 

@@ -6,7 +6,7 @@ from app.core.timeutil import utcnow
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
@@ -312,18 +312,6 @@ def get_active(db: Session = Depends(get_db)):
         db.query(QueueItem)
         .filter(QueueItem.status == "processing")
         .order_by(QueueItem.started_at.asc())
-        .all()
-    )
-    return [_serialize(item, include_actions=True) for item in items]
-
-
-@router.get("/manual-review")
-def list_manual_review(db: Session = Depends(get_db)):
-    """Items waiting for human approval."""
-    items = (
-        db.query(QueueItem)
-        .filter(QueueItem.status == "manual_review")
-        .order_by(QueueItem.created_at.asc())
         .all()
     )
     return [_serialize(item, include_actions=True) for item in items]
@@ -1118,68 +1106,6 @@ def retry_all_failed(db: Session = Depends(get_db)):
     }
 
 
-class SubtitleOverridesRequest(BaseModel):
-    # Maps stream_index -> "keep" | "remove" | "extract"
-    overrides: dict[int, str]
-
-
-@router.post("/{item_id}/resolve-subtitles")
-def resolve_subtitles(
-    item_id: int,
-    body: SubtitleOverridesRequest,
-    db: Session = Depends(get_db),
-):
-    """
-    Apply per-track answers to a subtitle manual review: "keep" (embed the
-    track as-is), "remove" (drop it), or "extract" (write it to an external
-    SRT and take it out of the file). The review may have been raised by the
-    image-subtitle gate, the font-attachment gate, or a failed extraction.
-
-    "extract" is refused in two cases where it would otherwise be accepted
-    and then not carried out:
-
-      • The stream is not a stored subtitle track with a codec in
-        SRT_CONVERTIBLE_SUBS. The extraction branch cannot take it, and
-        analyze_file treats the track as unanswered, so a success here would
-        report a choice that was never applied.
-      • The review was raised by a failed extraction (subtitle_encoding).
-        Extracting again repeats what just failed, and the job comes
-        straight back to this review; _flag_subtitle_encoding_review in
-        worker.py records that loop. Keep and Remove stay available.
-
-    Every choice is validated before anything is written, so a refused
-    request leaves the stored answers as they were.
-
-    The choices are merged into MediaFile.subtitle_overrides (persisted, so
-    they survive future re-scans) and the decision engine is re-run
-    immediately:
-
-      • If unresolved flagged tracks remain (e.g. the user only resolved
-        some of several), the item stays in manual_review with an updated
-        flagged_subtitles list.
-      • If the new decision requires changes, the item moves to "pending"
-        with freshly-generated planned actions.
-      • If the new decision needs no changes at all (e.g. the user chose
-        "keep" and nothing else needs fixing), the item is marked "skipped".
-    """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status != "manual_review":
-        raise HTTPException(400, "Item is not in manual review")
-
-    media = item.media_file
-    if not media:
-        raise HTTPException(404, "Associated media file not found")
-
-    try:
-        _answer_subtitle_review(db, item, media, body.overrides)
-    except ReviewAnswerRefused as refused:
-        raise HTTPException(400, str(refused))
-    db.commit()
-    return _serialize(item, include_actions=True)
-
-
 class ReviewAnswerRefused(Exception):
     """
     An answer that cannot be carried out, named for the caller to report.
@@ -1289,181 +1215,6 @@ def _cancel_item_row(item: QueueItem) -> None:
     if item.media_file:
         _force_rescan(item.media_file)
         item.media_file.status = "skipped"
-
-
-def _resolve_review_bulk(db: Session, reason: str, *,
-                         include_unlabelled: bool) -> dict:
-    """
-    Re-run the decision engine for every manual_review item raised by one
-    gate, letting that gate's setting resolve them without a per-item
-    choice. Built for the case of a large backlog — hundreds of items — where
-    clicking through each one is not practical.
-
-    Scoped by review_reason, which the gate records. It used to be scoped by
-    review_subtitles being non-null, and this docstring used to claim that
-    field was populated exclusively by the image-subtitle gate. That was true
-    until the font-attachment gate arrived: its items are flagged subtitles
-    too, so the old filter would have collected them here and resolved them
-    under image_subtitle_handling — converting away the styling a review
-    existed to protect.
-
-    include_unlabelled covers rows with a null reason and a non-null
-    review_subtitles. None of them is a font review; QueueItem.review_reason
-    lists where they come from. Only the image endpoint passes it; a font
-    resolve must never sweep up a row whose origin it is guessing at.
-
-    If the gate's setting is still "always_ask", every item re-runs and lands
-    straight back in manual_review, unresolved — harmless but pointless, and
-    the frontend only offers the action once the setting resolves.
-
-    Commits per-item, same reasoning as retry_all_failed and apply_language:
-    with a batch this size, one bad item raising must not roll back every
-    earlier item that already succeeded.
-    """
-    scope = [QueueItem.review_reason == reason]
-    if include_unlabelled:
-        scope.append(and_(
-            QueueItem.review_reason.is_(None),
-            QueueItem.review_subtitles.isnot(None),
-        ))
-
-    items = (
-        db.query(QueueItem)
-        .filter(QueueItem.status == "manual_review", or_(*scope))
-        .all()
-    )
-
-    app_cfg    = get_app_settings(db)
-    resolved   = 0
-    unresolved = 0
-    errors: list[dict] = []
-
-    for item in items:
-        media = item.media_file
-        if not media:
-            continue
-
-        try:
-            file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
-            decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
-
-            _apply_decision_to_item(db, item, media, decision)
-            if decision.is_manual_review:
-                unresolved += 1
-            else:
-                resolved += 1
-
-            db.commit()
-
-        except Exception as exc:
-            logger.exception("Bulk %s resolve failed for item %d", reason, item.id)
-            errors.append({"item_id": item.id, "error": str(exc)})
-            db.rollback()
-
-    return {"resolved": resolved, "still_unresolved": unresolved, "errors": errors}
-
-
-@router.post("/resolve-subtitles-bulk")
-def resolve_subtitles_bulk(db: Session = Depends(get_db)):
-    """
-    Bulk-resolve items flagged for non-convertible (image-based) subtitles,
-    under image_subtitle_handling. Includes items predating review_reason —
-    see _resolve_review_bulk.
-    """
-    return _resolve_review_bulk(db, "image_subtitles", include_unlabelled=True)
-
-
-@router.post("/resolve-fonts-bulk")
-def resolve_fonts_bulk(db: Session = Depends(get_db)):
-    """
-    Bulk-resolve items flagged for embedded font attachments, under
-    font_attachment_handling.
-
-    Deliberately does not include unlabelled rows: those predate the font
-    gate entirely, so sweeping them in would resolve image-subtitle reviews
-    under the font setting — the same mistake in the opposite direction.
-    """
-    return _resolve_review_bulk(db, "font_attachments", include_unlabelled=False)
-
-
-
-@router.post("/{item_id}/approve")
-def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
-    """
-    Approve a manual-review item.
-
-    Re-runs the decision engine immediately, mirroring resolve_subtitles'
-    structure exactly (see that endpoint for the fuller explanation of
-    why re-running rather than just flipping status matters):
-
-      • If the new decision still requires manual review (e.g. a
-        different gate — most plausibly the image-subtitle one — also
-        independently applies to this file), the item stays in
-        manual_review with an updated reason.
-      • If the new decision needs no changes at all, the item is marked
-        "skipped".
-      • Otherwise it moves to "pending" with freshly-generated planned
-        actions.
-
-    Previously this only ever flipped status to "pending" without
-    re-running anything — processing itself was never affected, since
-    the worker always recomputes its own decision fresh at job-pickup
-    time regardless of what's stored here, but the reason text and
-    Planned Actions shown in the UI stayed stale (still describing "why
-    this needs manual review") for however long the item sat in the
-    queue before the worker actually got to it.
-
-    Also records the acknowledgement when this item is a review the
-    undefined-audio threshold raised, which only a review from before that
-    threshold stopped holding files can be. Approving one is the old form
-    of Confirm correct, so it says the same thing: the undefined tags are
-    right as they are. Without it, the fresh decision below would flag
-    every one of those tracks in Audio Language Review, asking again what
-    was just answered. Set BEFORE the decision is computed, so
-    analyze_file() sees it.
-
-    review_subtitles being null is the existing, established signal that
-    this item's review came from the threshold rather than a subtitle
-    gate — confirmed via resolve_subtitles_bulk's own docstring, which
-    notes the threshold never populates that field.
-
-    INVARIANT this depends on: every code path that raises a manual review
-    for a SUBTITLE reason must write a non-null review_subtitles. There is
-    exactly one place that could previously violate it —
-    worker._flag_subtitle_encoding_review, which wrote NULL when no stored
-    Track matched the failing stream indices (stale track rows). That made a
-    subtitle-encoding review indistinguishable from a threshold review, so
-    approving it set und_audio_threshold_acknowledged on a file that never
-    tripped the threshold gate, permanently exempting it from a real check.
-    That path now fails the job instead, since an empty flagged list gives
-    the user nothing to review either way. If a new subtitle-review trigger
-    is ever added, it must populate this field or this inference breaks
-    again — see tests/test_manual_review_refresh.py.
-    """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status != "manual_review":
-        raise HTTPException(400, "Item is not in manual review")
-
-    media = item.media_file
-    if not media:
-        raise HTTPException(404, "Associated media file not found")
-
-    if item.review_subtitles is None:
-        media.und_audio_threshold_acknowledged = True
-
-    # ── Re-run the decision engine now that the exemption is in place ───────
-    # _build_analysis_inputs reads und_audio_threshold_acknowledged off the
-    # media object, so the in-session flag set above is what the fresh
-    # decision sees — which is the entire point of setting it first.
-    app_cfg = get_app_settings(db)
-    file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
-    decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
-
-    _apply_decision_to_item(db, item, media, decision)
-    db.commit()
-    return _serialize(item, include_actions=True)
 
 
 @router.post("/{item_id}/prioritize")
