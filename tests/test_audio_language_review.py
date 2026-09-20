@@ -523,3 +523,196 @@ def test_a_flag_whose_track_is_gone_is_reported_not_answered(tmp_path, monkeypat
     assert [e["file_id"] for e in result["errors"]] == [file.id]
     assert db.query(AudioLanguageFlag).count() == 1
     assert db.get(type(file), file.id).audio_language_overrides in (None, "{}")
+
+
+# ── What Apply does to the file's queue items ────────────────────────────────
+#
+# The audio and subtitle reviews share one implementation now, so these run
+# against the audio router only: a second copy through the subtitle router
+# would re-run the same function with a different flag table, which
+# test_language_review_isolation.py already pins.
+#
+# This is the half of apply_language the merge was FOR. Its comments record
+# each of these as a bug found once and then fixed again separately in the
+# other copy — and each of the three mutations below survived the full
+# 1599-test suite before these tests existed:
+#
+#   • the active-item delete unfiltered by status
+#   • a file with a running job cleared rather than skipped
+#   • the arr ids not carried into the reprocess
+#
+# Sharing the code means a regression in any of them now breaks both reviews
+# at once, which is the trade the merge made: one place to fix, and one
+# place where nothing was watching.
+#
+# EQUIVALENT MUTANT, recorded rather than killed: adding "processing" to the
+# status list of the active-item delete changes nothing, because the guard
+# above it returns first and a "processing" row therefore never reaches the
+# delete. It becomes reachable the moment that guard goes, which is what
+# test_a_file_whose_job_is_running_is_reported_not_requeued holds in place.
+
+
+def _queue_item(db, file_id, status, **kw):
+    from app.database.models import QueueItem
+
+    item = QueueItem(file_id=file_id, status=status, reason=status, **kw)
+    db.add(item)
+    db.commit()
+    return item
+
+
+def test_applying_leaves_the_files_history_rows_alone(tmp_path, monkeypatch):
+    """
+    Only the ACTIVE queue item is cleared to make way for the reprocess.
+
+    A file accumulates a row per past scan — completed, failed, cancelled —
+    and those are its history, read by the History tabs. An unfiltered
+    delete takes them with it, and worse, an unordered .first() can return
+    one of them INSTEAD of the live row: the active item then survives,
+    _process_file's own in-progress check finds it and declines to create a
+    new one, and the override is saved while the reprocess that applies it
+    never runs, with nothing shown anywhere.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag, QueueItem
+
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")])
+    _queue_item(db, file.id, "completed")
+    _queue_item(db, file.id, "failed")
+    _queue_item(db, file.id, "pending")
+    flag_id = db.query(AudioLanguageFlag).one().id
+
+    _real_run(monkeypatch)
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
+
+    assert result["applied"] == 1, result["errors"]
+    left = sorted(i.status for i in db.query(QueueItem).all())
+    assert left == ["completed", "failed"], (
+        f"the active item should go and the history should stay, got {left}"
+    )
+
+
+def test_a_file_whose_job_is_running_is_reported_not_requeued(
+        tmp_path, monkeypatch):
+    """
+    A "processing" row is skipped, not cleared.
+
+    Deleting it does nothing to the FFmpeg process already running — that is
+    what worker.abort_job is for, and it is not called here. The running job
+    would finish invisibly while the reprocess queued a second one against
+    the same final path, so the stale pre-override output could land last
+    and overwrite the corrected file.
+
+    The choice is still saved: the override is committed before this point,
+    the running job rewrites the file, and the next delta scan picks it up.
+    So the file is reported rather than counted, and nothing is queued.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag, QueueItem
+
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")])
+    _queue_item(db, file.id, "processing")
+    flag_id = db.query(AudioLanguageFlag).one().id
+
+    called = []
+    _real_run(monkeypatch)
+    import app.api.routes._language_review as lr
+    monkeypatch.setattr(lr, "_process_file",
+                        lambda *a, **k: called.append(a))
+
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
+
+    db.expire_all()
+    assert result["applied"] == 0
+    assert [e["file_id"] for e in result["errors"]] == [file.id]
+    assert called == [], "the file was re-queued while its job was running"
+    assert [i.status for i in db.query(QueueItem).all()] == ["processing"], (
+        "the running job's row was cleared"
+    )
+    # The point of skipping rather than refusing: the answer is kept.
+    assert db.get(type(file), file.id).audio_language_overrides not in (None, "{}")
+
+
+def test_the_reprocess_keeps_the_files_sonarr_and_radarr_linkage(
+        tmp_path, monkeypatch):
+    """
+    The arr ids are read off the item being deleted and handed to the
+    reprocess.
+
+    A pending item can carry them — a webhook-queued file does — and they
+    are what makes the finished job fire RescanSeries or RescanMovie. Lost
+    here, the correction is written to disk and the library is never told,
+    which looks like the whole thing not having worked.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag
+
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")])
+    _queue_item(db, file.id, "pending", sonarr_series_id=77, radarr_movie_id=12)
+    flag_id = db.query(AudioLanguageFlag).one().id
+
+    seen = {}
+    _real_run(monkeypatch)
+    import app.api.routes._language_review as lr
+    monkeypatch.setattr(lr, "_process_file",
+                        lambda *a, **kw: seen.update(kw))
+
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
+
+    assert result["applied"] == 1, result["errors"]
+    assert seen.get("sonarr_series_id") == 77
+    assert seen.get("radarr_movie_id") == 12
+
+
+def test_the_newest_active_item_is_the_one_whose_linkage_is_kept(
+        tmp_path, monkeypatch):
+    """
+    With more than one active item, the ids come off the most recent.
+
+    Defensive rather than load-bearing: the guards elsewhere against
+    double-queueing mean there is at most one in practice, which is why the
+    query says so where it orders. Pinned anyway, because "whichever row
+    the database happened to return" is not the same decision as "the
+    newest", and only one of the two survives someone removing the
+    order_by while tidying.
+
+    Timestamps are set explicitly. Both rows would otherwise be created
+    inside the same clock tick and the order would be arbitrary, so the
+    test would pass or fail on how fast the machine is.
+    """
+    from datetime import datetime
+
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.database.models import AudioLanguageFlag, QueueItem
+
+    db = _db()
+    file = _flagged_file(db, tmp_path, [(1, "mismatch")])
+    _queue_item(db, file.id, "pending", sonarr_series_id=11,
+                created_at=datetime(2024, 1, 1, 0, 0, 0))
+    _queue_item(db, file.id, "manual_review", sonarr_series_id=22,
+                created_at=datetime(2024, 6, 1, 0, 0, 0))
+    flag_id = db.query(AudioLanguageFlag).one().id
+
+    seen = {}
+    _real_run(monkeypatch)
+    import app.api.routes._language_review as lr
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **kw: seen.update(kw))
+
+    result = apply_language(
+        ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
+
+    assert result["applied"] == 1, result["errors"]
+    assert seen.get("sonarr_series_id") == 22, (
+        "the older item's linkage was carried over instead of the newer one's"
+    )
+    assert db.query(QueueItem).count() == 0, "both active items should go"
