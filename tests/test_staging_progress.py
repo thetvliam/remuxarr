@@ -24,9 +24,13 @@ sidecars stages several files; measuring each against its own size restarts
 the bar per file, and the restart is invisible on the common single-output
 job, which is exactly the shape of bug that ships.
 
-Mutation, 16 applied and 15 killed on the current suite; the survivor is
+Both pipelines divide their bars this way: the remux executors in ffmpeg.py
+and AC3 Forge, which builds its own ForgeProgress. The split itself lives in
+subprocess_runner, next to the staging it describes.
+
+Mutation, 21 applied and 20 killed on the current suite; the survivor is
 recorded as equivalent in test_an_abort_mid_copy_settles_before_cleanup.
-All 16 survived the suite as it stood before this file existed.
+All 21 survived the suite as it stood before the tests that kill them.
 """
 import asyncio
 import os
@@ -39,11 +43,12 @@ import pytest
 
 import app.core.subprocess_runner as sr
 from app.core.decision import analyze_file
-from app.core.ffmpeg import (
-    FFMPEG_PROGRESS_SHARE, STAGING_ACTION,
-    execute_ffmpeg, execute_ffmpeg_combined,
+from app.core.ffmpeg import execute_ffmpeg, execute_ffmpeg_combined
+from app.core.forge import build_add_ac3_command, run_forge_command
+from app.core.subprocess_runner import (
+    SUBPROCESS_PROGRESS_SHARE, STAGING_ACTION,
+    StagedOutput, run_staged_subprocess,
 )
-from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 from tests.conftest import make_file_info, make_track
 
 
@@ -446,11 +451,11 @@ def test_ffmpeg_owns_the_first_share_of_the_bar(tmp_path, settings):
     # Not equality: FFmpeg's last out_time lands fractionally short of the
     # probed duration, so its own percentage finishes near 100 rather than
     # at it. The property is that it never crosses into the write's share.
-    assert top <= FFMPEG_PROGRESS_SHARE, (
+    assert top <= SUBPROCESS_PROGRESS_SHARE, (
         f"FFmpeg reported {top}, past its share of the bar — unscaled, its "
         f"own 100% reads as a finished job while the file is still in /tmp"
     )
-    assert top > FFMPEG_PROGRESS_SHARE * 0.9, (
+    assert top > SUBPROCESS_PROGRESS_SHARE * 0.9, (
         f"FFmpeg only reached {top} on a job it completed"
     )
 
@@ -473,7 +478,7 @@ def test_the_write_phase_covers_the_rest(tmp_path, settings):
     assert writing, (
         "nothing reported the write, so the bar stops where FFmpeg does"
     )
-    assert writing[0].percent == FFMPEG_PROGRESS_SHARE
+    assert writing[0].percent == SUBPROCESS_PROGRESS_SHARE
     assert writing[-1].percent == 100.0
     assert events[-1] is writing[-1], "the write was not the last thing reported"
 
@@ -502,8 +507,119 @@ def test_the_combined_executor_reports_both_phases(tmp_path, settings):
     remux, writing = _split(events)
     assert remux, "FFmpeg reported no progress at all"
     top = max(e.percent for e in remux)
-    assert top <= FFMPEG_PROGRESS_SHARE, f"FFmpeg reported {top}"
-    assert top > FFMPEG_PROGRESS_SHARE * 0.9, f"FFmpeg only reached {top}"
+    assert top <= SUBPROCESS_PROGRESS_SHARE, f"FFmpeg reported {top}"
+    assert top > SUBPROCESS_PROGRESS_SHARE * 0.9, f"FFmpeg only reached {top}"
     assert writing, "the combined executor does not report its write"
-    assert writing[0].percent == FFMPEG_PROGRESS_SHARE
+    assert writing[0].percent == SUBPROCESS_PROGRESS_SHARE
     assert writing[-1].percent == 100.0
+
+
+# ── AC3 Forge ────────────────────────────────────────────────────────────────
+#
+# Its own section, and its own tests, because forge builds its progress
+# separately: ForgeProgress is a different dataclass whose label field is
+# .action, so nothing above touches this path. A forge job also re-encodes
+# audio rather than copying it, which makes its FFmpeg phase genuinely long —
+# and leaves the copy afterwards exactly as long as it was, which is the case
+# for giving it the same fixed share.
+
+
+def _forge_job(tmp_path):
+    """A real file with a 5.1 AAC track, and the command to add AC3 to it."""
+    source = tmp_path / "source.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-map", "0:v", "-map", "1:a",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-ac", "6",
+         "-f", "matroska", str(source)],
+        check=True,
+    )
+    temp   = tmp_path / "forge.tmp"
+    output = tmp_path / "output.mkv"
+    cmd = build_add_ac3_command(
+        input_path=str(source), temp_path=str(temp),
+        aac_stream_index=1, audio_track_count=1, container="mkv",
+    )
+    return cmd, source, temp, output
+
+
+def _forge_split(events):
+    work    = [e for e in events if e.action != STAGING_ACTION]
+    writing = [e for e in events if e.action == STAGING_ACTION]
+    return work, writing
+
+
+@ffmpeg_required
+def test_forge_transcode_owns_the_first_share_of_the_bar(tmp_path):
+    cmd, source, temp, output = _forge_job(tmp_path)
+    events = []
+
+    async def on_progress(prog):
+        events.append(prog)
+
+    result = asyncio.run(run_forge_command(
+        cmd, str(source), str(output), str(temp),
+        action_label="Adding AC3 5.1 track",
+        progress_callback=on_progress,
+    ))
+
+    assert result.success is True, result.error
+    work, _ = _forge_split(events)
+    assert work, "the transcode reported no progress at all"
+    top = max(e.percent for e in work)
+    assert top <= SUBPROCESS_PROGRESS_SHARE, (
+        f"the transcode reported {top}, past its share of the bar"
+    )
+    assert top > SUBPROCESS_PROGRESS_SHARE * 0.9, (
+        f"the transcode only reached {top} on a job it completed"
+    )
+
+
+@ffmpeg_required
+def test_forge_reports_its_write_to_the_library(tmp_path):
+    """
+    The half a forge job used to spend at 100% with "Adding AC3 5.1 track"
+    still on screen.
+    """
+    cmd, source, temp, output = _forge_job(tmp_path)
+    events = []
+
+    async def on_progress(prog):
+        events.append(prog)
+
+    result = asyncio.run(run_forge_command(
+        cmd, str(source), str(output), str(temp),
+        action_label="Adding AC3 5.1 track",
+        progress_callback=on_progress,
+    ))
+
+    assert result.success is True, result.error
+    _, writing = _forge_split(events)
+    assert writing, (
+        "nothing reported the write, so the forge bar stops where FFmpeg does"
+    )
+    assert writing[0].percent == SUBPROCESS_PROGRESS_SHARE
+    assert writing[-1].percent == 100.0
+    assert events[-1] is writing[-1], "the write was not the last thing reported"
+
+
+@ffmpeg_required
+def test_forge_without_a_progress_callback_still_runs(tmp_path):
+    """
+    Every forge caller passes one today, so a staging callback that assumed
+    the same would break nothing here and everything on the first caller
+    that did not — the shape of bug the adapter tests in test_staging_hook.py
+    exist for.
+    """
+    cmd, source, temp, output = _forge_job(tmp_path)
+
+    result = asyncio.run(run_forge_command(
+        cmd, str(source), str(output), str(temp),
+        action_label="Adding AC3 5.1 track",
+    ))
+
+    assert result.success is True, result.error
+    assert output.exists(), "the forged file never arrived"

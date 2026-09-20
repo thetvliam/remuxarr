@@ -61,7 +61,8 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Changed
 
 - The progress bar now keeps its last 10% for writing the finished file back
-  to your library, labelled "Writing to disk". On a parity-protected array
-  that write is most of a job, and the bar used to sit at 100% throughout it
-  with the remux label still showing. Nothing about the processing itself has
-  changed or got faster; the wait is now where you can see it.
+  to your library, labelled "Writing to disk", on both processing and AC3
+  Forge jobs. On a parity-protected array that write is most of a job, and
+  the bar used to sit at 100% throughout it with the remux label still
+  showing. Nothing about the processing itself has changed or got faster;
+  the wait is now where you can see it.

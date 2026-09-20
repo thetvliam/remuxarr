@@ -51,6 +51,40 @@ def parse_out_time_seconds(progress_kv: dict[str, str]) -> float:
     return time_us / 1_000_000
 
 
+# ── The progress split ───────────────────────────────────────────────────────
+#
+# A run has two halves and the subprocess is only the first of them. When it
+# exits, its output is still in the temp directory and has to be copied to the
+# destination, which on a parity-protected array is most of the wall time — 60
+# seconds of a 70-second job in the report this came from. So the subprocess
+# gets the first 90 per cent of the bar and the copy owns the last 10, and
+# "100%" means the file is in place rather than "the subprocess has stopped".
+#
+# The split is fixed rather than proportional deliberately. Nothing knows the
+# destination's write speed before writing to it, so weighting the two phases
+# honestly would be a guess that changes per file, and a bar whose meaning
+# moves is worse than one that is merely approximate.
+#
+# These live here, with the staging they describe, rather than in either
+# adapter: ffmpeg.py and forge.py both divide their bars this way, and a
+# second copy of the numbers is a second thing to keep in step.
+SUBPROCESS_PROGRESS_SHARE = 90.0
+STAGING_ACTION            = "Writing to disk"
+
+
+def subprocess_percent(raw_percent: float) -> float:
+    """A subprocess's own 0-100 scaled into the share of the bar it owns."""
+    return raw_percent * SUBPROCESS_PROGRESS_SHARE / 100.0
+
+
+def staging_percent(fraction: float) -> float:
+    """A staging fraction (0.0-1.0) placed in the share the copy owns."""
+    return (
+        SUBPROCESS_PROGRESS_SHARE
+        + (100.0 - SUBPROCESS_PROGRESS_SHARE) * fraction
+    )
+
+
 # ── File helpers ──────────────────────────────────────────────────────────────
 
 

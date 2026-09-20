@@ -18,11 +18,14 @@ from pathlib import Path
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
 from app.core.subprocess_runner import (
+    STAGING_ACTION,
     StagedOutput,
     cleanup_temp_file,
     parse_out_time_seconds,
     probe_duration,
     run_staged_subprocess,
+    staging_percent,
+    subprocess_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,28 +42,6 @@ class FFmpegProgress:
     current_action: str  # human label shown in the UI
 
 
-# How the bar is divided between the two halves of a job.
-#
-# FFmpeg finishing is not the job finishing: the output is still in the temp
-# directory at that point and has to be written to the library, which on a
-# parity-protected array is most of the wall time — 60 seconds of a 70-second
-# job in the report this came from. FFmpeg's own 0-100 is therefore squeezed
-# into the first 90, and the write owns the last 10, so "100%" means the file
-# is in place rather than "FFmpeg has stopped".
-#
-# The split is fixed rather than proportional deliberately. Nothing knows the
-# destination's write speed before writing to it, so any attempt to weight the
-# two phases honestly would be a guess that changes per file, and a bar whose
-# meaning moves is worse than one that is merely approximate.
-FFMPEG_PROGRESS_SHARE = 90.0
-STAGING_ACTION        = "Writing to disk"
-
-
-def _remux_percent(ffmpeg_percent: float) -> float:
-    """FFmpeg's own 0-100 scaled into the share of the bar it owns."""
-    return ffmpeg_percent * FFMPEG_PROGRESS_SHARE / 100.0
-
-
 def _staging_progress(
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
     duration: float | None,
@@ -68,8 +49,14 @@ def _staging_progress(
     """
     Adapt run_staged_subprocess's 0.0-1.0 staging fraction to FFmpegProgress.
 
+    The split itself lives in subprocess_runner, with the staging it
+    describes; this only puts it in the dataclass the remux pipeline's
+    callers expect. forge.py has a near-identical function for the same
+    reason, and the two are not shared: ForgeProgress is a different
+    dataclass with a differently named label field.
+
     Returns None when there is no callback to feed, which also keeps the
-    runner from doing the work of measuring a copy nobody is watching.
+    runner from measuring a copy nobody is watching.
 
     current_time stays at the full duration: the media is entirely processed
     by this point, and winding it back to zero would read as a restart.
@@ -82,8 +69,7 @@ def _staging_progress(
     async def on_staging(fraction: float) -> None:
         await progress_callback(
             FFmpegProgress(
-                percent=FFMPEG_PROGRESS_SHARE
-                + (100.0 - FFMPEG_PROGRESS_SHARE) * fraction,
+                percent=staging_percent(fraction),
                 current_time=duration or 0.0,
                 speed="",
                 current_action=STAGING_ACTION,
@@ -700,7 +686,7 @@ async def execute_ffmpeg(
         speed = progress_kv.get("speed", "?x")
         await progress_callback(
             FFmpegProgress(
-                percent=_remux_percent(pct),
+                percent=subprocess_percent(pct),
                 current_time=secs,
                 speed=speed,
                 current_action=current_action,
@@ -991,7 +977,7 @@ async def execute_ffmpeg_combined(
         secs  = parse_out_time_seconds(progress_kv)
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
         await progress_callback(FFmpegProgress(
-            percent=_remux_percent(pct),
+            percent=subprocess_percent(pct),
             current_time=secs,
             speed=progress_kv.get("speed", "?x"),
             current_action=current_action,
