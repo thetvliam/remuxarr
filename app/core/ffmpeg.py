@@ -39,6 +39,60 @@ class FFmpegProgress:
     current_action: str  # human label shown in the UI
 
 
+# How the bar is divided between the two halves of a job.
+#
+# FFmpeg finishing is not the job finishing: the output is still in the temp
+# directory at that point and has to be written to the library, which on a
+# parity-protected array is most of the wall time — 60 seconds of a 70-second
+# job in the report this came from. FFmpeg's own 0-100 is therefore squeezed
+# into the first 90, and the write owns the last 10, so "100%" means the file
+# is in place rather than "FFmpeg has stopped".
+#
+# The split is fixed rather than proportional deliberately. Nothing knows the
+# destination's write speed before writing to it, so any attempt to weight the
+# two phases honestly would be a guess that changes per file, and a bar whose
+# meaning moves is worse than one that is merely approximate.
+FFMPEG_PROGRESS_SHARE = 90.0
+STAGING_ACTION        = "Writing to disk"
+
+
+def _remux_percent(ffmpeg_percent: float) -> float:
+    """FFmpeg's own 0-100 scaled into the share of the bar it owns."""
+    return ffmpeg_percent * FFMPEG_PROGRESS_SHARE / 100.0
+
+
+def _staging_progress(
+    progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
+    duration: float | None,
+) -> Callable[[float], Awaitable[None]] | None:
+    """
+    Adapt run_staged_subprocess's 0.0-1.0 staging fraction to FFmpegProgress.
+
+    Returns None when there is no callback to feed, which also keeps the
+    runner from doing the work of measuring a copy nobody is watching.
+
+    current_time stays at the full duration: the media is entirely processed
+    by this point, and winding it back to zero would read as a restart.
+    Speed is blank rather than invented — this phase is bytes to disk, not
+    multiples of realtime, and the UI does not show the field anyway.
+    """
+    if progress_callback is None:
+        return None
+
+    async def on_staging(fraction: float) -> None:
+        await progress_callback(
+            FFmpegProgress(
+                percent=FFMPEG_PROGRESS_SHARE
+                + (100.0 - FFMPEG_PROGRESS_SHARE) * fraction,
+                current_time=duration or 0.0,
+                speed="",
+                current_action=STAGING_ACTION,
+            )
+        )
+
+    return on_staging
+
+
 @dataclass
 class FFmpegResult:
     success: bool
@@ -646,7 +700,7 @@ async def execute_ffmpeg(
         speed = progress_kv.get("speed", "?x")
         await progress_callback(
             FFmpegProgress(
-                percent=pct,
+                percent=_remux_percent(pct),
                 current_time=secs,
                 speed=speed,
                 current_action=current_action,
@@ -665,6 +719,7 @@ async def execute_ffmpeg(
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
+        on_staging_progress=_staging_progress(progress_callback, duration),
     )
 
     if not result.success:
@@ -936,7 +991,7 @@ async def execute_ffmpeg_combined(
         secs  = parse_out_time_seconds(progress_kv)
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
         await progress_callback(FFmpegProgress(
-            percent=pct,
+            percent=_remux_percent(pct),
             current_time=secs,
             speed=progress_kv.get("speed", "?x"),
             current_action=current_action,
@@ -971,6 +1026,7 @@ async def execute_ffmpeg_combined(
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
+        on_staging_progress=_staging_progress(progress_callback, duration),
     )
 
     if not result.success:

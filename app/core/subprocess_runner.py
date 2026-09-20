@@ -13,7 +13,6 @@ their own separate, near-identical copy of this logic.
 
 import asyncio
 import os
-import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -121,7 +120,67 @@ def staged_part_path(output: StagedOutput) -> str:
     )
 
 
-def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
+# How much is written between flushes, and how often the event loop looks at
+# the counter those flushes advance.
+#
+# Sized against the slow case rather than the fast one: staging to a
+# parity-protected array runs at tens of MB/s, so 64 MiB is a couple of
+# seconds between updates there and a fraction of one on an SSD. Smaller
+# would report more often at the cost of interrupting the write more often,
+# and the write is the thing the user is waiting for.
+_STAGE_FLUSH_BYTES  = 64 * 1024 * 1024
+_STAGE_COPY_BUFFER  = 1024 * 1024
+_STAGE_POLL_SECONDS = 0.5
+
+
+def _copy_and_flush(src: str, dst: str, flushed: list[int] | None) -> None:
+    """
+    Copy one file, flushing as it goes, and count only what reached the disk.
+
+    shutil.copyfile did this job and did it faster, and was still the wrong
+    tool once anything wanted to watch the copy. It returns when the bytes
+    are in the page cache, not when they are on the disk, so the caller's
+    fsync afterwards carried a large and invisible share of the wall time —
+    on a 700 MB file here, between 40 and 60 per cent of it. Progress
+    counted from a copyfile would therefore reach the end and then stop
+    dead for the length of that fsync, which is the stall it was added to
+    report.
+
+    Flushing every _STAGE_FLUSH_BYTES and advancing the counter AFTER the
+    flush makes the number mean "this much survives a power cut", so it
+    moves at the speed of the destination rather than the speed of RAM.
+
+    The source is opened before the destination so a missing temp raises
+    before any .part exists — copyfile's order, which the caller's cleanup
+    contract relies on.
+    """
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        since = 0
+        while True:
+            chunk = fi.read(_STAGE_COPY_BUFFER)
+            if not chunk:
+                break
+            fo.write(chunk)
+            since += len(chunk)
+            if since >= _STAGE_FLUSH_BYTES:
+                fo.flush()
+                os.fdatasync(fo.fileno())
+                if flushed is not None:
+                    flushed[0] += since
+                since = 0
+        fo.flush()
+        # fsync, not fdatasync: this is the durability guarantee the swap
+        # depends on, and the test that pins it counts fsync calls.
+        os.fsync(fo.fileno())
+        if flushed is not None:
+            flushed[0] += since
+
+
+def _stage_parts(
+    outputs: list[StagedOutput],
+    part_paths: list[str],
+    flushed: list[int] | None = None,
+) -> None:
     """
     Copy every temp output to its staged .part and fsync it. Synchronous.
 
@@ -138,13 +197,19 @@ def _stage_parts(outputs: list[StagedOutput], part_paths: list[str]) -> None:
     after the exception propagates out of the executor. Do not turn this into a
     return value — on the failure path there is no return.
 
+    `flushed`, when given, is a single-element list this function adds to as
+    bytes reach the disk, across ALL outputs rather than per file. It is read
+    from the event loop while this runs on a worker thread: a list holding an
+    int is written here and only read there, which needs no lock, and an int
+    is the whole of the shared state on purpose. Nothing else may be handed
+    back this way — anything requiring the two threads to agree on more than
+    one number belongs behind a queue.
+
     Raises OSError (including ENOSPC), handled by the caller.
     """
     for o in outputs:
         part = staged_part_path(o)
-        shutil.copyfile(o.temp_path, part)
-        with open(part, "rb") as f:
-            os.fsync(f.fileno())
+        _copy_and_flush(o.temp_path, part, flushed)
         part_paths.append(part)
 
 
@@ -156,6 +221,7 @@ async def run_staged_subprocess(
     stderr_tail_lines: int = 30,
     timeout_seconds: float | None = None,
     before_staging: Callable[[], Awaitable[str | None]] | None = None,
+    on_staging_progress: Callable[[float], Awaitable[None]] | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
@@ -169,6 +235,14 @@ async def run_staged_subprocess(
     the only point at which the originals and the finished outputs both
     exist.  Return None to continue, or an error string to abort the run with
     every original untouched.  See the call site for the full contract.
+
+    on_staging_progress: called with 0.0 when the copy to the destination
+    starts, with the fraction of total bytes flushed to disk as it runs, and
+    with 1.0 once every output is staged.  It exists because the copy is the
+    long silent tail of a run: the subprocess reports its own progress and
+    then finishes, while the bytes still have to travel to the destination.
+    Fractions are of the total across all outputs, so one bar covers a main
+    file and its sidecars rather than restarting per file.
 
     Staging is two-pass, so a failure while copying leaves every original
     untouched and every output unswapped.  The swap pass itself is a loop of
@@ -349,12 +423,22 @@ async def run_staged_subprocess(
         # handler below still sees exactly which .part files a failed run had
         # created.
         part_paths: list[str] = []
+        # Total across every output, measured before the copy starts: the
+        # temps all exist by here (checked above) and none of them changes
+        # size while being copied.
+        total_bytes = sum(os.path.getsize(o.temp_path) for o in outputs)
+        flushed = [0]
         staging = asyncio.ensure_future(
             asyncio.get_running_loop().run_in_executor(
-                None, _stage_parts, outputs, part_paths
+                None, _stage_parts, outputs, part_paths, flushed
             )
         )
         try:
+            # Reported before the first byte moves, so a caller showing a
+            # label can change it as the copy begins rather than one poll
+            # later. On a slow destination that gap is seconds.
+            if on_staging_progress:
+                await on_staging_progress(0.0)
             # shield(), not a bare await: staging is now interruptible where the
             # inline loop it replaced was not, and an abort landing mid-copy
             # would otherwise send us straight to the outer CancelledError
@@ -366,7 +450,25 @@ async def run_staged_subprocess(
             # cleanup always runs against a settled filesystem, and the abort is
             # re-raised immediately afterwards. This preserves the previous
             # behaviour: staging was effectively uninterruptible before.
-            await asyncio.shield(staging)
+            #
+            # asyncio.wait() rather than wait_for(): wait_for CANCELS what it
+            # is waiting on when the timeout fires, which here would abandon
+            # the copy every poll. wait() only tells us whether it finished
+            # yet, and leaves it alone — including when this coroutine is
+            # itself cancelled, which is how the shield above survives a
+            # poll landing at the same moment as an abort.
+            shielded = asyncio.shield(staging)
+            while True:
+                done, _ = await asyncio.wait(
+                    {shielded}, timeout=_STAGE_POLL_SECONDS
+                )
+                if done:
+                    break
+                if on_staging_progress and total_bytes:
+                    await on_staging_progress(min(1.0, flushed[0] / total_bytes))
+            await shielded          # re-raises whatever the copy raised
+            if on_staging_progress:
+                await on_staging_progress(1.0)
         except asyncio.CancelledError:
             try:
                 await staging
@@ -374,6 +476,16 @@ async def run_staged_subprocess(
                 pass          # already aborting; a staging failure changes nothing
             raise
         except OSError as exc:
+            # Usually the copy's own error, in which case it has already
+            # stopped. Not always: on_staging_progress is awaited while the
+            # thread runs, so one raising OSError arrives here mid-copy, and
+            # the cleanup below would then race it — the same race the shield
+            # exists to prevent. Settling first costs nothing in the common
+            # case, where this returns immediately.
+            try:
+                await staging
+            except Exception:
+                pass
             for p in part_paths + [staged_part_path(o) for o in outputs]:
                 cleanup_temp_file(p)
             for o in outputs:
@@ -386,6 +498,16 @@ async def run_staged_subprocess(
                 ),
                 returncode=proc.returncode,
             )
+        except Exception:
+            # Anything else raised while the copy thread is live — in
+            # practice a progress callback failing. Same reasoning as the
+            # OSError branch: settle first, then let the outer handler clean
+            # up against a filesystem nothing is still writing to.
+            try:
+                await staging
+            except Exception:
+                pass
+            raise
 
         for o in outputs:
             os.replace(staged_part_path(o), o.final_path)
