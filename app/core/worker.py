@@ -90,11 +90,17 @@ def abort_job(job_id: int) -> bool:
 
     Marks the DB row "cancelled" (reusing the existing status rather than
     inventing a new one, so every existing filter/tab/badge that already
-    understands "cancelled" — e.g. the Failed tab, Retry All — picks this
-    up with no further changes) BEFORE cancelling the task, so that by the
-    time _run_and_broadcast's finally block reads the final state, it
-    already reflects the abort rather than racing to overwrite it with
-    "failed" via the emergency-cleanup safety net.
+    understands "cancelled" — e.g. the Failed tab — picks this up with no
+    further changes) BEFORE cancelling the task, so that by the time
+    _run_and_broadcast's finally block reads the final state, it already
+    reflects the abort rather than racing to overwrite it with "failed" via
+    the emergency-cleanup safety net.
+
+    Retry All is the exception: it re-queues failed rows only, because a
+    cancelled row is otherwise something the user removed on purpose (see
+    queue.retry_all_failed). An aborted file comes back through its own
+    Retry in the detail window, or on the next delta scan once the sentinels
+    below are reset.
 
     Returns True if a matching running task was found and cancelled, False
     if the job wasn't actually running (already finished, or never
@@ -639,8 +645,14 @@ def _flag_subtitle_encoding_review(
     failed_stream_indices = {si for si, _ in subtitle_pairs}
 
     # Build the review_subtitles payload from the track metadata we already
-    # have in memory — same structure the Review page's per-track Keep/Remove
-    # UI expects, matching what decision.py produces for image-based subtitles.
+    # have in memory — the same shape decision.py's subtitle gates produce,
+    # which the Review page renders one choice per entry.
+    #
+    # Each entry names its own problem, as the gates' entries do. "encoding"
+    # marks a track that must not be offered Extract, because extracting it
+    # is exactly what just failed. resolve_subtitles enforces that from the
+    # item-level review_reason set below, which is exact for this review: it
+    # only ever holds the tracks whose extraction failed.
     flagged = [
         {
             "stream_index": t["stream_index"],
@@ -648,6 +660,7 @@ def _flag_subtitle_encoding_review(
             "codec":        t.get("codec") or "",
             "is_forced":    bool(t.get("is_forced", False)),
             "title":        t.get("title"),
+            "reason":       "encoding",
         }
         for t in tracks
         if t.get("track_type") == "subtitle"
@@ -1293,9 +1306,9 @@ def _load_job_data(job_id: int):
 
         app_cfg    = get_app_settings(db)
         file_info  = _file_info_for(media)
-        overrides  = _load_subtitle_overrides(media)
-        audio_lang_overrides = _load_audio_language_overrides(media)
-        subtitle_lang_overrides = _load_subtitle_language_overrides(media)
+        overrides  = _load_subtitle_overrides(media, tracks)
+        audio_lang_overrides = _load_audio_language_overrides(media, tracks)
+        subtitle_lang_overrides = _load_subtitle_language_overrides(media, tracks)
         faststart  = (
             is_faststart_mp4(media.path)
             if (media.container or "").lower() == "mp4"

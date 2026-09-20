@@ -156,6 +156,18 @@ def test_preexisting_ac3_51_before_forge_track_still_resolves_last():
 # ═══════════════════════════════════════════════════════════════════════════
 # analyze_file's und-threshold exclusion validates the index
 # ═══════════════════════════════════════════════════════════════════════════
+#
+# These read the flags the threshold raises. They asked whether the file went
+# to manual review, which is what the threshold used to do with it; it now
+# flags every undefined track it counted in Audio Language Review instead.
+# An excluded forge AC3 means one und track left, below the threshold of 2,
+# so nothing is flagged — the same distinction, at the same place.
+
+def _threshold_flagged(decision):
+    """The stream indices the threshold flagged, in order."""
+    return [f["stream_index"] for f in decision.undefined_audio_flags
+            if f["origin"] == "threshold"]
+
 
 def test_stale_forge_index_still_excludes_the_real_forge_track():
     """
@@ -169,9 +181,9 @@ def test_stale_forge_index_still_excludes_the_real_forge_track():
     tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
     decision = analyze_file(make_file_info(), tracks, settings,
                             forged_ac3_audio_index=5)
-    assert not decision.is_manual_review, (
-        "Stale forge index defeated the exclusion — the file was sent to "
-        "manual review even though its second und track is the forge AC3."
+    assert _threshold_flagged(decision) == [], (
+        "Stale forge index defeated the exclusion — the file's undefined "
+        "tracks were flagged even though its second und track is the forge AC3."
     )
 
 
@@ -187,9 +199,9 @@ def test_stale_index_landing_on_wrong_track_does_not_exclude_it():
     tracks = [_video(0), _aac51(1, "und"), _aac51(2, "und")]
     decision = analyze_file(make_file_info(), tracks, settings,
                             forged_ac3_audio_index=1)
-    assert decision.is_manual_review, (
+    assert _threshold_flagged(decision) == [1, 2], (
         "An in-range stale index excluded a genuine und track that is "
-        "not the forge AC3 — the threshold gate was silently bypassed."
+        "not the forge AC3 — the threshold was silently bypassed."
     )
 
 
@@ -229,9 +241,9 @@ def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
     decision = analyze_file(make_file_info(), replacement, settings,
                             forged_ac3_audio_index=1)
 
-    assert decision.is_manual_review, (
+    assert _threshold_flagged(decision), (
         "an unrelated release's AC3 5.1 was excluded from the und threshold "
-        "because a stale index happened to land on it — the gate was "
+        "because a stale index happened to land on it — the threshold was "
         "bypassed for a file forge never touched"
     )
 
@@ -255,7 +267,7 @@ def test_an_ac3_stereo_last_track_is_not_mistaken_for_the_forge_ac3():
     decision = analyze_file(make_file_info(), tracks, settings,
                             forged_ac3_audio_index=1)
 
-    assert decision.is_manual_review, (
+    assert _threshold_flagged(decision) == [1, 2], (
         "an AC3 stereo commentary track was treated as the forge AC3 and "
         "exempted from the und threshold"
     )
@@ -278,7 +290,7 @@ def test_nothing_is_excluded_for_a_file_with_no_forge_job():
     decision = analyze_file(make_file_info(), tracks, settings,
                             forged_ac3_audio_index=None)
 
-    assert decision.is_manual_review, (
+    assert _threshold_flagged(decision) == [1, 2], (
         "a file with no forge job had its last AC3 5.1 exempted from the "
         "und threshold — the exemption is supposed to require a forge job"
     )

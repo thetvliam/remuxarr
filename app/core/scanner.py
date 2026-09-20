@@ -437,8 +437,8 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
 def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None:
     """
     Upsert or clear AudioLanguageFlag/SubtitleLanguageFlag for this file
-    based on a freshly-computed decision's audio_language_mismatch /
-    subtitle_language_mismatch fields.
+    based on a freshly-computed decision's audio_language_mismatch,
+    undefined_audio_flags and subtitle_language_mismatches fields.
 
     This was originally inline within _process_file, called only during
     a scan. Extracted into a shared helper specifically so worker.py can
@@ -455,35 +455,63 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     wrong" warning, didn't show up in Audio Language Review until an
     entirely separate full scan ran afterward.
 
-    Never applies to a file the user has explicitly confirmed is correct
-    via Ignore, and never blocks processing either way — this is purely
+    A kind of flag the user has confirmed correct on this file stays off
+    it, and this never blocks processing either way — it is purely
     bookkeeping for the Audio/Subtitle Language Review sections.
     """
-    existing_flag = (
-        db.query(AudioLanguageFlag)
-        .filter(AudioLanguageFlag.file_id == media_file.id)
-        .first()
-    )
-    if decision.audio_language_mismatch and not media_file.audio_language_ignored:
-        mismatch = decision.audio_language_mismatch
-        if existing_flag:
-            existing_flag.stream_index      = mismatch["stream_index"]
-            existing_flag.detected_language = mismatch["language"]
+    # Audio flags are per TRACK: the table is unique on (file_id,
+    # stream_index). Each wanted flag updates its track's row or adds one,
+    # and every other row for the file is stale and removed.
+    #
+    # Updated in place rather than deleted and re-added, because the review
+    # page selects rows by id: a scan landing while a user is choosing would
+    # otherwise replace the ids they had selected. The origin is updated with
+    # the rest, since a track can move between them — an undefined track
+    # asked about under always_ask becomes a threshold flag once the file
+    # reaches the threshold.
+    #
+    # Each origin is suppressed by its own switch only (AudioLanguageFlag.
+    # origin). audio_language_ignored silences mismatch flags here. The
+    # threshold's acknowledgement is applied by the engine, which already
+    # leaves those flags out, so a file confirmed correct on a mismatch is
+    # still asked about its undefined tracks.
+    existing_audio_flags = {
+        flag.stream_index: flag
+        for flag in db.query(AudioLanguageFlag)
+                      .filter(AudioLanguageFlag.file_id == media_file.id)
+                      .all()
+    }
+    wanted_audio = []
+    if decision.audio_language_mismatch:
+        wanted_audio.append({**decision.audio_language_mismatch,
+                             "origin": "mismatch"})
+    wanted_audio += [
+        {"stream_index": f["stream_index"], "language": "und",
+         "origin": f["origin"]}
+        for f in decision.undefined_audio_flags
+    ]
+    if media_file.audio_language_ignored:
+        wanted_audio = [w for w in wanted_audio if w["origin"] != "mismatch"]
+
+    for wanted in wanted_audio:
+        flag = existing_audio_flags.pop(wanted["stream_index"], None)
+        if flag:
+            flag.detected_language = wanted["language"]
+            flag.origin            = wanted["origin"]
         else:
             db.add(AudioLanguageFlag(
                 file_id=media_file.id,
-                stream_index=mismatch["stream_index"],
-                detected_language=mismatch["language"],
+                stream_index=wanted["stream_index"],
+                detected_language=wanted["language"],
+                origin=wanted["origin"],
             ))
-    elif existing_flag:
-        # No longer mismatched (or now ignored) — clear any stale flag.
-        db.delete(existing_flag)
+    # No longer flagged, or silenced by its switch.
+    for flag in existing_audio_flags.values():
+        db.delete(flag)
 
-    # Subtitles are handled per TRACK, not per file. A file can have
-    # several undefined subtitles, each extracted to its own .srt carrying
-    # the language in its filename, so each needs its own answer. Audio
-    # above stays one-per-file: its threshold picks a representative, and
-    # its tracks do not leave the file.
+    # Subtitles are handled per TRACK as well. A file can have several
+    # undefined subtitles, each extracted to its own .srt carrying the
+    # language in its filename, so each needs its own answer.
     existing_sub_flags = {
         flag.stream_index: flag
         for flag in db.query(SubtitleLanguageFlag)
@@ -819,9 +847,9 @@ def _process_file(
 
     # ── Decision engine ────────────────────────────────────────────────────
     file_info_dict = _file_info_for(media_file)
-    overrides = _load_subtitle_overrides(media_file)
-    audio_lang_overrides = _load_audio_language_overrides(media_file)
-    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file)
+    overrides = _load_subtitle_overrides(media_file, track_list)
+    audio_lang_overrides = _load_audio_language_overrides(media_file, track_list)
+    subtitle_lang_overrides = _load_subtitle_language_overrides(media_file, track_list)
     forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media_file.id)
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
@@ -1017,30 +1045,97 @@ def _process_file(
     logger.info("Queued [%d] %s — %s", qi.id, os.path.basename(path), decision.reason)
 
 
-def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int, str]:
-    """
-    Shared implementation for _load_subtitle_overrides,
-    _load_audio_language_overrides, and _load_subtitle_language_overrides
-    below — those three were previously byte-identical apart from which
-    MediaFile column they read (their own docstrings already
-    acknowledged this). Consolidated here as thin wrappers rather than
-    updating every importer (worker.py, queue.py, audio_language.py,
-    subtitle_language.py) to call this directly, so every existing call
-    site keeps working unchanged.
+# ── Stored answers: keyed by what a track IS, not where it sits ──────────────
+#
+# The three override columns hold what the user answered about a track. They
+# were keyed by stream_index, which is a position in one probe of one file,
+# and positions move: processing drops tracks and renumbers what is left, so
+# a Keep answer given for stream 3 stopped matching the track it was given
+# for as soon as the file was processed, and the same question came back on
+# the next full scan. Worse, a file replaced in place under the same name
+# would have had that answer applied to whatever now sat at stream 3.
+#
+# They are keyed by a descriptor instead: what the track is, plus which one
+# it is among identical ones. Resolved back to a stream_index against the
+# file's current tracks every time the answer is used.
+#
+# The fields are the ones a remux carries through. ffmpeg.py copies titles
+# and dispositions to the output and rewrites only language tags, so codec,
+# title, forced and hearing-impaired flags, and an audio track's channels and
+# layout all survive. Language is deliberately left out: correcting a
+# language tag is a thing this app does on purpose, and including it would
+# throw away a Keep answer the moment the same file's language was fixed.
+#
+# The ordinal is what tells identical tracks apart — two untitled ASS tracks,
+# or the several undefined audio tracks the threshold exists for. It holds
+# because the remux pipeline copies kept streams in source order and never
+# reorders them, which forge.py's undo resolver relies on for the same
+# reason. An answer whose descriptor matches no current track, or whose
+# ordinal is not there any more, is dropped: the question comes back rather
+# than being applied to a track nobody answered for.
 
-    Parses a JSON dict with string keys (JSON object keys are always
-    strings) into a dict[int, str] keyed by stream_index, as expected by
-    analyze_file(). The warning message is built from `attr` itself,
-    which reproduces each wrapper's own original, distinct wording
-    exactly — preserved deliberately in case anything greps logs for a
-    specific one of these three messages.
+
+def _descriptor_fields(track: dict) -> list:
+    """The parts of a track that survive being remuxed. See the note above."""
+    return [
+        (track.get("track_type") or "").lower(),
+        (track.get("codec") or "").lower(),
+        (track.get("title") or "").strip(),
+        bool(track.get("is_forced")),
+        bool(track.get("is_hearing_impaired")),
+        track.get("channels"),
+        (track.get("channel_layout") or "").lower(),
+    ]
+
+
+def descriptors_by_stream(tracks: list[dict]) -> dict[int, str]:
+    """
+    The descriptor of every track, keyed by its stream_index.
+
+    JSON rather than a delimited string because a title can contain any
+    character, including whatever delimiter would have been picked. Sorted by
+    stream_index so the ordinal counts in file order from both sides: the
+    writer numbering the track it is answering, and the reader numbering the
+    tracks it is matching against.
+    """
+    counts: dict[str, int] = {}
+    out: dict[int, str] = {}
+    for track in sorted(tracks, key=lambda t: t["stream_index"]):
+        fields = _descriptor_fields(track)
+        shape = json.dumps(fields, separators=(",", ":"))
+        counts[shape] = counts.get(shape, 0) + 1
+        out[track["stream_index"]] = json.dumps(
+            fields + [counts[shape]], separators=(",", ":"))
+    return out
+
+
+def resolve_track_answers(stored: dict[str, str], tracks: list[dict]) -> dict[int, str]:
+    """
+    Stored answers, resolved against the tracks the file has now.
+
+    Keyed by stream_index, which is what analyze_file takes. An answer whose
+    descriptor matches nothing is left out — never applied to some other
+    track by falling back to a stored position, which is the failure this
+    keying exists to close.
+    """
+    stream_for = {key: si for si, key in descriptors_by_stream(tracks).items()}
+    return {stream_for[key]: answer
+            for key, answer in stored.items() if key in stream_for}
+
+
+def _load_track_answers(media_file: MediaFile, attr: str) -> dict[str, str]:
+    """
+    The stored answers of one column, exactly as held: descriptor -> answer.
+
+    For writers, which merge a new answer in and write the column back.
+    Readers want resolve_track_answers on top of this.
     """
     value = getattr(media_file, attr)
     if not value:
         return {}
     try:
         raw = json.loads(value)
-        return {int(k): v for k, v in raw.items()}
+        return {str(k): v for k, v in raw.items()}
     except (ValueError, AttributeError, TypeError):
         logger.warning(
             "Invalid %s JSON for file %d — ignoring", attr, media_file.id
@@ -1048,28 +1143,29 @@ def _load_int_keyed_json_overrides(media_file: MediaFile, attr: str) -> dict[int
         return {}
 
 
-def _load_subtitle_overrides(media_file: MediaFile) -> dict[int, str]:
+def _load_subtitle_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
     """
-    Parse MediaFile.subtitle_overrides (JSON dict with string keys, since
-    JSON object keys are always strings) into a dict[int, str] keyed by
-    stream_index, as expected by analyze_file().
+    MediaFile.subtitle_overrides, resolved against `tracks` into the
+    dict[int, str] keyed by stream_index that analyze_file() takes.
+
+    The three loaders were one shared parser while all three columns were
+    keyed by stream_index. They are thin wrappers over the same pair of
+    helpers now, for the same reason: every call site keeps its own name.
     """
-    return _load_int_keyed_json_overrides(media_file, "subtitle_overrides")
+    return resolve_track_answers(
+        _load_track_answers(media_file, "subtitle_overrides"), tracks)
 
 
-def _load_audio_language_overrides(media_file: MediaFile) -> dict[int, str]:
-    """
-    Parse MediaFile.audio_language_overrides (same JSON-dict-with-string-keys
-    shape as _load_subtitle_overrides above) into a dict[int, str] keyed by
-    stream_index, as expected by analyze_file().
-    """
-    return _load_int_keyed_json_overrides(media_file, "audio_language_overrides")
+def _load_audio_language_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
+    """MediaFile.audio_language_overrides, resolved the same way."""
+    return resolve_track_answers(
+        _load_track_answers(media_file, "audio_language_overrides"), tracks)
 
 
-def _load_subtitle_language_overrides(media_file: MediaFile) -> dict[int, str]:
-    """Subtitle counterpart to _load_audio_language_overrides above — same
-    shape, same parsing, different column."""
-    return _load_int_keyed_json_overrides(media_file, "subtitle_language_overrides")
+def _load_subtitle_language_overrides(media_file: MediaFile, tracks: list[dict]) -> dict[int, str]:
+    """Subtitle counterpart to _load_audio_language_overrides above."""
+    return resolve_track_answers(
+        _load_track_answers(media_file, "subtitle_language_overrides"), tracks)
 
 
 def _file_info_for(media_file: MediaFile) -> dict:

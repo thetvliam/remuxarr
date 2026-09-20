@@ -1,326 +1,371 @@
 /**
- * ReviewPage — two gates flag subtitle tracks, and each has its own setting.
+ * The review page: cards in, one Apply out.
  *
- * WHAT THIS PAGE GETS WRONG QUIETLY
- * ---------------------------------
- * Files reach manual review for four reasons now, and three of them flag
- * subtitle tracks: image-based subtitles that cannot become SRT, embedded
- * fonts that only MKV can hold, and text subtitles FFmpeg could not decode
- * as UTF-8. They look identical in the payload — all carry
- * flagged_subtitles — and the first two are resolved by different settings
- * that can be set to opposite values. The third has no setting at all.
+ * Nothing is written while a person is choosing. Answers, per-file
+ * exceptions and skips are staged here and sent together, so what these
+ * tests pin is what Apply carries, what the button claims it carries, and
+ * what the summary says came back.
  *
- * So counting them together offers to bulk-resolve font items under
- * Image-Based Subtitle Handling. With that on Always Remove, one button
- * press converts every anime file, drops its fonts and flattens its
- * typesetting to SRT — from a control that says it is resolving image
- * subtitles. Nothing fails, and the styling is gone.
+ * The old page resolved one item at a time and its tests went with it. Every
+ * mutation below survived the suite as it stood before these were written:
  *
- * review_reason is what tells them apart. A null reason on a flagged item
- * is an image-subtitle review — QueueItem.review_reason says where those
- * rows come from — and this page reads it the same way the bulk resolver
- * does. An encoding review gets no bulk action: re-deciding the file
- * cannot see the encoding failure, so it would queue the extraction that
- * just failed.
- *
- * The component had no tests at all before this file.
- *
- * Verified by mutation, 7 applied, 7 killed:
- *
- *   • Font items counted as subtitle items                  → killed
- *   • Encoding items counted as subtitle items              → killed
- *   • Subtitle items counted as font items                  → killed
- *   • Unlabelled items treated as font items                → killed
- *   • Each button posting to the other's endpoint           → killed
- *   • The font button shown while its setting is always_ask → killed
- *   • Both buttons reading the same setting                 → killed
- *
- * A mutation run here must confirm the file was collected: `vitest run
- * <path>` exits non-zero when it finds NO test files, which is
- * indistinguishable from every mutant dying — see the note in
- * LanguageReviewSection.test.jsx, where that happened.
+ *   • answers sent by slot rather than by each file's stream numbers
+ *   • a file's own exception ignored, or applied to every file
+ *   • skipped cards left out of the request
+ *   • a card with an unanswered track sent anyway
+ *   • the button counting cards instead of files, or dropping the skipped count
+ *   • the summary counting what was sent rather than what came back
+ *   • the outcome line derived on the page instead of from the preview
+ *   • staged answers surviving a refresh
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewPage } from "../ReviewPage";
-import { ThemeProvider } from "../../../theme";
 
-const API = "http://backend";
+const API = "http://x";
 
-/* One of each: an image-subtitle review, a font review, an unlabelled
- * image-subtitle review, and a subtitle-encoding review. */
-const IMAGE_ITEM = {
-  id: 1, status: "manual_review", review_reason: "image_subtitles",
-  flagged_subtitles: [{ stream_index: 2, language: "eng",
-                        codec: "hdmv_pgs_subtitle", is_forced: false }],
-  file: { id: 1, filename: "Movie.mkv", path: "/m/Movie.mkv" },
-};
-const FONT_ITEM = {
-  id: 2, status: "manual_review", review_reason: "font_attachments",
-  flagged_subtitles: [{ stream_index: 3, language: "eng", codec: "ass",
-                        is_forced: false, title: "Signs and Songs" }],
-  file: { id: 2, filename: "Saiki.mkv", path: "/m/Saiki.mkv" },
-};
-const LEGACY_ITEM = {
-  id: 3, status: "manual_review", review_reason: null,
-  flagged_subtitles: [{ stream_index: 2, language: "eng",
-                        codec: "dvd_subtitle", is_forced: false }],
-  file: { id: 3, filename: "Old.mkv", path: "/m/Old.mkv" },
-};
-const ENCODING_ITEM = {
-  id: 4, status: "manual_review", review_reason: "subtitle_encoding",
-  flagged_subtitles: [{ stream_index: 2, language: "eng",
-                        codec: "subrip", is_forced: false }],
-  file: { id: 4, filename: "Latin1.mkv", path: "/m/Latin1.mkv" },
+/* Two files whose tracks sit at different stream numbers: the card's slots
+ * are shared, the numbers behind them are not. */
+const GROUP = {
+  key: "g1",
+  heading: "Show / Season 1",
+  directory: "/media/tv/Show/Season 1",
+  file_count: 2,
+  font_attachments: 17,
+  tracks: [
+    { codec: "ass", language: "jpn", is_forced: false, reason: "styled", title: "Signs" },
+    { codec: "hdmv_pgs_subtitle", language: "eng", is_forced: false, reason: "image", title: null },
+  ],
+  files: [
+    { file_id: 1, filename: "ep01.mkv", path: "/media/tv/Show/Season 1/ep01.mkv", streams: [2, 3] },
+    { file_id: 2, filename: "ep02.mkv", path: "/media/tv/Show/Season 1/ep02.mkv", streams: [4, 5] },
+  ],
 };
 
-/* An audio-type review: no flagged subtitles, so the row offers the plain
- * APPROVE / SKIP pair rather than the per-subtitle controls. This is the
- * shape that matters here — re-deciding it is what can write an
- * AudioLanguageFlag for the section further down the page. */
-const AUDIO_ITEM = {
-  id: 5, status: "manual_review", review_reason: null,
-  flagged_subtitles: null,
-  file: { id: 5, filename: "Dubbed.mkv", path: "/m/Dubbed.mkv" },
-};
+const SECOND = { ...GROUP, key: "g2", heading: "Other / Season 2", file_count: 1,
+                 files: [{ file_id: 3, filename: "x.mkv", path: "/x.mkv", streams: [2, 3] }] };
 
 let posted;
+let toast;
 
-const mockApi = ({ imgSetting = "always_ask", fontSetting = "always_ask" } = {}) => {
+function mockApi({ groups = [GROUP], applyBody = null, applyOk = true,
+                   previewContainer = "mp4", currentContainer = "mkv",
+                   blockedBeyondSubtitles = false,
+                   // Per file, for cards whose files do not all end the same way.
+                   previewPerFile = null } = {}) {
   posted = [];
+  toast = vi.fn();
   global.fetch = vi.fn(async (url, opts = {}) => {
     const u = String(url);
     if (opts.method === "POST") {
-      posted.push(u);
-      return { ok: true, json: async () => ({ resolved: 1, still_unresolved: 0, errors: [] }) };
+      posted.push({ url: u, body: JSON.parse(opts.body) });
+      if (u.includes("/review/preview")) {
+        return { ok: true, json: async () => ({
+          outcomes: JSON.parse(opts.body).files.map(f => ({
+            file_id: f.file_id,
+            current_container: currentContainer,
+            target_container: previewContainer,
+            will_process: true, still_in_review: false,
+            blocked_beyond_subtitles: blockedBeyondSubtitles,
+            ...(previewPerFile?.[f.file_id] || {}),
+          })),
+          errors: [],
+        }) };
+      }
+      return {
+        ok: applyOk,
+        json: async () => applyBody
+          ?? { outcomes: JSON.parse(opts.body).files.map(f => ({ file_id: f.file_id })),
+               errors: [] },
+      };
     }
-    if (u.includes("image_subtitle_handling"))
-      return { ok: true, json: async () => ({ value: imgSetting }) };
-    if (u.includes("font_attachment_handling"))
-      return { ok: true, json: async () => ({ value: fontSetting }) };
-    return { ok: true, json: async () => ({ items: [], total: 0 }) };
+    if (u.includes("/review/groups")) {
+      return { ok: true, json: async () => ({
+        groups, total_groups: groups.length,
+        total_files: groups.reduce((n, g) => n + g.file_count, 0),
+      }) };
+    }
+    return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
   });
-};
+}
 
-/* jsdom has no IntersectionObserver, and both language sections below this
- * page arm one as soon as their list has more rows than the first page. The
- * effect throws a ReferenceError, React unmounts the whole section, and the
- * assertions here keep passing because they are about the bulk bar rather
- * than the sections — so the harness diverges silently from what any user
- * with more than one page of flagged files actually gets.
- *
- * mockApi answers those lists with total 0 today, which is what keeps the
- * observer out of reach. That is a property of the mock and not something
- * any test here asserts, so it is not a guarantee.
- *
- * Third copy of this stub. HistoryPanel.test.jsx and LanguageReviewSection.
- * test.jsx hold the others, and three is usually the point at which a shared
- * helper is worth extracting. Left duplicated here on purpose: this one is
- * inert scaffolding rather than a recording observer the tests interrogate,
- * so sharing it would mean exporting the richer version to a file that only
- * needs the class to exist. Worth revisiting if a fourth appears.
- */
-class InertObserver {
+class FakeObserver {
   observe() {}
-  unobserve() {}
   disconnect() {}
 }
 
-const setup = (items) => {
-  const onRefresh = vi.fn();
-  const toast = vi.fn();
-  render(
-    <ThemeProvider>
-      <ReviewPage api={API} items={items} onRefresh={onRefresh} toast={toast}
-                  invalidateHistory={vi.fn()} />
-    </ThemeProvider>,
-  );
-  return { onRefresh, toast };
-};
-
 beforeEach(() => {
-  vi.restoreAllMocks();
-  vi.stubGlobal("IntersectionObserver", InertObserver);
+  vi.stubGlobal("IntersectionObserver", FakeObserver);
 });
 
-describe("ReviewPage — refreshing the language lists", () => {
-  /* Resolving a manual-review item can CREATE a language review row.
-   * _apply_decision_to_item calls _upsert_language_flags for both the skipped
-   * and pending outcomes, deliberately, so that a mismatch the engine noticed
-   * while re-deciding is not lost. The two sections sit further down this
-   * same page.
-   *
-   * They are paginated lists driven by usePaginatedFetch, which refetches on
-   * reviewRefreshKey and on nothing else here. approve() called onRefresh()
-   * and invalidateHistory(null) — the queue and History — so the row appeared
-   * in the database, the page did not move, and the section only showed it
-   * after navigating away and back. */
+const show = () => render(<ReviewPage api={API} toast={toast} onReviewResolved={() => {}} />);
 
-  const LANGUAGE_GET = /(audio|subtitle)-language-review/;
+/**
+ * Answer both tracks of the FIRST card.
+ *
+ * By index rather than by the last match: the cards render in order, so the
+ * first two Deletes are this card's two tracks and the later ones belong to
+ * whatever card comes next.
+ */
+async function answerCard(user) {
+  await screen.findByText("Show / Season 1");
+  const deletes = () => screen.getAllByRole("button", { name: "Delete" });
+  await user.click(deletes()[0]);
+  await user.click(deletes()[1]);
+}
 
-  /** Stands in for App.jsx: holds the key and bumps it on the callback. */
-  const Harness = ({ items }) => {
-    const [key, setKey] = useState(0);
-    return (
-      <ThemeProvider>
-        <ReviewPage api={API} items={items} onRefresh={vi.fn()} toast={vi.fn()}
-                    invalidateHistory={vi.fn()} reviewRefreshKey={key}
-                    onReviewResolved={() => setKey(k => k + 1)} />
-      </ThemeProvider>
-    );
-  };
+const applyButton = () => screen.getByRole("button", { name: /^Apply/ });
+const applyRequest = () => posted.find(p => p.url.includes("/review/apply"))?.body;
 
-  const languageGets = () =>
-    global.fetch.mock.calls.filter(
-      ([url, opts = {}]) => (opts.method || "GET") === "GET"
-                            && LANGUAGE_GET.test(String(url))).length;
-
-  it("refetches both language lists when an item is approved", async () => {
+describe("what Apply carries", () => {
+  it("sends each file's own stream numbers, not the card's slots", async () => {
+    const user = userEvent.setup();
     mockApi();
-    render(<Harness items={[AUDIO_ITEM]} />);
+    show();
 
-    await waitFor(() => expect(languageGets()).toBe(2));
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
+  });
+
+  it("sends a file's own answer only for that file", async () => {
     const user = userEvent.setup();
+    mockApi();
+    show();
 
-    await user.click(await screen.findByRole("button", { name: /^APPROVE$/i }));
+    await answerCard(user);
+    await user.click(screen.getByRole("button", { name: /Show files/ }));
+    await user.click(screen.getByRole("button", { name: /ep02.mkv/ }));
+    await user.click(screen.getAllByRole("button", { name: "Keep" }).at(-1));
+    await user.click(applyButton());
 
-    await waitFor(() => expect(languageGets()).toBe(4));
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 4: "remove", 5: "keep" } },
+    ]);
+  });
+
+  it("sends skipped cards as skips, and leaves undecided ones out", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP, SECOND] });
+    show();
+
+    await screen.findByText("Other / Season 2");
+    // The first card is skipped; the second is left half-answered.
+    await user.click(screen.getAllByRole("button", { name: "Skip" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Keep" }).at(0));
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest()).toEqual({ files: [], skips: [1, 2] });
   });
 });
 
-describe("ReviewPage — bulk resolving", () => {
-  it("counts font items separately from image-subtitle ones", async () => {
-    /** The count is what the button acts on, so a font item counted as a
-     *  subtitle item is one that gets resolved under the wrong setting. */
-    mockApi({ imgSetting: "always_remove", fontSetting: "always_keep" });
-    setup([IMAGE_ITEM, FONT_ITEM]);
-
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 FONT ITEMS/i })).toBeTruthy();
-  });
-
-  it("treats an item with no recorded reason as an image-subtitle one", async () => {
-    /** Every install has these: image-subtitle reviews written before
-     *  every path recorded review_reason. Counting them as font items would
-     *  resolve them under a setting that has nothing to say about them. */
-    mockApi({ imgSetting: "always_remove", fontSetting: "always_remove" });
-    setup([LEGACY_ITEM]);
-
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /FONT ITEMS/i })).toBeNull();
-  });
-
-  it("offers no bulk action for a subtitle-encoding review", async () => {
-    /** Resolving it in bulk re-decided the file, which cannot see the
-     *  encoding failure, and queued the same failing extraction; the file
-     *  came straight back. Counted as a subtitle item, the button offered
-     *  exactly that. */
-    mockApi({ imgSetting: "always_remove" });
-    setup([IMAGE_ITEM, ENCODING_ITEM]);
-
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
-  });
-
-  it("counts correctly with a language list long enough to page", async () => {
-    /* The bulk bar and the two language sections share this page, and the
-     * sections page their lists independently. A library where audio or
-     * subtitle review runs past its first page is the ordinary case for
-     * anyone who has just scanned a season, and nothing here covered the
-     * page in that state: the sections happened to be handed empty lists.
-     *
-     * What this guards is the silent version of the failure. If the sections
-     * blow up, the bulk-bar assertions above still pass, because they never
-     * look at the sections. */
-    posted = [];
-    global.fetch = vi.fn(async (url, opts = {}) => {
-      const u = String(url);
-      if (opts.method === "POST") {
-        posted.push(u);
-        return { ok: true, json: async () => ({ resolved: 1, still_unresolved: 0, errors: [] }) };
-      }
-      if (u.includes("image_subtitle_handling"))
-        return { ok: true, json: async () => ({ value: "always_remove" }) };
-      if (u.includes("font_attachment_handling"))
-        return { ok: true, json: async () => ({ value: "always_keep" }) };
-      // A first page far short of the total, so hasMore goes true and the
-      // sentinel effect runs.
-      return { ok: true, json: async () => ({
-        total: 400,
-        items: [{ id: 1, file_id: 9, filename: "X.mkv", path: "/m/X.mkv",
-                  stream_index: 2, detected_language: "und",
-                  extracted_path: null }],
-        languages: [{ language: "und", count: 400 }],
-      }) };
-    });
-    setup([IMAGE_ITEM, FONT_ITEM]);
-
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i })).toBeTruthy();
-    expect(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 FONT ITEMS/i })).toBeTruthy();
-    /* No separate "the sections are still mounted" assertion. One was
-     * written and then removed: with the stub taken away it made no
-     * difference, because a throw in either section tears down this whole
-     * tree and the two button lookups above fail first. It read as though it
-     * guarded something and did not. */
-  });
-
-  it("sends each button to its own endpoint", async () => {
-    /** The bug in one line: a button labelled for fonts posting to
-     *  resolve-subtitles-bulk resolves them under the image setting, and
-     *  the response looks identical either way. */
-    mockApi({ imgSetting: "always_remove", fontSetting: "always_keep" });
+describe("what the page says", () => {
+  it("counts files, not cards, and names the skipped ones separately", async () => {
     const user = userEvent.setup();
-    setup([IMAGE_ITEM, FONT_ITEM]);
+    mockApi({ groups: [GROUP, SECOND] });
+    show();
 
-    await user.click(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 FONT ITEMS/i }));
+    await answerCard(user);
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided");
 
-    await waitFor(() => expect(posted).toEqual([
-      `${API}/api/queue/resolve-fonts-bulk`,
-    ]));
+    await user.click(screen.getAllByRole("button", { name: "Skip" })[1]);
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided, 1 skipped");
   });
 
-  it("sends the subtitle button to the subtitle endpoint", async () => {
-    mockApi({ imgSetting: "always_remove", fontSetting: "always_keep" });
+  it("offers nothing to apply until something is staged", async () => {
+    mockApi();
+    show();
+
+    await screen.findByText("Show / Season 1");
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+  });
+
+  it("summarises what came back, not what was sent", async () => {
     const user = userEvent.setup();
-    setup([IMAGE_ITEM, FONT_ITEM]);
+    mockApi({ applyBody: { outcomes: [{ file_id: 1 }],
+                           errors: [{ file_id: 2, error: "tracks changed" }] } });
+    show();
 
-    await user.click(await screen.findByRole("button",
-      { name: /RESOLVE ALL 1 SUBTITLE ITEMS/i }));
+    await answerCard(user);
+    await user.click(applyButton());
 
-    await waitFor(() => expect(posted).toEqual([
-      `${API}/api/queue/resolve-subtitles-bulk`,
-    ]));
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("1 file answered, 1 could not be", "warning");
   });
 
-  it("offers no font button while the setting is still always_ask", async () => {
-    /** always_ask means the gate re-flags every item it is handed, so the
-     *  action would report resolving nothing and leave the list unchanged.
-     *  Each button reads its OWN setting: showing the font one because the
-     *  image setting happens to be decisive is the same confusion in a
-     *  different place. */
-    mockApi({ imgSetting: "always_remove", fontSetting: "always_ask" });
-    setup([IMAGE_ITEM, FONT_ITEM]);
+  it("says so when the whole call fails", async () => {
+    const user = userEvent.setup();
+    mockApi({ applyOk: false, applyBody: { detail: "nope" } });
+    show();
 
-    expect(await screen.findByRole("button",
-      { name: /SUBTITLE ITEMS/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /FONT ITEMS/i })).toBeNull();
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("Could not apply these decisions", "error"));
+  });
+});
+
+describe("the outcome line", () => {
+  it("shows what the server worked out for the staged answers", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText("Converts to MP4, 2 deleted")).toBeInTheDocument();
+    const preview = posted.find(p => p.url.includes("/review/preview"));
+    expect(preview.body.files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
   });
 
-  it("offers no subtitle button while that setting is still always_ask", async () => {
-    mockApi({ imgSetting: "always_ask", fontSetting: "always_keep" });
-    setup([IMAGE_ITEM, FONT_ITEM]);
+  it("says what the server said, not what the answers suggest", async () => {
+    const user = userEvent.setup();
+    // Deleting both tracks looks like a conversion, and something else about
+    // these files - their audio, or the container they are already in -
+    // means it is not. Only the engine knows that.
+    mockApi({ previewContainer: "mkv" });
+    show();
 
-    expect(await screen.findByRole("button",
-      { name: /FONT ITEMS/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /SUBTITLE ITEMS/i })).toBeNull();
+    await answerCard(user);
+
+    expect(await screen.findByText("Stays MKV, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("takes the line down when a later preview fails", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+
+    await answerCard(user);
+    expect(await screen.findByText("Converts to MP4, 2 deleted")).toBeInTheDocument();
+
+    // The answers change and the server cannot be reached. The line on screen
+    // describes the answers from before: leaving it up is a sentence about a
+    // decision nobody is making any more.
+    const previous = global.fetch;
+    global.fetch = vi.fn(async (url, opts) =>
+      String(url).includes("/review/preview")
+        ? Promise.reject(new Error("network"))
+        : previous(url, opts));
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[0]);
+
+    await waitFor(() =>
+      expect(screen.queryByText("Converts to MP4, 2 deleted")).toBeNull());
+  });
+
+  it("offers the conversion only when the kept tracks are what hold the file", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    // Keep the styled track, delete the bitmap one.
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[1]);
+
+    expect(await screen.findByText(
+      "Stays MKV, 1 kept, 1 deleted — delete the kept tracks and it converts to MP4",
+    )).toBeInTheDocument();
+  });
+
+  it("says so when the file stays MKV whatever is chosen", async () => {
+    const user = userEvent.setup();
+    // Its audio or video is what holds it, so no answer on this card moves it.
+    mockApi({ previewContainer: "mkv", blockedBeyondSubtitles: true });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[1]);
+
+    expect(await screen.findByText(
+      "Stays MKV, 1 kept, 1 deleted — it stays MKV whatever you choose here",
+    )).toBeInTheDocument();
+  });
+
+  it("promises no conversion when nothing is kept and it still stays MKV", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+
+    await answerCard(user);
+
+    // Deleting everything and still not converting means the reason is not on
+    // this card, so there is nothing to offer deleting.
+    expect(await screen.findByText("Stays MKV, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("does not call an MP4 that stays an MP4 a conversion", async () => {
+    const user = userEvent.setup();
+    mockApi({ currentContainer: "mp4", previewContainer: "mp4" });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText("Stays MP4, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("counts a file that is already MP4 as staying, not converting", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewPerFile: {
+      1: { current_container: "mp4", target_container: "mp4" },
+      2: { current_container: "mkv", target_container: "mp4" },
+    } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "Converts 1 of 2 to MP4, 2 deleted. The other 1 stay as they are.",
+    )).toBeInTheDocument();
+  });
+
+  it("says which of a mixed card's files cannot move whatever is chosen", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewPerFile: {
+      1: { current_container: "mkv", target_container: "mkv",
+           blocked_beyond_subtitles: true },
+      2: { current_container: "mkv", target_container: "mp4" },
+    } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "Converts 1 of 2 to MP4, 2 deleted. The other 1 stay as they are "
+      + "whatever you choose here.",
+    )).toBeInTheDocument();
+  });
+
+  it("shows no line at all when the preview cannot be had", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    const realFetch = global.fetch;
+    global.fetch = vi.fn(async (url, opts) =>
+      String(url).includes("/review/preview")
+        ? Promise.reject(new Error("network"))
+        : realFetch(url, opts));
+    show();
+
+    await answerCard(user);
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/review/preview"), expect.anything()));
+    expect(screen.queryByText(/Converts/)).toBeNull();
+    expect(screen.queryByText(/Stays MKV/)).toBeNull();
   });
 });

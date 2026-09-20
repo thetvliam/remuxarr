@@ -357,6 +357,38 @@ def test_encoding_review_with_matching_tracks_still_reviews(db, monkeypatch):
     assert json.loads(row.review_subtitles)[0]["stream_index"] == 2
 
 
+def test_encoding_review_tracks_name_their_reason(db, monkeypatch):
+    """
+    Each flagged track carries its own problem, as the subtitle gates'
+    tracks do, because one review can hold tracks with different ones.
+    "encoding" is the one that must not be offered Extract: extracting the
+    track is what just failed. Leaving it off survived the full suite before
+    this test existed.
+    """
+    import app.core.worker as worker
+    from app.database.models import QueueItem
+    from sqlalchemy.orm import sessionmaker
+
+    media = _media(db)
+    qi = QueueItem(file_id=media.id, status="processing", is_dry_run=False)
+    db.add(qi)
+    db.commit()
+    job_id = qi.id
+
+    monkeypatch.setattr(worker, "SessionLocal", sessionmaker(bind=db.get_bind()))
+
+    worker._flag_subtitle_encoding_review(
+        job_id,
+        [(2, "invalid byte sequence")],
+        [{"track_type": "subtitle", "stream_index": 2, "language": "eng",
+          "codec": "subrip", "is_forced": False}],
+    )
+
+    db.expire_all()
+    flagged = json.loads(db.get(QueueItem, job_id).review_subtitles)
+    assert [f["reason"] for f in flagged] == ["encoding"]
+
+
 #
 # NOTE: a test named test_approving_a_subtitle_review_does_not_acknowledge_the
 # _audio_gate previously lived here. It was a tautology — it re-implemented

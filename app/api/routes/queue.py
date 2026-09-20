@@ -4,15 +4,22 @@ import os
 from datetime import datetime
 from app.core.timeutil import utcnow
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.decision import analyze_file
-from app.core.scanner import ScanStats, _file_info_for, _process_file, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
+from app.core.scanner import (ScanStats, _file_info_for, _process_file,
+                              _load_subtitle_overrides, _load_audio_language_overrides,
+                              _load_subtitle_language_overrides, _load_track_answers,
+                              _get_forged_ac3_audio_index, _track_to_dict,
+                              _upsert_language_flags, descriptors_by_stream)
 from app.core.probe import is_faststart_mp4
-from app.database.models import MediaFile, PlannedAction, QueueItem, Track
+from app.database.models import (
+    AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
+    SubtitleLanguageFlag, Track,
+)
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
@@ -178,13 +185,37 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
         else None
     )
     kwargs = dict(
-        subtitle_overrides=_load_subtitle_overrides(media),
-        audio_language_overrides=_load_audio_language_overrides(media),
-        subtitle_language_overrides=_load_subtitle_language_overrides(media),
+        subtitle_overrides=_load_subtitle_overrides(media, tracks),
+        audio_language_overrides=_load_audio_language_overrides(media, tracks),
+        subtitle_language_overrides=_load_subtitle_language_overrides(media, tracks),
         has_faststart=faststart,
         forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
     )
     return file_info, tracks, kwargs
+
+
+def _force_rescan(media: MediaFile) -> None:
+    """
+    Make the next delta scan re-probe this file, whatever its bytes say.
+
+    A delta scan compares the stored size and mtime against what is on disk
+    and skips anything unchanged. Every path that retires a file WITHOUT
+    touching it therefore has to invalidate that stamp, or the file is never
+    re-evaluated: its bytes are identical to what was stamped, the scan
+    returns immediately, and analyze_file is never called again until
+    something genuinely edits the file on disk.
+
+    That has been fixed twice already, once in clear_pending and once in
+    cancel_item, and the two fixes were separate copies of these two lines.
+    Clearing an acknowledgement is the third caller, so it is a function now
+    rather than a third copy to keep in step.
+
+    Deliberately does not set status: the callers disagree about it
+    ("skipped" for a cancelled item, untouched for a cleared
+    acknowledgement) and folding it in here would make this do two things.
+    """
+    media.size  = -1
+    media.mtime = -1.0
 
 
 def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
@@ -286,27 +317,559 @@ def get_active(db: Session = Depends(get_db)):
     return [_serialize(item, include_actions=True) for item in items]
 
 
-@router.get("/manual-review")
-def list_manual_review(db: Session = Depends(get_db)):
-    """Items waiting for human approval."""
-    items = (
-        db.query(QueueItem)
-        .filter(QueueItem.status == "manual_review")
-        .order_by(QueueItem.created_at.asc())
+def _review_heading(path: str, scan_paths: list[str]) -> str:
+    """
+    What a card calls the folder its files are in.
+
+    Derived from the path, never parsed out of the filename. The longest
+    matching scan path wins, so adding a broader library root later does not
+    silently rewrite every heading: with /media and /media/tv both configured,
+    a file under /media/tv is named relative to /media/tv.
+
+    Matched by whole path components, so /media/tv is not a root for
+    /media/tvshows.
+
+    A file under no scan path at all — webhooks do not check them, and
+    scanner.find_orphaned_media_files reports rows outside every one of them —
+    falls back to the last two segments of its folder. That names the folder
+    without asserting a root nobody configured, at the cost of a film under an
+    unconfigured folder reading "movies / The Movie".
+
+    Display only. Grouping always keys on the full directory, so two folders
+    that render the same heading never merge.
+    """
+    parent = os.path.dirname(path)
+    roots = [r.rstrip(os.sep) for r in scan_paths if r]
+    matching = [r for r in roots
+                if parent == r or parent.startswith(r + os.sep)]
+    if matching:
+        root = max(matching, key=len)
+        relative = parent[len(root):].strip(os.sep)
+        # A file sitting directly in its library root has nothing relative to
+        # show, so the root's own folder name is the most it can be called.
+        parts = relative.split(os.sep) if relative else [os.path.basename(root)]
+    else:
+        parts = [p for p in parent.split(os.sep) if p][-2:]
+    return " / ".join(parts)
+
+
+def _flagged_signature(flagged: list[dict], font_attachments: int | None):
+    """
+    What makes two files the same question.
+
+    The flagged tracks in stream order as (codec, language, forced, reason),
+    plus the file's font count, which decides whether keeping a styled track
+    costs the styling. Episodes 1-10 carrying jpn ass + eng ass and 11-12
+    also carrying a PGS commentary are two questions, and one card cannot
+    offer a toggle for a track half its files do not have.
+
+    Not the track descriptor answers are stored against (scanner.py). That
+    one leaves language out, because language gets corrected, and includes
+    the title, because it identifies a track within its own file. Here
+    language is exactly what makes two cards different questions, and titles
+    vary per episode — including them would split a season into one card per
+    file.
+    """
+    return (
+        tuple((t.get("codec"), t.get("language"), bool(t.get("is_forced")),
+               t.get("reason"))
+              for t in flagged),
+        font_attachments or 0,
+    )
+
+
+@router.get("/review/groups")
+def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
+                       offset: int = Query(default=0, ge=0),
+                       db: Session = Depends(get_db)):
+    """
+    Files waiting in review, grouped into the cards the Review page shows,
+    and paged by card.
+
+    A backlog is thousands of files and a handful of questions: one release
+    of one show is one question asked about twelve files. Paging by file
+    would put a page boundary through the middle of a card, which cannot be
+    rendered honestly — the count would be of what happened to fit.
+
+    Grouped by directory and flagged-track signature; see _flagged_signature.
+    Each group carries every one of its files, with the stream numbers that
+    file has for each track slot the card shows. The slots are shared, the
+    numbers are not: the same question in two files can sit at different
+    stream indices, which is why the apply endpoint takes answers per file.
+
+    Rows with no flagged tracks are not on this page. It asks one thing —
+    which tracks that block MP4 to keep — and a row with nothing flagged is
+    not that question.
+
+    Grouped in Python rather than SQL: the flagged tracks are a JSON column,
+    so a signature in SQL means JSON functions for no gain at this size. It
+    reads the waiting rows once per request, which is a few thousand small
+    rows on a page nobody loads in a loop.
+    """
+    rows = (
+        db.query(QueueItem.file_id, QueueItem.review_subtitles,
+                 MediaFile.path, MediaFile.filename, MediaFile.font_attachments)
+        .join(MediaFile, QueueItem.file_id == MediaFile.id)
+        .filter(QueueItem.status == "manual_review",
+                QueueItem.review_subtitles.isnot(None))
+        .order_by(MediaFile.path.asc())
         .all()
     )
-    return [_serialize(item, include_actions=True) for item in items]
+
+    scan_paths = get_app_settings(db).get("scan_paths") or []
+    groups: dict = {}
+    for file_id, flagged_json, path, filename, fonts in rows:
+        try:
+            flagged = json.loads(flagged_json)
+        except (ValueError, TypeError):
+            continue
+        if not flagged:
+            continue
+
+        directory = os.path.dirname(path)
+        key = (directory, _flagged_signature(flagged, fonts))
+        group = groups.get(key)
+        if group is None:
+            group = groups[key] = {
+                "key":          f"{len(groups)}:{directory}",
+                "heading":      _review_heading(path, scan_paths),
+                "directory":    directory,
+                "font_attachments": fonts or 0,
+                # The slots the card puts one set of choices on. Titles are
+                # this file's: they are not part of the signature, so files
+                # in one group can name the same track differently.
+                "tracks": [
+                    {"codec":     t.get("codec"),
+                     "language":  t.get("language"),
+                     "is_forced": bool(t.get("is_forced")),
+                     "reason":    t.get("reason"),
+                     "title":     t.get("title")}
+                    for t in flagged
+                ],
+                "files": [],
+            }
+        group["files"].append({
+            "file_id":  file_id,
+            "filename": filename,
+            "path":     path,
+            # One stream number per track slot above, in the same order.
+            "streams":  [t.get("stream_index") for t in flagged],
+        })
+
+    ordered = list(groups.values())
+    for group in ordered:
+        group["file_count"] = len(group["files"])
+    return {
+        "groups":      ordered[offset:offset + limit],
+        "total_groups": len(ordered),
+        "total_files":  sum(g["file_count"] for g in ordered),
+    }
+
+
+class ReviewFileDecision(BaseModel):
+    file_id: int
+    # Maps stream_index -> "keep" | "remove" | "extract", for every flagged
+    # track of that file. See apply_review_decisions.
+    answers: dict[int, str]
+
+
+class ReviewApplyRequest(BaseModel):
+    files: list[ReviewFileDecision] = []
+    skips: list[int] = []
+
+
+def _flagged_streams(item: QueueItem) -> set:
+    """
+    The streams an item is flagged for, as the page was shown them.
+
+    Answers have to name exactly this set. A file re-probed since then has a
+    different one, which means the card the user answered described tracks
+    this file may not have any more.
+    """
+    if not item.review_subtitles:
+        return set()
+    try:
+        return {t["stream_index"] for t in json.loads(item.review_subtitles)}
+    except (ValueError, TypeError, KeyError):
+        return set()
+
+
+PREVIEW_FILE_LIMIT = 500
+
+
+@router.post("/review/preview")
+def preview_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_db)):
+    """
+    What the staged answers would do to each file, without doing any of it.
+
+    The card's outcome line cannot be worked out from the answers alone.
+    Keeping a track holds a file as MKV, but so does DTS audio, and a file
+    whose container is already MP4 converts to nothing at all: checked
+    against the engine, the rule "any keep means it stays MKV" was wrong for
+    six of seven files. Only analyze_file knows, so the answer comes from
+    analyze_file.
+
+    Returns per file the container it is in, the container it would end in
+    (null when the file would not be processed at all), whether it would be
+    processed, whether it would still be waiting in review, and whether
+    anything other than its subtitles keeps it out of MP4. The sentence
+    on the card is built from that, plus the counts of kept, removed and
+    extracted tracks, which the page already has because it staged them.
+
+    Writes nothing. The staged answers are merged into a copy of the file's
+    stored answers and handed to the engine as an argument; the file's row
+    is not touched and nothing is committed.
+
+    An answer that could never be carried out is refused here rather than at
+    Apply, through the same checks Apply uses, so a card can say so while
+    the user is still choosing. Files with nothing waiting in review, or
+    whose flagged tracks have changed since the page was served, are
+    reported the same way Apply reports them.
+
+    Capped at PREVIEW_FILE_LIMIT files, because this costs a decision per
+    file — a couple of queries, and for an MP4 source a small read to see
+    whether it is already fast-start. That read is kept rather than guessed
+    at: without it the engine plans a fast-start pass for a file that
+    already has one, and the card would promise work that is not needed. The
+    page previews the card being edited, not the whole backlog.
+
+    Skips are not previewed. A skipped file has no outcome to compute, and
+    the page knows what it staged.
+    """
+    if len(body.files) > PREVIEW_FILE_LIMIT:
+        raise HTTPException(
+            400,
+            f"Too many files to preview at once: {len(body.files)} "
+            f"(limit {PREVIEW_FILE_LIMIT}). Preview one card at a time.")
+
+    outcomes: list[dict] = []
+    errors: list[dict] = []
+    app_cfg = get_app_settings(db)
+
+    for entry in body.files:
+        item = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == entry.file_id,
+                    QueueItem.status == "manual_review")
+            .order_by(QueueItem.created_at.asc())
+            .first()
+        )
+        if item is None:
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        media = item.media_file
+        flagged = _flagged_streams(item)
+        if flagged != set(entry.answers):
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "The tracks flagged for this file have changed since "
+                         "it was shown — nothing can be previewed for it",
+            })
+            continue
+
+        try:
+            _refuse_impossible_answers(db, item, media, entry.answers)
+        except ReviewAnswerRefused as refused:
+            errors.append({"file_id": entry.file_id, "error": str(refused)})
+            continue
+
+        file_info, tracks, kwargs = _build_analysis_inputs(db, media)
+        # The staged answers on top of whatever this file already had
+        # answered, as an argument. Nothing is written.
+        kwargs["subtitle_overrides"] = {
+            **kwargs["subtitle_overrides"], **entry.answers}
+        decision = analyze_file(file_info, tracks, app_cfg, **kwargs)
+
+        outcomes.append({
+            "file_id":           entry.file_id,
+            "current_container": (media.container or "").lower() or None,
+            "target_container":  decision.target_container,
+            "will_process":      decision.should_process,
+            "still_in_review":   decision.is_manual_review,
+            # Whether anything other than these subtitles keeps the file out
+            # of MP4, so the card can say "delete it and this converts" only
+            # when that is true.
+            "blocked_beyond_subtitles": decision.mp4_blocked_beyond_subtitles,
+        })
+
+    return {"outcomes": outcomes, "errors": errors}
+
+
+@router.post("/review/apply")
+def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_db)):
+    """
+    Apply a page's worth of subtitle-review decisions in one call: the files
+    answered, and the files skipped.
+
+    Files are named by file_id, not by queue item. The decision has always
+    been about the file — subtitle_overrides lives on MediaFile, and the
+    item is only the current evaluation of it — and item ids do not survive
+    staging: answering an audio language deletes a file's items and re-runs
+    the scan path, which creates a new one. Anime routinely has both an
+    audio and a subtitle question, so that is a normal thing to happen
+    between a page loading and its Apply. Each file is resolved to its
+    current manual_review item here instead.
+
+    Returns an outcome per file — the status it landed on, its reason, and
+    whether the job that follows is a dry run — plus refusals. One summary
+    is built from that, rather than a toast per file.
+
+    Answers have to name exactly the tracks the file is flagged for. A file
+    re-probed since the page was served has a different set, which means the
+    card the user answered described tracks this file may not have any more;
+    applying part of it would record answers for a question nobody was
+    asked. That file is reported and left alone.
+
+    Committed per file, for the reason retry_all_failed and the language
+    apply share: with a page of decisions, one refusal must not roll back
+    the files already applied.
+
+    Everything here is a row change, so there is no dry-run guard. A dry run
+    is about what a job writes to disk, and the decision this records is
+    what a later job — dry run or not — will act on.
+    """
+    outcomes: list[dict] = []
+    errors: list[dict] = []
+
+    # Whole-request validation first, before anything is written: a choice
+    # this endpoint does not have, or a file both answered and skipped, is a
+    # caller that has built the request wrong rather than one file's problem.
+    for entry in body.files:
+        for stream_index, choice in entry.answers.items():
+            if choice not in ("keep", "remove", "extract"):
+                raise HTTPException(
+                    400,
+                    f"Invalid choice for file {entry.file_id} stream "
+                    f"{stream_index}: {choice!r} (expected 'keep', 'remove' "
+                    f"or 'extract')")
+    both = sorted({e.file_id for e in body.files} & set(body.skips))
+    if both:
+        raise HTTPException(
+            400,
+            f"Answered and skipped in the same request: "
+            f"{', '.join(str(i) for i in both)}")
+
+    def _review_item(file_id: int):
+        return (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status == "manual_review")
+            .order_by(QueueItem.created_at.asc())
+            .first()
+        )
+
+    for entry in body.files:
+        item = _review_item(entry.file_id)
+        if item is None:
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        if _flagged_streams(item) != set(entry.answers):
+            errors.append({
+                "file_id": entry.file_id,
+                "error": "The tracks flagged for this file have changed since "
+                         "it was shown — nothing was applied to it",
+            })
+            continue
+
+        try:
+            _answer_subtitle_review(db, item, item.media_file, entry.answers)
+        except ReviewAnswerRefused as refused:
+            db.rollback()
+            errors.append({"file_id": entry.file_id, "error": str(refused)})
+            continue
+
+        db.commit()
+        outcomes.append({
+            "file_id":    entry.file_id,
+            "status":     item.status,
+            "reason":     item.reason,
+            "is_dry_run": item.is_dry_run,
+        })
+
+    for file_id in body.skips:
+        item = _review_item(file_id)
+        if item is None:
+            errors.append({
+                "file_id": file_id,
+                "error": "No file waiting in review — it may have been "
+                         "answered or re-scanned already",
+            })
+            continue
+
+        _cancel_item_row(item)
+        db.commit()
+        outcomes.append({
+            "file_id":    file_id,
+            "status":     item.status,
+            "reason":     item.reason,
+            "is_dry_run": item.is_dry_run,
+        })
+
+    return {"outcomes": outcomes, "errors": errors}
 
 
 @router.get("/stats")
 def queue_stats(db: Session = Depends(get_db)):
-    """Quick counts for the UI header badges."""
+    """
+    Quick counts for the UI header badges.
+
+    Queue statuses come back at the top level keyed by status. The
+    language-review backlog is nested under "language_review" rather than
+    added as two more top-level keys, because it counts FLAG ROWS and not
+    QueueItems: a caller walking this dict as a status map must not pick
+    them up as though they were statuses.
+
+    Those figures may be added to the manual_review count without double
+    counting a file. Every is_manual_review decision returns early (see the
+    three gates in decision.py) and constructs its ProcessingDecision
+    without audio_language_mismatch or subtitle_language_mismatches, so
+    both default to empty — and _upsert_language_flags deletes any existing
+    rows when they are. A file is therefore either in manual review or
+    carrying language flags, never both. That is what makes the sum the UI
+    does a count of files rather than an overcount.
+
+    Counted in SQL rather than by loading rows: the caller wants a number,
+    and the list endpoints that return the rows themselves are paginated,
+    so their totals are not free to reuse here.
+    """
     rows = (
         db.query(QueueItem.status, func.count(QueueItem.id))
         .group_by(QueueItem.status)
         .all()
     )
-    return {status: count for status, count in rows}
+    # No "or 0" fallback: count() returns 0 on an empty table, never None,
+    # so the fallback was unreachable — it survived mutation as an
+    # equivalent, which is what flagged it as dead.
+    audio = db.query(func.count(AudioLanguageFlag.id)).scalar()
+    subtitle = db.query(func.count(SubtitleLanguageFlag.id)).scalar()
+    return {
+        **{status: count for status, count in rows},
+        "language_review": {"audio": audio, "subtitle": subtitle},
+    }
+
+
+# ── Acknowledged undefined-audio thresholds ──────────────────────────────────
+#
+# DECLARED BEFORE /{item_id}, and it has to be. FastAPI matches in
+# declaration order, so with these below it a GET of /api/queue/acknowledged
+# is caught by /{item_id}, which tries to parse "acknowledged" as an int and
+# returns 422. /active, /manual-review and /stats sit above it for the same
+# reason. Note that the OpenAPI schema lists both routes either way — the
+# path is registered, just unreachable — so only a real request finds this.
+#
+# Approving a threshold review sets und_audio_threshold_acknowledged, and
+# nothing ever set it back: one write site, True, and no route to False.
+# The file is exempt from the gate for good.
+#
+# That matters more than a stray flag usually would. The Approve button used
+# to say it would "process the file now, keeping every audio track", which
+# was wrong whenever nothing else needed doing — the file was marked Skipped
+# instead. So an unknown number of these acknowledgements were given on a
+# false description, and until now there was no way to see them, let alone
+# take one back.
+
+
+class ClearAcknowledgedRequest(BaseModel):
+    # Files, not queue items. The acknowledgement lives on MediaFile and
+    # outlives every QueueItem the file has ever had, which is the whole
+    # reason it is invisible.
+    file_ids: list[int]
+
+
+@router.get("/acknowledged")
+def list_acknowledged(
+    limit:  int = Query(default=50, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """
+    Files whose undefined audio tracks the user has confirmed are correct
+    as they are: Confirm correct on a threshold flag in Audio Language
+    Review, or a past Approve on a review the threshold raised while it
+    still held files.
+
+    Bounded like every other list in this codebase. There is no ceiling on
+    how many files can carry this — it accumulates for the life of the
+    library and nothing ever removes one — so an unbounded version would be
+    the same mistake list_manual_review already carries.
+    """
+    base = db.query(MediaFile).filter(
+        MediaFile.und_audio_threshold_acknowledged.is_(True)
+    )
+    total = base.count()
+    rows = (
+        base.order_by(MediaFile.path)
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+    return {
+        "total": total,
+        "files": [
+            {
+                "id":       m.id,
+                "path":     m.path,
+                "filename": m.filename,
+                "status":   m.status,
+            }
+            for m in rows
+        ],
+    }
+
+
+@router.post("/acknowledged/clear")
+def clear_acknowledged(body: ClearAcknowledgedRequest,
+                       db: Session = Depends(get_db)):
+    """
+    Take back an acknowledgement, so the file's undefined audio tracks are
+    flagged again.
+
+    Two steps, and the second is the one that is easy to forget. Clearing
+    the column alone changes nothing a user can see: the file's bytes are
+    untouched, so the next delta scan compares size and mtime, finds them
+    identical, and never calls analyze_file. The acknowledgement would be
+    gone from the database and the tracks would still never be flagged. So
+    the scan stamp is invalidated too — the same pairing cancel_item needs,
+    via the same helper.
+
+    Only the threshold's answer is taken back. A language mismatch the user
+    confirmed on the same file answers to its own switch and is untouched,
+    which is why the two are kept apart.
+
+    The file returns on the next scan rather than immediately. That matches
+    Skip, whose wording users already know, and avoids the queue-item
+    surgery apply_language needs to reprocess a file on the spot.
+
+    Unknown ids are counted as misses rather than raising: this is driven by
+    a multi-select whose list may have moved under the user, and failing the
+    whole call because one row went stale would be worse than reporting it.
+    """
+    cleared = 0
+    missing: list[int] = []
+    for file_id in body.file_ids:
+        media = db.get(MediaFile, file_id)
+        if not media:
+            missing.append(file_id)
+            continue
+        # Counted only when there was something to clear, so the number
+        # describes work done rather than ids received.
+        if media.und_audio_threshold_acknowledged:
+            media.und_audio_threshold_acknowledged = False
+            _force_rescan(media)
+            cleared += 1
+    db.commit()
+    logger.info("Cleared %d undefined-audio acknowledgement(s)", cleared)
+    return {"cleared": cleared, "missing": missing}
 
 
 @router.get("/{item_id}")
@@ -396,8 +959,7 @@ def clear_dry_run(db: Session = Depends(get_db)):
             # calling analyze_file() again — so the cleared preview would
             # simply never reappear on any future scan until the file's
             # bytes genuinely changed on disk.
-            item.media_file.size   = -1
-            item.media_file.mtime  = -1.0
+            _force_rescan(item.media_file)
             item.media_file.status = "skipped"
         db.delete(item)
     db.commit()
@@ -434,18 +996,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     if item.status not in ("pending", "manual_review"):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
 
-    item.status = "cancelled"
-    # Stamp completed_at, matching the skipped transition in
-    # _apply_decision_to_item (and abort_job): history orders by
-    # completed_at DESC and SQLite sorts NULLs last, so a cancelled row
-    # without it would sink to the bottom of the Failed tab regardless of
-    # recency and render a "—" timestamp. cancel_item and clear_pending
-    # were the two "cancelled"-producing paths that missed this.
-    item.completed_at = utcnow()
-    if item.media_file:
-        item.media_file.size   = -1
-        item.media_file.mtime  = -1.0
-        item.media_file.status = "skipped"
+    _cancel_item_row(item)
     db.commit()
     return {"success": True}
 
@@ -453,7 +1004,7 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
 @router.post("/retry-all")
 def retry_all_failed(db: Session = Depends(get_db)):
     """
-    Re-queue every failed and cancelled item in one call.
+    Re-queue every failed item in one call.
 
     Each item is re-probed with force_probe=True — the same behaviour as
     single-item retry — so the retry picks up any settings changes, code
@@ -461,10 +1012,25 @@ def retry_all_failed(db: Session = Depends(get_db)):
 
     Items whose source file no longer exists on disk are silently skipped
     rather than failing the whole operation.
+
+    Failed only, not cancelled, although the Failed tab lists both. A
+    cancelled row is something the user removed on purpose: Skip in Review
+    and dismissing a queued item (cancel_item), Clear queue (clear_pending),
+    and Abort (worker.abort_job). This endpoint used to re-queue those too,
+    so one press put every skipped file back in Review and every cleared file
+    back in the queue — the opposite of what was asked for each of them. A
+    single cancelled row can still be retried from its detail window
+    (history.retry_history_item), and all three of those functions reset the
+    delta-scan sentinels, so the file is re-evaluated on the next scan either
+    way.
+
+    history_summary reports failed_only for the same reason: the Retry All
+    button is gated on it, so a tab holding only cancelled rows does not
+    offer a button that would do nothing.
     """
     items = (
         db.query(QueueItem)
-        .filter(QueueItem.status.in_(["failed", "cancelled"]))
+        .filter(QueueItem.status == "failed")
         .all()
     )
 
@@ -545,55 +1111,90 @@ def retry_all_failed(db: Session = Depends(get_db)):
     }
 
 
-class SubtitleOverridesRequest(BaseModel):
-    # Maps stream_index -> "keep" | "remove"
-    overrides: dict[int, str]
-
-
-@router.post("/{item_id}/resolve-subtitles")
-def resolve_subtitles(
-    item_id: int,
-    body: SubtitleOverridesRequest,
-    db: Session = Depends(get_db),
-):
+class ReviewAnswerRefused(Exception):
     """
-    Apply per-track keep/remove choices for a manual_review item flagged
-    because of non-convertible (image-based) subtitle tracks.
+    An answer that cannot be carried out, named for the caller to report.
 
-    The choices are merged into MediaFile.subtitle_overrides (persisted, so
-    they survive future re-scans) and the decision engine is re-run
-    immediately:
-
-      • If unresolved flagged tracks remain (e.g. the user only resolved
-        some of several), the item stays in manual_review with an updated
-        flagged_subtitles list.
-      • If the new decision requires changes, the item moves to "pending"
-        with freshly-generated planned actions.
-      • If the new decision needs no changes at all (e.g. the user chose
-        "keep" and nothing else needs fixing), the item is marked "skipped".
+    One file's problem. The single-item endpoint turns it into a 400; the
+    batch endpoint records it against that file and goes on with the rest,
+    which is why it is not an HTTPException itself.
     """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status != "manual_review":
-        raise HTTPException(400, "Item is not in manual review")
 
-    media = item.media_file
-    if not media:
-        raise HTTPException(404, "Associated media file not found")
 
-    for stream_index, choice in body.overrides.items():
-        if choice not in ("keep", "remove"):
-            raise HTTPException(400, f"Invalid choice for stream {stream_index}: {choice!r} (expected 'keep' or 'remove')")
+def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
+                               answers: dict[int, str]) -> None:
+    """
+    Refuse an answer that would be accepted and then not carried out.
 
-    # ── Merge new overrides into the persisted set ──────────────────────────
+    Its own function because the preview runs it without writing anything:
+    a card can say an answer cannot be done while the user is still choosing,
+    rather than at Apply. Recording an answer and checking one are the same
+    rules, so they are the same code.
+    """
+    for stream_index, choice in answers.items():
+        if choice not in ("keep", "remove", "extract"):
+            raise ReviewAnswerRefused(
+                f"Invalid choice for stream {stream_index}: {choice!r} "
+                f"(expected 'keep', 'remove' or 'extract')")
+        if choice != "extract":
+            continue
+        if item.review_reason == "subtitle_encoding":
+            raise ReviewAnswerRefused(
+                f"Cannot extract stream {stream_index}: extracting it is what "
+                f"failed. Choose keep or remove.")
+        track = (
+            db.query(Track)
+            .filter(Track.file_id == media.id,
+                    Track.stream_index == stream_index,
+                    Track.track_type == "subtitle")
+            .first()
+        )
+        if track is None or (track.codec or "").lower() not in SRT_CONVERTIBLE_SUBS:
+            raise ReviewAnswerRefused(
+                f"Cannot extract stream {stream_index}: it is not a text "
+                f"subtitle track that can be converted to SRT.")
+
+
+def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
+                            answers: dict[int, str]) -> None:
+    """
+    Record a subtitle review's answers on the file and re-decide it.
+
+    The one path from "the user chose" to "the item moved", shared by the
+    single-item endpoint and the batch one so the two cannot drift: the
+    validation below is what stops an answer being accepted and then not
+    carried out, and it has to hold whichever door the answer came through.
+
+    Does NOT commit. The batch endpoint commits per file, so one refusal
+    cannot roll back the files already applied.
+    """
+    _refuse_impossible_answers(db, item, media, answers)
+
+    # ── Merge new answers into the persisted set ────────────────────────────
     # Written to media BEFORE the analysis below — _build_analysis_inputs
     # loads subtitle_overrides back off the media object, so it sees the
     # merged set including these new choices (in-session attribute read,
     # not a DB re-read).
-    existing_overrides = _load_subtitle_overrides(media)
-    existing_overrides.update(body.overrides)
-    media.subtitle_overrides = json.dumps({str(k): v for k, v in existing_overrides.items()})
+    #
+    # Stored against what each track is, not the stream it arrived as: the
+    # request names a position in the file as probed, and positions move
+    # (scanner.descriptors_by_stream). A stream the file does not have gets
+    # no descriptor, and an answer that cannot be recorded is refused rather
+    # than dropped quietly.
+    descriptors = descriptors_by_stream(
+        [_track_to_dict(t) for t in
+         db.query(Track).filter(Track.file_id == media.id).all()]
+    )
+    missing = sorted(set(answers) - set(descriptors))
+    if missing:
+        raise ReviewAnswerRefused(
+            f"No such stream on this file: {', '.join(str(i) for i in missing)}. "
+            f"It may have been re-probed since the page loaded.")
+
+    existing_overrides = _load_track_answers(media, "subtitle_overrides")
+    existing_overrides.update(
+        {descriptors[si]: choice for si, choice in answers.items()})
+    media.subtitle_overrides = json.dumps(existing_overrides)
 
     # ── Re-run the decision engine with the updated overrides ───────────────
     app_cfg = get_app_settings(db)
@@ -601,185 +1202,24 @@ def resolve_subtitles(
     decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
     _apply_decision_to_item(db, item, media, decision)
-    db.commit()
-    return _serialize(item, include_actions=True)
 
 
-def _resolve_review_bulk(db: Session, reason: str, *,
-                         include_unlabelled: bool) -> dict:
+def _cancel_item_row(item: QueueItem) -> None:
     """
-    Re-run the decision engine for every manual_review item raised by one
-    gate, letting that gate's setting resolve them without a per-item
-    choice. Built for the case of a large backlog — hundreds of items — where
-    clicking through each one is not practical.
+    The transition Skip and Cancel make on one row. Does NOT commit.
 
-    Scoped by review_reason, which the gate records. It used to be scoped by
-    review_subtitles being non-null, and this docstring used to claim that
-    field was populated exclusively by the image-subtitle gate. That was true
-    until the font-attachment gate arrived: its items are flagged subtitles
-    too, so the old filter would have collected them here and resolved them
-    under image_subtitle_handling — converting away the styling a review
-    existed to protect.
-
-    include_unlabelled covers rows with a null reason and a non-null
-    review_subtitles. None of them is a font review; QueueItem.review_reason
-    lists where they come from. Only the image endpoint passes it; a font
-    resolve must never sweep up a row whose origin it is guessing at.
-
-    If the gate's setting is still "always_ask", every item re-runs and lands
-    straight back in manual_review, unresolved — harmless but pointless, and
-    the frontend only offers the action once the setting resolves.
-
-    Commits per-item, same reasoning as retry_all_failed and apply_language:
-    with a batch this size, one bad item raising must not roll back every
-    earlier item that already succeeded.
+    A helper because the batch review endpoint skips files through it too,
+    and the three parts have to travel together: the status the Failed tab
+    reads, the completed_at without which the row sinks to the bottom of
+    that tab, the scan-stamp reset without which a delta scan never looks
+    at the file again, and the file's own status. See cancel_item for the
+    full story of each.
     """
-    scope = [QueueItem.review_reason == reason]
-    if include_unlabelled:
-        scope.append(and_(
-            QueueItem.review_reason.is_(None),
-            QueueItem.review_subtitles.isnot(None),
-        ))
-
-    items = (
-        db.query(QueueItem)
-        .filter(QueueItem.status == "manual_review", or_(*scope))
-        .all()
-    )
-
-    app_cfg    = get_app_settings(db)
-    resolved   = 0
-    unresolved = 0
-    errors: list[dict] = []
-
-    for item in items:
-        media = item.media_file
-        if not media:
-            continue
-
-        try:
-            file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
-            decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
-
-            _apply_decision_to_item(db, item, media, decision)
-            if decision.is_manual_review:
-                unresolved += 1
-            else:
-                resolved += 1
-
-            db.commit()
-
-        except Exception as exc:
-            logger.exception("Bulk %s resolve failed for item %d", reason, item.id)
-            errors.append({"item_id": item.id, "error": str(exc)})
-            db.rollback()
-
-    return {"resolved": resolved, "still_unresolved": unresolved, "errors": errors}
-
-
-@router.post("/resolve-subtitles-bulk")
-def resolve_subtitles_bulk(db: Session = Depends(get_db)):
-    """
-    Bulk-resolve items flagged for non-convertible (image-based) subtitles,
-    under image_subtitle_handling. Includes items predating review_reason —
-    see _resolve_review_bulk.
-    """
-    return _resolve_review_bulk(db, "image_subtitles", include_unlabelled=True)
-
-
-@router.post("/resolve-fonts-bulk")
-def resolve_fonts_bulk(db: Session = Depends(get_db)):
-    """
-    Bulk-resolve items flagged for embedded font attachments, under
-    font_attachment_handling.
-
-    Deliberately does not include unlabelled rows: those predate the font
-    gate entirely, so sweeping them in would resolve image-subtitle reviews
-    under the font setting — the same mistake in the opposite direction.
-    """
-    return _resolve_review_bulk(db, "font_attachments", include_unlabelled=False)
-
-
-@router.post("/{item_id}/approve")
-def approve_manual_review(item_id: int, db: Session = Depends(get_db)):
-    """
-    Approve a manual-review item.
-
-    Re-runs the decision engine immediately, mirroring resolve_subtitles'
-    structure exactly (see that endpoint for the fuller explanation of
-    why re-running rather than just flipping status matters):
-
-      • If the new decision still requires manual review (e.g. a
-        different gate — most plausibly the image-subtitle one — also
-        independently applies to this file), the item stays in
-        manual_review with an updated reason.
-      • If the new decision needs no changes at all, the item is marked
-        "skipped".
-      • Otherwise it moves to "pending" with freshly-generated planned
-        actions.
-
-    Previously this only ever flipped status to "pending" without
-    re-running anything — processing itself was never affected, since
-    the worker always recomputes its own decision fresh at job-pickup
-    time regardless of what's stored here, but the reason text and
-    Planned Actions shown in the UI stayed stale (still describing "why
-    this needs manual review") for however long the item sat in the
-    queue before the worker actually got to it.
-
-    Also persists an exemption when this item's review was caused
-    specifically by the undefined-audio-count threshold gate
-    (decision.py) — that gate has no per-track override the way the
-    image-subtitle gate does (subtitle_overrides, resolved through the
-    separate resolve_subtitles endpoint instead of this generic one), so
-    without this, the fresh analyze_file() call below would immediately
-    re-trigger the identical gate, since a track's language tag never
-    changes on its own. This has to be set BEFORE the fresh decision is
-    computed — the whole point is that analyze_file() needs to already
-    see it acknowledged to correctly resolve past the gate.
-
-    review_subtitles being null is the existing, established signal
-    that this item's review came from the threshold gate rather than
-    the image-subtitle one — confirmed via resolve_subtitles_bulk's own
-    docstring, which notes the threshold gate never populates that
-    field.
-
-    INVARIANT this depends on: every code path that raises a manual review
-    for a SUBTITLE reason must write a non-null review_subtitles. There is
-    exactly one place that could previously violate it —
-    worker._flag_subtitle_encoding_review, which wrote NULL when no stored
-    Track matched the failing stream indices (stale track rows). That made a
-    subtitle-encoding review indistinguishable from a threshold review, so
-    approving it set und_audio_threshold_acknowledged on a file that never
-    tripped the threshold gate, permanently exempting it from a real check.
-    That path now fails the job instead, since an empty flagged list gives
-    the user nothing to review either way. If a new subtitle-review trigger
-    is ever added, it must populate this field or this inference breaks
-    again — see tests/test_manual_review_refresh.py.
-    """
-    item = db.get(QueueItem, item_id)
-    if not item:
-        raise HTTPException(404, "Queue item not found")
-    if item.status != "manual_review":
-        raise HTTPException(400, "Item is not in manual review")
-
-    media = item.media_file
-    if not media:
-        raise HTTPException(404, "Associated media file not found")
-
-    if item.review_subtitles is None:
-        media.und_audio_threshold_acknowledged = True
-
-    # ── Re-run the decision engine now that the exemption is in place ───────
-    # _build_analysis_inputs reads und_audio_threshold_acknowledged off the
-    # media object, so the in-session flag set above is what the fresh
-    # decision sees — which is the entire point of setting it first.
-    app_cfg = get_app_settings(db)
-    file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
-    decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
-
-    _apply_decision_to_item(db, item, media, decision)
-    db.commit()
-    return _serialize(item, include_actions=True)
+    item.status = "cancelled"
+    item.completed_at = utcnow()
+    if item.media_file:
+        _force_rescan(item.media_file)
+        item.media_file.status = "skipped"
 
 
 @router.post("/{item_id}/prioritize")

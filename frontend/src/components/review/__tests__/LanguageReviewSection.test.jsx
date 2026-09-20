@@ -15,7 +15,7 @@
  * The component had no tests at all, which is how it acquired a selection
  * keyed on file_id while the rows it rendered were per track.
  *
- * Verified by mutation, 4 applied, 4 killed:
+ * Verified by mutation, 11 applied, 11 killed:
  *
  *   • Apply sending file ids instead of flag ids        → killed
  *   • Selection keyed on the file, so two tracks of one
@@ -23,6 +23,24 @@
  *   • Ignore sending flag ids, silencing one track       → killed
  *   • Grouping collapsing every file into one            → killed
  *   • Grouping keyed on adjacency, so one file split in two → killed
+ *   • Confirm counting tracks instead of files           → killed
+ *   • Apply counting files instead of tracks             → killed
+ *   • The confirm label replaced wholesale               → killed
+ *   • The apply label replaced wholesale                 → killed
+ *   • The confirm button naming the wrong unit           → killed
+ *   • Permanence dropped from the explanation            → killed
+ *
+ * This header read "4 applied, 4 killed" above a list of FIVE. The list is
+ * taken as authoritative and the six below were added to it; the original
+ * five were NOT re-run, because reconstructing each from its one-line
+ * description would risk writing a different mutant and reporting it as
+ * verification of the old one.
+ *
+ * The first four of the six are re-runs of the pre-existing baseline, not
+ * new ground: all four already died before this change. They were run
+ * again AFTER the labels moved, because updating the assertions that named
+ * the old strings is exactly where coverage gets dropped without anyone
+ * noticing. They still die.
  *
  * An earlier run of that same suite reported 4/4 against a component with
  * no tests: `vitest run <path>` exits non-zero when it finds no test
@@ -347,12 +365,12 @@ describe("ignoring", () => {
       extracted_path: "/m/Other.und.srt" },
   ];
 
-  /** Select every track, click IGNORE, and settle on the refresh it triggers. */
+  /** Select every track, click CONFIRM CORRECT, and settle on the refresh. */
   const ignoreAll = async (count) => {
     const user = userEvent.setup();
     const boxes = await screen.findAllByRole("checkbox");
     for (let n = 1; n <= count; n += 1) await user.click(boxes[n]);
-    await user.click(screen.getByRole("button", { name: /IGNORE/ }));
+    await user.click(screen.getByRole("button", { name: /CONFIRM CORRECT/ }));
     await waitFor(() => expect(listFetches()).toBe(2));
   };
 
@@ -407,16 +425,40 @@ describe("ignoring", () => {
     ]);
   });
 
-  it("counts files on the IGNORE button, not tracks", async () => {
+  it("says that confirming is permanent", async () => {
+    /* CONFIRM CORRECT was labelled IGNORE, which reads as "dismiss" or "not
+     * now". It is neither: it sets the ignored column, deletes every flag
+     * row for the file, and the scanner then refuses to create new ones for
+     * a file already marked — so apply_language, the only place that column
+     * is set back to False, can never run for that file again. The one route
+     * back is closed by the same action that opens the door, which is why
+     * ignore_flags blocks it under dry run.
+     *
+     * The Approve/Skip pair on ReviewPage already carries this kind of line.
+     * This half of the page did not. */
+    setup();
+
+    const shown = await screen.findByText(/says the tags on those files are already right/i);
+
+    expect(shown.textContent).toMatch(/permanent/i);
+    expect(shown.textContent).toMatch(/never flagged for language again/i);
+  });
+
+  it("counts files on the confirm button and tracks on the apply button", async () => {
     /* The three rows in ITEMS are three subtitle tracks of ONE file, which is
      * the ordinary case: a release with forced, dub and SDH subtitles all
-     * tagged und. Ignore is a per-file decision — ignoreSelected reduces the
-     * selected tracks to their files before sending, and the endpoint counts
-     * files — so a label reading IGNORE (3) beside a toast reading
+     * tagged und. Confirming is a per-file decision — ignoreSelected reduces
+     * the selected tracks to their files before sending, and the endpoint
+     * counts files — so a label reading (3) beside a toast reading
      * "Ignoring 1 file" describes two different units for one click.
      *
      * SET LANGUAGE keeps the track count on purpose: applying really is
-     * per-track, and that button sends the flag ids untouched. */
+     * per-track, and that button sends the flag ids untouched.
+     *
+     * The numbers were fixed when that bug was found; the units were added
+     * later, because two bare numbers that disagree still give the reader
+     * nothing to reconcile them with. Both are asserted here — a label that
+     * says "1" where it means one FILE is only half the fix. */
     setup();
     const user = userEvent.setup();
 
@@ -425,10 +467,10 @@ describe("ignoring", () => {
     await user.click(boxes[2]);
     await user.click(boxes[3]);
 
-    expect(screen.getByRole("button", { name: /IGNORE/ }).textContent)
-      .toContain("IGNORE (1)");
+    expect(screen.getByRole("button", { name: /CONFIRM CORRECT/ }).textContent)
+      .toContain("CONFIRM CORRECT (1 file)");
     expect(screen.getByRole("button", { name: /SET LANGUAGE/ }).textContent)
-      .toContain("SET LANGUAGE (3)");
+      .toContain("SET LANGUAGE (3 tracks)");
   });
 
   it("sends file ids, not flag ids", async () => {
@@ -443,7 +485,7 @@ describe("ignoring", () => {
 
     const boxes = await screen.findAllByRole("checkbox");
     await user.click(boxes[1]);
-    await user.click(screen.getByRole("button", { name: /IGNORE/ }));
+    await user.click(screen.getByRole("button", { name: /CONFIRM CORRECT/ }));
 
     await waitFor(() => expect(calls.some(c => c.url.includes("/ignore"))).toBe(true));
     expect(bodyOf("/ignore")).toEqual({ file_ids: [7] });
@@ -456,7 +498,7 @@ describe("ignoring", () => {
     const boxes = await screen.findAllByRole("checkbox");
     await user.click(boxes[1]);
     await user.click(boxes[2]);
-    await user.click(screen.getByRole("button", { name: /IGNORE/ }));
+    await user.click(screen.getByRole("button", { name: /CONFIRM CORRECT/ }));
 
     await waitFor(() => expect(calls.some(c => c.url.includes("/ignore"))).toBe(true));
     expect(bodyOf("/ignore")).toEqual({ file_ids: [7] });
@@ -534,7 +576,7 @@ describe("grouping — non-adjacent rows", () => {
      * the same index is Other.mkv's row instead, which is what makes this
      * index the one worth asserting on. */
     await user.click(boxes[2]);
-    await user.click(screen.getByRole("button", { name: /IGNORE/i }));
+    await user.click(screen.getByRole("button", { name: /CONFIRM CORRECT/i }));
 
     expect(bodyOf("ignore").file_ids).toEqual([7]);
   });

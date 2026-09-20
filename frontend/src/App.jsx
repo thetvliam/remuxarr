@@ -143,7 +143,7 @@ export default function App() {
     // `queue` is deliberately not taken: QueuePanel renders pendingQueue,
     // the same list with in-progress items filtered out. Destructuring the
     // raw one alongside it invited picking the wrong variable.
-    activeJobs, review,
+    activeJobs, reviewBadgeCount,
     modal, setModal,
     toasts,
     dryRun,
@@ -242,7 +242,11 @@ export default function App() {
         ╚══════════════════════════════════════════════╝ */}
         <AppHeader
         page={page} setPage={requestPage}
-        reviewCount={review.length}
+        /* Manual-review items plus outstanding language flags — see
+         * useAppData's reviewBadgeCount for why the two cannot overlap.
+         * review.length alone left this blank while the language sections
+         * below had rows. */
+        reviewCount={reviewBadgeCount}
         api={api} setApi={setApi} showApiBar={showApiBar} setShowApiBar={setShowApiBar}
         dryRun={dryRun} onToggleDryRun={toggleDryRun}
         autoStart={autoStart} onToggleAutoStart={toggleAutoStart}
@@ -390,7 +394,7 @@ export default function App() {
 
           {page === "review" && (
             <div style={{ flex: 1, overflowY: "auto" }}>
-            <ReviewPage api={api} items={review} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
+            <ReviewPage api={api} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
             </div>
           )}
 

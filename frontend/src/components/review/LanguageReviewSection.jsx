@@ -533,20 +533,54 @@ export const LanguageReviewSection = ({
                     Use a 2- or 3-letter language code
                     </span>
                 )}
+                {/* The counts name their units. The two buttons deliberately
+                  * count different things — see selectedFileIds above, and the
+                  * bug it records: IGNORE (3) followed by "Ignoring 1 file".
+                  * The numbers were fixed then; the labels still gave the
+                  * reader nothing to reconcile them with, so three und
+                  * subtitles on one release read as "3" next to "1" with no
+                  * explanation on screen. */}
                 <Btn
-                label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size})`}
+                label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size} ${selected.size === 1 ? "track" : "tracks"})`}
                 color={palette.green}
                 bg={alpha(palette.green, ALPHA.low)}
                 onClick={applyLanguage}
                 disabled={busy || selected.size === 0 || !langValid}
                 />
+                {/* Was IGNORE, which reads as "dismiss" or "not now". It is
+                  * neither. It asserts the existing tag is right, deletes
+                  * every flag row for the file, and the scanner then refuses
+                  * to create new ones for a file already marked — so the file
+                  * never comes back and apply_language, the only place the
+                  * column is set back to False, can never run for it again.
+                  * The one route back is closed by the same action that opens
+                  * the door; see ignore_flags in _language_review.py, which
+                  * blocks this in dry-run mode for exactly that reason.
+                  *
+                  * A word that sounds temporary should not be the label on a
+                  * one-way door. */}
                 <Btn
-                label={busy ? "WORKING…" : `IGNORE (${selectedFileIds.length})`}
+                label={busy ? "WORKING…" : `CONFIRM CORRECT (${selectedFileIds.length} ${selectedFileIds.length === 1 ? "file" : "files"})`}
                 color={palette.dim}
                 bg="transparent"
                 onClick={ignoreSelected}
                 disabled={busy || selected.size === 0}
                 />
+                </div>
+
+                {/* The same treatment the Approve/Skip pair on ReviewPage
+                  * carries. Confirming is the permanent half of this pair and
+                  * nothing on screen said so. */}
+                <div style={{
+                    color: palette.dim,
+                    fontSize: type.size.xs,
+                    lineHeight: 1.5,
+                    marginTop: space.xs,
+                }}>
+                <b style={{ color: palette.text }}>SET LANGUAGE</b>
+                {" retags the selected tracks. "}
+                <b style={{ color: palette.text }}>CONFIRM CORRECT</b>
+                {" says the tags on those files are already right — it is permanent, and those files are never flagged for language again."}
                 </div>
 
                 {items.length === 0 && !loading ? (

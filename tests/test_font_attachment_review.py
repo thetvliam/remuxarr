@@ -58,6 +58,26 @@ elsewhere, every one of whose tracks is English. The other two survived:
   the keep rule the gate ignoring it                            killed
                 a bare language check instead of the shared rule killed
 
+Three more for an explicit Extract answer, which matches always_remove
+where a Remove answer does not. Each was run against the full 1520-test
+suite before its test existed, and all three survived:
+
+  the answer    Extract not overriding the extraction setting   killed
+                Extract not overriding the keep list            killed
+                the description not naming the review           killed
+
+Four for one review holding both subtitle gates' tracks, each run against
+the full 1532-test suite before its test existed, and all four survived:
+
+  the merge     the font gate skipped once image tracks exist   killed
+                the font gate replacing the image tracks        killed
+                the tracks in gate order, not file order        killed
+                the review's text losing the image explanation  killed
+
+Labelling image tracks "styled", or styled tracks "image", was already
+killed by the tests that check which gate a review names, because the
+review's summary is worked out from those labels.
+
 Run from the project root:
     pytest tests/test_font_attachment_review.py -v
 """
@@ -283,6 +303,122 @@ def test_one_resolved_track_still_leaves_the_other_to_ask_about(settings):
 
     assert decision.is_manual_review is True
     assert [f["stream_index"] for f in decision.flagged_subtitles] == [4]
+
+
+# ── An explicit Extract answer ────────────────────────────────────────────────
+#
+# Keep and Remove cannot express what always_remove does. The policy injects
+# no answer for the styled tracks, so they fall through to SRT extraction; a
+# Remove answer drops them with no SRT at all. "extract" is the answer that
+# matches the policy, and like the other two it outranks the rules that would
+# otherwise decide the track.
+
+def _layout(decision):
+    return [(a.action_type, a.stream_index) for a in decision.actions]
+
+
+def test_an_extract_answer_does_what_always_remove_does(settings):
+    """
+    The same plan as the policy, action for action, so a review answered
+    Extract and a library set to always_remove end up with the same files.
+    The description is the one difference, and it is deliberate: like the
+    other two answers, it says the choice came from a review.
+    """
+    answered = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+    policy = analyze_file(
+        _mkv(), _anime_tracks(),
+        settings | {"font_attachment_handling": "always_remove"},
+    )
+
+    assert answered.is_manual_review is False
+    assert _layout(answered) == _layout(policy)
+    extracted = _actions(answered, "extract_subtitle")
+    assert [a.stream_index for a in extracted] == [3, 4]
+    assert all(a.description.endswith("extracted via manual review")
+               for a in extracted)
+
+
+def test_an_extract_answer_holds_with_extraction_switched_off(settings):
+    """
+    Extract is a per-track exception to extract_text_subtitles_to_srt, as
+    Keep is to the keep list. The font gate still fires with extraction
+    off, so a review can be answered Extract there. Without the exception
+    the answer fell through to the default rules: the tracks stayed
+    embedded and held the file as MKV, which is what Keep does.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+
+    decision = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+
+    assert [a.stream_index for a in _actions(decision, "extract_subtitle")] == [3, 4]
+    assert decision.target_container == "mp4"
+
+
+def test_an_extract_answer_outranks_the_keep_list(settings):
+    """
+    The gates only ask about tracks the keep list keeps, so a fresh answer
+    never meets this. A stored one does, once the keep list changes after it
+    was given, and it is still the user's last word on that track — which is
+    why Keep and Remove already take precedence over the language rules.
+    """
+    settings["keep_subtitle_languages"] = ["jpn"]
+
+    decision = analyze_file(
+        _mkv(), _anime_tracks(), settings,
+        subtitle_overrides={3: "extract", 4: "extract"},
+    )
+
+    assert [a.stream_index for a in _actions(decision, "extract_subtitle")] == [3, 4]
+    assert not [a for a in _actions(decision, "drop_track")
+                if a.stream_index in (3, 4)]
+
+
+# ── One review for both subtitle gates ────────────────────────────────────────
+#
+# A file with a kept bitmap track and kept styled tracks used to be asked
+# about the bitmap first and the styling on the evaluation after. That hid
+# how the answers interact: a kept styled track holds the file as MKV, so
+# removing the bitmap track then changes nothing about the container.
+
+def _mixed_tracks():
+    """A styled track BEFORE the bitmap one, so file order and gate order differ."""
+    return [
+        make_track(0, "video", codec="hevc", language="und"),
+        make_track(1, "audio", codec="aac", language="eng", is_default=True),
+        make_track(2, "subtitle", codec="ass", language="eng",
+                   title="Signs and Songs [Saiki]"),
+        make_track(3, "subtitle", codec="hdmv_pgs_subtitle", language="eng"),
+    ]
+
+
+def test_image_and_styled_subtitles_are_asked_about_on_one_review(settings):
+    """
+    Both kinds at once, each track naming its own problem, in the order the
+    file holds them. The image gate runs first, so a list kept in gate order
+    would put stream 3 ahead of stream 2.
+    """
+    decision = analyze_file(_mkv(), _mixed_tracks(), settings)
+
+    assert decision.is_manual_review is True
+    assert [(f["stream_index"], f["reason"])
+            for f in decision.flagged_subtitles] == [(2, "styled"), (3, "image")]
+
+
+def test_one_review_for_both_explains_both(settings):
+    """
+    The review's text is both gates' explanations. Losing one leaves a track
+    on the card that nothing on it accounts for.
+    """
+    decision = analyze_file(_mkv(), _mixed_tracks(), settings)
+
+    assert "image-based subtitle track" in decision.reason
+    assert "17 embedded fonts" in decision.reason
 
 
 # ── Only the tracks the file keeps ────────────────────────────────────────────

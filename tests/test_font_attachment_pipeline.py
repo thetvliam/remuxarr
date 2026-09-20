@@ -159,11 +159,16 @@ def test_resolving_image_subtitles_then_asks_about_the_fonts(factory):
     """
     Closes: queue.py re-deciding without the count.
 
-    decision.py puts the image-subtitle gate first, and says a file with
-    both is asked about fonts on the evaluation after its image subtitles
-    are resolved. That evaluation is this endpoint's, so without the count
-    the second question was never asked: resolving the PGS track moved the
-    file straight to conversion.
+    The review here holds only the PGS track. That is what a file with both
+    kinds got before the two subtitle gates were merged: the image gate
+    asked first, and the fonts on the evaluation after. Reviews like it can
+    still be waiting, and answering one is this endpoint's evaluation, so
+    without the count the fonts were never asked about: answering the PGS
+    track moved the file straight to conversion.
+
+    Also the third outcome of applying a decision, which the retired approve
+    endpoint used to pin: a file that answers one question and trips another
+    stays in review, under the new reason rather than the old one.
     """
     with factory() as db:
         media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",
@@ -185,8 +190,11 @@ def test_resolving_image_subtitles_then_asks_about_the_fonts(factory):
         db.add(item)
         db.commit()
 
-        queue_routes.resolve_subtitles(
-            item.id, queue_routes.SubtitleOverridesRequest(overrides={2: "remove"}),
+        queue_routes.apply_review_decisions(
+            queue_routes.ReviewApplyRequest(files=[
+                queue_routes.ReviewFileDecision(file_id=media.id,
+                                                answers={2: "remove"}),
+            ]),
             db,
         )
 

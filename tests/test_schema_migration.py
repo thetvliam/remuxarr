@@ -44,6 +44,48 @@ code today and load-bearing the day the rebuild is deleted — which is
 the intent, once every deployed install has started once.
 test_the_column_migration_stands_on_its_own pins it against the shape
 the world is in on that day.
+
+Six more for the per-track reason labels, each run against the full
+1532-test suite before its test existed, and all six survived:
+
+  • per-track labels never run                 → killed
+  • a font review's tracks labelled image      → killed
+  • a null-reason review's tracks labelled styled → killed
+  • a track labelled whatever its codec        → killed
+  • the labels running before the encoding relabel → killed
+  • the labels reaching rows not in review     → killed
+
+A seventh is equivalent, checked rather than assumed: labelling a track that
+already has a reason. It survives these tests too, because no writer
+produces a row where that differs. Every track that already has a reason
+either carries the label its review implies, or is a styled track on a
+mixed image review, and the codec check skips that one first.
+
+Five more for moving audio flags to one row per track. Each was run against
+the full suite before the tests for it existed (1539 tests: the 1540 then,
+less the test that pinned the old shape), and all five survived:
+
+  • the audio rebuild never run                → killed
+  • its uniqueness left on the file alone      → killed
+  • its uniqueness dropped altogether          → killed
+  • the rebuild repeated on every startup      → killed
+  • the carried-over rows labelled "threshold" → killed
+
+Three for releasing the files the undefined-audio threshold was holding,
+each run against the full suite before the tests at the end of this file
+existed, and all three survived:
+
+  • the release never run                      → killed
+  • it reaching subtitle reviews too           → killed
+  • it re-stamping files already stamped       → killed
+
+Three for re-keying the stored answers from stream numbers to descriptors,
+each run against the full suite before the tests at the end of this file
+existed, and all three survived:
+
+  • the re-keying never run                    → killed
+  • answers it could not match kept anyway     → killed
+  • writing and logging on every startup       → killed
 """
 import importlib
 import json
@@ -414,18 +456,114 @@ def test_the_rebuild_does_not_repeat_on_later_startups(legacy_flags,
     )
 
 
-def test_the_audio_flags_are_left_one_per_file(legacy_flags):
-    """
-    Deliberately not migrated. The audio threshold picks a single
-    representative track, and audio tracks do not leave the file the way
-    extracted subtitles do — there is no second filename to correct.
-    """
-    from sqlalchemy import create_engine, inspect
+# ── One audio flag per track ─────────────────────────────────────────────────
 
-    inspector = inspect(create_engine(f"sqlite:///{legacy_flags}"))
-    uniques = inspector.get_unique_constraints("audio_language_flags")
+LEGACY_AUDIO_FLAGS = [
+    """
+    CREATE TABLE audio_language_flags (
+        id INTEGER NOT NULL PRIMARY KEY,
+        file_id INTEGER NOT NULL,
+        stream_index INTEGER NOT NULL,
+        detected_language VARCHAR,
+        created_at DATETIME,
+        UNIQUE (file_id),
+        FOREIGN KEY(file_id) REFERENCES media_files (id) ON DELETE CASCADE
+    )
+    """,
+    # The indexes the old model created, which the rebuild has to clear out
+    # of the way before recreating them under the same names.
+    "CREATE INDEX ix_audio_language_flags_id ON audio_language_flags (id)",
+    "CREATE INDEX ix_audio_language_flags_detected_language "
+    "ON audio_language_flags (detected_language)",
+]
 
-    assert any(u["column_names"] == ["file_id"] for u in uniques)
+
+@pytest.fixture
+def legacy_audio_flags(tmp_path, monkeypatch):
+    """A database whose audio flags are still one-per-file, with no origin."""
+    path = tmp_path / "remuxarr.db"
+    conn = sqlite3.connect(path)
+    for statement in LEGACY_AUDIO_FLAGS:
+        conn.execute(statement)
+    conn.execute(
+        "INSERT INTO audio_language_flags "
+        "(file_id, stream_index, detected_language) VALUES (7, 2, 'dut')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+    yield path
+    _restore_the_engine(session_mod)
+
+
+def test_a_second_audio_track_of_the_same_file_can_be_flagged(legacy_audio_flags):
+    """
+    Replaces a test that pinned the opposite, on the grounds that only one
+    representative audio track was ever flagged. A file with several
+    undefined audio tracks, often in different languages, needs each one
+    answered on its own.
+    """
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        conn.execute(
+            "INSERT INTO audio_language_flags "
+            "(file_id, stream_index, detected_language) VALUES (7, 3, 'und')")
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM audio_language_flags "
+            "WHERE file_id = 7").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert count == 2
+
+
+def test_the_same_audio_track_still_cannot_be_flagged_twice(legacy_audio_flags):
+    """Without uniqueness per (file, stream) every rescan would add another row."""
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO audio_language_flags "
+                "(file_id, stream_index) VALUES (7, 2)")
+    finally:
+        conn.close()
+
+
+def test_existing_audio_flags_survive_the_rebuild_as_mismatches(legacy_audio_flags):
+    """
+    Every row written before the origin column came from
+    audio_language_mismatch — the threshold held files instead of flagging
+    them — so "mismatch" is the true origin of all of them, and the one that
+    keeps them under the switch they were confirmed through.
+    """
+    conn = sqlite3.connect(legacy_audio_flags)
+    try:
+        rows = list(conn.execute(
+            "SELECT file_id, stream_index, detected_language, origin "
+            "FROM audio_language_flags"))
+    finally:
+        conn.close()
+
+    assert rows == [(7, 2, "dut", "mismatch")]
+
+
+def test_the_audio_rebuild_does_not_repeat_on_later_startups(legacy_audio_flags,
+                                                             monkeypatch, caplog):
+    import logging
+
+    session_mod = _point_the_engine_at(legacy_audio_flags, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "audio language flag" in r.getMessage()], (
+        "the table was rebuilt again on a database that was already migrated"
+    )
 
 
 # ── The general check ────────────────────────────────────────────────────────
@@ -644,3 +782,314 @@ def test_the_relabel_leaves_rows_that_are_no_longer_in_review(old_reviews):
     protect it from, and a label on it would say something untrue.
     """
     assert old_reviews["not_in_review"] is None
+
+
+# ── Per-track reasons on reviews written before them ─────────────────────────
+
+_UNREASONED_REVIEWS = {
+    # name: (status, review_reason, flagged codecs)
+    "image":           ("manual_review", "image_subtitles",   ["hdmv_pgs_subtitle"]),
+    "font":            ("manual_review", "font_attachments",  ["ass"]),
+    "encoding":        ("manual_review", "subtitle_encoding", ["subrip"]),
+    "unlabelled":      ("manual_review", None,                ["dvd_subtitle"]),
+    "unlabelled_text": ("manual_review", None,                ["subrip"]),
+    "mixed":           ("manual_review", None,                ["subrip", "dvd_subtitle"]),
+    "not_in_review":   ("pending",       "image_subtitles",   ["hdmv_pgs_subtitle"]),
+}
+
+
+@pytest.fixture
+def unreasoned(tmp_path, monkeypatch):
+    """
+    Reviews written before flagged tracks carried a reason, then a real
+    startup. Returns each row's per-track reasons afterwards, by name.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, QueueItem
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    ids = {}
+    with Session(engine) as db:
+        media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",
+                          directory="/m", size=1, mtime=1.0)
+        db.add(media)
+        db.flush()
+        for name, (status, reason, codecs) in _UNREASONED_REVIEWS.items():
+            item = QueueItem(
+                file_id=media.id, status=status, review_reason=reason,
+                review_subtitles=json.dumps(
+                    [{"stream_index": 2 + n, "codec": c}
+                     for n, c in enumerate(codecs)]
+                ),
+            )
+            db.add(item)
+            db.flush()
+            ids[item.id] = name
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        reasons = {
+            ids[i]: [entry.get("reason") for entry in json.loads(flagged)]
+            for i, flagged in conn.execute(
+                "SELECT id, review_subtitles FROM queue_items")
+        }
+    finally:
+        conn.close()
+
+    yield reasons
+
+    _restore_the_engine(session_mod)
+
+
+def test_each_track_takes_the_reason_its_review_was_raised_for(unreasoned):
+    """
+    Closes: the labels never running, and a font or null-reason review
+    mislabelled.
+
+    Before one review could hold both subtitle gates' tracks, every review
+    had one cause, so the item's reason is each track's. A null reason with
+    a bitmap track is an image review — QueueItem.review_reason lists where
+    those rows come from.
+    """
+    assert unreasoned["image"] == ["image"]
+    assert unreasoned["font"] == ["styled"]
+    assert unreasoned["encoding"] == ["encoding"]
+    assert unreasoned["unlabelled"] == ["image"]
+
+
+def test_an_unlabelled_encoding_review_is_named_before_its_tracks(unreasoned):
+    """
+    Closes: the labels running before the encoding relabel.
+
+    A null reason on a text track is an encoding review, but only the
+    encoding relabel says so. Labelling first reads the null as an image
+    review, finds no bitmap to label, and the track stays unlabelled.
+    """
+    assert unreasoned["unlabelled_text"] == ["encoding"]
+
+
+def test_a_track_its_review_could_not_have_flagged_is_left_unlabelled(unreasoned):
+    """
+    Closes: a track labelled whatever its codec.
+
+    The image gate never flags a text track, so a null-reason review holding
+    one alongside a bitmap is not something the labels can explain. Calling
+    the subrip track an image would claim a text track has no text to
+    extract.
+    """
+    assert unreasoned["mixed"] == [None, "image"]
+
+
+def test_the_labels_leave_rows_that_are_no_longer_in_review(unreasoned):
+    """
+    Closes: the labels reaching past the review tab, the same boundary the
+    encoding relabel keeps.
+    """
+    assert unreasoned["not_in_review"] == [None]
+
+
+# ── Files the undefined-audio threshold was holding ──────────────────────────
+
+@pytest.fixture
+def held_files(tmp_path, monkeypatch):
+    """
+    A threshold hold and a subtitle review, then a real startup. Returns each
+    file's scan stamp afterwards, by name.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, QueueItem
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        for name, flagged in (("threshold", None),
+                              ("subtitles", '[{"stream_index": 2}]')):
+            media = MediaFile(path=f"/m/{name}.mkv", filename=f"{name}.mkv",
+                              directory="/m", size=1234, mtime=99.0)
+            db.add(media)
+            db.flush()
+            db.add(QueueItem(file_id=media.id, status="manual_review",
+                             review_subtitles=flagged))
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        stamps = {
+            filename.removesuffix(".mkv"): (size, mtime)
+            for filename, size, mtime in conn.execute(
+                "SELECT filename, size, mtime FROM media_files")
+        }
+    finally:
+        conn.close()
+
+    yield stamps, path, session_mod
+
+    _restore_the_engine(session_mod)
+
+
+def test_a_file_held_by_the_threshold_is_stamped_for_a_rescan(held_files):
+    """
+    Closes: the release never running.
+
+    The threshold no longer holds files, but the ones it held sit in review
+    until something re-decides them, and a scan skips them while their size
+    and mtime match. Clearing the stamp is what brings them back — and with
+    them, their undefined tracks, in Audio Language Review.
+    """
+    stamps, _, _ = held_files
+
+    assert stamps["threshold"] == (-1, -1.0)
+
+
+def test_a_subtitle_review_is_left_where_it_is(held_files):
+    """
+    Closes: the release reaching past the threshold's own holds.
+
+    A subtitle review still holds its file on purpose and has its own way
+    out. Stamping it would re-probe every waiting review on the next scan.
+    Its flagged tracks are what tell the two apart, the same test Approve
+    relies on.
+    """
+    stamps, _, _ = held_files
+
+    assert stamps["subtitles"] == (1234, 99.0)
+
+
+def test_a_file_already_stamped_is_not_stamped_again(held_files, monkeypatch, caplog):
+    """
+    Closes: the release rewriting rows on every startup.
+
+    The hold stays until a scan runs, so this runs again on the next start
+    and every start after. Writing and logging each time would report work
+    that had already been done, on a line a user reads as something new.
+    """
+    import logging
+
+    _, path, _ = held_files
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "undefined-audio threshold" in r.getMessage()]
+
+
+# ── Answers re-keyed from stream numbers to descriptors ──────────────────────
+
+@pytest.fixture
+def indexed_answers(tmp_path, monkeypatch):
+    """
+    A file whose stored answers are still keyed by stream_index, then a real
+    startup. Returns the answers afterwards, by column.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.database.models import Base, MediaFile, Track
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        media = MediaFile(path="/m/Show.mkv", filename="Show.mkv",
+                          directory="/m", size=1, mtime=1.0,
+                          subtitle_overrides=json.dumps({"2": "keep", "9": "remove"}),
+                          audio_language_overrides=json.dumps({"1": "eng"}))
+        db.add(media)
+        db.flush()
+        db.add(Track(file_id=media.id, stream_index=1, track_type="audio",
+                     codec="aac", language="und"))
+        db.add(Track(file_id=media.id, stream_index=2, track_type="subtitle",
+                     codec="ass", language="eng", title="Signs"))
+        db.commit()
+    engine.dispose()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            "SELECT subtitle_overrides, audio_language_overrides "
+            "FROM media_files").fetchone()
+    finally:
+        conn.close()
+
+    yield {"subtitle_overrides": json.loads(row[0]),
+           "audio_language_overrides": json.loads(row[1])}, path, session_mod
+
+    _restore_the_engine(session_mod)
+
+
+def test_stored_answers_are_re_keyed_by_descriptor(indexed_answers):
+    """
+    Closes: the re-keying never running.
+
+    Left as stream numbers, every answer a user has given is read against
+    keys nothing matches, so each one is dropped and every file comes back
+    to review asking what it already asked.
+    """
+    from app.core.scanner import descriptors_by_stream
+
+    answers, _, _ = indexed_answers
+    keys = descriptors_by_stream([
+        {"stream_index": 1, "track_type": "audio", "codec": "aac"},
+        {"stream_index": 2, "track_type": "subtitle", "codec": "ass",
+         "title": "Signs"},
+    ])
+
+    assert answers["subtitle_overrides"] == {keys[2]: "keep"}
+    assert answers["audio_language_overrides"] == {keys[1]: "eng"}
+
+
+def test_an_answer_whose_stream_has_no_track_is_dropped(indexed_answers):
+    """
+    Closes: keeping answers that could not be matched.
+
+    Stream 9 is not a track of this file, so nothing can be said about what
+    that answer was for. Kept under its old key it would sit there forever,
+    matching nothing; kept under some other track's key it would answer a
+    question nobody asked.
+    """
+    answers, _, _ = indexed_answers
+
+    assert len(answers["subtitle_overrides"]) == 1
+
+
+def test_the_re_keying_does_not_repeat_on_later_startups(indexed_answers,
+                                                         monkeypatch, caplog):
+    """
+    Closes: writing and logging on every startup.
+
+    Descriptor keys are not stream numbers, so a second pass finds nothing
+    to convert. Reporting work that was not done is a line a user reads as
+    something new happening to their library.
+    """
+    import logging
+
+    _, path, _ = indexed_answers
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        with caplog.at_level(logging.INFO):
+            session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    assert not [r for r in caplog.records
+                if "track answer" in r.getMessage()]

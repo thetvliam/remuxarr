@@ -58,13 +58,24 @@ class MediaFile(Base):
     last_processed = Column(DateTime)
     created_at     = Column(DateTime, default=utcnow)
 
-    # JSON dict mapping stream_index (as string) -> "keep" | "remove",
-    # set when the user resolves a manual-review flag for a non-convertible
-    # (image-based) subtitle track. Persists the choice across re-scans so
-    # the decision engine can act on it instead of re-flagging the same track.
+    # JSON dict mapping a track descriptor -> "keep" | "remove" | "extract",
+    # set when the user answers a subtitle manual review (image subtitles,
+    # embedded fonts, or a failed extraction). Persists the choice across
+    # re-scans so the decision engine can act on it instead of re-flagging
+    # the same track.
+    #
+    # The key says what the track IS, plus which one it is among identical
+    # ones, and is resolved back to a stream_index against the file's tracks
+    # each time it is used — see scanner.descriptors_by_stream for the
+    # fields and why. Keyed by stream number, an answer stopped matching its
+    # track as soon as processing renumbered the streams, and would have
+    # been applied to whatever took that number in a file replaced in place.
+    # An answer that matches no current track is left out, so the question
+    # comes back instead.
     subtitle_overrides = Column(Text)
 
-    # JSON dict mapping stream_index (as string) -> ISO 639-2/B language
+    # JSON dict mapping a track descriptor (as for subtitle_overrides above)
+    # -> ISO 639-2/B language
     # code, set via the Audio Language Review section when a track has a
     # DEFINED but wrong language (e.g. an English show whose only audio
     # track is mistagged "dut"). Distinct from the "fix undefined language"
@@ -74,30 +85,41 @@ class MediaFile(Base):
 
     # Set when a human has explicitly confirmed the file's current audio
     # language is correct despite not matching keep_audio_languages (e.g.
-    # anime that's genuinely, correctly Japanese). Once set, the file is
-    # never re-flagged in Audio Language Review again, regardless of what
-    # else changes about it on future scans.
+    # anime that's genuinely, correctly Japanese). Once set, no mismatch
+    # flag is ever raised for the file again, regardless of what else
+    # changes about it on future scans.
+    #
+    # Mismatch flags only: a flag records where it came from and answers to
+    # its own switch (AudioLanguageFlag.origin), so a file confirmed correct
+    # here is still asked about undefined tracks over the Undefined Audio
+    # Track Threshold, which is a different question with a different
+    # answer.
     audio_language_ignored = Column(Boolean, default=False)
 
-    # Set when a manual-review item caused specifically by the
-    # undefined-audio-count threshold gate (decision.py) is approved via
-    # the generic approve_manual_review endpoint. Unlike the image-subtitle
-    # manual-review gate, which already has its own dedicated resolution
-    # flow (resolve_subtitles) that persists an exemption via
-    # subtitle_overrides, this gate had no persistence mechanism at all —
-    # every fresh analyze_file() call (including the one the worker does
-    # at job-pickup time, after "Keep" was already clicked) would
-    # re-evaluate the track count and re-trigger the same gate forever,
-    # since a track's language tag never changes on its own. Confirmed
-    # this directly: decision.actions ended up as only [flag_manual_review]
-    # at the exact point a retry was being built, which is what silently
-    # produced a no-op retry rather than the intended one.
+    # Set when the user confirms the undefined tracks of a file at or over
+    # the Undefined Audio Track Threshold are correct as they are: Confirm
+    # correct on a threshold flag in Audio Language Review, or Approve on a
+    # review the threshold raised while it still held files. It suppresses
+    # those flags, and it stops fix_undefined_language_audio=always_fix
+    # guessing at the tracks, which it never does over the threshold
+    # anyway. Clear acknowledged takes it back, and the tracks are flagged
+    # again on the next scan.
+    #
+    # The threshold used to hold the file for manual review, and had no
+    # persistence at all: every fresh analyze_file() call, including the
+    # worker's at job-pickup time after Keep was already clicked, re-read
+    # the track count and re-raised the same gate forever, since a track's
+    # language tag never changes on its own. Confirmed directly at the
+    # time: decision.actions ended up as only [flag_manual_review] at the
+    # exact point a retry was being built, which is what silently produced
+    # a no-op retry rather than the intended one.
     und_audio_threshold_acknowledged = Column(Boolean, default=False)
 
     # Parallel fields for subtitle tracks — see Subtitle Language Review.
     # Distinct table/column set from the audio ones above even though the
-    # shape is identical, since a file can independently have an audio
-    # override, a subtitle override, both, or neither.
+    # shape is identical (descriptor keys included), since a file can
+    # independently have an audio override, a subtitle override, both, or
+    # neither.
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 
@@ -188,7 +210,12 @@ class QueueItem(Base):
     current_action = Column(String)
 
     # JSON list of flagged subtitle tracks for a manual_review item. Each
-    # entry: {stream_index, language, codec, is_forced, title}
+    # entry: {stream_index, language, codec, is_forced, title, reason}
+    # reason is that track's own problem: "image", "styled" or "encoding".
+    # One review can hold tracks from both subtitle gates, so the item-level
+    # review_reason below cannot say which applies to which track. Rows
+    # written before tracks carried it are labelled at startup
+    # (session._label_flagged_track_reasons).
     # Null/empty for causes that flag no track (e.g. undefined-language audio).
     review_subtitles = Column(Text)
 
@@ -197,6 +224,14 @@ class QueueItem(Base):
     # "subtitle_encoding", or null. The first two name a gate in the decision
     # engine; the third is raised by the worker, outside the engine, and so
     # names itself.
+    #
+    # A summary, now that one review can hold tracks from both gates: such a
+    # review is "image_subtitles", and review_subtitles gives each track its
+    # own reason. The summary is what the Review page and both bulk
+    # endpoints read. It is safe for the image endpoint to take a mixed
+    # review, because re-deciding the file applies every setting, including
+    # font_attachment_handling to the styled tracks — see where decision.py
+    # holds the file.
     #
     # Two separate places used to work this out from review_subtitles being
     # non-null, which was reliable only while the image-subtitle gate was the
@@ -428,15 +463,25 @@ class AudioLanguageFlag(Base):
     or confirms it's already correct (via MediaFile.audio_language_ignored)
     — either action removes this row.
 
-    One row per file (file_id is unique) — re-detecting the same mismatch
-    on a later scan updates detected_language in place rather than creating
-    a duplicate entry.
+    One row per TRACK (unique on file_id and stream_index), like
+    SubtitleLanguageFlag. Re-detecting the same track on a later scan
+    updates its row in place rather than adding another.
+
+    It was one row per file while only one audio track per file was ever
+    flagged. A file with several undefined tracks often holds different
+    languages in them, so flagging them needs a row per track that the user
+    can answer on its own.
     """
     __tablename__ = "audio_language_flags"
 
+    __table_args__ = (
+        UniqueConstraint("file_id", "stream_index",
+                         name="uq_audio_language_flags_file_stream"),
+    )
+
     id      = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
-                     nullable=False, unique=True)
+                     nullable=False, index=True)
 
     # Which audio track this refers to — needed so the "apply" action
     # knows exactly which stream to write the corrected language to; the
@@ -452,6 +497,21 @@ class AudioLanguageFlag(Base):
     # language dropdown needs a DISTINCT ... GROUP BY over this column on
     # every page load to build its options.
     detected_language = Column(String, index=True)
+
+    # Where the flag came from, because each origin is confirmed through its
+    # own switch on MediaFile:
+    #   "mismatch"  — decision.audio_language_mismatch: a defined language
+    #                 that is not a preferred one, or an undefined track
+    #                 fix_undefined_language_audio=always_ask left for a
+    #                 person. Suppressed by audio_language_ignored.
+    #   "threshold" — decision.undefined_audio_flags: the file is at or over
+    #                 the Undefined Audio Track Threshold. Suppressed by
+    #                 und_audio_threshold_acknowledged.
+    #
+    # The server default is what the table rebuild relies on: it copies only
+    # the columns the old shape had, and every row from before this column
+    # came from audio_language_mismatch.
+    origin = Column(String, nullable=False, server_default="mismatch")
 
     created_at = Column(DateTime, default=utcnow)
 
@@ -486,9 +546,8 @@ class SubtitleLanguageFlag(Base):
     # One row per file meant a file with several undefined subtitle tracks
     # could only ever offer one of them for review, while extraction wrote
     # a separate .srt for every one — so the rest kept "und" in their
-    # filenames with no way to correct them. The audio table keeps its
-    # one-row-per-file shape deliberately: its threshold picks a single
-    # representative track, and audio tracks do not leave the file.
+    # filenames with no way to correct them. The audio table has since
+    # moved to the same shape.
     __table_args__ = (
         UniqueConstraint("file_id", "stream_index",
                          name="uq_subtitle_language_flags_file_stream"),

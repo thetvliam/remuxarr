@@ -24,7 +24,6 @@ from app.api.routes._language_review import (
     LanguageReviewKind,
     build_language_review_router,
 )
-from app.core.scanner import _load_audio_language_overrides
 from app.database.models import AudioLanguageFlag
 
 AUDIO_LANGUAGE_REVIEW = LanguageReviewKind(
@@ -32,7 +31,6 @@ AUDIO_LANGUAGE_REVIEW = LanguageReviewKind(
     prefix         = "/api/audio-language-review",
     tag            = "audio-language-review",
     flag_model     = AudioLanguageFlag,
-    load_overrides = _load_audio_language_overrides,
     overrides_attr = "audio_language_overrides",
     ignored_attr   = "audio_language_ignored",
 
@@ -82,9 +80,20 @@ currently RUNNING is skipped rather than cleared, and reported as such
 Confirm the current audio language is correct for every file in
 file_ids, despite not matching keep_audio_languages — e.g. anime
 that's genuinely, correctly Japanese. No reprocessing happens: nothing
-about the file needs to change, this just permanently stops it being
-flagged again on future scans.
+about the file needs to change, this just stops it being flagged again
+on future scans.
+
+Each flag records the answer on the switch for its origin: a language
+mismatch on audio_language_ignored, and the undefined-audio threshold on
+und_audio_threshold_acknowledged, which Clear acknowledged can take back.
+A file whose flags are already gone is marked audio_language_ignored, as
+before flags had an origin.
 """.strip(),
+
+    origin_switches = (
+        ("mismatch",  "audio_language_ignored"),
+        ("threshold", "und_audio_threshold_acknowledged"),
+    ),
 )
 
 router = build_language_review_router(AUDIO_LANGUAGE_REVIEW)

@@ -26,6 +26,22 @@
  *
  * useWebSocket is mocked out — this file is about the hook's own state
  * transitions, not its transport.
+ *
+ * REVIEW BADGE COUNT — 3 mutants applied, 2 killed by assertion, 1 by crash:
+ *
+ *   • reviewBadgeCount drops languageReviewCount  → killed (2 tests)
+ *   • the ?? 0 fallbacks removed, giving NaN      → killed
+ *   • optional chaining on `lr` removed           → killed BY CRASH ONLY
+ *
+ * The third is worth reading before editing that block. A response without
+ * language_review makes it throw, and the throw lands in fetchAll's
+ * floating promise: vitest reports an unhandled rejection and exits
+ * non-zero while every single test still passes. Read the totals alone and
+ * that looks like a healthy run. It is the reason the block uses optional
+ * chaining rather than an `if (lr)` guard — the guard version turns the
+ * same mistake into that crash, where this version turns it into NaN,
+ * which "still counts manual-review items when stats omits the backlog"
+ * catches as an ordinary failure.
  */
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -872,5 +888,71 @@ describe("useAppData — revert_complete", () => {
     act(() => { ws.onMessage({ event: "revert_complete" }); });
 
     expect(result.current.revertRefreshKey).not.toBe(before);
+  });
+});
+
+/* ── The Review tab badge ───────────────────────────────────────────────── */
+//
+// The badge was review.length — manual-review QueueItems only — so it read
+// zero while the Audio and Subtitle Language Review sections had rows
+// waiting. A file can carry a language flag without ever entering manual
+// review: one undefined audio track under a threshold of two, or an
+// undefined subtitle that gets extracted. Verified against the decision
+// engine, which returns is_manual_review=False with the mismatch set in
+// both cases.
+//
+// The sum lives in the hook rather than App.jsx so it can be tested at all;
+// App.jsx has no test file.
+
+/** fetch stub that answers each endpoint separately. */
+function stubEndpoints({ stats = {} } = {}) {
+  vi.stubGlobal("fetch", vi.fn(async (url) => {
+    const body =
+      url.includes("/api/queue/stats")         ? stats
+      : url.includes("/api/queue/active")      ? []
+      : url.includes("/api/queue/")            ? []
+      : { value: false, items: [], total: 0 };
+    return { ok: true, json: async () => body };
+  }));
+}
+
+describe("useAppData — the Review badge count", () => {
+  it("adds the language backlog to the manual-review items", async () => {
+    stubEndpoints({
+      stats: { manual_review: 2, language_review: { audio: 3, subtitle: 4 } },
+    });
+
+    const { result } = await mount();
+
+    expect(result.current.reviewBadgeCount).toBe(9);
+  });
+
+  it("counts language flags when nothing is in manual review", async () => {
+    // The whole bug: this case used to read zero and show no badge.
+    stubEndpoints({ stats: { language_review: { audio: 1, subtitle: 0 } } });
+
+    const { result } = await mount();
+
+    expect(result.current.reviewBadgeCount).toBe(1);
+  });
+
+  it("is zero when there is nothing of either kind", async () => {
+    stubEndpoints({ stats: { manual_review: 0, language_review: { audio: 0, subtitle: 0 } } });
+
+    const { result } = await mount();
+
+    expect(result.current.reviewBadgeCount).toBe(0);
+  });
+
+  it("still counts manual-review items when stats omits the backlog", async () => {
+    /* An older backend, or a stats response missing a key. Both halves of
+     * the badge come from this one response now, so a missing key must read
+     * as zero rather than turning the badge into NaN and rendering nothing —
+     * undercounting is survivable, a blank badge on a full queue is not. */
+    stubEndpoints({ stats: { manual_review: 2 } });
+
+    const { result } = await mount();
+
+    expect(result.current.reviewBadgeCount).toBe(2);
   });
 });

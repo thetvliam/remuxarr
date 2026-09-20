@@ -7,11 +7,11 @@ import logging
 from pathlib import Path
 from typing import Any, Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.database.models import AppSetting, Base, QueueItem
+from app.database.models import AppSetting, Base, MediaFile, QueueItem
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +263,15 @@ def init_db() -> None:
     # already has every current column, so the ADD COLUMN pass then finds
     # nothing to do rather than failing on a column it just created.
     _allow_one_subtitle_flag_per_track()
+    _allow_one_audio_flag_per_track()
     _migrate_schema()
     # After _migrate_schema: it reads and writes review_reason, which older
     # databases only gain there.
     _label_subtitle_encoding_reviews()
+    # After the encoding backfill: it reads the reason that one writes.
+    _label_flagged_track_reasons()
+    _release_threshold_holds()
+    _key_track_answers_by_descriptor()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -312,6 +317,197 @@ def _label_subtitle_encoding_reviews() -> None:
         if labelled:
             db.commit()
             logger.info("Labelled %d subtitle-encoding review(s)", labelled)
+
+
+# The per-track reason for every track on a review raised for one cause,
+# keyed by the item's review_reason. See _label_flagged_track_reasons.
+_TRACK_REASON_FOR_REVIEW = {
+    "image_subtitles":   "image",
+    "font_attachments":  "styled",
+    "subtitle_encoding": "encoding",
+    None:                "image",
+}
+
+
+def _label_flagged_track_reasons() -> None:
+    """
+    Give every flagged track on a waiting review its own reason.
+
+    Reviews record the problem per track ("image", "styled", "encoding") in
+    review_subtitles, because one review can now hold tracks from both
+    subtitle gates. Rows written before that carry no per-track reason, and
+    each was raised for a single cause, so the item's review_reason names it
+    for every track on the row (_TRACK_REASON_FOR_REVIEW).
+
+    A null reason with flagged tracks is read as an image-subtitle review,
+    which is what it is once _label_subtitle_encoding_reviews has run:
+    QueueItem.review_reason lists where those rows come from, and that
+    function names the encoding reviews among them.
+
+    A track is labelled only if its codec is one that cause can flag —
+    bitmap codecs for "image", ass/ssa for "styled", the extractable text
+    codecs for "encoding". Every writer's rows pass that check. A row that
+    does not, such as a null-reason review flagging both a bitmap and a
+    text track, keeps the odd track unlabelled rather than calling a text
+    track an image. An unrecognised review_reason is left alone for the
+    same reason.
+
+    Only rows still in review are touched, a track that already has a
+    reason keeps it, and a second run finds nothing to change.
+    """
+    from app.core.decision import IMAGE_BASED_SUBS, SRT_CONVERTIBLE_SUBS, STYLED_SUBS
+
+    flaggable = {
+        "image":    IMAGE_BASED_SUBS,
+        "styled":   STYLED_SUBS,
+        "encoding": SRT_CONVERTIBLE_SUBS,
+    }
+    with SessionLocal() as db:
+        items = db.query(QueueItem).filter(
+            QueueItem.status == "manual_review",
+            QueueItem.review_subtitles.isnot(None),
+        ).all()
+        labelled = 0
+        for item in items:
+            reason = _TRACK_REASON_FOR_REVIEW.get(item.review_reason)
+            if reason is None:
+                continue
+            try:
+                flagged = json.loads(item.review_subtitles)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(flagged, list):
+                continue
+            changed = False
+            for entry in flagged:
+                if (isinstance(entry, dict) and not entry.get("reason")
+                        and (entry.get("codec") or "").lower() in flaggable[reason]):
+                    entry["reason"] = reason
+                    changed = True
+            if changed:
+                item.review_subtitles = json.dumps(flagged)
+                labelled += 1
+        if labelled:
+            db.commit()
+            logger.info("Labelled the flagged tracks on %d review(s)", labelled)
+
+
+def _release_threshold_holds() -> None:
+    """
+    Let files the undefined-audio threshold held be re-decided.
+
+    The threshold no longer holds a file for manual review; it flags the
+    file's undefined tracks in Audio Language Review instead. The files it
+    held before that sit in manual review until something re-decides them,
+    and a scan on its own never would: their bytes have not changed, so the
+    delta check skips them. Clearing the scan stamp (size and mtime, as
+    queue._force_rescan does) makes the next scan of any kind re-probe them,
+    and that re-decision drops the review row and raises the flags.
+
+    A threshold hold is a manual_review row with no review_subtitles, the
+    same test approve_manual_review relies on: every subtitle review writes
+    its flagged tracks. The review row itself is left alone, so Approve goes
+    on working on it until then.
+
+    Files already stamped for a rescan are left untouched, so this writes
+    nothing on later startups, or on a fresh install.
+    """
+    with SessionLocal() as db:
+        held = [
+            file_id for (file_id,) in db.query(QueueItem.file_id)
+            .filter(
+                QueueItem.status == "manual_review",
+                QueueItem.review_subtitles.is_(None),
+                QueueItem.file_id.isnot(None),
+            )
+            .distinct()
+        ]
+        if not held:
+            return
+
+        released = (
+            db.query(MediaFile)
+            .filter(MediaFile.id.in_(held), MediaFile.size != -1)
+            .update({"size": -1, "mtime": -1.0}, synchronize_session=False)
+        )
+        if released:
+            db.commit()
+            logger.info(
+                "Releasing %d file(s) held by the undefined-audio threshold: "
+                "their undefined tracks move to Audio Language Review on the "
+                "next scan", released
+            )
+
+
+_TRACK_ANSWER_COLUMNS = (
+    "subtitle_overrides",
+    "audio_language_overrides",
+    "subtitle_language_overrides",
+)
+
+
+def _key_track_answers_by_descriptor() -> None:
+    """
+    Re-key the stored answers about tracks from stream_index to descriptor.
+
+    The three columns held {stream_index: answer}. A stream_index is a
+    position in one probe of one file, and positions move: processing drops
+    tracks and renumbers the rest. Answers are keyed by what the track is
+    now, resolved back to a position each time they are used
+    (scanner.descriptors_by_stream).
+
+    Each row's answers are converted against its own Track rows, which are
+    the same probe the answers were given against unless the file has been
+    processed or replaced since. An answer whose stream has no track is
+    dropped: it can no longer be tied to anything, and the question comes
+    back rather than being applied to whatever now sits at that number.
+
+    Only integer keys are converted, so a second start finds nothing to do.
+    """
+    from app.core.scanner import _track_to_dict, descriptors_by_stream
+    from app.database.models import MediaFile, Track
+
+    converted = dropped = 0
+    with SessionLocal() as db:
+        rows = (
+            db.query(MediaFile)
+            .filter(or_(*[getattr(MediaFile, c).isnot(None)
+                          for c in _TRACK_ANSWER_COLUMNS]))
+            .all()
+        )
+        for media in rows:
+            descriptors = None
+            for column in _TRACK_ANSWER_COLUMNS:
+                raw = getattr(media, column)
+                if not raw:
+                    continue
+                try:
+                    stored = json.loads(raw)
+                except (ValueError, TypeError):
+                    continue
+                legacy = {k: v for k, v in stored.items() if str(k).lstrip("-").isdigit()}
+                if not legacy:
+                    continue
+                if descriptors is None:
+                    descriptors = descriptors_by_stream([
+                        _track_to_dict(t) for t in
+                        db.query(Track).filter(Track.file_id == media.id).all()
+                    ])
+                rekeyed = {k: v for k, v in stored.items() if k not in legacy}
+                for stream_index, answer in legacy.items():
+                    key = descriptors.get(int(stream_index))
+                    if key is None:
+                        dropped += 1
+                        continue
+                    rekeyed[key] = answer
+                    converted += 1
+                setattr(media, column, json.dumps(rekeyed))
+        if converted or dropped:
+            db.commit()
+            logger.info(
+                "Re-keyed %d stored track answer(s) by descriptor; dropped %d "
+                "whose track is gone", converted, dropped
+            )
 
 
 def _relax_revert_point_file_id() -> None:
@@ -425,6 +621,44 @@ def _allow_one_subtitle_flag_per_track() -> None:
     columns = {c["name"] for c in
                inspector.get_columns("subtitle_language_flags")}
     _rebuild_table(SubtitleLanguageFlag.__table__, columns)
+
+
+def _allow_one_audio_flag_per_track() -> None:
+    """
+    Move audio_language_flags off UNIQUE(file_id) onto
+    UNIQUE(file_id, stream_index), and give it an origin column.
+
+    One row per file could flag only one audio track, while a file with
+    several undefined tracks needs each answered on its own — they often
+    hold different languages.
+
+    The same rebuild as the subtitle table, for the same reason: SQLite
+    cannot drop a UNIQUE constraint. Existing rows carry over, already
+    unique per file and so unique per (file, stream). The rebuild copies
+    only the columns the old shape had, so each row takes origin's server
+    default, "mismatch" — correct for all of them, since until now only
+    decision.audio_language_mismatch wrote to this table.
+
+    No-op once the constraint is right, so it is safe on every startup and
+    on fresh installs.
+    """
+    inspector = inspect(engine)
+    if "audio_language_flags" not in set(inspector.get_table_names()):
+        return
+
+    uniques = inspector.get_unique_constraints("audio_language_flags")
+    if not any(u["column_names"] == ["file_id"] for u in uniques):
+        return
+
+    logger.info(
+        "Migrating database: allowing one audio language flag per track"
+    )
+
+    from app.database.models import AudioLanguageFlag
+
+    columns = {c["name"] for c in
+               inspector.get_columns("audio_language_flags")}
+    _rebuild_table(AudioLanguageFlag.__table__, columns)
 
 
 def _migrate_schema() -> None:

@@ -161,27 +161,28 @@ class ProcessingDecision:
     # diverging is exactly what caused real silent file renames
     # (.m2ts → .ts, .m4v/.mov → .mp4) on incidental processing — see
     # determine_output_path's docstring.
-    # Populated only for is_manual_review=True decisions caused by
-    # non-convertible (image-based) subtitle tracks. Each entry:
-    #   {stream_index, language, codec, is_forced, title}
-    # The UI uses this to render per-track Keep/Remove choices.
+    # Populated only for is_manual_review=True decisions raised by the
+    # subtitle gates: kept image-based tracks, and kept styled tracks in a
+    # file with embedded fonts. Entries are in stream order, each:
+    #   {stream_index, language, codec, is_forced, title, reason}
+    # reason is the problem with that track: "image" or "styled" here, and
+    # "encoding" on the reviews worker._flag_subtitle_encoding_review raises
+    # after a failed extraction. The UI renders one choice per entry.
     flagged_subtitles: list[dict] | None = None
     # WHICH gate raised the review, for the caller to persist on the queue
     # item. Recorded rather than inferred: two endpoints used to work this
     # out from flagged_subtitles being non-empty, which only held while the
-    # image-subtitle gate was the only trigger that set it.
+    # image-subtitle gate was the only trigger that set it. When both
+    # subtitle gates flag tracks this is a summary, "image_subtitles" — see
+    # where the gates hold the file.
     review_reason: str | None = None
     # Set when the file's surviving (kept) audio track needs a human to look
-    # at its language tag. Two distinct causes, both landing here:
-    #   • a DEFINED but non-preferred language — e.g. "dut" on an English
-    #     show, gated on has_preferred_audio;
-    #   • an UNDEFINED tag under fix_undefined_language="always_ask", which
-    #     sets {"language": "und"} and is deliberately NOT gated that way
-    #     (see the und_flagged_audio branch below).
-    # Shape: {"stream_index": int, "language": str}. None means no audio
-    # track needs review. This comment used to say None also covered the
-    # "und" case, which stopped being true when always_ask started flagging
-    # audio. The scanner reads this to
+    # at its language tag: a DEFINED but non-preferred language — e.g.
+    # "dut" on an English show, gated on has_preferred_audio. Undefined
+    # tags used to land here too, one track per file; they are in
+    # undefined_audio_flags now, every track on its own.
+    # Shape: {"stream_index": int, "language": str}. None means no track
+    # with a defined language needs review. The scanner reads this to
     # upsert/clear an AudioLanguageFlag row — informational only, never
     # blocks should_process the way is_manual_review does. stream_index is
     # included (not just the language) because the Audio Language Review
@@ -189,6 +190,22 @@ class ProcessingDecision:
     # writing the corrected language — the language alone isn't enough to
     # reliably identify the track again later.
     audio_language_mismatch: dict | None = None
+
+    # True when something other than the file's kept subtitles stops it
+    # being an MP4: a video or audio codec MP4 cannot hold, or
+    # prefer_mp4_container being off. Informational, for the Review page's
+    # outcome line — see where the container is decided.
+    mp4_blocked_beyond_subtitles: bool = False
+
+    # Undefined-language audio tracks for Audio Language Review, one entry
+    # per track, in stream order: {"stream_index": int, "origin": str}.
+    #   "threshold" — the file is at or over the Undefined Audio Track
+    #                 Threshold, which is no longer a manual-review gate.
+    #   "mismatch"  — fix_undefined_language_audio=always_ask left the track
+    #                 for a person.
+    # The origin becomes AudioLanguageFlag.origin, which decides the switch
+    # Confirm correct writes. Informational only, like the field above.
+    undefined_audio_flags: list[dict] = field(default_factory=list)
 
     # Subtitle-track counterpart to audio_language_mismatch above. Unlike
     # that field though, this one is ONLY ever populated by an undefined
@@ -375,12 +392,16 @@ def analyze_file(
     settings : dict
         App settings from session.get_app_settings()
     subtitle_overrides : dict[int, str] | None
-        Per-track resolutions for previously-flagged non-convertible
-        subtitle tracks, keyed by stream_index with value "keep" or
-        "remove". Set by the user via the manual-review UI and persisted
-        on MediaFile.subtitle_overrides. A track with an override skips
-        the non-convertible-subtitle manual-review gate entirely and is
-        either embedded as-is ("keep") or dropped ("remove").
+        Per-track answers to a subtitle manual review, keyed by
+        stream_index with value "keep", "remove" or "extract". Set by the
+        user via the manual-review UI and persisted on
+        MediaFile.subtitle_overrides. A track with an answer skips both
+        subtitle review gates and is embedded as-is ("keep"), dropped
+        ("remove"), or extracted to an external SRT ("extract"), whatever
+        the keep list and extract_text_subtitles_to_srt would otherwise
+        decide. "extract" on a track the extraction branch cannot take is
+        ignored, and the track is treated as unanswered — see the block
+        just above the gates.
     audio_language_overrides : dict[int, str] | None
         Per-track language corrections from the Audio Language Review
         section, keyed by stream_index with value an ISO 639-2/B code
@@ -399,11 +420,11 @@ def analyze_file(
         Ac3ForgeJob.audio_track_count, the 0-based audio-track-relative
         index the AC3 was appended at. When set, the forge AC3 is
         excluded from the "multiple undefined-language audio tracks"
-        manual-review threshold count: it's a known, intentional
+        threshold count, and from the flags it raises: it's a known, intentional
         duplicate of an existing audio track (added by the AC3 forge
         feature for AVR passthrough), not a new genuinely-ambiguous
         source. Without this exclusion, any file where forge was used on
-        an "und"-language source would trip manual review on every
+        an "und"-language source would trip the threshold on every
         subsequent scan even though both tracks are always meant to be
         kept — there's nothing for a human to actually decide.
 
@@ -431,8 +452,8 @@ def analyze_file(
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
     # or more undefined-language tracks" true for every file, including
-    # ones with none at all, silently forcing the whole pipeline into
-    # manual review. 0 is never a meaningful value for a ">=" comparison
+    # ones with none at all, silently flagging every file in the library.
+    # 0 is never a meaningful value for a ">=" comparison
     # like this one; 1 is the lowest threshold that actually means
     # something. Same defensive pattern already used for
     # max_concurrent_jobs in worker.py's dispatch loop.
@@ -505,7 +526,7 @@ def analyze_file(
 
     sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
-    # ── Manual-review gate: undefined-language audio ─────────────────────────
+    # ── Undefined-language audio: the threshold ──────────────────────────────
     und_audio = [t for t in audio_tracks
                  if (t["language"] or "und") in ("und", "")]
 
@@ -546,32 +567,16 @@ def analyze_file(
         if (last.get("codec") or "").lower() == "ac3" and last.get("channels") == 6:
             und_audio = [t for t in und_audio if t is not last]
 
-    if len(und_audio) >= und_threshold and not file_info.get("und_audio_threshold_acknowledged"):
-        # Names the setting that caused this rather than just the count. The
-        # count alone reads like a fault in the file ("Contains 1 audio
-        # tracks" — also ungrammatical at the threshold's minimum of 1,
-        # which is the value most likely to produce this message), when it
-        # is really a configured policy the user owns and can change. Saying
-        # which threshold it hit turns an alarm into something actionable:
-        # either fix this file, or raise the threshold so files like it stop
-        # arriving here.
-        count  = len(und_audio)
-        plural = "" if count == 1 else "s"
-        msg = (
-            f"Contains {count} audio track{plural} with an undefined "
-            f"language — at or above the Undefined Audio Track Threshold "
-            f"of {und_threshold}. Held for review so no track is dropped "
-            f"by mistake."
-        )
-        return ProcessingDecision(
-            should_process=False,
-            is_manual_review=True,
-            reason=msg,
-            actions=[Action(
-                action_type="flag_manual_review",
-                description=msg,
-            )],
-        )
+    # At or over the Undefined Audio Track Threshold, the file's undefined
+    # tracks are a question for a person. The threshold used to hold the
+    # file for manual review right here. It no longer holds anything:
+    # undefined audio is kept unconditionally (the audio keep rule below), so
+    # processing the file first loses no track, and the question goes to
+    # Audio Language Review as a flag on each undefined track instead — see
+    # undefined_audio_flags. The accepted cost is that such a file can be
+    # processed twice, once now and once after its tracks are tagged, which
+    # is what Set language already does.
+    over_und_threshold = len(und_audio) >= und_threshold
 
     # Whether a subtitle track would be retained under the current language/
     # forced settings — shared by the manual-review gate below and the main
@@ -625,6 +630,51 @@ def analyze_file(
             or (keep_und_subs and lang == "und")
         )
 
+    # ── Answers that cannot be carried out ───────────────────────────────────
+    # An "extract" answer on a track the extraction branch cannot take is
+    # removed from the local copy here, BEFORE the gates below, so the track
+    # is treated as if it had never been answered: with extraction on, a kept
+    # bitmap track is asked about again by the image-subtitle gate, and
+    # everything else takes the normal rules.
+    #
+    # Both gates treat a track with any entry in subtitle_overrides as
+    # answered, whatever the value, and the main loop falls back to the
+    # normal rules for a value it does not act on. Left in place, "extract"
+    # on a PGS track therefore skipped the image-subtitle gate and then kept
+    # the track embedded, holding the file as MKV: an impossible request
+    # silently became Keep. The resolve endpoint refuses such an answer, so
+    # this is the engine's own guard rather than the only one.
+    #
+    # Tested against SRT_CONVERTIBLE_SUBS rather than IMAGE_BASED_SUBS: the
+    # extraction branch below only handles the codecs in that set, and a
+    # text codec outside it (webvtt, say) is no more extractable there than
+    # a bitmap is.
+    for t in sub_tracks:
+        si = t["stream_index"]
+        if (subtitle_overrides.get(si) == "extract"
+                and (t.get("codec") or "").lower() not in SRT_CONVERTIBLE_SUBS):
+            del subtitle_overrides[si]
+
+    # ── Manual-review gates: subtitle tracks ─────────────────────────────────
+    # Two gates hold a file for a person to decide about its subtitles: kept
+    # image-based tracks, and kept styled tracks in a file with embedded
+    # fonts. Each adds its unanswered tracks to review_tracks, tagged with the
+    # problem it found, and the file is held ONCE after both have run, with
+    # every one of those tracks on the same review.
+    #
+    # They used to return one at a time — the image gate first, the font gate
+    # on the evaluation after its tracks were answered — which was two
+    # prompts for one file and hid how the answers interact. Removing a PGS
+    # track gains nothing if a styled track is then kept, because the kept
+    # track holds the file as MKV anyway; asked in sequence, the user cannot
+    # see that.
+    #
+    # IMAGE_BASED_SUBS and STYLED_SUBS share no codec, so no track is tagged
+    # twice. Both gates consider only tracks the file keeps, and both skip a
+    # track that already has an entry in subtitle_overrides.
+    review_tracks:   list[tuple[dict, str]] = []   # (track, its reason)
+    review_messages: list[str] = []
+
     # ── Manual-review gate: non-convertible kept subtitles ───────────────────
     # When SRT extraction is enabled, any KEPT subtitle track using an
     # image-based codec (PGS, VOBSUB, DVD, DVB) cannot be converted to
@@ -671,27 +721,8 @@ def analyze_file(
                     f"manual review required to decide whether to keep or remove "
                     f"{'them' if n > 1 else 'it'}."
                 )
-                flagged = [
-                    {
-                        "stream_index": t["stream_index"],
-                        "language":     t["language"] or "und",
-                        "codec":        t.get("codec") or "",
-                        "is_forced":    t.get("is_forced", False),
-                        "title":        t.get("title"),
-                    }
-                    for t in non_convertible
-                ]
-                return ProcessingDecision(
-                    should_process=False,
-                    is_manual_review=True,
-                    reason=msg,
-                    actions=[Action(
-                        action_type="flag_manual_review",
-                        description=msg,
-                    )],
-                    review_reason="image_subtitles",
-                    flagged_subtitles=flagged,
-                )
+                review_messages.append(msg)
+                review_tracks.extend((t, "image") for t in non_convertible)
 
     # ── Manual-review gate: embedded font attachments ────────────────────────
     # Fonts only exist in a file because its styled subtitles reference them
@@ -703,12 +734,6 @@ def analyze_file(
     #
     # Nothing about that fails. The job succeeds, the sizes look right, and
     # the symptom appears whenever someone next watches the episode.
-    #
-    # Placed AFTER the image-subtitle gate above so that gate's behaviour is
-    # unchanged. A file with both image subs and fonts is asked about the
-    # image subs first, and about fonts on the next evaluation once those are
-    # resolved — two prompts for one file, which is accepted rather than
-    # overlooked.
     if file_info.get("font_attachments"):
         # Only tracks the file keeps, by the same rule as the image gate
         # above. A styled track in a language the keep list drops is deleted
@@ -760,27 +785,48 @@ def analyze_file(
                     f"flattens the styling — manual review required to decide "
                     f"whether to keep the file as MKV or convert it anyway."
                 )
-                flagged = [
-                    {
-                        "stream_index": t["stream_index"],
-                        "language":     t["language"] or "und",
-                        "codec":        t.get("codec") or "",
-                        "is_forced":    t.get("is_forced", False),
-                        "title":        t.get("title"),
-                    }
-                    for t in styled
-                ]
-                return ProcessingDecision(
-                    should_process=False,
-                    is_manual_review=True,
-                    reason=msg,
-                    actions=[Action(
-                        action_type="flag_manual_review",
-                        description=msg,
-                    )],
-                    review_reason="font_attachments",
-                    flagged_subtitles=flagged,
-                )
+                review_messages.append(msg)
+                review_tracks.extend((t, "styled") for t in styled)
+
+    # ── The subtitle review, if either gate found anything ───────────────────
+    if review_tracks:
+        # File order, so a review lists tracks the way a player does rather
+        # than grouped by the gate that found them.
+        review_tracks.sort(key=lambda pair: pair[0]["stream_index"])
+        msg = " ".join(review_messages)
+        return ProcessingDecision(
+            should_process=False,
+            is_manual_review=True,
+            reason=msg,
+            actions=[Action(
+                action_type="flag_manual_review",
+                description=msg,
+            )],
+            # The item-level summary, which the current Review page and both
+            # bulk endpoints read; each track's own reason is in
+            # flagged_subtitles. A review holding any image track is an
+            # image-subtitle review even with styled tracks beside it. That
+            # is safe for the image bulk endpoint, which re-decides the whole
+            # file under every setting: a font policy still applies to the
+            # styled tracks, and with font handling on always_ask the file
+            # comes back as a font review holding only those.
+            review_reason=(
+                "image_subtitles"
+                if any(reason == "image" for _, reason in review_tracks)
+                else "font_attachments"
+            ),
+            flagged_subtitles=[
+                {
+                    "stream_index": t["stream_index"],
+                    "language":     t["language"] or "und",
+                    "codec":        t.get("codec") or "",
+                    "is_forced":    t.get("is_forced", False),
+                    "title":        t.get("title"),
+                    "reason":       reason,
+                }
+                for t, reason in review_tracks
+            ],
+        )
 
     # ── Audio analysis ─────────────────────────────────────────────────────
     actions: list[Action] = []
@@ -894,9 +940,9 @@ def analyze_file(
             # extra of unknowable relevance. "und" tells us nothing
             # either way, so each side defaults to whichever mistake is
             # cheaper to make: keep the audio, drop the subtitle. The
-            # fix_undefined_language setting and the und_audio_threshold
-            # manual-review gate both exist precisely to let und tags be
-            # resolved properly rather than guessed at here.
+            # fix_undefined_language setting and the Undefined Audio Track
+            # Threshold both exist precisely to let und tags be resolved
+            # properly rather than guessed at here.
             or lang == "und"
             # Only keep the default-flagged track when no preferred-language
             # track exists — preserves audio on edge-case files without
@@ -938,6 +984,9 @@ def analyze_file(
 
     # ── Subtitle keep/drop/extract decision ─────────────────────────────────
     # For each subtitle track:
+    #   • Answered in manual review                  → as answered, and none
+    #     of the rules below apply: "remove" → drop_track, "keep" →
+    #     kept_subs (copied), "extract" → the extraction branch below
     #   • Not in keep list (language/forced)        → drop_track
     #   • Kept, text-based, extraction enabled       → extract_subtitle
     #     (pulled out to an external .srt sidecar and removed from the
@@ -993,7 +1042,17 @@ def analyze_file(
             order += 1
             continue
 
-        if not _sub_is_kept(track):
+        # An explicit "extract" answer skips the keep list, as the two answers
+        # above do, and skips extract_text_subtitles_to_srt as well: it is a
+        # per-track exception to that setting in the way "keep" is a
+        # per-track exception to the keep list. Without that, Extract would
+        # mean Keep for anyone with extraction switched off — the track stays
+        # embedded and nothing says so. Codecs it cannot apply to were removed
+        # before the gates, so every track reaching the branch below with
+        # this set can be extracted.
+        explicit_extract = override == "extract"
+
+        if not explicit_extract and not _sub_is_kept(track):
             # "not in keep list" is accurate for a tagged track and
             # misleading for an untagged one: "und" is not a language that
             # failed to match, it is the absence of one. Saying so, and
@@ -1019,7 +1078,7 @@ def analyze_file(
             order += 1
             continue
 
-        if extract_subs_to_srt and codec in SRT_CONVERTIBLE_SUBS:
+        if explicit_extract or (extract_subs_to_srt and codec in SRT_CONVERTIBLE_SUBS):
             # The sidecar carries the language in its FILENAME, which is how
             # Plex identifies it — so a subtitle_language_overrides entry has
             # to be resolved here, before the path is built.
@@ -1056,6 +1115,7 @@ def analyze_file(
                     f"Extract subtitle [{srt_lang}] {codec}{tag_str} "
                     f"(stream {track['stream_index']}) to external SRT: "
                     f"{Path(srt_path).name}"
+                    + (" — extracted via manual review" if explicit_extract else "")
                 ),
                 track_type="subtitle",
                 stream_index=track["stream_index"],
@@ -1090,12 +1150,27 @@ def analyze_file(
     #   • any kept audio codec outside MP4_COMPATIBLE_AUDIO (post AAC→AC3)
     #   • any kept (embedded, non-extracted) subtitle codec in
     #     MP4_INCOMPATIBLE_SUBS
-    # Note: when SRT extraction is enabled, kept_subs is normally empty —
-    # every text-based kept subtitle was extracted above, and any kept
-    # image-based subtitle would have triggered the manual-review gate.
-    # kept_subs is only non-empty when extraction is disabled, preserving
-    # the original container-blocking behavior.
+    # Note: kept_subs holds every subtitle that stays embedded. With SRT
+    # extraction disabled that is every kept track. With it enabled, it is
+    # the kept tracks the extraction branch cannot take — a codec outside
+    # SRT_CONVERTIBLE_SUBS that no gate asks about, such as webvtt — plus
+    # every track answered "keep", whether by the user or by an always_keep
+    # setting. That last route is how a Keep answer on a styled or image
+    # track holds the file as MKV.
     video_audio_ok = _video_audio_mp4_compatible(video_tracks, kept_audio)
+
+    # Whether anything OTHER than the kept subtitles keeps this file out of
+    # MP4. The Review page needs it to tell two sentences apart: "keeping
+    # this track is what holds the file as MKV" and "this file stays MKV
+    # whatever you choose". Without it, a card offering to delete a subtitle
+    # reads as though deleting it would convert the file, when its audio or
+    # video may make that impossible — the answer a person gives then does
+    # nothing they were led to expect.
+    #
+    # Informational, like audio_language_mismatch: it changes no action and
+    # no outcome here. Computed from the same two conditions the container
+    # decision below uses, so the two cannot disagree.
+    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4
 
     subs_block_mp4 = any(
         (t.get("codec") or "").lower() in MP4_INCOMPATIBLE_SUBS
@@ -1173,6 +1248,15 @@ def analyze_file(
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
 
         for track_type in ("audio", "subtitle"):
+            if track_type == "audio" and over_und_threshold:
+                # Over the threshold, the file's undefined audio belongs to
+                # the threshold whatever this setting says. always_fix would
+                # tag every track with the primary language, which is the
+                # guess the threshold exists to stop, and always_ask would
+                # flag the same tracks a second time. Acknowledging the
+                # threshold changes neither: Confirm correct means the tags
+                # are right as they are.
+                continue
             und_mode = und_modes[track_type]
             if und_mode not in ("always_fix", "always_ask"):
                 # This type is always_leave. `continue`, not a narrower
@@ -1291,24 +1375,36 @@ def analyze_file(
                     "language":     lang,
                 }
                 break
-    # Undefined tracks flagged by always_ask above — deliberately NOT
-    # gated by has_preferred_audio the way the defined-but-wrong case is:
-    # a track needing a language decision is worth surfacing regardless of
-    # whether some OTHER track in the same file already happens to match a
-    # preferred language.
-    if audio_language_mismatch is None and und_flagged_audio:
-        # min(), not next(iter(...)). These are sets, so iteration follows
-        # hash-table slot order, which for ints is not ascending —
-        # next(iter({18, 2, 10})) is 18. The index is not cosmetic:
-        # AudioLanguageFlag.stream_index is the track the Review page's
-        # Apply action writes the corrected language to, and the model's
-        # docstring says the detected language alone cannot re-identify the
-        # track. On a file with several und tracks the user's correction
-        # landed on whichever one the hash table happened to yield.
-        # min() also matches the "first track" model used elsewhere —
-        # absolute_fallback_stream_index already does this.
-        si = min(und_flagged_audio)
-        audio_language_mismatch = {"stream_index": si, "language": "und"}
+    # Undefined tracks, each flagged on its own. Deliberately NOT gated by
+    # has_preferred_audio the way the defined-but-wrong case is: a track
+    # needing a language decision is worth surfacing regardless of whether
+    # some OTHER track in the same file already matches a preferred
+    # language.
+    #
+    # Over the threshold, every undefined track the threshold counted is
+    # flagged, unless the user has acknowledged the threshold for this file
+    # or the track already has a language waiting to be written. That last
+    # skip matters because the count reads the raw tags, and Set language
+    # re-evaluates the file before the job writes the new tag: without it,
+    # the track just answered would be flagged again at once.
+    #
+    # Below the threshold, the tracks always_ask left for a person — every
+    # one of them now, not only the first, since the flag table holds a row
+    # per track. The fix pass above already skipped tracks with a pending
+    # language.
+    #
+    # Sorted, because these are sets and the order reaches the review page.
+    if over_und_threshold:
+        undefined_audio_flags = [] if file_info.get("und_audio_threshold_acknowledged") else [
+            {"stream_index": si, "origin": "threshold"}
+            for si in sorted(t["stream_index"] for t in und_audio)
+            if si not in audio_language_overrides
+        ]
+    else:
+        undefined_audio_flags = [
+            {"stream_index": si, "origin": "mismatch"}
+            for si in sorted(und_flagged_audio)
+        ]
 
     # ── Subtitle language mismatch detection (for Subtitle Language Review) ──
     # Subtitle counterpart to the und-flagging half of the block above —
@@ -1390,6 +1486,8 @@ def analyze_file(
             reason="File already meets all configured criteria — no changes needed.",
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
+            undefined_audio_flags=undefined_audio_flags,
+        mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
             faststart_enabled=add_faststart,
@@ -1433,6 +1531,8 @@ def analyze_file(
         actions=actions,
         target_container=target_container,
         audio_language_mismatch=audio_language_mismatch,
+        undefined_audio_flags=undefined_audio_flags,
+        mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
         subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,
