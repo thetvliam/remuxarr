@@ -286,15 +286,26 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
 
             /* Counted from what the server reported, not from what was sent: a
              * file whose tracks changed under the page is refused, and calling
-             * that applied would report the request rather than the result. */
-            const applied = (data.outcomes || []).length;
-            const refused = (data.errors || []).length;
-            toast?.(
-                refused
-                    ? `${applied} ${applied === 1 ? "file" : "files"} answered, ${refused} could not be`
-                    : `${applied} ${applied === 1 ? "file" : "files"} answered`,
-                refused ? "warning" : "success",
-            );
+             * that applied would report the request rather than the result.
+             *
+             * But the server reports a skip as an outcome too, with the same
+             * fields as an answer, so counting outcomes alone called every
+             * skipped file answered — "2 files answered" under a button that
+             * had just said "0 decided, 2 skipped". Each outcome is placed by
+             * which list its file was sent in: still the server's word for
+             * what happened, and the page's own for what was asked. */
+            const sentAsSkip = new Set(body.skips);
+            const outcomes = data.outcomes || [];
+            const skipped  = outcomes.filter(o => sentAsSkip.has(o.file_id)).length;
+            const applied  = outcomes.length - skipped;
+            const refused  = (data.errors || []).length;
+            const files = n => `${n} ${n === 1 ? "file" : "files"}`;
+            let summary = applied || !skipped
+                ? `${files(applied)} answered`
+                : `${files(skipped)} skipped`;
+            if (applied && skipped) summary += `, ${skipped} skipped`;
+            if (refused) summary += `, ${refused} could not be`;
+            toast?.(summary, refused ? "warning" : "success");
             setStaged({});
             setOutcomes({});
             await loadPage(0);

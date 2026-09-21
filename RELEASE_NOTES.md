@@ -73,3 +73,5 @@ state for a cycle in which nothing user-visible has changed yet.
   different card in the same folder, if another card was answered in a
   different tab or on another device while the page was open. Each card now
   keeps its own identity, and a card is never shown twice.
+- Skipping cards on the Review page no longer reports the skipped files as
+  answered. The summary now names answered and skipped files separately.

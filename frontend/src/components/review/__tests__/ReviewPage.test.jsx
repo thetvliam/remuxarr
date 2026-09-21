@@ -17,6 +17,19 @@
  *   • the summary counting what was sent rather than what came back
  *   • the outcome line derived on the page instead of from the preview
  *   • staged answers surviving a refresh
+ *
+ * And, added later, each of these survived the suite of its day:
+ *
+ *   • every outcome called an answer, skips included
+ *   • a skip counted from the request, so one the server refused was
+ *     still called skipped
+ *   • the skipped count dropped when some files were also answered
+ *   • a request of only skips summarised as "0 files answered"
+ *
+ * Those four lived because the apply mocks answered body.files alone. The
+ * endpoint returns an outcome for every skip as well, with the same fields
+ * as an answer — which is the whole of the bug — so a mock without them
+ * could not show it. Both mocks below now answer skips the way it does.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -76,8 +89,13 @@ function mockApi({ groups = [GROUP], applyBody = null, applyOk = true,
       }
       return {
         ok: applyOk,
+        /* As /review/apply answers: one outcome per file, skipped ones
+         * included and indistinguishable by their fields. */
         json: async () => applyBody
-          ?? { outcomes: JSON.parse(opts.body).files.map(f => ({ file_id: f.file_id })),
+          ?? { outcomes: [
+                 ...JSON.parse(opts.body).files.map(f => ({ file_id: f.file_id })),
+                 ...JSON.parse(opts.body).skips.map(id => ({ file_id: id })),
+               ],
                errors: [] },
       };
     }
@@ -180,6 +198,50 @@ describe("what the page says", () => {
 
     await user.click(screen.getAllByRole("button", { name: "Skip" })[1]);
     expect(applyButton()).toHaveTextContent("Apply: 2 decided, 1 skipped");
+  });
+
+  it("calls skipped files skipped, not answered", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP] });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    expect(applyButton()).toHaveTextContent("Apply: 0 decided, 2 skipped");
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("2 files skipped", "success");
+  });
+
+  it("names answered and skipped files separately", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP, SECOND] });
+    show();
+
+    await answerCard(user);
+    await user.click(screen.getAllByRole("button", { name: "Skip" })[1]);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("2 files answered, 1 skipped", "success");
+  });
+
+  it("does not call a skip the server refused skipped", async () => {
+    // The file was answered or rescanned elsewhere first. What the server
+    // did is one skip and one refusal, not two skips.
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP],
+              applyBody: { outcomes: [{ file_id: 1 }],
+                           errors: [{ file_id: 2, error: "No file waiting in review" }] } });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("1 file skipped, 1 could not be", "warning");
   });
 
   it("offers nothing to apply until something is staged", async () => {
@@ -422,7 +484,10 @@ describe("paging while the list moves", () => {
         const body = JSON.parse(opts.body);
         posted.push({ url: u, body });
         return { ok: true, json: async () => ({
-          outcomes: (body.files || []).map(f => ({ file_id: f.file_id })),
+          outcomes: [
+            ...(body.files || []).map(f => ({ file_id: f.file_id })),
+            ...(body.skips || []).map(id => ({ file_id: id })),
+          ],
           errors: [],
         }) };
       }
