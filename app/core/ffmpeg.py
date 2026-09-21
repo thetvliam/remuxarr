@@ -18,11 +18,14 @@ from pathlib import Path
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
 from app.core.subprocess_runner import (
+    STAGING_ACTION,
     StagedOutput,
     cleanup_temp_file,
     parse_out_time_seconds,
     probe_duration,
     run_staged_subprocess,
+    staging_percent,
+    subprocess_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,43 @@ class FFmpegProgress:
     current_time: float  # seconds processed so far
     speed: str  # "2.50x"
     current_action: str  # human label shown in the UI
+
+
+def _staging_progress(
+    progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
+    duration: float | None,
+) -> Callable[[float], Awaitable[None]] | None:
+    """
+    Adapt run_staged_subprocess's 0.0-1.0 staging fraction to FFmpegProgress.
+
+    The split itself lives in subprocess_runner, with the staging it
+    describes; this only puts it in the dataclass the remux pipeline's
+    callers expect. forge.py has a near-identical function for the same
+    reason, and the two are not shared: ForgeProgress is a different
+    dataclass with a differently named label field.
+
+    Returns None when there is no callback to feed, which also keeps the
+    runner from measuring a copy nobody is watching.
+
+    current_time stays at the full duration: the media is entirely processed
+    by this point, and winding it back to zero would read as a restart.
+    Speed is blank rather than invented — this phase is bytes to disk, not
+    multiples of realtime, and the UI does not show the field anyway.
+    """
+    if progress_callback is None:
+        return None
+
+    async def on_staging(fraction: float) -> None:
+        await progress_callback(
+            FFmpegProgress(
+                percent=staging_percent(fraction),
+                current_time=duration or 0.0,
+                speed="",
+                current_action=STAGING_ACTION,
+            )
+        )
+
+    return on_staging
 
 
 @dataclass
@@ -646,7 +686,7 @@ async def execute_ffmpeg(
         speed = progress_kv.get("speed", "?x")
         await progress_callback(
             FFmpegProgress(
-                percent=pct,
+                percent=subprocess_percent(pct),
                 current_time=secs,
                 speed=speed,
                 current_action=current_action,
@@ -665,6 +705,7 @@ async def execute_ffmpeg(
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
+        on_staging_progress=_staging_progress(progress_callback, duration),
     )
 
     if not result.success:
@@ -936,7 +977,7 @@ async def execute_ffmpeg_combined(
         secs  = parse_out_time_seconds(progress_kv)
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
         await progress_callback(FFmpegProgress(
-            percent=pct,
+            percent=subprocess_percent(pct),
             current_time=secs,
             speed=progress_kv.get("speed", "?x"),
             current_action=current_action,
@@ -971,6 +1012,7 @@ async def execute_ffmpeg_combined(
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
+        on_staging_progress=_staging_progress(progress_callback, duration),
     )
 
     if not result.success:

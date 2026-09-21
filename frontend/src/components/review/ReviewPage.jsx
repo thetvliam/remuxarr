@@ -136,9 +136,20 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const [staged, setStaged] = useState({});      // card key -> { answers, files, skipped }
     const [outcomes, setOutcomes] = useState({});  // card key -> sentence
     const [applying, setApplying] = useState(false);
+    /* Where the next page starts, as the SERVER counts it: advanced by the
+     * number of cards each response carried, not by how many are on screen.
+     *
+     * Those two used to be the same number, and are not any more, because a
+     * card that arrives twice is now dropped (below). The list can move
+     * between two page loads — a card answered in another tab shifts
+     * everything after it — so the next page can open on a card already
+     * shown. Paging on groups.length after dropping it would ask for the same
+     * offset again and again, and the sentinel, still in view, would keep
+     * asking. usePaginatedFetch advances the same way for the same reason. */
+    const [nextOffset, setNextOffset] = useState(0);
 
     const sentinelRef = useRef(null);
-    const hasMore = groups.length < totalGroups;
+    const hasMore = nextOffset < totalGroups;
 
     const loadPage = useCallback(async (offset) => {
         setLoading(true);
@@ -146,9 +157,18 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
             const r = await fetch(
                 `${api}/api/queue/review/groups?limit=${PAGE_SIZE}&offset=${offset}`);
             const data = await r.json();
-            setGroups(prev => offset === 0
-                ? (data.groups || [])
-                : [...prev, ...(data.groups || [])]);
+            const page = data.groups || [];
+            /* A card already on the page is not added again. Its key is its
+             * identity now — folder and flagged tracks, not position — so a
+             * repeat is the same question, and showing it twice would send
+             * its files twice on Apply and put two elements under one React
+             * key. */
+            setGroups(prev => {
+                if (offset === 0) return page;
+                const shown = new Set(prev.map(g => g.key));
+                return [...prev, ...page.filter(g => !shown.has(g.key))];
+            });
+            setNextOffset(offset + page.length);
             setTotalGroups(data.total_groups || 0);
             setTotalFiles(data.total_files || 0);
         } catch (err) {
@@ -171,12 +191,12 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
         const sentinel = sentinelRef.current;
         if (!sentinel || !hasMore || loading) return;
         const observer = new IntersectionObserver(
-            ([entry]) => { if (entry.isIntersecting) loadPage(groups.length); },
+            ([entry]) => { if (entry.isIntersecting) loadPage(nextOffset); },
             { threshold: 0 },
         );
         observer.observe(sentinel);
         return () => observer.disconnect();
-    }, [hasMore, loading, groups.length, loadPage]);
+    }, [hasMore, loading, nextOffset, loadPage]);
 
     // ── Staging ───────────────────────────────────────────────────────────────
     const choose = (key, slot, choice) => setStaged(prev => {
@@ -266,15 +286,26 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
 
             /* Counted from what the server reported, not from what was sent: a
              * file whose tracks changed under the page is refused, and calling
-             * that applied would report the request rather than the result. */
-            const applied = (data.outcomes || []).length;
-            const refused = (data.errors || []).length;
-            toast?.(
-                refused
-                    ? `${applied} ${applied === 1 ? "file" : "files"} answered, ${refused} could not be`
-                    : `${applied} ${applied === 1 ? "file" : "files"} answered`,
-                refused ? "warning" : "success",
-            );
+             * that applied would report the request rather than the result.
+             *
+             * But the server reports a skip as an outcome too, with the same
+             * fields as an answer, so counting outcomes alone called every
+             * skipped file answered — "2 files answered" under a button that
+             * had just said "0 decided, 2 skipped". Each outcome is placed by
+             * which list its file was sent in: still the server's word for
+             * what happened, and the page's own for what was asked. */
+            const sentAsSkip = new Set(body.skips);
+            const outcomes = data.outcomes || [];
+            const skipped  = outcomes.filter(o => sentAsSkip.has(o.file_id)).length;
+            const applied  = outcomes.length - skipped;
+            const refused  = (data.errors || []).length;
+            const files = n => `${n} ${n === 1 ? "file" : "files"}`;
+            let summary = applied || !skipped
+                ? `${files(applied)} answered`
+                : `${files(skipped)} skipped`;
+            if (applied && skipped) summary += `, ${skipped} skipped`;
+            if (refused) summary += `, ${refused} could not be`;
+            toast?.(summary, refused ? "warning" : "success");
             setStaged({});
             setOutcomes({});
             await loadPage(0);

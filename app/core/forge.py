@@ -38,10 +38,13 @@ from app.config import settings as app_settings
 from app.core.probe import ProbeError, extract_tracks, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
+    STAGING_ACTION,
     StagedOutput,
     parse_out_time_seconds,
     probe_duration,
     run_staged_subprocess,
+    staging_percent,
+    subprocess_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -235,10 +238,27 @@ async def run_forge_command(
         secs = parse_out_time_seconds(progress_kv)
         pct  = min(100.0, secs / duration * 100)
         await progress_callback(ForgeProgress(
-            percent=pct,
+            percent=subprocess_percent(pct),
             current_time=secs,
             speed=progress_kv.get("speed", "?x"),
             action=action_label,
+        ))
+
+    async def on_staging(fraction: float) -> None:
+        # Same two-phase bar as the remux pipeline, and deliberately not the
+        # same function: this builds a ForgeProgress, whose label field is
+        # .action where FFmpegProgress uses .current_action. The split
+        # itself is shared, in subprocess_runner.
+        #
+        # A forge job re-encodes audio rather than copying it, so FFmpeg
+        # takes far longer here than in a remux — and the copy that follows
+        # is the same size and the same speed either way, which is exactly
+        # why a fixed share is the honest thing to give it.
+        await progress_callback(ForgeProgress(
+            percent=staging_percent(fraction),
+            current_time=duration or 0.0,
+            speed="",
+            action=STAGING_ACTION,
         ))
 
     result = await run_staged_subprocess(
@@ -247,6 +267,7 @@ async def run_forge_command(
         on_progress_line=on_progress_line,
         stderr_tail_lines=20,
         timeout_seconds=timeout_seconds,
+        on_staging_progress=on_staging if progress_callback else None,
     )
 
     if not result.success:

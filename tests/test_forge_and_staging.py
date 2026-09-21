@@ -392,7 +392,7 @@ def test_a_staging_failure_is_reported_as_a_failure(tmp_path, monkeypatch):
     final = tmp_path / "a.mkv"
     final.write_bytes(b"ORIGINAL")
 
-    def _boom(outputs, part_paths):
+    def _boom(outputs, part_paths, flushed=None):
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(sr, "_stage_parts", _boom)
@@ -416,7 +416,7 @@ def test_a_staging_failure_leaves_every_original_untouched(tmp_path, monkeypatch
     final.write_bytes(b"ORIGINAL")
 
     monkeypatch.setattr(sr, "_stage_parts",
-                        lambda o, p: (_ for _ in ()).throw(OSError("disk full")))
+                        lambda o, p, f=None: (_ for _ in ()).throw(OSError("disk full")))
 
     _run(_writer_cmd([(str(temp), "NEW")]),
          [StagedOutput(temp_path=str(temp), final_path=str(final))])
@@ -439,7 +439,7 @@ def test_a_staging_failure_cleans_up_the_part_files(tmp_path, monkeypatch):
     temp_a, temp_b = tmp_path / "a.tmp", tmp_path / "b.tmp"
     fin_a,  fin_b  = tmp_path / "a.mkv", tmp_path / "b.mkv"
 
-    def _partial(outputs, part_paths):
+    def _partial(outputs, part_paths, flushed=None):
         # First output stages fine, second dies mid-copy.
         p = staged_part_path(outputs[0])
         with open(p, "wb") as f:
@@ -467,7 +467,7 @@ def test_a_staging_failure_cleans_up_the_temp_files(tmp_path, monkeypatch):
     final = tmp_path / "a.mkv"
 
     monkeypatch.setattr(sr, "_stage_parts",
-                        lambda o, p: (_ for _ in ()).throw(OSError("disk full")))
+                        lambda o, p, f=None: (_ for _ in ()).throw(OSError("disk full")))
 
     _run(_writer_cmd([(str(temp), "NEW")]),
          [StagedOutput(temp_path=str(temp), final_path=str(final))])
@@ -487,7 +487,7 @@ def test_cancellation_cleans_up_temps_and_parts(tmp_path, monkeypatch):
     temp  = tmp_path / "a.tmp"
     final = tmp_path / "a.mkv"
 
-    def _stage_then_cancel(outputs, part_paths):
+    def _stage_then_cancel(outputs, part_paths, flushed=None):
         p = staged_part_path(outputs[0])
         with open(p, "wb") as f:
             f.write(b"STAGED")

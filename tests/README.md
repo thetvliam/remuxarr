@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1586 tests across 74 test files, plus 551 frontend tests under
+1608 tests across 75 test files, plus 556 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -65,7 +65,8 @@ acts on it.
 `test_source_file_preservation.py`, `test_forge_and_staging.py`,
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
-`test_subtitle_cascade_review.py`. Some run a real subprocess against real
+`test_subtitle_cascade_review.py`, `test_staging_progress.py`. Some run a
+real subprocess against real
 temp files; a few need real ffmpeg/ffprobe and skip when the binaries are
 absent (CI installs them, so they always run there).
 `test_attachment_preservation.py` pins the `-map` arguments against the bug

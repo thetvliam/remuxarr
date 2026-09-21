@@ -148,10 +148,13 @@ def test_editing_the_workflow_comment_does_not_reshow_the_dialog(notes):
 
 def test_the_shipped_file_parses(notes):
     """
-    The real RELEASE_NOTES.md, not a fixture. It is currently comment-only,
-    which must read as "nothing to announce" rather than as a parse
-    failure — and if someone adds entries, this proves the file the repo
-    actually ships is still readable by the thing that serves it.
+    The real RELEASE_NOTES.md, not a fixture. At the start of each cycle it
+    is comment-only, which must read as "nothing to announce" rather than as
+    a parse failure — and once entries are added, this proves the file the
+    repo actually ships is still readable by the thing that serves it.
+
+    Readable is not the same as complete: a truncated entry is readable.
+    test_no_line_of_the_shipped_file_is_silently_dropped covers that.
     """
     body = module.get_release_notes()
 
@@ -160,3 +163,40 @@ def test_the_shipped_file_parses(notes):
         assert body["version"], "notes present but no version to dismiss"
     else:
         assert body["version"] is None
+
+
+def test_no_line_of_the_shipped_file_is_silently_dropped():
+    """
+    Below the first heading, every line has to be a heading or a whole entry.
+
+    The parser drops anything else without a word, and that is deliberate: a
+    malformed note should cost one entry rather than the endpoint. Right at
+    runtime, wrong at review time, because what it drops disappears from
+    the dialog and nothing else notices.
+
+    It happened. Three entries were hard-wrapped over several lines to suit
+    an editor, the dialog showed the first line of each and stopped
+    mid-sentence, and every test passed. This one failed against that file.
+    An entry is one line however long it is — the format section at the top
+    of RELEASE_NOTES.md says so.
+    """
+    with open(module._NOTES_PATH, encoding="utf-8") as f:
+        text = module._COMMENT.sub("", f.read())
+    lines = text.splitlines()
+    first_heading = next(
+        (i for i, line in enumerate(lines) if module._HEADING.match(line)),
+        len(lines),
+    )
+
+    dropped = [
+        line for line in lines[first_heading:]
+        if line.strip()
+        and not module._HEADING.match(line)
+        and not module._ITEM.match(line)
+    ]
+
+    assert not dropped, (
+        "these lines of RELEASE_NOTES.md are not shown to anyone — an entry "
+        "wrapped onto a second line loses everything after the first:\n  "
+        + "\n  ".join(dropped)
+    )

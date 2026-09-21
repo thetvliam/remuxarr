@@ -17,6 +17,19 @@
  *   • the summary counting what was sent rather than what came back
  *   • the outcome line derived on the page instead of from the preview
  *   • staged answers surviving a refresh
+ *
+ * And, added later, each of these survived the suite of its day:
+ *
+ *   • every outcome called an answer, skips included
+ *   • a skip counted from the request, so one the server refused was
+ *     still called skipped
+ *   • the skipped count dropped when some files were also answered
+ *   • a request of only skips summarised as "0 files answered"
+ *
+ * Those four lived because the apply mocks answered body.files alone. The
+ * endpoint returns an outcome for every skip as well, with the same fields
+ * as an answer — which is the whole of the bug — so a mock without them
+ * could not show it. Both mocks below now answer skips the way it does.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -76,8 +89,13 @@ function mockApi({ groups = [GROUP], applyBody = null, applyOk = true,
       }
       return {
         ok: applyOk,
+        /* As /review/apply answers: one outcome per file, skipped ones
+         * included and indistinguishable by their fields. */
         json: async () => applyBody
-          ?? { outcomes: JSON.parse(opts.body).files.map(f => ({ file_id: f.file_id })),
+          ?? { outcomes: [
+                 ...JSON.parse(opts.body).files.map(f => ({ file_id: f.file_id })),
+                 ...JSON.parse(opts.body).skips.map(id => ({ file_id: id })),
+               ],
                errors: [] },
       };
     }
@@ -180,6 +198,50 @@ describe("what the page says", () => {
 
     await user.click(screen.getAllByRole("button", { name: "Skip" })[1]);
     expect(applyButton()).toHaveTextContent("Apply: 2 decided, 1 skipped");
+  });
+
+  it("calls skipped files skipped, not answered", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP] });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    expect(applyButton()).toHaveTextContent("Apply: 0 decided, 2 skipped");
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("2 files skipped", "success");
+  });
+
+  it("names answered and skipped files separately", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP, SECOND] });
+    show();
+
+    await answerCard(user);
+    await user.click(screen.getAllByRole("button", { name: "Skip" })[1]);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("2 files answered, 1 skipped", "success");
+  });
+
+  it("does not call a skip the server refused skipped", async () => {
+    // The file was answered or rescanned elsewhere first. What the server
+    // did is one skip and one refusal, not two skips.
+    const user = userEvent.setup();
+    mockApi({ groups: [GROUP],
+              applyBody: { outcomes: [{ file_id: 1 }],
+                           errors: [{ file_id: 2, error: "No file waiting in review" }] } });
+    show();
+
+    await screen.findByText("Show / Season 1");
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith("1 file skipped, 1 could not be", "warning");
   });
 
   it("offers nothing to apply until something is staged", async () => {
@@ -367,5 +429,99 @@ describe("the outcome line", () => {
       expect.stringContaining("/review/preview"), expect.anything()));
     expect(screen.queryByText(/Converts/)).toBeNull();
     expect(screen.queryByText(/Stays MKV/)).toBeNull();
+  });
+});
+
+/**
+ * Paging when the list moves between two loads.
+ *
+ * Cards arrive a page at a time, and the list can change in between: a card
+ * answered in another tab shifts everything after it, and /review/apply
+ * broadcasts nothing, so this page is not told. The next page can then open
+ * on a card already shown.
+ *
+ * A card's key is its identity now (the server's folder and flagged tracks),
+ * so a repeat is the same question and is dropped — shown twice, its files
+ * went twice on Apply. Dropping it means the cards on screen no longer count
+ * the server's offset, so paging advances by what each response carried.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • a repeated card appended again
+ *   • the next page asked for at the number of cards on screen, which asks
+ *     for the same offset forever once one is dropped
+ *   • "more to load" judged by the cards on screen, which never reaches the
+ *     total once one is dropped, and keeps asking past the end
+ */
+describe("paging while the list moves", () => {
+  /* The sentinel is in view: every observe() reports it immediately, the way
+   * a real IntersectionObserver does for a target already on screen. */
+  class VisibleObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() { this.callback([{ isIntersecting: true }]); }
+    disconnect() {}
+  }
+
+  const A = { ...GROUP, key: "card-a" };
+  const C = { ...SECOND, key: "card-c" };
+
+  /* Three cards in all. The page at offset 1 opens on A again, as it would
+   * after a card ahead of it was answered elsewhere. */
+  function mockPages(pages = { 0: [A], 1: [A], 2: [C] }, total = 3) {
+    const offsets = [];
+    posted = [];
+    toast = vi.fn();
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const offset = Number(new URL(u).searchParams.get("offset"));
+        offsets.push(offset);
+        return { ok: true, json: async () => ({
+          groups: pages[offset] || [], total_groups: total, total_files: total,
+        }) };
+      }
+      if (opts.method === "POST") {
+        const body = JSON.parse(opts.body);
+        posted.push({ url: u, body });
+        return { ok: true, json: async () => ({
+          outcomes: [
+            ...(body.files || []).map(f => ({ file_id: f.file_id })),
+            ...(body.skips || []).map(id => ({ file_id: id })),
+          ],
+          errors: [],
+        }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return offsets;
+  }
+
+  /* Long enough for a runaway loader to ask several more times. */
+  const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+
+  it("shows a repeated card once and stops at the end of the list", async () => {
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const offsets = mockPages();
+    show();
+
+    await screen.findByText(C.heading);
+    await settle();
+
+    expect(screen.getAllByText(A.heading)).toHaveLength(1);
+    expect(offsets).toEqual([0, 1, 2]);
+  });
+
+  it("sends a repeated card's files once", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    mockPages();
+    show();
+
+    await screen.findByText(C.heading);
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files.map(f => f.file_id)).toEqual([1, 2]);
   });
 });

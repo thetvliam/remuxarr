@@ -60,22 +60,9 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
-- Manual Review now asks once per question instead of once per file. Files with the same subtitle tracks in the same folder are grouped into one card, so a season answered the same way is one decision rather than twelve. Each track offers Keep, Extract SRT or Delete, with Extract writing an external .srt and taking the track out of the file; image subtitles and tracks whose extraction failed offer Keep and Delete only. A single file can be set on its own, a card can be skipped, and the line under each card says what will happen to the files - whether they convert to MP4 or stay MKV - worked out by the same engine that will do the work. Nothing is written until you press Apply, which reports one summary. The two "resolve all" buttons are gone: they answered every file in the library of one kind at once, which is what a card now does deliberately and in sight of what it affects.
-
-- Retry All in History's Failed tab now retries failed items only. Cancelled items (ones you skipped in Review, removed from the queue or aborted) stay where they are instead of all coming back at once; open one and press Retry to re-queue it. They still return on the next scan, as before.
-- A file with both image-based subtitles and embedded fonts now shows all of its flagged subtitle tracks in one review, instead of asking about the image subtitles first and the styled ones only after those were answered.
-- Undefined audio language tags no longer hold a file for manual review. Every undefined track is flagged in Audio Language Review instead, where you can set each one's language or confirm they are correct as they are, and the file keeps moving through the queue in the meantime. Files already waiting on this move across on the next scan. "Fix Undefined Audio Language Tags" set to Always Fix no longer guesses at a file with several undefined tracks. The list of confirmed files on the Review page is now Confirmed Undefined-Audio Tracks, and its button reads Clear Confirmation.
+- The progress bar now keeps its last 10% for writing the finished file to your library, labelled "Writing to disk", on both processing and AC3 Forge jobs — before, it sat at 100% for the whole of that write. Nothing has got faster; the wait is just visible now.
 
 ## Fixed
 
-- Setting the language on an extracted subtitle in Subtitle Language Review failed with "1 file was not updated". Extraction takes the subtitle out of the video, so the file no longer has that track, and a check meant for files that changed under the page was refusing these rows instead. The sidecar is renamed again, and the question clears.
-
-- An answer given in Review stopped applying to the track it was given for once the file had been processed. Processing renumbers the streams it keeps, and answers were stored against the old numbers, so a file you had answered came back asking the same question on the next full scan. Answers are now stored against the track itself, and existing ones are converted when Remuxarr starts.
-
-- Approving, skipping or resolving a file in Review now reports what happened, including when dry run means a preview is written rather than the file being changed. Only failures were reported before, so a card just vanished from the list and a failed Approve looked exactly like a successful one.
-- Approving a file held only by the undefined-audio threshold now tells you when the file will not be processed. If nothing else needs doing it is marked Skipped rather than converted, which the page previously described the wrong way round.
-- The Review page's IGNORE button is now CONFIRM CORRECT, and says what it does. It asserts the existing language tags are right, which is permanent — those files are never flagged for language again. Both buttons now name their units, since one counts tracks and the other counts files.
-
-## Added
-
-- The Review page now lists files you approved past the undefined audio track threshold, and lets you take an approval back. Approving exempted a file from that check permanently, with nothing showing which files were affected; cleared files return to review on the next scan and are not otherwise touched.
+- On the Review page, a choice made on one card could end up applied to a different card in the same folder if another card was answered in a different tab or on another device while the page was open. Each card now keeps its own identity, and a card is never shown twice.
+- Skipping cards on the Review page no longer reports the skipped files as answered. The summary now names answered and skipped files separately.
