@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -378,6 +379,28 @@ def _flagged_signature(flagged: list[dict], font_attachments: int | None):
     )
 
 
+def _card_key(directory: str, signature) -> str:
+    """
+    The card's identity: the same (directory, signature) pair the page is
+    grouped by, and nothing else.
+
+    It used to be the card's position plus its directory. Position is not
+    identity. Two questions in one folder were told apart only by where they
+    sat in the list, so when one of them was answered — in another tab, on
+    another device — the next load gave its key to the other. The page
+    stages answers under this key and appends pages without clearing them,
+    so a choice made on one card could arrive on a different card in the
+    same folder, and nothing on the server could tell: the answers still
+    named the right streams for that file, just not the right choice. A
+    subtitle kept on one card could be deleted on another.
+
+    Hashed so that it stays short and opaque. The page never reads anything
+    out of it, and a readable key would invite something to start.
+    """
+    raw = json.dumps([directory, signature], separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 @router.get("/review/groups")
 def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
                        offset: int = Query(default=0, ge=0),
@@ -427,11 +450,12 @@ def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
             continue
 
         directory = os.path.dirname(path)
-        key = (directory, _flagged_signature(flagged, fonts))
+        signature = _flagged_signature(flagged, fonts)
+        key = (directory, signature)
         group = groups.get(key)
         if group is None:
             group = groups[key] = {
-                "key":          f"{len(groups)}:{directory}",
+                "key":          _card_key(directory, signature),
                 "heading":      _review_heading(path, scan_paths),
                 "directory":    directory,
                 "font_attachments": fonts or 0,

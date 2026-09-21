@@ -1700,6 +1700,99 @@ def test_a_row_with_nothing_flagged_is_not_a_card(db):
     assert result["total_files"] == 1
 
 
+# ── A card's key ─────────────────────────────────────────────────────────────
+#
+# The page stages answers under a card's key and appends pages without
+# clearing them, so the key has to BE the question: the same folder and the
+# same flagged tracks, and nothing that moves when another card comes or goes.
+#
+# It used to be the card's position plus its folder. Two questions in one
+# folder were told apart by where they sat, so answering one in another tab
+# handed its key to the other on the next load — and a choice staged for one
+# card arrived on a different one. The server cannot catch that: the answers
+# still name the right streams for that file, only the choice is wrong.
+#
+# Each mutation below survived the whole 1603-test suite before these existed:
+#
+#   • the key as position plus folder, as it was
+#   • the key as the folder alone
+#   • the key as the flagged tracks alone
+
+_PGS = [(4, "hdmv_pgs_subtitle", "eng", "image")]
+
+
+def _keys(result):
+    return {g["key"]: g["files"][0]["file_id"] for g in result["groups"]}
+
+
+def test_a_card_keeps_its_key_when_another_card_is_answered(db):
+    """
+    The case that reached a real answer: two questions in one folder, and
+    the first of them answered somewhere else while the page stays open.
+    """
+    from app.database.models import QueueItem
+
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep11.mkv", _PGS, fonts=17)
+    before = _keys(_groups(db))
+
+    db.query(QueueItem).filter(QueueItem.file_id == 1).delete()
+    db.commit()
+    after = _keys(_groups(db))
+
+    (key,) = after
+    assert key in before, (
+        "the card that is still waiting came back under a new key, so "
+        "anything staged against it is lost or lands elsewhere"
+    )
+    assert before[key] == after[key] == 2, (
+        "a key that named one question now names another"
+    )
+
+
+def test_two_questions_in_one_folder_have_different_keys(db):
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep11.mkv", _PGS, fonts=17)
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 2
+    assert len(_keys(result)) == 2, (
+        "two cards share one key, so the page stages both under it"
+    )
+
+
+def test_one_question_in_two_folders_has_two_keys(db):
+    """
+    Two releases with the same tracks are still two cards — the folder is
+    part of the question, because the answer applies to that folder's files
+    — so the key has to carry the folder too.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 2/ep01.mkv", _ANIME, fonts=17)
+
+    result = _groups(db)
+
+    assert result["total_groups"] == 2
+    assert len(_keys(result)) == 2
+
+
+def test_a_cards_key_does_not_depend_on_the_page_it_arrives_on(db):
+    """
+    The page asks for a card on the second page by offset. If the key knew
+    where the card sat, the same card would arrive under a different key
+    than the one it had when it was fetched with a bigger page.
+    """
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep11.mkv", _PGS, fonts=17)
+
+    whole = _keys(_groups(db, limit=25, offset=0))
+    second_page = _keys(_groups(db, limit=1, offset=1))
+
+    (key,) = second_page
+    assert whole.get(key) == second_page[key]
+
+
 # ── What the staged answers would do ─────────────────────────────────────────
 #
 # The card's outcome line cannot be derived from the answers: keeping a track

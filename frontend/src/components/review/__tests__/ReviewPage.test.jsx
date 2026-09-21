@@ -369,3 +369,94 @@ describe("the outcome line", () => {
     expect(screen.queryByText(/Stays MKV/)).toBeNull();
   });
 });
+
+/**
+ * Paging when the list moves between two loads.
+ *
+ * Cards arrive a page at a time, and the list can change in between: a card
+ * answered in another tab shifts everything after it, and /review/apply
+ * broadcasts nothing, so this page is not told. The next page can then open
+ * on a card already shown.
+ *
+ * A card's key is its identity now (the server's folder and flagged tracks),
+ * so a repeat is the same question and is dropped — shown twice, its files
+ * went twice on Apply. Dropping it means the cards on screen no longer count
+ * the server's offset, so paging advances by what each response carried.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • a repeated card appended again
+ *   • the next page asked for at the number of cards on screen, which asks
+ *     for the same offset forever once one is dropped
+ *   • "more to load" judged by the cards on screen, which never reaches the
+ *     total once one is dropped, and keeps asking past the end
+ */
+describe("paging while the list moves", () => {
+  /* The sentinel is in view: every observe() reports it immediately, the way
+   * a real IntersectionObserver does for a target already on screen. */
+  class VisibleObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() { this.callback([{ isIntersecting: true }]); }
+    disconnect() {}
+  }
+
+  const A = { ...GROUP, key: "card-a" };
+  const C = { ...SECOND, key: "card-c" };
+
+  /* Three cards in all. The page at offset 1 opens on A again, as it would
+   * after a card ahead of it was answered elsewhere. */
+  function mockPages(pages = { 0: [A], 1: [A], 2: [C] }, total = 3) {
+    const offsets = [];
+    posted = [];
+    toast = vi.fn();
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const offset = Number(new URL(u).searchParams.get("offset"));
+        offsets.push(offset);
+        return { ok: true, json: async () => ({
+          groups: pages[offset] || [], total_groups: total, total_files: total,
+        }) };
+      }
+      if (opts.method === "POST") {
+        const body = JSON.parse(opts.body);
+        posted.push({ url: u, body });
+        return { ok: true, json: async () => ({
+          outcomes: (body.files || []).map(f => ({ file_id: f.file_id })),
+          errors: [],
+        }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return offsets;
+  }
+
+  /* Long enough for a runaway loader to ask several more times. */
+  const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+
+  it("shows a repeated card once and stops at the end of the list", async () => {
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const offsets = mockPages();
+    show();
+
+    await screen.findByText(C.heading);
+    await settle();
+
+    expect(screen.getAllByText(A.heading)).toHaveLength(1);
+    expect(offsets).toEqual([0, 1, 2]);
+  });
+
+  it("sends a repeated card's files once", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    mockPages();
+    show();
+
+    await screen.findByText(C.heading);
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files.map(f => f.file_id)).toEqual([1, 2]);
+  });
+});

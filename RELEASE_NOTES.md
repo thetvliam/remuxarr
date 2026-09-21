@@ -66,3 +66,10 @@ state for a cycle in which nothing user-visible has changed yet.
   the bar used to sit at 100% throughout it with the remux label still
   showing. Nothing about the processing itself has changed or got faster;
   the wait is now where you can see it.
+
+## Fixed
+
+- On the Review page, a choice made on one card could end up applied to a
+  different card in the same folder, if another card was answered in a
+  different tab or on another device while the page was open. Each card now
+  keeps its own identity, and a card is never shown twice.
