@@ -60,18 +60,9 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
-- The progress bar now keeps its last 10% for writing the finished file back
-  to your library, labelled "Writing to disk", on both processing and AC3
-  Forge jobs. On a parity-protected array that write is most of a job, and
-  the bar used to sit at 100% throughout it with the remux label still
-  showing. Nothing about the processing itself has changed or got faster;
-  the wait is now where you can see it.
+- The progress bar now keeps its last 10% for writing the finished file to your library, labelled "Writing to disk", on both processing and AC3 Forge jobs — before, it sat at 100% for the whole of that write. Nothing has got faster; the wait is just visible now.
 
 ## Fixed
 
-- On the Review page, a choice made on one card could end up applied to a
-  different card in the same folder, if another card was answered in a
-  different tab or on another device while the page was open. Each card now
-  keeps its own identity, and a card is never shown twice.
-- Skipping cards on the Review page no longer reports the skipped files as
-  answered. The summary now names answered and skipped files separately.
+- On the Review page, a choice made on one card could end up applied to a different card in the same folder if another card was answered in a different tab or on another device while the page was open. Each card now keeps its own identity, and a card is never shown twice.
+- Skipping cards on the Review page no longer reports the skipped files as answered. The summary now names answered and skipped files separately.
