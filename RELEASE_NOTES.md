@@ -66,3 +66,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 - On the Review page, a choice made on one card could end up applied to a different card in the same folder if another card was answered in a different tab or on another device while the page was open. Each card now keeps its own identity, and a card is never shown twice.
 - Skipping cards on the Review page no longer reports the skipped files as answered. The summary now names answered and skipped files separately.
+- Choices on the Review page that had not been applied yet were cleared whenever a job finished or a file was queued. They now stay until you press Apply. A new file that joins a card you have already answered takes that card's answer.

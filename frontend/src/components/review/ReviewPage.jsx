@@ -178,11 +178,28 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
         }
     }, [api]);
 
-    /* Staging is dropped on a refresh on purpose: the cards it belonged to
-     * may not be the same cards any more, and an answer carried across that
-     * would answer a question nobody was shown. */
+    /* Staging survives a refresh. It used to be dropped, on the grounds that
+     * the cards might not be the same cards any more — true while a card's
+     * key was its position. It is not now: the key is the folder and the
+     * flagged tracks, so a card that comes back under the same key is the
+     * same question.
+     *
+     * Dropping it cost more than it protected. reviewRefreshKey is bumped
+     * whenever a job finishes or a file is queued, so on a busy queue every
+     * finished job erased every choice not yet applied.
+     *
+     * Nothing is pruned. Apply and the button count only the cards loaded,
+     * so an answer whose card is not on the page does nothing: it reattaches
+     * if the card comes back on a later page, and goes at the next Apply if
+     * not. The stream numbers are worked out at Apply from the card as last
+     * loaded, so a file re-probed in between is sent its new ones. A file
+     * that has joined the card since the choice takes the card's answer:
+     * it has the same tracks in the same folder, which is what the card is.
+     *
+     * The outcome lines are still dropped. They describe the files the card
+     * had when they were worked out, and the preview below recomputes them
+     * for the files it has now. */
     useEffect(() => {
-        setStaged({});
         setOutcomes({});
         loadPage(0);
     }, [loadPage, reviewRefreshKey]);

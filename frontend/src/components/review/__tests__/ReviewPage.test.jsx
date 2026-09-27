@@ -16,7 +16,11 @@
  *   • the button counting cards instead of files, or dropping the skipped count
  *   • the summary counting what was sent rather than what came back
  *   • the outcome line derived on the page instead of from the preview
- *   • staged answers surviving a refresh
+ *
+ * This list used to end with "staged answers surviving a refresh". Nothing
+ * here tested that: deleting the reset left the whole suite green. The
+ * behaviour has since been reversed on purpose, and what now pins it is the
+ * refresh block at the end of this file.
  *
  * And, added later, each of these survived the suite of its day:
  *
@@ -523,5 +527,169 @@ describe("paging while the list moves", () => {
 
     await waitFor(() => expect(applyRequest()).toBeDefined());
     expect(applyRequest().files.map(f => f.file_id)).toEqual([1, 2]);
+  });
+});
+
+/**
+ * A refresh while choices are staged.
+ *
+ * reviewRefreshKey is bumped whenever a job finishes or a file is queued, so
+ * on a busy queue it moves every minute or so while someone is working
+ * through the cards. Staging used to be dropped on every bump, which erased
+ * every choice not yet applied. It is kept now, and these pin what keeping it
+ * means: the choice follows the card by its key, the stream numbers come from
+ * the card as last loaded, and a card that did not come back is not sent.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • staging dropped on a refresh again
+ *   • a first-page load appended to the old list instead of replacing it,
+ *     which keeps the card as it was before the refresh — old stream
+ *     numbers, old files, and cards that have gone
+ *   • staging kept after Apply
+ */
+describe("a refresh while choices are staged", () => {
+  /* The page as it is at each load: the nth request for the first page gets
+   * loads[n], and the last entry repeats. */
+  function mockLoads(loads, { applyBody = null } = {}) {
+    posted = [];
+    toast = vi.fn();
+    let n = 0;
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const groups = loads[Math.min(n++, loads.length - 1)];
+        return { ok: true, json: async () => ({
+          groups, total_groups: groups.length,
+          total_files: groups.reduce((t, g) => t + g.file_count, 0),
+        }) };
+      }
+      if (opts.method === "POST") {
+        const body = JSON.parse(opts.body);
+        posted.push({ url: u, body });
+        if (u.includes("/review/preview")) {
+          return { ok: true, json: async () => ({ outcomes: [], errors: [] }) };
+        }
+        return { ok: true, json: async () => applyBody ?? {
+          outcomes: [
+            ...body.files.map(f => ({ file_id: f.file_id })),
+            ...body.skips.map(id => ({ file_id: id })),
+          ],
+          errors: [],
+        } };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return () => n;
+  }
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+
+  /* Bump the key the way a finished job does, and wait for the reload to
+   * land rather than for the old page to still be on screen. */
+  async function refresh(rerender, loadsSoFar, heading) {
+    const before = loadsSoFar();
+    rerender(page(1));
+    await waitFor(() => expect(loadsSoFar()).toBe(before + 1));
+    await screen.findByText(heading);
+  }
+
+  it("keeps a choice when the same card comes back", async () => {
+    const user = userEvent.setup();
+    const loads = mockLoads([[GROUP]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided");
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
+  });
+
+  it("sends a file re-probed since the choice its new stream numbers", async () => {
+    const user = userEvent.setup();
+    const reprobed = { ...GROUP, files: [
+      GROUP.files[0],
+      { ...GROUP.files[1], streams: [6, 7] },
+    ] };
+    const loads = mockLoads([[GROUP], [reprobed]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 6: "remove", 7: "remove" } },
+    ]);
+  });
+
+  it("neither counts nor sends a card that did not come back", async () => {
+    // Both cards answered; the first was then answered in another tab.
+    const user = userEvent.setup();
+    const loads = mockLoads([[GROUP, SECOND], [SECOND]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    const deletes = () => screen.getAllByRole("button", { name: "Delete" });
+    await user.click(deletes()[2]);
+    await user.click(deletes()[3]);
+    expect(applyButton()).toHaveTextContent("Apply: 3 decided");
+
+    await refresh(rerender, loads, SECOND.heading);
+    await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
+
+    expect(applyButton()).toHaveTextContent("Apply: 1 decided");
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files.map(f => f.file_id)).toEqual([3]);
+  });
+
+  it("gives a file that joined the card since the choice the card's answer", async () => {
+    // A new episode with the same tracks in the same folder is the same
+    // question, so it is answered with the card. Its own stream numbers.
+    const user = userEvent.setup();
+    const joined = { ...GROUP, file_count: 3, files: [
+      ...GROUP.files,
+      { file_id: 4, filename: "ep03.mkv", path: "/media/tv/Show/Season 1/ep03.mkv",
+        streams: [8, 9] },
+    ] };
+    const loads = mockLoads([[GROUP], [joined]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+    await waitFor(() => expect(applyButton()).toHaveTextContent("Apply: 3 decided"));
+
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toContainEqual(
+      { file_id: 4, answers: { 8: "remove", 9: "remove" } });
+  });
+
+  it("clears what it sent once Apply is done", async () => {
+    // The server refused both files, so the card is still waiting when the
+    // page reloads. It comes back unanswered: the choice was made and sent,
+    // and carrying it into the next Apply would send it twice.
+    const user = userEvent.setup();
+    mockLoads([[GROUP]], { applyBody: { outcomes: [], errors: [
+      { file_id: 1, error: "tracks changed" }, { file_id: 2, error: "tracks changed" },
+    ] } });
+    render(page(0));
+
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    await screen.findByText(GROUP.heading);
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
   });
 });
