@@ -431,7 +431,8 @@ def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
     """
     rows = (
         db.query(QueueItem.file_id, QueueItem.review_subtitles,
-                 MediaFile.path, MediaFile.filename, MediaFile.font_attachments)
+                 MediaFile.path, MediaFile.filename, MediaFile.font_attachments,
+                 MediaFile.size, MediaFile.mtime)
         .join(MediaFile, QueueItem.file_id == MediaFile.id)
         .filter(QueueItem.status == "manual_review",
                 QueueItem.review_subtitles.isnot(None))
@@ -441,7 +442,7 @@ def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
 
     scan_paths = get_app_settings(db).get("scan_paths") or []
     groups: dict = {}
-    for file_id, flagged_json, path, filename, fonts in rows:
+    for file_id, flagged_json, path, filename, fonts, size, mtime in rows:
         try:
             flagged = json.loads(flagged_json)
         except (ValueError, TypeError):
@@ -478,6 +479,13 @@ def list_review_groups(limit:  int = Query(default=25, ge=1, le=200),
             "path":     path,
             # One stream number per track slot above, in the same order.
             "streams":  [t.get("stream_index") for t in flagged],
+            # The file as last probed. A re-probe of a file that changed on
+            # disk rewrites both, so the page can tell a card whose file was
+            # replaced — same path, same subtitle layout, different audio —
+            # from one that is as it was, and work its outcome line out
+            # again rather than keep a sentence about the old file.
+            "size":     size,
+            "mtime":    mtime,
         })
 
     ordered = list(groups.values())

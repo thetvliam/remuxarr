@@ -1671,6 +1671,30 @@ def test_each_file_brings_its_own_stream_numbers(db):
     assert [f["streams"] for f in group["files"]] == [[2, 3], [4, 5]]
 
 
+def test_each_file_brings_its_own_size_and_mtime(db):
+    """
+    What the page compares to tell a replaced file from the one it previewed.
+
+    The outcome line under a card is worked out once and kept until something
+    changes. A file replaced at the same path with the same subtitle layout
+    arrives under the same card with the same stream numbers, so without
+    these the page would keep a sentence about a file that is no longer
+    there. A re-probe rewrites both when the file on disk changed.
+    """
+    from app.database.models import MediaFile
+
+    _waiting(db, 1, "/media/tv/Show/Season 1/ep01.mkv", _ANIME, fonts=17)
+    _waiting(db, 2, "/media/tv/Show/Season 1/ep02.mkv", _ANIME, fonts=17)
+    db.get(MediaFile, 2).size = 5_000_000
+    db.get(MediaFile, 2).mtime = 1_700_000_000.0
+    db.commit()
+
+    (group,) = _groups(db)["groups"]
+
+    assert [(f["size"], f["mtime"]) for f in group["files"]] == [
+        (1, 1.0), (5_000_000, 1_700_000_000.0)]
+
+
 def test_cards_are_paged_whole(db):
     """A page of cards, not of files: the limit counts cards."""
     for n in (1, 2, 3):

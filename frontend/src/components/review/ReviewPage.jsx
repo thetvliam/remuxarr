@@ -64,6 +64,13 @@ const isDecided = (group, staged) =>
     !staged?.skipped
     && (group.tracks || []).every((_t, slot) => staged?.answers?.[slot] !== undefined);
 
+/* What a card's outcome line was worked out for, besides its answers: which
+ * files, their stream numbers, and each file as last probed. A file replaced
+ * at the same path keeps its stream numbers and its card, so size and mtime
+ * are what say it is a different file. */
+const filesOf = group => JSON.stringify(
+    (group.files || []).map(f => [f.file_id, f.streams, f.size, f.mtime]));
+
 /**
  * What Apply would do to this card, from the per-file outcomes the server
  * returned.
@@ -136,6 +143,9 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const [staged, setStaged] = useState({});      // card key -> { answers, files, skipped }
     const [outcomes, setOutcomes] = useState({});  // card key -> sentence
     const [applying, setApplying] = useState(false);
+    /* card key -> { card, files }: the staged answers and the files the card's
+     * last preview was sent for. See the outcome-line effect. */
+    const previewed = useRef({});
     /* Where the next page starts, as the SERVER counts it: advanced by the
      * number of cards each response carried, not by how many are on screen.
      *
@@ -196,11 +206,11 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
      * that has joined the card since the choice takes the card's answer:
      * it has the same tracks in the same folder, which is what the card is.
      *
-     * The outcome lines are still dropped. They describe the files the card
-     * had when they were worked out, and the preview below recomputes them
-     * for the files it has now. */
+     * The outcome lines are kept too, for the same reason: a card that comes
+     * back with the same files is the same sentence. The effect that works
+     * them out drops and recomputes the line of any card whose files did
+     * change. */
     useEffect(() => {
-        setOutcomes({});
         loadPage(0);
     }, [loadPage, reviewRefreshKey]);
 
@@ -240,13 +250,53 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     });
 
     // ── The outcome line, from the engine ─────────────────────────────────────
+    /* Only the cards whose line could have changed are previewed: their
+     * answers are not the ones last sent, or their files are not.
+     *
+     * It used to preview every decided card on every change. Answering one
+     * card sent a request for each card already answered, one after
+     * another, and each is an engine run per file — and once staging
+     * survived a refresh, every finished job did the same.
+     *
+     * What was sent is recorded when the request goes out, not when this
+     * effect runs. Answering a second card inside the debounce runs this
+     * again and cancels the first timer, so a record made here would mark
+     * the first card as done when nothing had been sent for it.
+     *
+     * A card whose files changed loses its line at once rather than when the
+     * new one arrives. The old one is about files the card no longer has.
+     * A card whose answers changed keeps its line until then, as it always
+     * has. */
     useEffect(() => {
-        const decided = groups.filter(g => isDecided(g, staged[g.key]));
-        if (decided.length === 0) return;
+        const stale = [];
+        const due = [];
+        for (const g of groups) {
+            const last = previewed.current[g.key];
+            const filesNow = filesOf(g);
+            if (last && last.files !== filesNow) stale.push(g.key);
+            if (isDecided(g, staged[g.key])
+                && (!last || last.card !== staged[g.key] || last.files !== filesNow)) {
+                due.push(g);
+            }
+        }
+        if (stale.length) {
+            setOutcomes(prev => {
+                if (!stale.some(key => key in prev)) return prev;
+                const next = { ...prev };
+                stale.forEach(key => { delete next[key]; });
+                return next;
+            });
+        }
+        if (due.length === 0) return;
 
         const timer = setTimeout(async () => {
-            for (const group of decided) {
-                const card = staged[group.key];
+            const sent = due.map(group => {
+                const record = { card: staged[group.key], files: filesOf(group) };
+                previewed.current[group.key] = record;
+                return [group, record];
+            });
+            for (const [group, record] of sent) {
+                const card = record.card;
                 const body = {
                     files: group.files.map(f => ({
                         file_id: f.file_id,
@@ -270,6 +320,12 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                      * being invented. */
                     console.error("Failed to preview review decisions", err);
                     setOutcomes(prev => ({ ...prev, [group.key]: null }));
+                    /* Forgotten, so the next change or refresh asks again.
+                     * Unless a newer request has replaced it: that one is
+                     * the answer this card is waiting for. */
+                    if (previewed.current[group.key] === record) {
+                        delete previewed.current[group.key];
+                    }
                 }
             }
         }, PREVIEW_DEBOUNCE_MS);
