@@ -164,12 +164,28 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const sentinelRef = useRef(null);
     const hasMore = nextOffset < totalGroups;
 
+    /* Which list a page load belongs to. Every first-page load starts a new
+     * one; a later page belongs to whichever is current when it is asked
+     * for. A load that finishes after a newer list has started is dropped —
+     * its cards, its offset and its totals.
+     *
+     * Without this a refresh raced whatever was already in flight. A later
+     * page asked for before a refresh landed after it and was appended to
+     * the new list, bringing back cards answered in the meantime with the
+     * old list's offset and totals. Two refreshes close together (two jobs
+     * finishing, or Apply's reload and the refresh that follows it) could
+     * finish in the wrong order and leave the older list on screen.
+     * usePaginatedFetch does the same, for the same reason. */
+    const generation = useRef(0);
+
     const loadPage = useCallback(async (offset) => {
+        const mine = offset === 0 ? ++generation.current : generation.current;
         setLoading(true);
         try {
             const r = await fetch(
                 `${api}/api/queue/review/groups?limit=${PAGE_SIZE}&offset=${offset}`);
             const data = await r.json();
+            if (generation.current !== mine) return;
             const page = data.groups || [];
             /* A card already on the page is not added again. Its key is its
              * identity now — folder and flagged tracks, not position — so a
@@ -187,7 +203,10 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
         } catch (err) {
             console.error("Failed to load review cards", err);
         } finally {
-            setLoading(false);
+            /* Not for a load that has been superseded: the newer one is still
+             * running, and clearing loading under it lets the sentinel ask
+             * for the next page of the old list before the new one arrives. */
+            if (generation.current === mine) setLoading(false);
         }
     }, [api]);
 

@@ -1090,3 +1090,117 @@ describe("previews that land late", () => {
     expect(second).toEqual([["keep", "remove"]]);
   });
 });
+
+/**
+ * Page loads that a refresh has overtaken.
+ *
+ * A refresh starts a new list. Anything already in flight for the old one —
+ * a later page the sentinel asked for, or an earlier refresh's first page —
+ * is dropped when it lands: its cards, its offset, its totals, and its hold
+ * on the loading flag.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • a load that a newer list overtook used anyway
+ *   • a superseded load clearing the loading flag under the newer one
+ *   • only later pages checked, so an older first page still replaced a
+ *     newer one
+ */
+describe("page loads a refresh has overtaken", () => {
+  class VisibleObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() { this.callback([{ isIntersecting: true }]); }
+    disconnect() {}
+  }
+
+  const THIRD = { ...SECOND, key: "g3", heading: "Third / Season 3",
+                  files: [{ file_id: 5, filename: "y.mkv", path: "/y.mkv", streams: [2, 3] }] };
+
+  /* Every request for cards waits until the test answers it, so which load
+   * lands first is the test's choice. */
+  function mockHeldPages() {
+    const requests = [];
+    global.fetch = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const offset = Number(new URL(u).searchParams.get("offset"));
+        return new Promise(resolve => requests.push({
+          offset,
+          answer: (groups, total) => resolve({ ok: true, json: async () => ({
+            groups: structuredClone(groups), total_groups: total,
+            total_files: groups.reduce((t, g) => t + g.file_count, 0),
+          }) }),
+        }));
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, files: [] }) });
+    });
+    return requests;
+  }
+
+  const page = key => <ReviewPage api={API} reviewRefreshKey={key} />;
+  const answer = (request, groups, total) => act(async () => { request.answer(groups, total); });
+  const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 100)));
+
+  it("does not add a page asked for before a refresh to the list after it", async () => {
+    // The second page is in flight when a refresh lands. By then both cards
+    // on the old list were answered elsewhere; only SECOND is waiting.
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 2);
+    await waitFor(() => expect(requests).toHaveLength(2));          // offset 1, held
+    expect(requests[1].offset).toBe(1);
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(3));          // offset 0, new list
+    await answer(requests[2], [SECOND], 1);
+    await screen.findByText(SECOND.heading);
+    await answer(requests[1], [THIRD], 2);
+    await quiet();
+
+    expect(screen.queryByText(THIRD.heading)).toBeNull();
+    expect(screen.queryByText(GROUP.heading)).toBeNull();
+  });
+
+  it("does not ask for more of the old list while the new one is loading", async () => {
+    // The overtaken page lands first. The new first page is still loading,
+    // so the sentinel must not take that as its cue to ask for the next page.
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 2);
+    await waitFor(() => expect(requests).toHaveLength(2));          // offset 1, held
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(3));          // offset 0, held
+    await answer(requests[1], [THIRD], 2);
+    await quiet();
+
+    expect(requests.map(r => r.offset)).toEqual([0, 1, 0]);
+  });
+
+  it("keeps the newer of two refreshes when the older lands last", async () => {
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 1);
+    await screen.findByText(GROUP.heading);
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    rerender(page(2));
+    await waitFor(() => expect(requests).toHaveLength(3));
+    await answer(requests[2], [THIRD], 1);
+    await screen.findByText(THIRD.heading);
+    await answer(requests[1], [SECOND], 1);
+    await quiet();
+
+    expect(screen.getByText(THIRD.heading)).toBeInTheDocument();
+    expect(screen.queryByText(SECOND.heading)).toBeNull();
+  });
+});

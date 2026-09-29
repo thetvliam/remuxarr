@@ -68,3 +68,4 @@ state for a cycle in which nothing user-visible has changed yet.
 - Skipping cards on the Review page no longer reports the skipped files as answered. The summary now names answered and skipped files separately.
 - Choices on the Review page that had not been applied yet were cleared whenever a job finished or a file was queued. They now stay until you press Apply. A new file that joins a card you have already answered takes that card's answer.
 - A card on the Review page could describe choices you had since changed. Changing an answer while the line under the card was still being worked out could leave the line for your earlier answer in place, even telling you to delete tracks you had just chosen to delete.
+- A card on the Review page that had already been answered could reappear after the list refreshed, and applying it reported its files as ones that could not be answered.
