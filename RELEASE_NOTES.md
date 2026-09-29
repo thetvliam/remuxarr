@@ -58,14 +58,8 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Changed
-
-- The progress bar now keeps its last 10% for writing the finished file to your library, labelled "Writing to disk", on both processing and AC3 Forge jobs — before, it sat at 100% for the whole of that write. Nothing has got faster; the wait is just visible now.
-
 ## Fixed
 
-- On the Review page, a choice made on one card could end up applied to a different card in the same folder if another card was answered in a different tab or on another device while the page was open. Each card now keeps its own identity, and a card is never shown twice.
-- Skipping cards on the Review page no longer reports the skipped files as answered. The summary now names answered and skipped files separately.
 - Choices on the Review page that had not been applied yet were cleared whenever a job finished or a file was queued. They now stay until you press Apply. A new file that joins a card you have already answered takes that card's answer.
 - A card on the Review page could describe choices you had since changed. Changing an answer while the line under the card was still being worked out could leave the line for your earlier answer in place, even telling you to delete tracks you had just chosen to delete.
 - A card on the Review page that had already been answered could reappear after the list refreshed, and applying it reported its files as ones that could not be answered.
