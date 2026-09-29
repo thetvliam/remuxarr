@@ -144,7 +144,10 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const [outcomes, setOutcomes] = useState({});  // card key -> sentence
     const [applying, setApplying] = useState(false);
     /* card key -> { card, files }: the staged answers and the files the card's
-     * last preview was sent for. See the outcome-line effect. */
+     * last preview was sent for, for as long as that preview still describes
+     * the card. It is forgotten when the card changes, when the preview
+     * fails, and at Apply; a response whose record is gone is dropped. See
+     * the outcome-line effect. */
     const previewed = useRef({});
     /* Where the next page starts, as the SERVER counts it: advanced by the
      * number of cards each response carried, not by how many are on screen.
@@ -279,6 +282,12 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                 due.push(g);
             }
         }
+        /* A card due for a preview has changed since its last one was sent,
+         * so that one is out of date whenever it lands — including in the
+         * debounce before the new request goes out. Forgetting it here is
+         * what makes the checks below drop it. It is not a record of
+         * something sent: the timer below makes that, when it sends. */
+        due.forEach(g => { delete previewed.current[g.key]; });
         if (stale.length) {
             setOutcomes(prev => {
                 if (!stale.some(key => key in prev)) return prev;
@@ -296,6 +305,10 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                 return [group, record];
             });
             for (const [group, record] of sent) {
+                /* Changed while an earlier card in this batch was waiting on
+                 * its response. Whatever this would bring back would be
+                 * dropped below, so it is not asked for. */
+                if (previewed.current[group.key] !== record) continue;
                 const card = record.card;
                 const body = {
                     files: group.files.map(f => ({
@@ -310,6 +323,11 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                         body: JSON.stringify(body),
                     });
                     const data = await r.json();
+                    /* Used only if the card has not changed since this was
+                     * sent. A response can outlive its question: a slow one
+                     * for answers since changed would otherwise land after
+                     * the one for the answers on screen and replace it. */
+                    if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({
                         ...prev,
                         [group.key]: outcomeLine(group, card, data.outcomes),
@@ -319,13 +337,13 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                      * did not produce is the thing this endpoint exists to stop
                      * being invented. */
                     console.error("Failed to preview review decisions", err);
+                    /* The same test as above: a failure for a question since
+                     * replaced says nothing about the line now on the card,
+                     * and taking that line down would lose a correct one. */
+                    if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({ ...prev, [group.key]: null }));
-                    /* Forgotten, so the next change or refresh asks again.
-                     * Unless a newer request has replaced it: that one is
-                     * the answer this card is waiting for. */
-                    if (previewed.current[group.key] === record) {
-                        delete previewed.current[group.key];
-                    }
+                    // Forgotten, so the next change or refresh asks again.
+                    delete previewed.current[group.key];
                 }
             }
         }, PREVIEW_DEBOUNCE_MS);
@@ -381,6 +399,11 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
             toast?.(summary, refused ? "warning" : "success");
             setStaged({});
             setOutcomes({});
+            /* Every question on the page has been answered or dropped, so a
+             * preview still in flight has nothing left to describe. Without
+             * this it would land on a card with no answers — one the server
+             * refused, still on the page — and the line shows regardless. */
+            previewed.current = {};
             await loadPage(0);
             onReviewResolved?.();
         } catch (err) {
