@@ -64,6 +64,13 @@ const isDecided = (group, staged) =>
     !staged?.skipped
     && (group.tracks || []).every((_t, slot) => staged?.answers?.[slot] !== undefined);
 
+/* What a card's outcome line was worked out for, besides its answers: which
+ * files, their stream numbers, and each file as last probed. A file replaced
+ * at the same path keeps its stream numbers and its card, so size and mtime
+ * are what say it is a different file. */
+const filesOf = group => JSON.stringify(
+    (group.files || []).map(f => [f.file_id, f.streams, f.size, f.mtime]));
+
 /**
  * What Apply would do to this card, from the per-file outcomes the server
  * returned.
@@ -136,6 +143,12 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const [staged, setStaged] = useState({});      // card key -> { answers, files, skipped }
     const [outcomes, setOutcomes] = useState({});  // card key -> sentence
     const [applying, setApplying] = useState(false);
+    /* card key -> { card, files }: the staged answers and the files the card's
+     * last preview was sent for, for as long as that preview still describes
+     * the card. It is forgotten when the card changes, when the preview
+     * fails, and at Apply; a response whose record is gone is dropped. See
+     * the outcome-line effect. */
+    const previewed = useRef({});
     /* Where the next page starts, as the SERVER counts it: advanced by the
      * number of cards each response carried, not by how many are on screen.
      *
@@ -151,12 +164,28 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     const sentinelRef = useRef(null);
     const hasMore = nextOffset < totalGroups;
 
+    /* Which list a page load belongs to. Every first-page load starts a new
+     * one; a later page belongs to whichever is current when it is asked
+     * for. A load that finishes after a newer list has started is dropped —
+     * its cards, its offset and its totals.
+     *
+     * Without this a refresh raced whatever was already in flight. A later
+     * page asked for before a refresh landed after it and was appended to
+     * the new list, bringing back cards answered in the meantime with the
+     * old list's offset and totals. Two refreshes close together (two jobs
+     * finishing, or Apply's reload and the refresh that follows it) could
+     * finish in the wrong order and leave the older list on screen.
+     * usePaginatedFetch does the same, for the same reason. */
+    const generation = useRef(0);
+
     const loadPage = useCallback(async (offset) => {
+        const mine = offset === 0 ? ++generation.current : generation.current;
         setLoading(true);
         try {
             const r = await fetch(
                 `${api}/api/queue/review/groups?limit=${PAGE_SIZE}&offset=${offset}`);
             const data = await r.json();
+            if (generation.current !== mine) return;
             const page = data.groups || [];
             /* A card already on the page is not added again. Its key is its
              * identity now — folder and flagged tracks, not position — so a
@@ -174,16 +203,36 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
         } catch (err) {
             console.error("Failed to load review cards", err);
         } finally {
-            setLoading(false);
+            /* Not for a load that has been superseded: the newer one is still
+             * running, and clearing loading under it lets the sentinel ask
+             * for the next page of the old list before the new one arrives. */
+            if (generation.current === mine) setLoading(false);
         }
     }, [api]);
 
-    /* Staging is dropped on a refresh on purpose: the cards it belonged to
-     * may not be the same cards any more, and an answer carried across that
-     * would answer a question nobody was shown. */
+    /* Staging survives a refresh. It used to be dropped, on the grounds that
+     * the cards might not be the same cards any more — true while a card's
+     * key was its position. It is not now: the key is the folder and the
+     * flagged tracks, so a card that comes back under the same key is the
+     * same question.
+     *
+     * Dropping it cost more than it protected. reviewRefreshKey is bumped
+     * whenever a job finishes or a file is queued, so on a busy queue every
+     * finished job erased every choice not yet applied.
+     *
+     * Nothing is pruned. Apply and the button count only the cards loaded,
+     * so an answer whose card is not on the page does nothing: it reattaches
+     * if the card comes back on a later page, and goes at the next Apply if
+     * not. The stream numbers are worked out at Apply from the card as last
+     * loaded, so a file re-probed in between is sent its new ones. A file
+     * that has joined the card since the choice takes the card's answer:
+     * it has the same tracks in the same folder, which is what the card is.
+     *
+     * The outcome lines are kept too, for the same reason: a card that comes
+     * back with the same files is the same sentence. The effect that works
+     * them out drops and recomputes the line of any card whose files did
+     * change. */
     useEffect(() => {
-        setStaged({});
-        setOutcomes({});
         loadPage(0);
     }, [loadPage, reviewRefreshKey]);
 
@@ -223,13 +272,63 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
     });
 
     // ── The outcome line, from the engine ─────────────────────────────────────
+    /* Only the cards whose line could have changed are previewed: their
+     * answers are not the ones last sent, or their files are not.
+     *
+     * It used to preview every decided card on every change. Answering one
+     * card sent a request for each card already answered, one after
+     * another, and each is an engine run per file — and once staging
+     * survived a refresh, every finished job did the same.
+     *
+     * What was sent is recorded when the request goes out, not when this
+     * effect runs. Answering a second card inside the debounce runs this
+     * again and cancels the first timer, so a record made here would mark
+     * the first card as done when nothing had been sent for it.
+     *
+     * A card whose files changed loses its line at once rather than when the
+     * new one arrives. The old one is about files the card no longer has.
+     * A card whose answers changed keeps its line until then, as it always
+     * has. */
     useEffect(() => {
-        const decided = groups.filter(g => isDecided(g, staged[g.key]));
-        if (decided.length === 0) return;
+        const stale = [];
+        const due = [];
+        for (const g of groups) {
+            const last = previewed.current[g.key];
+            const filesNow = filesOf(g);
+            if (last && last.files !== filesNow) stale.push(g.key);
+            if (isDecided(g, staged[g.key])
+                && (!last || last.card !== staged[g.key] || last.files !== filesNow)) {
+                due.push(g);
+            }
+        }
+        /* A card due for a preview has changed since its last one was sent,
+         * so that one is out of date whenever it lands — including in the
+         * debounce before the new request goes out. Forgetting it here is
+         * what makes the checks below drop it. It is not a record of
+         * something sent: the timer below makes that, when it sends. */
+        due.forEach(g => { delete previewed.current[g.key]; });
+        if (stale.length) {
+            setOutcomes(prev => {
+                if (!stale.some(key => key in prev)) return prev;
+                const next = { ...prev };
+                stale.forEach(key => { delete next[key]; });
+                return next;
+            });
+        }
+        if (due.length === 0) return;
 
         const timer = setTimeout(async () => {
-            for (const group of decided) {
-                const card = staged[group.key];
+            const sent = due.map(group => {
+                const record = { card: staged[group.key], files: filesOf(group) };
+                previewed.current[group.key] = record;
+                return [group, record];
+            });
+            for (const [group, record] of sent) {
+                /* Changed while an earlier card in this batch was waiting on
+                 * its response. Whatever this would bring back would be
+                 * dropped below, so it is not asked for. */
+                if (previewed.current[group.key] !== record) continue;
+                const card = record.card;
                 const body = {
                     files: group.files.map(f => ({
                         file_id: f.file_id,
@@ -243,6 +342,11 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                         body: JSON.stringify(body),
                     });
                     const data = await r.json();
+                    /* Used only if the card has not changed since this was
+                     * sent. A response can outlive its question: a slow one
+                     * for answers since changed would otherwise land after
+                     * the one for the answers on screen and replace it. */
+                    if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({
                         ...prev,
                         [group.key]: outcomeLine(group, card, data.outcomes),
@@ -252,7 +356,13 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                      * did not produce is the thing this endpoint exists to stop
                      * being invented. */
                     console.error("Failed to preview review decisions", err);
+                    /* The same test as above: a failure for a question since
+                     * replaced says nothing about the line now on the card,
+                     * and taking that line down would lose a correct one. */
+                    if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({ ...prev, [group.key]: null }));
+                    // Forgotten, so the next change or refresh asks again.
+                    delete previewed.current[group.key];
                 }
             }
         }, PREVIEW_DEBOUNCE_MS);
@@ -308,6 +418,11 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
             toast?.(summary, refused ? "warning" : "success");
             setStaged({});
             setOutcomes({});
+            /* Every question on the page has been answered or dropped, so a
+             * preview still in flight has nothing left to describe. Without
+             * this it would land on a card with no answers — one the server
+             * refused, still on the page — and the line shows regardless. */
+            previewed.current = {};
             await loadPage(0);
             onReviewResolved?.();
         } catch (err) {

@@ -16,7 +16,11 @@
  *   • the button counting cards instead of files, or dropping the skipped count
  *   • the summary counting what was sent rather than what came back
  *   • the outcome line derived on the page instead of from the preview
- *   • staged answers surviving a refresh
+ *
+ * This list used to end with "staged answers surviving a refresh". Nothing
+ * here tested that: deleting the reset left the whole suite green. The
+ * behaviour has since been reversed on purpose, and what now pins it is the
+ * refresh block at the end of this file.
  *
  * And, added later, each of these survived the suite of its day:
  *
@@ -31,7 +35,7 @@
  * as an answer — which is the whole of the bug — so a mock without them
  * could not show it. Both mocks below now answer skips the way it does.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -523,5 +527,680 @@ describe("paging while the list moves", () => {
 
     await waitFor(() => expect(applyRequest()).toBeDefined());
     expect(applyRequest().files.map(f => f.file_id)).toEqual([1, 2]);
+  });
+});
+
+/**
+ * A refresh while choices are staged.
+ *
+ * reviewRefreshKey is bumped whenever a job finishes or a file is queued, so
+ * on a busy queue it moves every minute or so while someone is working
+ * through the cards. Staging used to be dropped on every bump, which erased
+ * every choice not yet applied. It is kept now, and these pin what keeping it
+ * means: the choice follows the card by its key, the stream numbers come from
+ * the card as last loaded, and a card that did not come back is not sent.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • staging dropped on a refresh again
+ *   • a first-page load appended to the old list instead of replacing it,
+ *     which keeps the card as it was before the refresh — old stream
+ *     numbers, old files, and cards that have gone
+ *   • staging kept after Apply
+ */
+describe("a refresh while choices are staged", () => {
+  /* The page as it is at each load: the nth request for the first page gets
+   * loads[n], and the last entry repeats. */
+  function mockLoads(loads, { applyBody = null } = {}) {
+    posted = [];
+    toast = vi.fn();
+    let n = 0;
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const groups = loads[Math.min(n++, loads.length - 1)];
+        return { ok: true, json: async () => ({
+          groups, total_groups: groups.length,
+          total_files: groups.reduce((t, g) => t + g.file_count, 0),
+        }) };
+      }
+      if (opts.method === "POST") {
+        const body = JSON.parse(opts.body);
+        posted.push({ url: u, body });
+        if (u.includes("/review/preview")) {
+          return { ok: true, json: async () => ({ outcomes: [], errors: [] }) };
+        }
+        return { ok: true, json: async () => applyBody ?? {
+          outcomes: [
+            ...body.files.map(f => ({ file_id: f.file_id })),
+            ...body.skips.map(id => ({ file_id: id })),
+          ],
+          errors: [],
+        } };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return () => n;
+  }
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+
+  /* Bump the key the way a finished job does, and wait for the reload to
+   * land rather than for the old page to still be on screen. */
+  async function refresh(rerender, loadsSoFar, heading) {
+    const before = loadsSoFar();
+    rerender(page(1));
+    await waitFor(() => expect(loadsSoFar()).toBe(before + 1));
+    await screen.findByText(heading);
+  }
+
+  it("keeps a choice when the same card comes back", async () => {
+    const user = userEvent.setup();
+    const loads = mockLoads([[GROUP]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided");
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
+  });
+
+  it("sends a file re-probed since the choice its new stream numbers", async () => {
+    const user = userEvent.setup();
+    const reprobed = { ...GROUP, files: [
+      GROUP.files[0],
+      { ...GROUP.files[1], streams: [6, 7] },
+    ] };
+    const loads = mockLoads([[GROUP], [reprobed]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "remove" } },
+      { file_id: 2, answers: { 6: "remove", 7: "remove" } },
+    ]);
+  });
+
+  it("neither counts nor sends a card that did not come back", async () => {
+    // Both cards answered; the first was then answered in another tab.
+    const user = userEvent.setup();
+    const loads = mockLoads([[GROUP, SECOND], [SECOND]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    const deletes = () => screen.getAllByRole("button", { name: "Delete" });
+    await user.click(deletes()[2]);
+    await user.click(deletes()[3]);
+    expect(applyButton()).toHaveTextContent("Apply: 3 decided");
+
+    await refresh(rerender, loads, SECOND.heading);
+    await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
+
+    expect(applyButton()).toHaveTextContent("Apply: 1 decided");
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files.map(f => f.file_id)).toEqual([3]);
+  });
+
+  it("gives a file that joined the card since the choice the card's answer", async () => {
+    // A new episode with the same tracks in the same folder is the same
+    // question, so it is answered with the card. Its own stream numbers.
+    const user = userEvent.setup();
+    const joined = { ...GROUP, file_count: 3, files: [
+      ...GROUP.files,
+      { file_id: 4, filename: "ep03.mkv", path: "/media/tv/Show/Season 1/ep03.mkv",
+        streams: [8, 9] },
+    ] };
+    const loads = mockLoads([[GROUP], [joined]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await refresh(rerender, loads, GROUP.heading);
+    await waitFor(() => expect(applyButton()).toHaveTextContent("Apply: 3 decided"));
+
+    await user.click(applyButton());
+    await waitFor(() => expect(applyRequest()).toBeDefined());
+    expect(applyRequest().files).toContainEqual(
+      { file_id: 4, answers: { 8: "remove", 9: "remove" } });
+  });
+
+  it("clears what it sent once Apply is done", async () => {
+    // The server refused both files, so the card is still waiting when the
+    // page reloads. It comes back unanswered: the choice was made and sent,
+    // and carrying it into the next Apply would send it twice.
+    const user = userEvent.setup();
+    mockLoads([[GROUP]], { applyBody: { outcomes: [], errors: [
+      { file_id: 1, error: "tracks changed" }, { file_id: 2, error: "tracks changed" },
+    ] } });
+    render(page(0));
+
+    await answerCard(user);
+    await user.click(applyButton());
+
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    await screen.findByText(GROUP.heading);
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+  });
+});
+
+/**
+ * Which cards are previewed.
+ *
+ * A card's outcome line is worked out by the engine, one run per file, so
+ * the page asks only when the line could have changed: the card's answers
+ * are not the ones last sent, or its files are not. Its files means which
+ * ones, their stream numbers, and each file's size and mtime — a file
+ * replaced at the same path keeps its card and its streams, and only those
+ * two say it is not the file that was previewed.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • every decided card previewed on every change
+ *   • what was sent recorded when the effect ran rather than when the
+ *     request went out
+ *   • a card's files left out of deciding whether to preview it
+ *   • every line dropped on a refresh
+ *   • a failed preview remembered as sent, so never asked again
+ *   • size, or mtime, left out of what counts as the card's files
+ *   • the line of a card whose files changed left up until the new one came
+ */
+describe("which cards are previewed", () => {
+  const LINE = "Converts to MP4, 2 deleted";
+
+  /* The first-page loads in order (the last repeats), and every preview
+   * request recorded as the file ids it carried. mode: "ok" answers,
+   * "fail" rejects, "hang" never answers. */
+  function mockPreviews(loads, { mode = "ok" } = {}) {
+    posted = [];
+    toast = vi.fn();
+    const state = { mode, previews: [], loads: 0 };
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        /* A fresh copy per load, as parsed JSON is. Handing back the same
+         * objects lets React skip the update on a refresh, and a test of
+         * what a refresh re-previews then passes without one happening. */
+        const groups = structuredClone(loads[Math.min(state.loads++, loads.length - 1)]);
+        return { ok: true, json: async () => ({
+          groups, total_groups: groups.length,
+          total_files: groups.reduce((t, g) => t + g.file_count, 0),
+        }) };
+      }
+      if (u.includes("/review/preview")) {
+        const body = JSON.parse(opts.body);
+        state.previews.push(body.files.map(f => f.file_id));
+        if (state.mode === "fail") throw new Error("network");
+        if (state.mode === "hang") return new Promise(() => {});
+        return { ok: true, json: async () => ({
+          outcomes: body.files.map(f => ({
+            file_id: f.file_id, current_container: "mkv", target_container: "mp4",
+            will_process: true, still_in_review: false, blocked_beyond_subtitles: false,
+          })),
+          errors: [],
+        }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return state;
+  }
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+
+  /* Longer than the debounce, so anything the page was going to send has
+   * gone by the time this returns. Inside act, because the previews it lets
+   * through update the page. */
+  const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
+
+  const deletes = () => screen.getAllByRole("button", { name: "Delete" });
+
+  async function refresh(rerender, state, heading) {
+    const before = state.loads;
+    rerender(page(1));
+    await waitFor(() => expect(state.loads).toBe(before + 1));
+    await screen.findByText(heading);
+  }
+
+  it("previews only the card a click changed", async () => {
+    const user = userEvent.setup();
+    const state = mockPreviews([[GROUP, SECOND]]);
+    render(page(0));
+
+    await answerCard(user);
+    await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
+    await user.click(deletes()[2]);
+    await user.click(deletes()[3]);
+    await waitFor(() => expect(state.previews).toEqual([[1, 2], [3]]));
+
+    await user.click(screen.getAllByRole("button", { name: "Keep" })[2]);
+    await quiet();
+    expect(state.previews).toEqual([[1, 2], [3], [3]]);
+  });
+
+  it("previews both of two cards answered inside the debounce", async () => {
+    const user = userEvent.setup();
+    const state = mockPreviews([[GROUP, SECOND]]);
+    render(page(0));
+
+    await screen.findByText(SECOND.heading);
+    await user.click(deletes()[0]);
+    await user.click(deletes()[2]);
+    // Each click below completes a card, the second well inside 250ms.
+    await user.click(deletes()[1]);
+    await user.click(deletes()[3]);
+    await quiet();
+
+    expect(state.previews).toContainEqual([1, 2]);
+    expect(state.previews).toContainEqual([3]);
+  });
+
+  it("sends nothing and keeps the line when a refresh brings the same cards", async () => {
+    const user = userEvent.setup();
+    const state = mockPreviews([[GROUP]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await screen.findByText(LINE);
+    await refresh(rerender, state, GROUP.heading);
+    await quiet();
+
+    expect(state.previews).toEqual([[1, 2]]);
+    expect(screen.getByText(LINE)).toBeInTheDocument();
+  });
+
+  it("previews a card again with a file that joined it", async () => {
+    const user = userEvent.setup();
+    const joined = { ...GROUP, file_count: 3, files: [
+      ...GROUP.files,
+      { file_id: 4, filename: "ep03.mkv", path: "/media/tv/Show/Season 1/ep03.mkv",
+        streams: [8, 9] },
+    ] };
+    const state = mockPreviews([[GROUP], [joined]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
+    await refresh(rerender, state, GROUP.heading);
+
+    await waitFor(() => expect(state.previews).toEqual([[1, 2], [1, 2, 4]]));
+  });
+
+  it("takes a card's line down as soon as its files change", async () => {
+    // The new preview never arrives: the old line is about files the card
+    // no longer has, so it goes without waiting for its replacement.
+    const user = userEvent.setup();
+    const joined = { ...GROUP, file_count: 3, files: [
+      ...GROUP.files,
+      { file_id: 4, filename: "ep03.mkv", path: "/x/ep03.mkv", streams: [8, 9] },
+    ] };
+    const state = mockPreviews([[GROUP], [joined]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await screen.findByText(LINE);
+    state.mode = "hang";
+    await refresh(rerender, state, GROUP.heading);
+
+    await waitFor(() => expect(screen.queryByText(LINE)).toBeNull());
+  });
+
+  it("asks again, on the next change, for a card whose preview failed", async () => {
+    const user = userEvent.setup();
+    const state = mockPreviews([[GROUP, SECOND]], { mode: "fail" });
+    render(page(0));
+
+    await answerCard(user);
+    await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
+    state.mode = "ok";
+    await user.click(deletes()[2]);
+    await user.click(deletes()[3]);
+
+    await waitFor(() => expect(state.previews.slice(1)).toContainEqual([1, 2]));
+    // Both cards now have their line, the one that failed included.
+    await waitFor(() => expect(screen.getAllByText(LINE)).toHaveLength(2));
+  });
+
+  it.each([
+    ["size", { size: 5_000_000 }],
+    ["mtime", { mtime: 1_700_000_000 }],
+  ])("previews a card again when a file's %s changed under the same streams", async (_what, change) => {
+    // Replaced at the same path with the same subtitle layout: same card,
+    // same stream numbers, different file.
+    const user = userEvent.setup();
+    const replaced = { ...GROUP, files: [
+      GROUP.files[0], { ...GROUP.files[1], ...change },
+    ] };
+    const state = mockPreviews([[GROUP], [replaced]]);
+    const { rerender } = render(page(0));
+
+    await answerCard(user);
+    await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
+    await refresh(rerender, state, GROUP.heading);
+
+    await waitFor(() => expect(state.previews).toEqual([[1, 2], [1, 2]]));
+  });
+});
+
+/**
+ * Previews that land late.
+ *
+ * A response can outlive its question. It is used only if its card has not
+ * changed since it was sent: not re-answered, not given new files, not
+ * applied. A card whose answers change still keeps its current line until
+ * the new one arrives — what goes is a response that is out of date by the
+ * time it lands.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • a late response used without checking its card
+ *   • a late failure used without checking its card
+ *   • a card's last preview still counted as current after the card changed
+ *   • records kept through Apply
+ *   • a card changed mid-batch still sent
+ */
+describe("previews that land late", () => {
+  const DELETED = "Converts to MP4, 2 deleted";
+  const STAYS = /^Stays MKV/;
+
+  /* Every preview waits until the test releases it: resolve(target) answers
+   * with that container for every file, fail() rejects. Arrival order is
+   * then whatever the test says, not whatever the timers make it. */
+  function mockHeld(loads, { applyBody } = {}) {
+    posted = [];
+    toast = vi.fn();
+    const state = { requests: [], loads: 0 };
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const groups = structuredClone(loads[Math.min(state.loads++, loads.length - 1)]);
+        return { ok: true, json: async () => ({
+          groups, total_groups: groups.length,
+          total_files: groups.reduce((t, g) => t + g.file_count, 0),
+        }) };
+      }
+      const body = JSON.parse(opts.body);
+      if (u.includes("/review/preview")) {
+        return new Promise((resolve, reject) => state.requests.push({
+          ids: body.files.map(f => f.file_id),
+          choices: Object.values(body.files[0].answers),
+          resolve: target => resolve({ ok: true, json: async () => ({
+            outcomes: body.files.map(f => ({
+              file_id: f.file_id, current_container: "mkv", target_container: target,
+              will_process: true, still_in_review: false, blocked_beyond_subtitles: false,
+            })),
+            errors: [],
+          }) }),
+          fail: () => reject(new Error("network")),
+        }));
+      }
+      posted.push({ url: u, body });
+      return { ok: true, json: async () => applyBody };
+    });
+    return state;
+  }
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+  const release = fn => act(async () => { fn(); });
+  const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
+  const buttons = name => screen.getAllByRole("button", { name });
+
+  async function answerBoth(user, choice, from = 0) {
+    await user.click(buttons(choice)[from]);
+    await user.click(buttons(choice)[from + 1]);
+  }
+
+  it("does not let a slow preview for answers since changed replace the newer line", async () => {
+    const user = userEvent.setup();
+    const state = mockHeld([[GROUP]]);
+    render(page(0));
+    await screen.findByText(GROUP.heading);
+
+    await answerBoth(user, "Keep");
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    await answerBoth(user, "Delete");
+    await waitFor(() => expect(state.requests).toHaveLength(2));
+
+    await release(() => state.requests[1].resolve("mp4"));
+    await screen.findByText(DELETED);
+    await release(() => state.requests[0].resolve("mkv"));
+
+    expect(screen.getByText(DELETED)).toBeInTheDocument();
+    expect(screen.queryByText(STAYS)).toBeNull();
+  });
+
+  it("does not let a slow failure for answers since changed take the newer line down", async () => {
+    const user = userEvent.setup();
+    const state = mockHeld([[GROUP]]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(page(0));
+    await screen.findByText(GROUP.heading);
+
+    await answerBoth(user, "Keep");
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    await answerBoth(user, "Delete");
+    await waitFor(() => expect(state.requests).toHaveLength(2));
+
+    await release(() => state.requests[1].resolve("mp4"));
+    await screen.findByText(DELETED);
+    await release(() => state.requests[0].fail());
+
+    expect(screen.getByText(DELETED)).toBeInTheDocument();
+    console.error.mockRestore();
+  });
+
+  it("drops a preview for answers since changed that lands before the new one is sent", async () => {
+    // Inside the debounce the new request has not gone out yet, so nothing
+    // has replaced the old one's record except the change itself.
+    const user = userEvent.setup();
+    const state = mockHeld([[GROUP]]);
+    render(page(0));
+    await screen.findByText(GROUP.heading);
+
+    await answerBoth(user, "Keep");
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    await answerBoth(user, "Delete");
+    await release(() => state.requests[0].resolve("mkv"));
+    await quiet();
+
+    expect(state.requests).toHaveLength(2);   // the new one went out, still held
+    expect(screen.queryByText(STAYS)).toBeNull();
+  });
+
+  it("does not put back the line of a card whose files changed", async () => {
+    // A preview for the card's old files is in flight when a refresh brings
+    // a new file. The line comes down at once and stays down.
+    const user = userEvent.setup();
+    const joined = { ...GROUP, file_count: 3, files: [
+      ...GROUP.files,
+      { file_id: 4, filename: "ep03.mkv", path: "/x/ep03.mkv", streams: [8, 9] },
+    ] };
+    const state = mockHeld([[GROUP], [joined]]);
+    const { rerender } = render(page(0));
+    await screen.findByText(GROUP.heading);
+
+    await answerBoth(user, "Delete");
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    await release(() => state.requests[0].resolve("mp4"));
+    await screen.findByText(DELETED);
+    await user.click(buttons("Keep")[0]);
+    await waitFor(() => expect(state.requests).toHaveLength(2));   // old files, held
+
+    rerender(page(1));
+    await waitFor(() => expect(screen.queryByText(DELETED)).toBeNull());
+    await release(() => state.requests[1].resolve("mkv"));
+    await quiet();
+
+    expect(state.requests.at(-1).ids).toEqual([1, 2, 4]);         // new files, held
+    expect(screen.queryByText(STAYS)).toBeNull();
+  });
+
+  it("does not put a line under a card left with no answers by Apply", async () => {
+    // The server refused both files, so the card is still on the page after
+    // Apply, unanswered. The preview sent before Apply then lands.
+    const user = userEvent.setup();
+    const state = mockHeld([[GROUP]], { applyBody: { outcomes: [], errors: [
+      { file_id: 1, error: "tracks changed" }, { file_id: 2, error: "tracks changed" },
+    ] } });
+    render(page(0));
+    await screen.findByText(GROUP.heading);
+
+    await answerBoth(user, "Delete");
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    await user.click(applyButton());
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+    await waitFor(() => expect(state.loads).toBe(2));
+    await release(() => state.requests[0].resolve("mp4"));
+
+    expect(screen.queryByText(DELETED)).toBeNull();
+  });
+
+  it("does not send a card that changed while earlier ones in its batch were waiting", async () => {
+    // Both cards answered inside one debounce: one batch, sent in turn. The
+    // second card is changed while the first card's preview is held.
+    const user = userEvent.setup();
+    const state = mockHeld([[GROUP, SECOND]]);
+    render(page(0));
+    await screen.findByText(SECOND.heading);
+
+    await user.click(buttons("Delete")[0]);
+    await user.click(buttons("Delete")[2]);
+    await user.click(buttons("Delete")[1]);
+    await user.click(buttons("Delete")[3]);
+    await waitFor(() => expect(state.requests).toHaveLength(1));
+    expect(state.requests[0].ids).toEqual([1, 2]);
+
+    await user.click(buttons("Keep")[2]);                          // second card changes
+    await waitFor(() => expect(state.requests).toHaveLength(2));
+    await release(() => state.requests[0].resolve("mp4"));
+    await quiet();
+
+    const second = state.requests.filter(r => r.ids[0] === 3).map(r => r.choices);
+    expect(second).toEqual([["keep", "remove"]]);
+  });
+});
+
+/**
+ * Page loads that a refresh has overtaken.
+ *
+ * A refresh starts a new list. Anything already in flight for the old one —
+ * a later page the sentinel asked for, or an earlier refresh's first page —
+ * is dropped when it lands: its cards, its offset, its totals, and its hold
+ * on the loading flag.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • a load that a newer list overtook used anyway
+ *   • a superseded load clearing the loading flag under the newer one
+ *   • only later pages checked, so an older first page still replaced a
+ *     newer one
+ */
+describe("page loads a refresh has overtaken", () => {
+  class VisibleObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() { this.callback([{ isIntersecting: true }]); }
+    disconnect() {}
+  }
+
+  const THIRD = { ...SECOND, key: "g3", heading: "Third / Season 3",
+                  files: [{ file_id: 5, filename: "y.mkv", path: "/y.mkv", streams: [2, 3] }] };
+
+  /* Every request for cards waits until the test answers it, so which load
+   * lands first is the test's choice. */
+  function mockHeldPages() {
+    const requests = [];
+    global.fetch = vi.fn((url) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const offset = Number(new URL(u).searchParams.get("offset"));
+        return new Promise(resolve => requests.push({
+          offset,
+          answer: (groups, total) => resolve({ ok: true, json: async () => ({
+            groups: structuredClone(groups), total_groups: total,
+            total_files: groups.reduce((t, g) => t + g.file_count, 0),
+          }) }),
+        }));
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, files: [] }) });
+    });
+    return requests;
+  }
+
+  const page = key => <ReviewPage api={API} reviewRefreshKey={key} />;
+  const answer = (request, groups, total) => act(async () => { request.answer(groups, total); });
+  const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 100)));
+
+  it("does not add a page asked for before a refresh to the list after it", async () => {
+    // The second page is in flight when a refresh lands. By then both cards
+    // on the old list were answered elsewhere; only SECOND is waiting.
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 2);
+    await waitFor(() => expect(requests).toHaveLength(2));          // offset 1, held
+    expect(requests[1].offset).toBe(1);
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(3));          // offset 0, new list
+    await answer(requests[2], [SECOND], 1);
+    await screen.findByText(SECOND.heading);
+    await answer(requests[1], [THIRD], 2);
+    await quiet();
+
+    expect(screen.queryByText(THIRD.heading)).toBeNull();
+    expect(screen.queryByText(GROUP.heading)).toBeNull();
+  });
+
+  it("does not ask for more of the old list while the new one is loading", async () => {
+    // The overtaken page lands first. The new first page is still loading,
+    // so the sentinel must not take that as its cue to ask for the next page.
+    vi.stubGlobal("IntersectionObserver", VisibleObserver);
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 2);
+    await waitFor(() => expect(requests).toHaveLength(2));          // offset 1, held
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(3));          // offset 0, held
+    await answer(requests[1], [THIRD], 2);
+    await quiet();
+
+    expect(requests.map(r => r.offset)).toEqual([0, 1, 0]);
+  });
+
+  it("keeps the newer of two refreshes when the older lands last", async () => {
+    const requests = mockHeldPages();
+    const { rerender } = render(page(0));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    await answer(requests[0], [GROUP], 1);
+    await screen.findByText(GROUP.heading);
+
+    rerender(page(1));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    rerender(page(2));
+    await waitFor(() => expect(requests).toHaveLength(3));
+    await answer(requests[2], [THIRD], 1);
+    await screen.findByText(THIRD.heading);
+    await answer(requests[1], [SECOND], 1);
+    await quiet();
+
+    expect(screen.getByText(THIRD.heading)).toBeInTheDocument();
+    expect(screen.queryByText(SECOND.heading)).toBeNull();
   });
 });
