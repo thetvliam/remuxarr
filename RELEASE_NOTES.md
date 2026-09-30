@@ -59,5 +59,5 @@ state for a cycle in which nothing user-visible has changed yet.
 -->
 
 ## Fixed
-
+ 
 - In the Audio and Subtitle Language Review lists, a track could appear twice after more of the list loaded, and "SELECT ALL LOADED" counted it twice.
