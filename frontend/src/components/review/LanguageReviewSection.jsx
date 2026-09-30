@@ -79,10 +79,29 @@ export const LanguageReviewSection = ({
     // fetched on mount, until the page was navigated away from and back.
     const combinedKey = `${reviewRefreshKey}:${refreshKey}`;
 
-    const { items, total, loading, hasMore, loadMore, raw } = usePaginatedFetch(
+    const { items: fetched, total, loading, hasMore, loadMore, raw } = usePaginatedFetch(
         api, endpoint, combinedKey, debouncedSearch, 100,
         { language },
     );
+
+    /* The rows as loaded, each flag once.
+     *
+     * The list can move between two page loads — a scan flagging files that
+     * sort earlier shifts everything back — so the next page can open on
+     * rows already shown. The hook appends them as they come. Grouping by
+     * file kept the FILE from appearing twice, but the repeated row still
+     * went into its file's group again: the same track shown twice, two
+     * elements under one React key, and SELECT ALL LOADED counting it twice.
+     *
+     * The first copy is kept, as the Review page keeps the card already on
+     * screen. The hook still advances by what the server sent, so dropping a
+     * repeat here does not move where the next page starts. Everything
+     * below reads this list, including the reads that would not care — the
+     * selection goes through Sets — so no one has to know which do. */
+    const items = useMemo(() => {
+        const seen = new Set();
+        return fetched.filter(row => !seen.has(row.id) && seen.add(row.id));
+    }, [fetched]);
 
     // The server sends language counts with every page. Hold the last set
     // rather than reading them straight off the response: the response is
@@ -208,7 +227,9 @@ export const LanguageReviewSection = ({
              * two as one element — the second group's checkbox state lands
              * on the first, so ticking a track can select a different one.
              * A Map cannot produce that: the row joins the group it
-             * belongs to wherever it turns up. */
+             * belongs to wherever it turns up. It does nothing about a row
+             * that turns up twice, which would join its group twice; that
+             * is what de-duplicating `items` above is for. */
             const existing = byFileId.get(item.file_id);
             if (existing) {
                 existing.tracks.push(item);

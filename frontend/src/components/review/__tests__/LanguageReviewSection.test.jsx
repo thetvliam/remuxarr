@@ -583,6 +583,67 @@ describe("grouping — non-adjacent rows", () => {
 });
 
 
+describe("a row repeated on the next page", () => {
+  /* The same shift as above, one step further: the next page opens on a
+   * row already on screen, not just on another row of a file already
+   * shown. Grouping by file keeps the file from appearing twice, but not
+   * the row; the section drops the repeat before grouping.
+   *
+   * Each mutation below survived the whole suite before these existed:
+   *
+   *   • the repeat not dropped
+   *   • the grouping reading the rows as loaded rather than de-duplicated
+   *   • SELECT ALL LOADED counting the rows as loaded */
+  const row = (id, fileId, stream, name) => ({
+    id, file_id: fileId, filename: `${name}.mkv`, path: `/m/${name}.mkv`,
+    stream_index: stream, detected_language: "und",
+    extracted_path: `/m/${name}.s${stream}.und.srt`,
+  });
+  const SHOW_2 = row(11, 7, 2, "Show");
+  const SHOW_3 = row(12, 7, 3, "Show");
+  const OTHER = row(21, 8, 2, "Other");
+
+  const setupShifted = () => {
+    calls = [];
+    global.fetch = vi.fn(async (url, options = {}) => {
+      const u = String(url);
+      calls.push({ url: u, method: options.method || "GET", body: options.body });
+      const offset = Number(new URL(u).searchParams.get("offset") || 0);
+      // Four rows in all. Between the two loads the list moved back one,
+      // so the second page opens on SHOW_3, which the first page ended on.
+      const items = offset === 0 ? [SHOW_2, SHOW_3] : [SHOW_3, OTHER];
+      return { ok: true, json: async () => ({ total: 4, items,
+        languages: [{ language: "und", count: 4 }] }) };
+    });
+    render(
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API} toast={vi.fn()} reviewRefreshKey={0} />
+      </ThemeProvider>,
+    );
+  };
+
+  const loadSecondPage = async () => {
+    await waitFor(() => expect(watching()).toBe(true));
+    await act(async () => { observers.at(-1).cb([{ isIntersecting: true }]); });
+    await screen.findByText("Other.mkv");
+  };
+
+  it("shows it once", async () => {
+    setupShifted();
+    await loadSecondPage();
+
+    expect(screen.getAllByText("Show.s3.und.srt")).toHaveLength(1);
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1 + 3);   // select-all + three rows
+  });
+
+  it("counts it once in SELECT ALL LOADED", async () => {
+    setupShifted();
+    await loadSecondPage();
+
+    expect(screen.getByText("SELECT ALL LOADED (3 of 4)")).toBeInTheDocument();
+  });
+});
+
 describe("refresh signals", () => {
   /* Two independent signals are combined into one key for the shared hook:
    * `refreshKey` is local and bumped after this section's own Apply/Ignore,
