@@ -143,6 +143,34 @@ export const outcomeLine = (group, staged, previewed) => {
     return stuck ? `${line} whatever you choose here.` : `${line}.`;
 };
 
+/* The outcome line with the files the preview refused put first.
+ *
+ * The preview checks each answer the way Apply will, so that a card can say
+ * a choice cannot be carried out while it is still being made. The page
+ * used to drop that half of the response, so a card with one file refused
+ * said "Converts to MP4" about all of them and the refusal surfaced only
+ * after Apply.
+ *
+ * `line` is worked out from the files that were answerable, as it always
+ * was; this says how many were not, and why. The first refusal is given
+ * with its file's name, because the reasons name stream numbers and those
+ * differ from file to file — a reason read against the wrong file points at
+ * the wrong track. The rest are counted, not listed: a card of forty files
+ * refused for the same cause would otherwise be forty copies of one
+ * sentence. */
+const withRefusals = (group, line, errors) => {
+    if (!errors || errors.length === 0) return line;
+    const [first] = errors;
+    const file = (group.files || []).find(f => f.file_id === first.file_id);
+    const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : "";
+    const reason = `${file ? file.filename : `File ${first.file_id}`}: `
+        + `${String(first.error).replace(/\.$/, "")}${more}`;
+    if (!line) return `None of these files can be answered as chosen: ${reason}`;
+    const total = (group.files || []).length;
+    return `${errors.length} of ${total} files can't be answered as chosen: ${reason}. `
+        + `The others: ${line}`;
+};
+
 export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                              reviewRefreshKey = 0, onReviewResolved }) => {
     const { palette, type, space, radius } = useTheme();
@@ -352,6 +380,13 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(body),
                     });
+                    /* A refusal of the whole request, not of some files in
+                     * it: the file limit is the one the endpoint raises
+                     * itself, and a malformed body or a crash answers the
+                     * same way. Its body is an error, and read as a result
+                     * it has no outcomes and showed nothing, silently. It is
+                     * a failed preview. */
+                    if (!r.ok) throw new Error(`Preview answered ${r.status}`);
                     const data = await r.json();
                     /* Used only if the card has not changed since this was
                      * sent. A response can outlive its question: a slow one
@@ -360,7 +395,8 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                     if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({
                         ...prev,
-                        [group.key]: outcomeLine(group, card, data.outcomes),
+                        [group.key]: withRefusals(group,
+                            outcomeLine(group, card, data.outcomes), data.errors),
                     }));
                 } catch (err) {
                     /* No line rather than a guessed one. A sentence the engine

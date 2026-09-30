@@ -35,7 +35,7 @@
  * as an answer — which is the whole of the bug — so a mock without them
  * could not show it. Both mocks below now answer skips the way it does.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1286,5 +1286,151 @@ describe("answering file by file", () => {
       { file_id: 1, answers: { 2: "remove", 3: "keep" } },
       { file_id: 2, answers: { 4: "remove", 5: "remove" } },
     ]);
+  });
+});
+
+/**
+ * Files the preview refused.
+ *
+ * The preview checks each answer the way Apply will and reports the ones it
+ * cannot carry out, so that a card can say so while it is still being
+ * answered. The page dropped that half of the response, and a card with a
+ * file refused described every file as fine until Apply said otherwise.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • the refusals ignored
+ *   • a response that is not OK read as a result
+ *   • the "of M" taken from the refusals rather than the card's files
+ *   • the first refusal's reason put against the card's first file
+ *   • the last refusal's reason given rather than the first
+ *   • "(and N more)" never added
+ *   • a reason's own full stop kept, so the sentence ends twice
+ */
+describe("files the preview refused", () => {
+  const EP03 = { file_id: 4, filename: "ep03.mkv",
+                 path: "/media/tv/Show/Season 1/ep03.mkv", streams: [8, 9] };
+  const THREE = { ...GROUP, file_count: 3, files: [...GROUP.files, EP03] };
+
+  /* Its own mock rather than an option on mockApi: that one answers every
+   * preview with no refusals, and the tests above rely on it. Here the
+   * preview refuses the files named in `refusals`, each with its own
+   * reason, and answers the rest; `status` answers every preview with that
+   * HTTP status for as long as it is set. */
+  function mockRefusing({ groups = [GROUP], refusals = {} } = {}) {
+    toast = vi.fn();
+    const state = { status: 200, previews: 0 };
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        return { ok: true, json: async () => ({
+          groups: structuredClone(groups), total_groups: groups.length,
+          total_files: groups.reduce((n, g) => n + g.file_count, 0),
+        }) };
+      }
+      if (u.includes("/review/preview")) {
+        state.previews += 1;
+        if (state.status !== 200) {
+          return { ok: false, status: state.status,
+                   json: async () => ({ detail: "Too many files to preview at once" }) };
+        }
+        const files = JSON.parse(opts.body).files;
+        return { ok: true, json: async () => ({
+          outcomes: files.filter(f => !refusals[f.file_id]).map(f => ({
+            file_id: f.file_id, current_container: "mkv", target_container: "mp4",
+            will_process: true, still_in_review: false, blocked_beyond_subtitles: false,
+          })),
+          errors: files.filter(f => refusals[f.file_id])
+            .map(f => ({ file_id: f.file_id, error: refusals[f.file_id] })),
+        }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return state;
+  }
+
+  /* By the track's own name, not by position: a card that gains a control
+   * moves every index. */
+  const choose = (user, track, choice) => user.click(
+    within(screen.getByText(track).parentElement).getByRole("button", { name: choice }));
+
+  async function deleteBoth(user) {
+    await screen.findByText(GROUP.heading);
+    await choose(user, "Signs", "Delete");
+    await choose(user, "Track 2", "Delete");
+  }
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+
+  it("names the refused file and its reason, then the outcome for the rest", async () => {
+    const user = userEvent.setup();
+    mockRefusing({ refusals: {
+      2: "Cannot extract stream 5: extracting it is what failed. Choose keep or remove.",
+    } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      "1 of 2 files can't be answered as chosen: ep02.mkv: Cannot extract stream 5: "
+      + "extracting it is what failed. Choose keep or remove. "
+      + "The others: Converts to MP4, 2 deleted",
+    )).toBeInTheDocument();
+  });
+
+  it("gives the first refusal against its own file and counts the rest", async () => {
+    // Two refusals with different reasons, neither on the card's first file.
+    const user = userEvent.setup();
+    mockRefusing({ groups: [THREE], refusals: {
+      2: "No such stream on this file: 5. It may have been re-probed since the page loaded.",
+      4: "No file waiting in review — it may have been answered or re-scanned already",
+    } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      "2 of 3 files can't be answered as chosen: ep02.mkv: No such stream on this file: 5. "
+      + "It may have been re-probed since the page loaded (and 1 more). "
+      + "The others: Converts to MP4, 2 deleted",
+    )).toBeInTheDocument();
+  });
+
+  it("says none can be when every file was refused", async () => {
+    const user = userEvent.setup();
+    // The endpoint's own wording, dash and all.
+    const changed = "The tracks flagged for this file have changed since it was "
+      + "shown — nothing can be previewed for it";
+    mockRefusing({ refusals: { 1: changed, 2: changed } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      `None of these files can be answered as chosen: ep01.mkv: ${changed} (and 1 more)`,
+    )).toBeInTheDocument();
+  });
+
+  it("treats a response that is not OK as a failed preview, and asks again", async () => {
+    // A failed preview is asked again on the next change or refresh; one
+    // read as a result is remembered as answered, so a refresh that brings
+    // the same card back asks nothing and the card stays without a line.
+    const user = userEvent.setup();
+    const state = mockRefusing();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(page(0));
+
+    state.status = 400;
+    await deleteBoth(user);
+    await waitFor(() => expect(state.previews).toBe(1));
+    await act(() => new Promise(resolve => setTimeout(resolve, 50)));
+    expect(screen.queryByText(/Converts to MP4/)).toBeNull();
+
+    state.status = 200;
+    rerender(page(1));
+
+    expect(await screen.findByText("Converts to MP4, 2 deleted")).toBeInTheDocument();
+    console.error.mockRestore();
   });
 });
