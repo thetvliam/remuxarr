@@ -1204,3 +1204,87 @@ describe("page loads a refresh has overtaken", () => {
     expect(screen.queryByText(SECOND.heading)).toBeNull();
   });
 });
+
+/**
+ * Answering file by file.
+ *
+ * A card is decided once every file has an answer for every track, its own
+ * or the card's. Before, only the card's own row counted, so a card answered
+ * entirely file by file showed every choice made and sent nothing.
+ *
+ * Mutation, 3 applied against the unchanged suite. One was already killed,
+ * by "sends a file's own answer only for that file" above, and is recorded
+ * here as covered rather than claimed below:
+ *
+ *   • only the card's row counted, as before         → killed below
+ *   • any complete file enough, rather than every    → killed below
+ *   • a file with answers of its own ignoring the
+ *     card's for the tracks it has not set           → already covered
+ */
+describe("answering file by file", () => {
+  const button = name => screen.getAllByRole("button", { name });
+
+  /* Opens one file's own row and sets both its tracks. A file's buttons
+   * follow the card's, so they are the last two of each name. */
+  async function answerFile(user, filename, first, second) {
+    await user.click(screen.getByRole("button", { name: new RegExp(filename) }));
+    await user.click(button(first).at(-2));
+    await user.click(button(second).at(-1));
+  }
+
+  async function showFiles(user) {
+    await screen.findByText(GROUP.heading);
+    await user.click(screen.getByRole("button", { name: /Show files/ }));
+  }
+
+  it("counts a card whose every file was answered on its own", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await answerFile(user, "ep01.mkv", "Delete", "Keep");
+    await answerFile(user, "ep02.mkv", "Keep", "Delete");
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided");
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "keep" } },
+      { file_id: 2, answers: { 4: "keep", 5: "remove" } },
+    ]);
+  });
+
+  it("does not count it while any file is still unanswered", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await answerFile(user, "ep01.mkv", "Delete", "Keep");
+
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+  });
+
+  it("counts a track answered on the card and the rest file by file", async () => {
+    // The card answers the first track for every file; each file answers
+    // the second on its own.
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await user.click(button("Delete")[0]);
+    await user.click(screen.getByRole("button", { name: /ep01.mkv/ }));
+    await user.click(button("Keep").at(-1));
+    await user.click(screen.getByRole("button", { name: /ep02.mkv/ }));
+    await user.click(button("Delete").at(-1));
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "keep" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
+  });
+});

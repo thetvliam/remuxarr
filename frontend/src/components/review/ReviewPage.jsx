@@ -60,9 +60,20 @@ export const answersForFile = (file, answers, fileAnswers) => {
 
 const blank = () => ({ answers: {}, files: {}, skipped: false });
 
+/* Decided: every file has an answer for every track, its own or the card's.
+ *
+ * It used to need the card's own row complete, so a card answered file by
+ * file — each episode set on its own because they differ — showed every
+ * choice made and still sent nothing. A file's own answer for one track
+ * does not stand in for the rest: a track it has not set itself takes the
+ * card's, as answersForFile does when it builds what is sent. */
 const isDecided = (group, staged) =>
     !staged?.skipped
-    && (group.tracks || []).every((_t, slot) => staged?.answers?.[slot] !== undefined);
+    && (group.files || []).every(file => {
+        const own = staged?.files?.[file.file_id] || {};
+        return (group.tracks || []).every((_t, slot) =>
+            (own[slot] ?? staged?.answers?.[slot]) !== undefined);
+    });
 
 /* What a card's outcome line was worked out for, besides its answers: which
  * files, their stream numbers, and each file as last probed. A file replaced

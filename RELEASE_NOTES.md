@@ -61,3 +61,4 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - In the Audio and Subtitle Language Review lists, a track could appear twice after more of the list loaded, and "SELECT ALL LOADED" counted it twice.
+- On the Review page, a card answered file by file, with every file's tracks set on their own, was not applied. It is now, as long as every file has an answer for every track, set on the file or on the card.
