@@ -1434,3 +1434,45 @@ describe("files the preview refused", () => {
     console.error.mockRestore();
   });
 });
+
+describe("the reload after Apply", () => {
+  /* The page reloads its cards itself after Apply, rather than leaving it to
+   * the refresh its parent runs, so that answered cards leaving the page does
+   * not depend on App.jsx passing onReviewResolved down. Rendered here with
+   * no callback at all.
+   *
+   * Removing the reload was already killed before this existed, but only by
+   * the late-previews test above, which waits for a second load as part of
+   * its setup. Nothing asserted the cards leaving. */
+  it("takes the answered cards off the page with no parent to refresh it", async () => {
+    const user = userEvent.setup();
+    let answered = false;
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const groups = answered ? [] : [GROUP];
+        return { ok: true, json: async () => ({
+          groups: structuredClone(groups), total_groups: groups.length,
+          total_files: groups.reduce((n, g) => n + g.file_count, 0),
+        }) };
+      }
+      if (u.includes("/review/apply")) {
+        answered = true;
+        const body = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({
+          outcomes: body.files.map(f => ({ file_id: f.file_id })), errors: [] }) };
+      }
+      return { ok: true, json: async () => ({ outcomes: [], errors: [] }) };
+    });
+    render(<ReviewPage api={API} toast={vi.fn()} />);
+
+    await screen.findByText(GROUP.heading);
+    for (const track of ["Signs", "Track 2"]) {
+      await user.click(within(screen.getByText(track).parentElement)
+        .getByRole("button", { name: "Delete" }));
+    }
+    await user.click(screen.getByRole("button", { name: /^Apply/ }));
+
+    await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
+  });
+});

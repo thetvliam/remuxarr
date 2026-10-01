@@ -470,6 +470,19 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
              * this it would land on a card with no answers — one the server
              * refused, still on the page — and the line shows regardless. */
             previewed.current = {};
+            /* Reloaded here, and then again: in the app onReviewResolved
+             * bumps reviewRefreshKey, and the refresh effect above loads the
+             * first page a second time once this one has finished. The two
+             * run one after the other, not together, so nothing is dropped;
+             * the second fetches the same list and replaces the first.
+             *
+             * The bump is not for the cards. It is for the language sections
+             * rendered below them, which watch that key (see
+             * refreshAfterReviewResolved in useAppData). Leaving the cards'
+             * reload to it instead would make answered cards leaving the
+             * page depend on App.jsx passing the callback down, and there is
+             * no App-level test to notice if it stopped. One extra request
+             * per Apply is the price. */
             await loadPage(0);
             onReviewResolved?.();
         } catch (err) {
