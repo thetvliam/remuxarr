@@ -9,16 +9,17 @@ import { EmptyState } from "../atoms/EmptyState";
  * Files whose undefined audio tracks the user has confirmed are correct as
  * they are, so those tracks are not flagged again.
  *
- * Confirm correct in Audio Language Review writes that now. Approve on a
- * review the threshold raised also does, which is what every file here was
- * confirmed by before the threshold stopped holding files.
+ * Confirm correct in Audio Language Review writes that now, and is the only
+ * thing that does. Before the threshold stopped holding files, Approve on
+ * the review it raised did the same; the button has gone with that review,
+ * but the files it confirmed are still here.
  *
  * Until the endpoints behind this section existed nothing ever set it back:
  * one write site, True, and no route to False. The file was exempt for good
  * and there was nowhere to see that it was. That mattered more than a stray
  * flag because the Approve button used to say it would "process the file
- * now, keeping every audio track". It does not, whenever nothing else needs
- * doing — the file is marked Skipped instead. So an unknown number of these
+ * now, keeping every audio track". It did not, whenever nothing else needed
+ * doing — the file was marked Skipped instead. So an unknown number of these
  * were given on a false description, and this list is how someone finds
  * them.
  *
@@ -134,7 +135,8 @@ export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
 
         <p style={{ color: palette.muted, fontSize: type.size.md, margin: `0 0 ${space.xl}px`, lineHeight: type.leading.relaxed }}>
         Files whose undefined audio tracks you confirmed are correct as they
-        are, from Audio Language Review or a past Approve here. Those tracks
+        are, from Audio Language Review or the Approve button this page used
+        to have. Those tracks
         stay untagged and are not flagged again. Clearing brings them back to
         Audio Language Review — they reappear on the next scan, and nothing
         about the file itself is changed either way.

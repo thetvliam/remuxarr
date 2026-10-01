@@ -589,9 +589,9 @@ export const LanguageReviewSection = ({
                 />
                 </div>
 
-                {/* The same treatment the Approve/Skip pair on ReviewPage
-                  * carries. Confirming is the permanent half of this pair and
-                  * nothing on screen said so. */}
+                {/* Says what each button does before it is pressed.
+                  * Confirming is the lasting half of this pair and nothing on
+                  * screen said so. */}
                 <div style={{
                     color: palette.dim,
                     fontSize: type.size.xs,
