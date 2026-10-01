@@ -141,6 +141,59 @@ async function answerCard(user) {
 const applyButton = () => screen.getByRole("button", { name: /^Apply/ });
 const applyRequest = () => posted.find(p => p.url.includes("/review/apply"))?.body;
 
+/* Finding things by what they are called rather than where they fall.
+ *
+ * An indexed query — the third Delete on the page — moves whenever a card
+ * gains a control or another card arrives above it, and the test then
+ * clicks something else and fails for a reason that has nothing to do with
+ * what it tests. These find the card by its heading, the row by its track's
+ * name, and the button by its label. Both test cards share their tracks, so
+ * a track name alone is never enough: everything is looked up inside a card.
+ */
+
+/* The card under a heading: the smallest element holding the heading and
+ * the card's Show files button ("Hide files" once pressed). Not the Skip
+ * button: that sits in a header row beside the heading, and the smallest
+ * element holding both is that row, without the tracks. */
+function card(heading) {
+  let el = screen.getByText(heading);
+  while (el && !within(el).queryByRole("button", { name: /^(Show|Hide) files/ })) {
+    el = el.parentElement;
+  }
+  if (!el) throw new Error(`No card under "${heading}"`);
+  return el;
+}
+
+/* A card's own answer for one track. The card's track rows render before
+ * its file list, so the first row with the track's name is the card's even
+ * when a file below has been opened and shows the same names. */
+async function choose(user, heading, track, choice) {
+  const row = within(card(heading)).getAllByText(track)[0].parentElement;
+  await user.click(within(row).getByRole("button", { name: choice }));
+}
+
+/* Both of a card's tracks given the same answer. */
+async function chooseAll(user, heading, choice) {
+  await screen.findByText(heading);
+  for (const track of ["Signs", "Track 2"]) await choose(user, heading, track, choice);
+}
+
+/* One file's own answer for one track, opening the card's file list and the
+ * file's row as needed. Looked up inside the file's row, so the card's rows
+ * of the same names are never in reach. */
+async function chooseForFile(user, heading, filename, track, choice) {
+  const name = new RegExp(filename.replace(/\./g, "\\."));
+  if (!within(card(heading)).queryByRole("button", { name })) {
+    await user.click(within(card(heading)).getByRole("button", { name: /^Show files/ }));
+  }
+  const fileRow = within(card(heading)).getByRole("button", { name }).parentElement;
+  if (!within(fileRow).queryByText(track)) {
+    await user.click(within(fileRow).getByRole("button", { name }));
+  }
+  const row = within(fileRow).getByText(track).parentElement;
+  await user.click(within(row).getByRole("button", { name: choice }));
+}
+
 describe("what Apply carries", () => {
   it("sends each file's own stream numbers, not the card's slots", async () => {
     const user = userEvent.setup();
@@ -600,7 +653,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
 
     expect(applyButton()).toHaveTextContent("Apply: 2 decided");
@@ -621,7 +674,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP], [reprobed]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
     await user.click(applyButton());
 
@@ -638,10 +691,8 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP, SECOND], [SECOND]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
-    const deletes = () => screen.getAllByRole("button", { name: "Delete" });
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, GROUP.heading, "Delete");
+    await chooseAll(user, SECOND.heading, "Delete");
     expect(applyButton()).toHaveTextContent("Apply: 3 decided");
 
     await refresh(rerender, loads, SECOND.heading);
@@ -665,7 +716,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
     await waitFor(() => expect(applyButton()).toHaveTextContent("Apply: 3 decided"));
 
@@ -685,7 +736,7 @@ describe("a refresh while choices are staged", () => {
     ] } });
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await user.click(applyButton());
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
@@ -763,7 +814,6 @@ describe("which cards are previewed", () => {
    * through update the page. */
   const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
 
-  const deletes = () => screen.getAllByRole("button", { name: "Delete" });
 
   async function refresh(rerender, state, heading) {
     const before = state.loads;
@@ -777,13 +827,12 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP, SECOND]]);
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, SECOND.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2], [3]]));
 
-    await user.click(screen.getAllByRole("button", { name: "Keep" })[2]);
+    await choose(user, SECOND.heading, "Signs", "Keep");
     await quiet();
     expect(state.previews).toEqual([[1, 2], [3], [3]]);
   });
@@ -794,11 +843,11 @@ describe("which cards are previewed", () => {
     render(page(0));
 
     await screen.findByText(SECOND.heading);
-    await user.click(deletes()[0]);
-    await user.click(deletes()[2]);
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await choose(user, SECOND.heading, "Signs", "Delete");
     // Each click below completes a card, the second well inside 250ms.
-    await user.click(deletes()[1]);
-    await user.click(deletes()[3]);
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    await choose(user, SECOND.heading, "Track 2", "Delete");
     await quiet();
 
     expect(state.previews).toContainEqual([1, 2]);
@@ -810,7 +859,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await screen.findByText(LINE);
     await refresh(rerender, state, GROUP.heading);
     await quiet();
@@ -829,7 +878,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     await refresh(rerender, state, GROUP.heading);
 
@@ -847,7 +896,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await screen.findByText(LINE);
     state.mode = "hang";
     await refresh(rerender, state, GROUP.heading);
@@ -860,11 +909,10 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP, SECOND]], { mode: "fail" });
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     state.mode = "ok";
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, SECOND.heading, "Delete");
 
     await waitFor(() => expect(state.previews.slice(1)).toContainEqual([1, 2]));
     // Both cards now have their line, the one that failed included.
@@ -884,7 +932,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [replaced]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     await refresh(rerender, state, GROUP.heading);
 
@@ -954,12 +1002,7 @@ describe("previews that land late", () => {
     <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
   const release = fn => act(async () => { fn(); });
   const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
-  const buttons = name => screen.getAllByRole("button", { name });
-
-  async function answerBoth(user, choice, from = 0) {
-    await user.click(buttons(choice)[from]);
-    await user.click(buttons(choice)[from + 1]);
-  }
+  const answerBoth = (user, choice) => chooseAll(user, GROUP.heading, choice);
 
   it("does not let a slow preview for answers since changed replace the newer line", async () => {
     const user = userEvent.setup();
@@ -1034,7 +1077,7 @@ describe("previews that land late", () => {
     await waitFor(() => expect(state.requests).toHaveLength(1));
     await release(() => state.requests[0].resolve("mp4"));
     await screen.findByText(DELETED);
-    await user.click(buttons("Keep")[0]);
+    await choose(user, GROUP.heading, "Signs", "Keep");
     await waitFor(() => expect(state.requests).toHaveLength(2));   // old files, held
 
     rerender(page(1));
@@ -1074,14 +1117,14 @@ describe("previews that land late", () => {
     render(page(0));
     await screen.findByText(SECOND.heading);
 
-    await user.click(buttons("Delete")[0]);
-    await user.click(buttons("Delete")[2]);
-    await user.click(buttons("Delete")[1]);
-    await user.click(buttons("Delete")[3]);
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await choose(user, SECOND.heading, "Signs", "Delete");
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    await choose(user, SECOND.heading, "Track 2", "Delete");
     await waitFor(() => expect(state.requests).toHaveLength(1));
     expect(state.requests[0].ids).toEqual([1, 2]);
 
-    await user.click(buttons("Keep")[2]);                          // second card changes
+    await choose(user, SECOND.heading, "Signs", "Keep");                      // second card changes
     await waitFor(() => expect(state.requests).toHaveLength(2));
     await release(() => state.requests[0].resolve("mp4"));
     await quiet();
@@ -1222,14 +1265,10 @@ describe("page loads a refresh has overtaken", () => {
  *     card's for the tracks it has not set           → already covered
  */
 describe("answering file by file", () => {
-  const button = name => screen.getAllByRole("button", { name });
-
-  /* Opens one file's own row and sets both its tracks. A file's buttons
-   * follow the card's, so they are the last two of each name. */
+  /* Sets both of one file's tracks on the file itself. */
   async function answerFile(user, filename, first, second) {
-    await user.click(screen.getByRole("button", { name: new RegExp(filename) }));
-    await user.click(button(first).at(-2));
-    await user.click(button(second).at(-1));
+    await chooseForFile(user, GROUP.heading, filename, "Signs", first);
+    await chooseForFile(user, GROUP.heading, filename, "Track 2", second);
   }
 
   async function showFiles(user) {
@@ -1274,11 +1313,9 @@ describe("answering file by file", () => {
     show();
     await showFiles(user);
 
-    await user.click(button("Delete")[0]);
-    await user.click(screen.getByRole("button", { name: /ep01.mkv/ }));
-    await user.click(button("Keep").at(-1));
-    await user.click(screen.getByRole("button", { name: /ep02.mkv/ }));
-    await user.click(button("Delete").at(-1));
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await chooseForFile(user, GROUP.heading, "ep01.mkv", "Track 2", "Keep");
+    await chooseForFile(user, GROUP.heading, "ep02.mkv", "Track 2", "Delete");
     await user.click(applyButton());
 
     await waitFor(() => expect(applyRequest()).toBeTruthy());
@@ -1349,16 +1386,7 @@ describe("files the preview refused", () => {
     return state;
   }
 
-  /* By the track's own name, not by position: a card that gains a control
-   * moves every index. */
-  const choose = (user, track, choice) => user.click(
-    within(screen.getByText(track).parentElement).getByRole("button", { name: choice }));
-
-  async function deleteBoth(user) {
-    await screen.findByText(GROUP.heading);
-    await choose(user, "Signs", "Delete");
-    await choose(user, "Track 2", "Delete");
-  }
+  const deleteBoth = user => chooseAll(user, GROUP.heading, "Delete");
 
   const page = key =>
     <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
@@ -1466,11 +1494,7 @@ describe("the reload after Apply", () => {
     });
     render(<ReviewPage api={API} toast={vi.fn()} />);
 
-    await screen.findByText(GROUP.heading);
-    for (const track of ["Signs", "Track 2"]) {
-      await user.click(within(screen.getByText(track).parentElement)
-        .getByRole("button", { name: "Delete" }));
-    }
+    await chooseAll(user, GROUP.heading, "Delete");
     await user.click(screen.getByRole("button", { name: /^Apply/ }));
 
     await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
