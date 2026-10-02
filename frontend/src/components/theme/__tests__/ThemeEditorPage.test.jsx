@@ -34,7 +34,7 @@
  * vitest also exits non-zero when it finds no test files at all.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import {
@@ -496,10 +496,19 @@ describe("ThemeEditorPage — export", () => {
     renderEditor("terminal");
     await openEveryGroup(user);
 
-    await user.clear(screen.getByLabelText("palette.green"));
-    await user.type(screen.getByLabelText("palette.green"), "#00ff88");
-    await user.clear(screen.getByLabelText("space.md"));
-    await user.type(screen.getByLabelText("space.md"), "18");
+    /* Set each value in one change event rather than typing it. With every
+     * group open there are 117 controls on the page, and under jsdom a
+     * user-event clear costs close to a second and each keystroke a few
+     * hundred milliseconds, while the re-render they cause costs a few
+     * tens. Typed, this test took about 3.5s of its 5s budget here and
+     * timed out on CI. Typing is not what it is about: a control taking
+     * typed input is covered by "writes to the token the control is named
+     * after" above, and a field cleared and retyped by "recovers once the
+     * draft is valid again" below. */
+    fireEvent.change(screen.getByLabelText("palette.green"),
+      { target: { value: "#00ff88" } });
+    fireEvent.change(screen.getByLabelText("space.md"),
+      { target: { value: "18" } });
 
     const probe = screen.getByTestId("probe");
     expect(probe.style.borderColor).toBe("rgb(0, 255, 136)");
