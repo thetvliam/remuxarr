@@ -55,6 +55,19 @@ _plan_sources and _reannotate and are tested directly in
 tests/test_revert_capture.py.
 
 No equivalent mutants.
+
+The look-alike tests at the end of this file were added with
+revert._pair_pass and check content by packet hash, because their failure
+is the right tag on the wrong track. The four that revert failed against
+the matching that paired an uneven group in order. Between them they kill
+that mutant, the rule being switched off in the exact pass, and the
+rejected refinement of skipping streams the sidecar already holds — the
+last one only here, via
+test_an_earlier_lookalike_does_not_hide_a_later_loss.
+test_a_point_that_stored_both_lookalikes_still_matches_exactly is a guard
+rather than a mutant's target: it passed before the change too, and
+pins that reporting a group lost does not make attach refuse its own file. Mutation detail for
+the matching itself is recorded in test_revert_manifest.py.
 """
 import asyncio
 import json
@@ -791,3 +804,209 @@ def test_three_jobs_still_restore_the_pristine_original(lib):
 
     assert outcome.success is True, outcome.error
     assert _summarise(lib["path"]) == lib["pristine"]
+
+
+# ── Look-alike tracks: which one survived? ─────────────────────────────────────
+#
+# The tests above compare languages and codecs, which is what the earlier
+# bugs got wrong. The ones below cannot: their failure is the RIGHT
+# metadata on the WRONG content — a French slot holding English audio,
+# written back with a French tag. So every track carries distinct content
+# (a different tone, a different subtitle line) and the check is on the
+# packets themselves, which a stream copy carries through unchanged.
+
+
+def _packets(path, kind):
+    """One hash per stream of `kind` ("a" or "s"), over its packets."""
+    out = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:{kind}",
+         "-c", "copy", "-f", "streamhash", "-hash", "md5", "-"],
+        capture_output=True, text=True, check=True).stdout
+    return [line.split("=", 1)[1] for line in out.strip().splitlines()]
+
+
+def _library(tmp_path, monkeypatch, *, audio=(), subtitles=()):
+    """
+    A file whose audio is `audio` — (frequency, language) pairs — and whose
+    subtitles are `subtitles` — (text, language) pairs — with no default
+    flag on any of them, so tracks that share a language and codec really
+    are identical in everything the matching compares.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+    import app.core.worker as worker_mod
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    recycle = tmp_path / "recycle"
+    recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    cmd = ["ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1"]
+    maps = ["-map", "0:v"]
+    meta = []
+    n = 1
+    for i, (freq, lang) in enumerate(audio):
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency={freq}:duration=1"]
+        maps += ["-map", f"{n}:a"]
+        meta += [f"-disposition:a:{i}", "0"]
+        if lang:
+            meta += [f"-metadata:s:a:{i}", f"language={lang}"]
+        n += 1
+    for i, (text, lang) in enumerate(subtitles):
+        srt = tmp_path / f"sub{i}.srt"
+        srt.write_text(f"1\n00:00:00,000 --> 00:00:01,000\n{text}\n\n")
+        cmd += ["-i", str(srt)]
+        maps += ["-map", f"{n}:s"]
+        meta += [f"-disposition:s:{i}", "0"]
+        if lang:
+            meta += [f"-metadata:s:s:{i}", f"language={lang}"]
+        n += 1
+
+    path = media_dir / "Show.mkv"
+    subprocess.run(cmd + maps + meta + [
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ac", "2", "-ar", "48000", "-c:s", "srt",
+        "-f", "matroska", str(path)], check=True)
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Show.mkv",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv", status="processed")
+    db.add(media)
+    db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path),
+            "audio": _packets(path, "a") if audio else [],
+            "subtitles": _packets(path, "s") if subtitles else []}
+
+
+def _assert_pristine_content(lib, outcome):
+    assert outcome.success is True, outcome.error
+    assert _summarise(outcome.restored_path) == lib["pristine"]
+    if lib["audio"]:
+        assert _packets(outcome.restored_path, "a") == lib["audio"], (
+            "the audio came back with the right tags on the wrong content"
+        )
+    if lib["subtitles"]:
+        assert _packets(outcome.restored_path, "s") == lib["subtitles"], (
+            "the subtitles came back with the right tags on the wrong content"
+        )
+
+
+def test_a_retag_and_a_drop_in_one_job_restore_the_right_tracks(tmp_path, monkeypatch):
+    """
+    The job keeps the untagged English tracks, tags them English, and
+    drops the French ones, which share codec and layout. Matching used to
+    pair the French originals with the English survivors, store English a
+    second time and never store French: the revert succeeded and played
+    English in the French slot.
+    """
+    lib = _library(tmp_path, monkeypatch,
+                   audio=[(440, "fre"), (880, None)],
+                   subtitles=[("bonjour", "fre"), ("hello", None)])
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:4", "-c", "copy",
+                   "-metadata:s:a:0", "language=eng",
+                   "-metadata:s:s:0", "language=eng"], job_id=1)
+
+    _assert_pristine_content(lib, _revert(lib))
+
+
+def test_a_retag_after_a_drop_keeps_the_dropped_tracks(tmp_path, monkeypatch):
+    """
+    The same loss spread over two jobs, which is the routine shape under
+    the shipped defaults: undefined tags are left alone, so the first job
+    only drops French, and the tag is fixed later from the review page.
+
+    The first job's revert point was correct. The second destroyed nothing
+    — and rebuilt the sidecar without the French tracks, because matching
+    paired the stored French original with the re-tagged English survivor.
+    """
+    lib = _library(tmp_path, monkeypatch,
+                   audio=[(440, "fre"), (880, None)],
+                   subtitles=[("bonjour", "fre"), ("hello", None)])
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:4", "-c", "copy"],
+             job_id=1)
+    _run_job(lib, ["-map", "0", "-c", "copy",
+                   "-metadata:s:a:0", "language=eng",
+                   "-metadata:s:s:0", "language=eng"], job_id=2)
+
+    _assert_pristine_content(lib, _revert(lib))
+
+
+def test_an_earlier_lookalike_does_not_hide_a_later_loss(tmp_path, monkeypatch):
+    """
+    The first job cannot tell French from the re-tagged English track, so
+    it stores both — including the English one that is still in the file.
+    The second drops Spanish, a third look-alike.
+
+    The obvious refinement is to stop looking for tracks the sidecar
+    already holds, since they were lost before. That leaves the English
+    survivor unclaimed, and Spanish takes it: recorded as still present,
+    never stored, and the revert plays English in the Spanish slot.
+    """
+    lib = _library(tmp_path, monkeypatch,
+                   audio=[(440, "fre"), (880, None), (660, "spa")])
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3", "-c", "copy",
+                   "-metadata:s:a:0", "language=eng"], job_id=1)
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=2)
+
+    _assert_pristine_content(lib, _revert(lib))
+
+
+def test_the_first_of_two_identical_subtitles_can_be_removed(tmp_path, monkeypatch):
+    """
+    Two English subtitles with no title and no flags — a full track and a
+    forced-only one, say — are identical to everything the matching
+    compares. A review answer can still remove either: answers are stored
+    per track, with look-alikes numbered apart (descriptors_by_stream),
+    and analyze_file drops exactly the one named.
+
+    Removing the first used to store the second twice and lose the first.
+    """
+    lib = _library(tmp_path, monkeypatch,
+                   subtitles=[("full subtitles", "eng"), ("forced only", "eng")])
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
+
+    _assert_pristine_content(lib, _revert(lib))
+
+
+def test_a_point_that_stored_both_lookalikes_still_matches_exactly(tmp_path, monkeypatch):
+    """
+    Attaching a detached point re-runs the matching against the candidate
+    file, and refuses if a track the original had is neither in that file
+    nor in the sidecar. Reporting a group of look-alikes lost must not
+    make that check refuse the very file the point was captured from —
+    which is what a renamed file is, byte for byte.
+    """
+    from app.core.revert_match import EXACT, assess
+    from app.database.models import RevertPoint
+
+    lib = _library(tmp_path, monkeypatch,
+                   audio=[(440, "fre"), (880, None)])
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy",
+                   "-metadata:s:a:0", "language=eng"], job_id=1)
+
+    lib["db"].expire_all()
+    point = lib["db"].query(RevertPoint).one()
+    result = assess(point, str(lib["path"]), _probe(lib["path"]))
+
+    assert result.tier == EXACT, result.reasons

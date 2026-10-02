@@ -61,6 +61,42 @@ The remaining mutations, killed on the first run:
   • mov_text override dropped                    → killed (real ffmpeg fails)
   • subtitle_ordinal counting every mapped stream→ killed
 
+Look-alike groups (revert._pair_pass) were added later: a pass now pairs a
+group of streams its key cannot tell apart only when at least as many
+survived as the original had, and otherwise reports the whole group lost.
+Mutants applied to the new code and run against the suite as it stood
+first; five survived it, which is the baseline, and are killed here now:
+
+  • An uneven group paired in order (the old
+    behaviour)                                   → killed, by five of
+                                                    the look-alike tests here
+                                                    and four real-FFmpeg ones
+                                                    in the multi-job module
+  • An uneven group's survivors left in the pool → killed
+  • An uneven group's originals carried on to
+    the next pass                                → killed
+  • The rule switched off in the exact pass only → killed
+  • What a pass hands on kept in group order
+    rather than manifest order                   → killed
+
+Two more were already killed elsewhere and are not this file's to claim:
+equal counts treated as uneven (test_revert_capture's
+test_the_manifest_records_where_every_stream_ended_up), and survivors chosen
+by payload whatever the pass (the fixture of test_revert_execution's
+test_revert_puts_the_dropped_track_back).
+
+The loop mutants in the list above — passes reversed, pass 2 or 3 removed,
+pass 1 on payload, remaining.pop() dropped — targeted code that rewrite
+replaced. Re-aimed at the new loop they were run again and all were killed,
+by tests that existed before it.
+
+Two tests changed with it. test_retag_and_drop_together_are_told_apart
+asserted that only the dropped track was reported; it passed because the
+untagged track came first, and the reverse order lost data. And
+test_identical_streams_are_matched_one_for_one asserted exactly one loss
+from two identical tracks, which encoded a guess about which one survived.
+Both now expect the whole group, and keep the concern each was written for.
+
 No equivalent mutants recorded for this file.
 
 The FFmpeg-backed tests skip rather than fail when no ffmpeg binary is
@@ -235,10 +271,22 @@ def test_retagged_track_is_not_reported_as_lost():
     assert find_lost_streams(original, processed) == []
 
 
-def test_retag_and_drop_together_are_told_apart():
+def test_retag_and_drop_of_lookalikes_captures_both():
     """
     Both happen in one job routinely: fix an undefined tag on one track,
-    drop a foreign-language track in the same pass.
+    drop a foreign-language track in the same pass. When the two share
+    codec and layout, nothing in the processed file says which of them is
+    the survivor — the language that would have said so is the thing the
+    job rewrote.
+
+    This test used to assert that only the French track was reported, and
+    its docstring said the two were "told apart". They were not: the
+    untagged track happened to come first, and the payload pass paired the
+    first look-alike with the survivor. Put the French track first and the
+    same code stored the English survivor and lost the French one for
+    good — test_retag_and_drop_is_safe_in_either_order below. Reporting
+    both is the only answer that is right in both orders, and it costs one
+    redundant track on the recycle volume.
     """
     from app.core.revert import find_lost_streams
 
@@ -251,26 +299,145 @@ def test_retag_and_drop_together_are_told_apart():
     )
 
     lost = find_lost_streams(original, processed)
-    assert [s["index"] for s in lost] == [2]
+    assert [s["index"] for s in lost] == [1, 2]
 
 
-def test_identical_streams_are_matched_one_for_one():
+def test_retag_and_drop_is_safe_in_either_order():
     """
-    Two identical tracks in, one out, means exactly one was lost. Without
-    consuming a match when it is used, both would pair against the single
-    survivor and the loss would go unreported — the under-capture failure.
+    The order that lost data. French first, then the untagged English
+    track the job keeps and tags; the French one is destroyed. Pairing in
+    order hands the survivor to the French original, so the sidecar would
+    hold English twice and French not at all.
     """
     from app.core.revert import find_lost_streams
 
     original = _manifest(
-        _stream(1, "audio", "aac", channels=2, language="eng"),
-        _stream(2, "audio", "aac", channels=2, language="eng"),
+        _stream(1, "audio", "ac3", channels=6, language="fre"),
+        _stream(2, "audio", "ac3", channels=6, language=None),
+    )
+    processed = _probe(
+        _stream(1, "audio", "ac3", channels=6, language="eng"),
+    )
+
+    lost = find_lost_streams(original, processed)
+    assert 1 in [s["index"] for s in lost], (
+        "the destroyed French track was paired with the surviving English "
+        "one and would never be stored"
+    )
+    assert [s["index"] for s in lost] == [1, 2]
+
+
+def test_identical_twins_where_one_survived_are_both_captured():
+    """
+    Two tracks identical in payload AND metadata, one out. Exactly one was
+    lost, and nothing in either file says which.
+
+    That is not a case where it does not matter. A full subtitle track and
+    a forced-only one can share every field the match compares, and a
+    review answer is stored per track — see scanner.descriptors_by_stream,
+    which numbers look-alikes apart — so the user can remove either. Pair
+    the first original with the survivor and a job that removed the FIRST
+    stores the survivor twice, while the removed track's content is gone.
+
+    So both are reported. The original version of this test asserted
+    exactly one, which held the right concern (a single survivor must not
+    be paired with both originals, leaving the loss unreported) with the
+    wrong conclusion. Reporting both still guarantees the loss is seen.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(1, "subtitle", "subrip", language="eng"),
+        _stream(2, "subtitle", "subrip", language="eng"),
+    )
+    processed = _probe(
+        _stream(1, "subtitle", "subrip", language="eng"),
+    )
+
+    lost = find_lost_streams(original, processed)
+    assert [s["index"] for s in lost] == [1, 2]
+
+
+def test_an_unresolved_survivor_is_not_handed_to_a_looser_pass():
+    """
+    A group the language pass gives up on still used up its survivor.
+
+    Two English tracks, one survives with a new title; a French track of
+    the same codec and layout is destroyed. The language pass cannot say
+    which English track survived and reports both. If the survivor were
+    left in the pool, the payload pass would pair it with the French
+    original instead, and the destroyed French track would be recorded as
+    still present.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="eng", title="Main"),
+        _stream(2, "audio", "aac", channels=2, language="eng",
+                title="Commentary"),
+        _stream(3, "audio", "aac", channels=2, language="fre"),
     )
     processed = _probe(
         _stream(1, "audio", "aac", channels=2, language="eng"),
     )
 
-    assert len(find_lost_streams(original, processed)) == 1
+    lost = find_lost_streams(original, processed)
+    assert [s["index"] for s in lost] == [1, 2, 3]
+
+
+def test_a_group_reported_lost_does_not_compete_in_a_later_pass():
+    """
+    The other half of settling a group: its originals are finished with.
+
+    The two English tracks are reported lost at the language pass. The
+    untagged track was kept and tagged Spanish, which only the payload
+    pass can see. Were the English originals still in play there, three
+    look-alikes would compete for one Spanish survivor and all three would
+    be reported lost — including the Spanish track, which is plainly still
+    in the file.
+    """
+    from app.core.revert import match_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="eng", title="Main"),
+        _stream(2, "audio", "aac", channels=2, language="eng",
+                title="Commentary"),
+        _stream(3, "audio", "aac", channels=2, language=None),
+    )
+    processed = _probe(
+        _stream(1, "audio", "aac", channels=2, language="eng"),
+        _stream(2, "audio", "aac", channels=2, language="spa"),
+    )
+
+    by_index = {s["index"]: idx for s, idx in match_streams(original, processed)}
+    assert by_index == {1: None, 2: None, 3: 2}
+
+
+def test_later_passes_pair_in_file_order():
+    """
+    Pairing look-alikes in order is only right if the order is the file's.
+
+    The language pass groups by language, so what it hands on can come out
+    grouped — the two French tracks together, then the German one — unless
+    it is put back into manifest order. All three were re-tagged, so the
+    payload pass pairs them, and grouped order would give the second
+    French original the second survivor and the German original the third.
+    """
+    from app.core.revert import match_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="fre"),
+        _stream(2, "audio", "aac", channels=2, language="ger"),
+        _stream(3, "audio", "aac", channels=2, language="fre"),
+    )
+    processed = _probe(
+        _stream(1, "audio", "aac", channels=2, language="eng"),
+        _stream(2, "audio", "aac", channels=2, language="spa"),
+        _stream(3, "audio", "aac", channels=2, language="ita"),
+    )
+
+    by_index = {s["index"]: idx for s, idx in match_streams(original, processed)}
+    assert by_index == {1: 1, 2: 2, 3: 3}
 
 
 def test_the_right_one_of_two_similar_tracks_is_reported():
