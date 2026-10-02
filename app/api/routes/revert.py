@@ -21,7 +21,10 @@ from app.api.ws_manager import broadcast_threadsafe
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
-from app.core.revert_restore import restore_revert_point, revert_blocked_reason
+from app.core.revert_restore import (
+    recorded_path, restore_blocked_reason, restore_destination,
+    restore_revert_point,
+)
 from app.database.models import MediaFile, QueueItem, RevertPoint
 from app.database.session import get_db
 
@@ -54,8 +57,15 @@ def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
     # an entry the revert then refuses makes the button look broken
     # rather than the file look changed, and the user has no way to tell
     # which — so the reason travels with the row.
-    problem = (revert_blocked_reason(point, media.path) if media else
+    problem = (restore_blocked_reason(point, media.path) if media else
                "This revert point is not attached to a file.")
+
+    # Where a revert would write, from the function the revert uses, so the
+    # row can say so before the user presses anything. Absent for a point
+    # with no file: there is nothing to derive it from until it is matched.
+    original = recorded_path(point)
+    destination = (restore_destination(original, media.path)
+                   if media and original else None)
 
     return {
         "id": point.id,
@@ -63,6 +73,7 @@ def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
         "current_path": media.path if media else None,
         "current_filename": media.filename if media else None,
         "original_path": point.original_path,
+        "restore_path": destination,
         "original_container": point.original_container,
         "sidecar_size": point.sidecar_size,
         "created_at": point.created_at,

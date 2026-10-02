@@ -258,8 +258,8 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 
 const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => {
   const { palette, type, space } = useTheme();
-  const movedTo = point.original_path && point.current_path
-  && point.original_path !== point.current_path;
+  const movedTo = point.restore_path && point.current_path
+  && point.restore_path !== point.current_path;
 
   return (
     <Row>
@@ -269,9 +269,11 @@ const AttachedRow = ({ point, busy, running, blocked, onRevert, onDiscard }) => 
     </div>
     <div style={{ color: palette.dim, fontSize: type.size.xs, marginTop: space.hair }}>
     {fmtSize(point.sidecar_size)} · kept {fmtRel(point.created_at)}
-    {/* A container conversion renames the file, so the name on disk is
-      * not the one that will come back. Saying so prevents a surprise. */}
-      {movedTo && <> · restores as {basename(point.original_path)}</>}
+    {/* A container conversion changes the extension, so the name on disk
+      * is not the one that will come back. Saying so prevents a surprise.
+      * restore_path, not original_path: the server derives it the way the
+      * revert does, keeping a name the file was given since. */}
+      {movedTo && <> · restores as {basename(point.restore_path)}</>}
       </div>
       {/* The entry stays listed even when it cannot be used — the stored
         * tracks are still on the volume and still taking up space, so it

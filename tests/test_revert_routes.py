@@ -20,7 +20,7 @@ The restore endpoint returns as soon as the work is RUNNING, so the tests
 assert what it refuses and what it starts, not what it produces. What it
 produces is tested against real files in test_revert_execution.py.
 
-Verified by mutation, 11 applied, 11 killed:
+Verified by mutation, 13 applied, 13 killed:
 
   • Single-flight check removed                      → killed
   • Flag not rolled back when the thread fails to
@@ -34,6 +34,11 @@ Verified by mutation, 11 applied, 11 killed:
   • Attach refusal returning no reasons               → killed
   • Discard leaving the sidecar on the volume         → killed
   • Empty-bin ignoring detached_only                  → killed
+
+Added with restore_destination, both surviving the suite before it:
+
+  • restore_path reporting the recorded path          → killed
+  • Listing skipping the destination collision check  → killed
 
 No equivalent mutants.
 """
@@ -273,6 +278,61 @@ def test_the_listing_and_the_revert_agree(client, tmp_path):
 
 
 # ── Restore: what it refuses ─────────────────────────────────────────────────
+
+def _live_point(db, recycle, media_file, original_path):
+    """A usable point on `media_file`, captured when it lived at `original_path`."""
+    from app.database.models import MediaFile, RevertPoint
+
+    media_file.write_bytes(b"processed output")
+    stat = media_file.stat()
+    media = MediaFile(path=str(media_file), filename=media_file.name,
+                      directory=str(media_file.parent), size=stat.st_size,
+                      mtime=stat.st_mtime, container=media_file.suffix[1:])
+    db.add(media)
+    db.commit()
+    sidecar = recycle / f"{media.id}.remuxarr_revert"
+    sidecar.write_bytes(b"stored tracks")
+    db.add(RevertPoint(file_id=media.id, sidecar_path=str(sidecar),
+                       sidecar_size=1, manifest="{}",
+                       original_path=str(original_path),
+                       processed_size=stat.st_size,
+                       processed_mtime=stat.st_mtime))
+    db.commit()
+
+
+def test_the_listing_says_where_a_revert_will_write(client, tmp_path):
+    """
+    The row tells the user what name the file will come back under, so the
+    listing has to give the name the revert will actually use: the current
+    one with the original extension, not the one recorded at capture. This
+    file was renamed after the job that turned it into an MP4.
+    """
+    api, db, recycle = client
+    _live_point(db, recycle, tmp_path / "New Name.mp4",
+                original_path=tmp_path / "Old Name.mkv")
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restore_path"] == str(tmp_path / "New Name.mkv")
+    assert entry["restorable"] is True
+
+
+def test_a_point_whose_revert_would_overwrite_a_file_is_not_offered(client, tmp_path):
+    """
+    The revert refuses when another file already sits where it would
+    write. The list has to know that too, or it offers a Revert button the
+    revert then turns down.
+    """
+    api, db, recycle = client
+    _live_point(db, recycle, tmp_path / "Show.mp4",
+                original_path=tmp_path / "Show.mkv")
+    (tmp_path / "Show.mkv").write_bytes(b"a different file the user has")
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restorable"] is False
+    assert "Show.mkv" in entry["blocked_reason"]
+
 
 def test_restoring_a_detached_point_is_refused(client):
     api, db, recycle = client

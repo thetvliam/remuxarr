@@ -39,6 +39,15 @@ The delete below is still written as "every point for this file" rather
 than "the one we used". Under the current model those are the same thing;
 written the narrow way, a stray second row would survive with a sidecar
 nothing could reach and a fingerprint that could never match again.
+
+Where a revert writes
+---------------------
+To the file as it is called NOW, with the original extension — see
+restore_destination. Not to the path recorded at capture: that is only
+right while nobody has renamed the file, and a point matched back to a
+renamed file still carries it. Writing there put the file back under its
+old name, deleted the renamed one, and failed outright when the folder had
+been renamed too.
 """
 
 import json
@@ -70,12 +79,11 @@ def revert_blocked_reason(point, path: str) -> str | None:
     """
     Why this revert point cannot be used on `path` right now, or None.
 
-    Every cheap precondition the revert checks, in the order it checks
-    them. Shared by the revert itself and by the listing the UI renders,
-    and that sharing is the point: written twice they drift, and the drift
-    is invisible in the direction that matters — the list keeps offering
-    Revert on entries the revert then refuses, so the button appears
-    broken rather than the file appearing changed.
+    The checks on the revert point and the file it describes: is the
+    sidecar there, and is the file still the one the job left. Capture
+    uses this to decide whether a new job can extend the point, so it must
+    say nothing about where a revert would write — see
+    restore_blocked_reason, which adds that for the revert and the list.
 
     Deliberately covers ALL of them, not just the fingerprint. A missing
     sidecar is the likelier reason on a bin that retention has been
@@ -108,6 +116,67 @@ def revert_blocked_reason(point, path: str) -> str | None:
         return (
             f"{name} has been modified since it was processed. These stored "
             f"tracks belong to the previous version."
+        )
+    return None
+
+
+def recorded_path(point, manifest: dict | None = None) -> str | None:
+    """Where the file lived when the point was captured."""
+    if manifest is None:
+        try:
+            manifest = json.loads(point.manifest)
+        except (TypeError, ValueError):
+            manifest = {}
+    return manifest.get("path") or point.original_path
+
+
+def restore_destination(original_path: str, current_path: str) -> str:
+    """
+    Where a revert writes: the current file's folder and name, with the
+    original file's extension.
+
+    A job only ever changes the extension (determine_output_path), so for a
+    file nobody has renamed this IS the recorded path, and an MKV turned
+    into X.mp4 comes back as X.mkv. For a renamed file it keeps the name
+    the user, or Sonarr, gave it.
+    """
+    return (os.path.splitext(current_path)[0]
+            + os.path.splitext(original_path)[1])
+
+
+def restore_blocked_reason(point, path: str,
+                           manifest: dict | None = None) -> str | None:
+    """
+    Why a revert of this point onto `path` would be refused, or None.
+
+    Shared by the revert itself and by the listing the UI renders, and that
+    sharing is the point: written twice they drift, and the drift is
+    invisible in the direction that matters — the list keeps offering
+    Revert on entries the revert then refuses, so the button appears
+    broken rather than the file appearing changed.
+
+    Adds one check to revert_blocked_reason: that the destination, when it
+    is not the file itself, is free. Something already there is a file the
+    user has, and the staged write would replace it without asking. The
+    message leads with the name because the failure toast keeps only the
+    first 60 characters.
+
+    Cheap enough to run per row: a few stats, no probing.
+    """
+    problem = revert_blocked_reason(point, path)
+    if problem:
+        return problem
+
+    original = recorded_path(point, manifest)
+    if not original:
+        return "This revert point does not record where the file came from."
+
+    destination = restore_destination(original, path)
+    if destination != path and os.path.lexists(destination):
+        return (
+            f'Another file already exists as "{os.path.basename(destination)}", '
+            f"and reverting would overwrite it. Move or rename that file, "
+            f"then revert."
         )
     return None
 
@@ -166,6 +235,7 @@ class _Plan:
     sidecar_path: str
     manifest: dict
     original_path: str
+    destination: str
 
 
 def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
@@ -180,20 +250,17 @@ def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
     if media is None:
         return None, "The file this revert point belongs to is no longer tracked."
 
-    # ── Preconditions ───────────────────────────────────────────────────
-    problem = revert_blocked_reason(point, media.path)
-    if problem:
-        return None, problem
-
     try:
         manifest = json.loads(point.manifest)
     except (TypeError, ValueError) as exc:
         return None, f"This revert point's manifest is unreadable: {exc}"
 
-    original_path = manifest.get("path") or point.original_path
-    if not original_path:
-        return None, "This revert point does not record where the file came from."
+    # ── Preconditions ───────────────────────────────────────────────────
+    problem = restore_blocked_reason(point, media.path, manifest)
+    if problem:
+        return None, problem
 
+    original_path = recorded_path(point, manifest)
     return _Plan(
         point_id=point.id,
         file_id=media.id,
@@ -201,6 +268,7 @@ def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
         sidecar_path=point.sidecar_path,
         manifest=manifest,
         original_path=original_path,
+        destination=restore_destination(original_path, media.path),
     ), None
 
 
@@ -341,8 +409,13 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     # temp file, which is only swapped into place once it is complete. A
     # crash mid-restore therefore leaves the processed file intact rather
     # than a truncated one where a working file used to be.
+    #
+    # Sized from the current file, which exists. The destination often does
+    # not yet — X.mkv while the file is X.mp4 — and _pick_temp_dir reads a
+    # missing file as zero bytes, so TEMP_DIR would be chosen however
+    # little room it had. The fallback folder is the same either way.
     temp_output = os.path.join(
-        _pick_temp_dir(plan.original_path), f"revert_{point_id}.remuxarr_tmp"
+        _pick_temp_dir(plan.current_path), f"revert_{point_id}.remuxarr_tmp"
     )
 
     try:
@@ -353,11 +426,11 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         return RestoreOutcome(success=False, error=str(exc))
 
     logger.info(
-        "Reverting %s → %s", plan.current_path, plan.original_path,
+        "Reverting %s → %s", plan.current_path, plan.destination,
     )
     result = await run_staged_subprocess(
         cmd,
-        [StagedOutput(temp_path=temp_output, final_path=plan.original_path)],
+        [StagedOutput(temp_path=temp_output, final_path=plan.destination)],
         on_progress_line=on_progress,
         stderr_tail_lines=30,
     )
@@ -366,9 +439,9 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         return RestoreOutcome(success=False, error=result.error)
 
     # A container change during processing means the file lived under a
-    # different name; the restored original is now beside it and the
+    # different extension; the restored original is now beside it and the
     # processed copy is dead weight.
-    if plan.original_path != plan.current_path and os.path.exists(plan.current_path):
+    if plan.destination != plan.current_path and os.path.exists(plan.current_path):
         try:
             os.remove(plan.current_path)
         except OSError as exc:
@@ -384,13 +457,13 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
 
     try:
         with SessionLocal() as db:
-            _apply(db, plan, plan.original_path)
+            _apply(db, plan, plan.destination)
             db.commit()
     except Exception:
         logger.exception(
             "Revert of %s succeeded on disk but its database update failed",
-            plan.original_path,
+            plan.destination,
         )
 
-    logger.info("Reverted %s", plan.original_path)
-    return RestoreOutcome(success=True, restored_path=plan.original_path)
+    logger.info("Reverted %s", plan.destination)
+    return RestoreOutcome(success=True, restored_path=plan.destination)
