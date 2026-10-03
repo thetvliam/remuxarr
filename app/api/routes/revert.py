@@ -25,7 +25,7 @@ from app.core.revert_restore import (
     recorded_path, restore_blocked_reason, restore_destination,
     restore_revert_point,
 )
-from app.database.models import MediaFile, QueueItem, RevertPoint
+from app.database.models import Ac3ForgeJob, MediaFile, QueueItem, RevertPoint
 from app.database.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,8 @@ router = APIRouter(prefix="/api/revert", tags=["revert"])
 # Queue states that mean the worker is about to write, or is writing, this
 # file. Reverting underneath either produces two writers for one path.
 _ACTIVE_QUEUE_STATES = ("pending", "processing")
+# A forge job writes the file in place too, adding or undoing an AC3 track.
+_ACTIVE_FORGE_STATES = ("pending", "undo_pending", "processing")
 
 
 class AttachRequest(BaseModel):
@@ -144,28 +146,45 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
     # Refusing beats racing. The worker writes through a staged swap and so
     # does revert, so the loser's output silently replaces the winner's and
     # the result is whichever finished second — with a revert point and a
-    # queue item that both now describe a file that never existed.
-    active = (db.query(QueueItem)
-                .filter(QueueItem.file_id == point.file_id,
-                        QueueItem.status.in_(_ACTIVE_QUEUE_STATES))
-                .first())
-    if active:
-        raise HTTPException(
-            409,
-            f"This file is {active.status} in the queue. Wait for it to "
-            f"finish, or remove it from the queue, before reverting.",
-        )
-
+    # queue item that both now describe a file that never existed. The
+    # forge writes the same way. See revert_lock, THREE WRITERS.
+    #
+    # The checks and the acquire happen under CLAIM_LOCK, so a queue or
+    # forge claim running in its executor thread cannot take this file
+    # between the check that found it free and the acquire that holds it.
     media = db.get(MediaFile, point.file_id)
+    with revert_lock.CLAIM_LOCK:
+        active = (db.query(QueueItem)
+                    .filter(QueueItem.file_id == point.file_id,
+                            QueueItem.status.in_(_ACTIVE_QUEUE_STATES))
+                    .first())
+        if active:
+            raise HTTPException(
+                409,
+                f"This file is {active.status} in the queue. Wait for it to "
+                f"finish, or remove it from the queue, before reverting.",
+            )
 
-    # Acquired before the thread starts, and carrying the file id: from
-    # here until release() the worker will not claim a job for this file,
-    # which closes the half of the exclusion that did not exist. The check
-    # above only covers jobs queued BEFORE this point — a scan running
-    # during the revert would otherwise queue this same file and the
-    # worker would pick it straight up.
-    revert_lock.acquire(point.file_id, point_id,
-                        media.path if media else None)
+        forging = (db.query(Ac3ForgeJob)
+                     .filter(Ac3ForgeJob.file_id == point.file_id,
+                             Ac3ForgeJob.status.in_(_ACTIVE_FORGE_STATES))
+                     .first())
+        if forging:
+            raise HTTPException(
+                409,
+                "This file has an AC3 Forge job waiting or running. Wait "
+                "for it to finish, or remove it from the forge queue, "
+                "before reverting.",
+            )
+
+        # Acquired before the thread starts, and carrying the file id: from
+        # here until release() neither the worker nor the forge will claim
+        # a job for this file. The checks above only cover jobs queued
+        # BEFORE this point — a scan running during the revert would
+        # otherwise queue this same file and the worker would pick it
+        # straight up.
+        revert_lock.acquire(point.file_id, point_id,
+                            media.path if media else None)
     started = False
     try:
         loop = asyncio.get_running_loop()

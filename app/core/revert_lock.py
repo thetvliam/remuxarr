@@ -1,11 +1,31 @@
 """
 Which file a revert is currently rewriting, if any.
 
+THREE WRITERS, ONE AT A TIME
+----------------------------
+Three things rewrite media files in place: queue jobs, AC3 Forge runs, and
+revert. All of them stage to a temporary file and swap, so two running on
+the same path race, and the loser's output silently replaces the winner's.
+Each steers around the other two:
+
+  * A queue job is not claimed for the file being reverted, or for a file
+    with a forge run in progress (worker._claim_next).
+  * A forge run is not claimed for the file being reverted, or for a file
+    with a queue job in progress (forge.claim_next_forge_job). Queue and
+    forge tasks run side by side once max_concurrent_jobs is above 1.
+  * A revert does not start while the file has a queue job or a forge run
+    pending or in progress (routes/revert.restore).
+
+Each of those is a check followed by a claim, and the two claims run in
+executor threads while restore runs on the event loop, so two of them can
+otherwise both see a file as free and both take it. CLAIM_LOCK is held
+across every check-and-claim, which makes them take turns. It is held for
+a query and a commit, never across the work itself.
+
 WHY THIS IS A MODULE AND NOT A COLUMN
 -------------------------------------
-Two subsystems write media files in place: the queue worker and revert.
-Both stage to a temporary file and swap, so if they run on the same path
-the loser's output silently replaces the winner's and the survivor is
+The writers stage to a temporary file and swap, so if two run on the same
+path the loser's output silently replaces the winner's and the survivor is
 whichever finished second — leaving a revert point and a queue item that
 both describe a file that never existed. Nothing about the result looks
 wrong; it plays.
@@ -53,6 +73,11 @@ it are atomic as long as nothing awaits between them.
 # The file_id being rewritten, or None. file_id rather than point_id
 # because the worker's question is "may I write this file", and a revert
 # point's identity is not what makes two writers collide — the path is.
+import threading
+
+# Held across each check-and-claim of a file to write; see THREE WRITERS.
+CLAIM_LOCK = threading.Lock()
+
 _reverting_file_id: int | None = None
 
 # Kept for the /status endpoint, which reports what the user is waiting on.

@@ -491,17 +491,34 @@ def claim_next_forge_job() -> int | None:
     """
     Claim the next pending or undo_pending forge job.
     Returns the job ID, or None if the forge queue is empty.
+
+    Not one for a file another writer holds — a revert in progress, or a
+    queue job in progress, which can run beside a forge task once
+    max_concurrent_jobs is above 1. See revert_lock, THREE WRITERS. The
+    job is skipped, not the queue: it is claimed on a later pass.
     """
-    from app.database.models import Ac3ForgeJob
+    from app.core import revert_lock
+
+    with revert_lock.CLAIM_LOCK:
+        return _claim_next_forge_job_locked(revert_lock.reverting_file_id())
+
+
+def _claim_next_forge_job_locked(reverting: int | None) -> int | None:
+    from app.database.models import Ac3ForgeJob, QueueItem
 
     db = SessionLocal()
     try:
-        job = (
+        query = (
             db.query(Ac3ForgeJob)
             .filter(Ac3ForgeJob.status.in_(["pending", "undo_pending"]))
-            .order_by(Ac3ForgeJob.created_at.asc())
-            .first()
         )
+        if reverting is not None:
+            query = query.filter(Ac3ForgeJob.file_id != reverting)
+        processing = (db.query(QueueItem.file_id)
+                        .filter(QueueItem.status == "processing"))
+        query = query.filter(Ac3ForgeJob.file_id.notin_(processing))
+
+        job = query.order_by(Ac3ForgeJob.created_at.asc()).first()
         if job is None:
             return None
 

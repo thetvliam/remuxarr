@@ -31,7 +31,7 @@ from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
-from app.database.models import MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
+from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -1165,6 +1165,11 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
 def _claim_next() -> int | None:
     """Atomically claim the highest-priority pending job. Returns its ID or None."""
+    with revert_lock.CLAIM_LOCK:
+        return _claim_next_locked()
+
+
+def _claim_next_locked() -> int | None:
     db = SessionLocal()
     try:
         query = (
@@ -1201,6 +1206,13 @@ def _claim_next() -> int | None:
         reverting = revert_lock.reverting_file_id()
         if reverting is not None:
             query = query.filter(QueueItem.file_id != reverting)
+
+        # Nor a file the forge is rewriting. Forge runs are tasks beside
+        # queue jobs once max_concurrent_jobs is above 1, and they write
+        # the same way — see revert_lock, THREE WRITERS.
+        forging = (db.query(Ac3ForgeJob.file_id)
+                     .filter(Ac3ForgeJob.status == "processing"))
+        query = query.filter(QueueItem.file_id.notin_(forging))
 
         job = (
             query

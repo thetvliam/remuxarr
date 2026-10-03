@@ -20,7 +20,7 @@ The restore endpoint returns as soon as the work is RUNNING, so the tests
 assert what it refuses and what it starts, not what it produces. What it
 produces is tested against real files in test_revert_execution.py.
 
-Verified by mutation, 13 applied, 13 killed:
+Verified by mutation, 26 applied, 26 killed:
 
   • Single-flight check removed                      → killed
   • Flag not rolled back when the thread fails to
@@ -39,6 +39,28 @@ Added with restore_destination, both surviving the suite before it:
 
   • restore_path reporting the recorded path          → killed
   • Listing skipping the destination collision check  → killed
+
+Added with the forge as a third writer (TestOneWriterPerFile), all of them
+surviving the suite as it stood first:
+
+  • Queue claim ignoring a forge run in progress     → killed
+  • Queue claim held back by any forge job, finished
+    ones included                                    → killed
+  • Forge claim ignoring the file being reverted     → killed
+  • Forge claim ignoring a queue job in progress     → killed
+  • Forge claim held back by any queue item          → killed
+  • Revert ignoring the forge queue                  → killed
+  • Revert missing a pending forge job               → killed
+  • Revert missing a processing forge job            → killed
+  • Revert missing an undo_pending forge job         → killed
+  • Revert held back by a finished forge job         → killed
+  • Queue claim outside CLAIM_LOCK                   → killed
+  • Forge claim outside CLAIM_LOCK                   → killed
+  • Revert's checks and acquire outside CLAIM_LOCK   → killed
+
+The last three are killed by tests that pin the mechanism, the lock being
+held at commit and at acquire, rather than by a race: the window is too
+narrow to hit on purpose.
 
 No equivalent mutants.
 """
@@ -928,3 +950,201 @@ class TestTheBinCannotBeEmptiedDuringARevert:
 
         assert r.status_code == 200
         assert not sidecar.exists()
+
+
+class TestOneWriterPerFile:
+    """
+    Three things rewrite a media file in place — queue jobs, AC3 Forge runs
+    and revert — and two of them on one file race, the loser's output
+    silently replacing the winner's. Queue and forge tasks run side by side
+    once max_concurrent_jobs is above 1. See revert_lock, THREE WRITERS.
+
+    Each writer skips a file another holds, and only that file: the tests
+    pair each refusal with something unrelated that still moves, and with
+    a finished job of the other kind that must not hold anything back.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _claims_see_the_test_db(self, client, monkeypatch):
+        """worker.py and forge.py each hold their own SessionLocal reference."""
+        import app.core.forge as forge_mod
+        import app.core.worker as worker_mod
+        import app.database.session as session_mod
+
+        monkeypatch.setattr(worker_mod, "SessionLocal", session_mod.SessionLocal)
+        monkeypatch.setattr(forge_mod, "SessionLocal", session_mod.SessionLocal)
+
+    def _file(self, db):
+        from app.database.models import MediaFile
+
+        n = next(_seq)
+        media = MediaFile(path=f"/media/w{n}.mkv", filename=f"w{n}.mkv",
+                          directory="/media", size=1, mtime=1.0)
+        db.add(media)
+        db.commit()
+        return media
+
+    def _queued(self, db, media, status="pending"):
+        from app.database.models import QueueItem
+
+        item = QueueItem(file_id=media.id, status=status, priority=1)
+        db.add(item)
+        db.commit()
+        return item.id
+
+    def _forge(self, db, media, status="pending"):
+        from app.database.models import Ac3ForgeJob
+
+        job = Ac3ForgeJob(file_id=media.id, status=status,
+                          is_undo=status == "undo_pending")
+        db.add(job)
+        db.commit()
+        return job.id
+
+    # ── The queue ────────────────────────────────────────────────────────
+
+    def test_a_queue_job_waits_while_the_forge_rewrites_its_file(self, client):
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        forging, other = self._file(db), self._file(db)
+        self._forge(db, forging, "processing")
+        self._queued(db, forging)
+        other_item = self._queued(db, other)
+
+        assert _claim_next() == other_item
+        assert _claim_next() is None, (
+            "the worker claimed a file the forge is rewriting"
+        )
+
+    def test_a_finished_forge_job_does_not_hold_back_the_queue(self, client):
+        """Every forged file keeps a 'success' row; only a running one counts."""
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        media = self._file(db)
+        self._forge(db, media, "success")
+        item = self._queued(db, media)
+
+        assert _claim_next() == item
+
+    # ── The forge ────────────────────────────────────────────────────────
+
+    def test_a_forge_job_waits_while_its_file_is_reverted(self, client):
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        reverting, other = self._file(db), self._file(db)
+        self._forge(db, reverting)
+        other_job = self._forge(db, other)
+
+        revert_lock.acquire(file_id=reverting.id, point_id=1, path=reverting.path)
+
+        assert claim_next_forge_job() == other_job
+        assert claim_next_forge_job() is None, (
+            "the forge claimed the file a revert is rewriting"
+        )
+
+    def test_a_forge_job_waits_while_the_queue_processes_its_file(self, client):
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        busy, other = self._file(db), self._file(db)
+        self._queued(db, busy, "processing")
+        self._forge(db, busy)
+        other_job = self._forge(db, other)
+
+        assert claim_next_forge_job() == other_job
+        assert claim_next_forge_job() is None, (
+            "the forge claimed a file a queue job is rewriting"
+        )
+
+    def test_a_finished_queue_item_does_not_hold_back_the_forge(self, client):
+        """Every processed file keeps a completed queue item."""
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        media = self._file(db)
+        self._queued(db, media, "completed")
+        job = self._forge(db, media)
+
+        assert claim_next_forge_job() == job
+
+    # ── Revert ───────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("status", ["pending", "undo_pending", "processing"])
+    def test_a_revert_is_refused_while_the_forge_holds_the_file(self, client, status):
+        """
+        Waiting counts, as it does for the queue: the forge may pick the
+        job up at any moment, and the revert would lose that race.
+        """
+        api, db, recycle = client
+        media, point, _sidecar = _seed(db, recycle)
+        self._forge(db, media, status)
+
+        r = api.post(f"/api/revert/{point.id}/restore/")
+
+        assert r.status_code == 409
+        assert "AC3 Forge" in r.json()["detail"]
+        assert revert_lock.is_running() is False
+
+    def test_a_finished_forge_job_does_not_block_a_revert(self, client):
+        api, db, recycle = client
+        media, point, _sidecar = _seed(db, recycle)
+        self._forge(db, media, "success")
+
+        assert api.post(f"/api/revert/{point.id}/restore/").status_code == 200
+
+    # ── Taking turns ─────────────────────────────────────────────────────
+
+    def test_each_claim_commits_under_the_shared_lock(self, client, monkeypatch):
+        """
+        A check that a file is free and the claim that takes it have to
+        happen as one step, or two writers in different threads can both
+        see the file free and both take it. The race itself is too narrow
+        to reproduce in a test, so this pins the mechanism: each claim's
+        commit happens while CLAIM_LOCK is held.
+        """
+        from sqlalchemy.orm import Session
+
+        from app.core.forge import claim_next_forge_job
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        self._queued(db, self._file(db))
+        self._forge(db, self._file(db))
+
+        held = []
+        real_commit = Session.commit
+
+        def recording_commit(session):
+            held.append(revert_lock.CLAIM_LOCK.locked())
+            return real_commit(session)
+
+        monkeypatch.setattr(Session, "commit", recording_commit)
+
+        assert _claim_next() is not None
+        queue_commits, held[:] = list(held), []
+        assert claim_next_forge_job() is not None
+        forge_commits = list(held)
+
+        assert queue_commits and all(queue_commits), "queue claim outside the lock"
+        assert forge_commits and all(forge_commits), "forge claim outside the lock"
+
+    def test_starting_a_revert_holds_the_shared_lock_until_acquired(self, client,
+                                                                     monkeypatch):
+        """The route's checks and its acquire are one step for the same reason."""
+        api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+
+        held = []
+        real_acquire = revert_lock.acquire
+
+        def recording_acquire(*args, **kwargs):
+            held.append(revert_lock.CLAIM_LOCK.locked())
+            return real_acquire(*args, **kwargs)
+
+        monkeypatch.setattr(revert_lock, "acquire", recording_acquire)
+
+        assert api.post(f"/api/revert/{point.id}/restore/").status_code == 200
+        assert held == [True]
