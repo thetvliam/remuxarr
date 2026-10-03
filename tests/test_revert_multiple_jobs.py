@@ -66,8 +66,31 @@ last one only here, via
 test_an_earlier_lookalike_does_not_hide_a_later_loss.
 test_a_point_that_stored_both_lookalikes_still_matches_exactly is a guard
 rather than a mutant's target: it passed before the change too, and
-pins that reporting a group lost does not make attach refuse its own file. Mutation detail for
-the matching itself is recorded in test_revert_manifest.py.
+pins that reporting a group lost does not make attach refuse its own file.
+Mutation detail for the matching itself is recorded in
+test_revert_manifest.py.
+
+The track-order tests at the end of this file came with
+ffmpeg._sparse_openings, and look at the written file with ffprobe: how
+far back in time does any packet fall, in byte order. All five fail
+against the code before it, on FFmpeg 8.1 (the image's build) and on
+Ubuntu's 6.1. Mutants run against the suite as it stood first, all
+surviving it, all killed now:
+
+  • No second openings at all                    → killed
+  • The restore reading sparse streams from the
+    main inputs                                  → killed
+  • A two-file sidecar not remapping             → killed
+  • Only subtitles treated as sparse             → killed
+  • Only attachments treated as sparse           → killed
+  • Cover art not treated as sparse              → killed
+
+The two-file sidecar mutant is killed here only by
+test_a_second_jobs_sidecar_stays_in_order, and the cover-art one only by
+test_cover_art_stays_in_order; both are also killed by unit tests on the
+command line. A second opening of the wrong file was already killed by
+twenty existing tests, and every video and audio stream reopened as well
+by three existing tests.
 """
 import asyncio
 import json
@@ -1010,3 +1033,277 @@ def test_a_point_that_stored_both_lookalikes_still_matches_exactly(tmp_path, mon
     result = assess(point, str(lib["path"]), _probe(lib["path"]))
 
     assert result.tier == EXACT, result.reasons
+
+
+# ── Track order in the written file ────────────────────────────────────────────
+#
+# A restore reads two files, and a later job's sidecar does too. Mixing
+# them, FFmpeg used to write a file whose tracks were not in time order:
+# subtitles, fonts or a whole audio track sat in a second pass through the
+# timeline after the rest, and a player that seeks to a video frame never
+# met them — styled subtitles "worked at startup and vanished on seeking".
+# See ffmpeg._sparse_openings. These tests look at the file itself: in file
+# order, how far does any packet's time ever step backwards?
+#
+# The fixtures are a minute long. A track out of order by a whole file, or
+# by the gap between two subtitle lines, needs that much to show; at a few
+# seconds it stays inside FFmpeg's ten-second interleaving window and the
+# file comes out in order whatever the code does.
+
+ORDER_SECONDS = 60
+
+ASS_HEADER = """[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Fixture Sans,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def _worst_step_back(path):
+    """
+    The furthest any packet's time falls behind one written before it, in
+    seconds, reading the file in byte order. A well-formed file stays near
+    zero; one with a track in a second pass reports most of its length.
+    Cover art has no timestamp and is skipped.
+    """
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "packet=dts_time,pts_time,pos",
+         "-of", "json", str(path)], capture_output=True, text=True, check=True).stdout
+    packets = [p for p in json.loads(out).get("packets", [])
+               if p.get("pos") not in (None, "N/A")]
+    packets.sort(key=lambda p: int(p["pos"]))
+    worst, latest = 0.0, float("-inf")
+    for p in packets:
+        raw = p.get("dts_time")
+        if raw in (None, "N/A"):
+            raw = p.get("pts_time")
+        if raw in (None, "N/A"):
+            continue
+        t = float(raw)
+        worst = max(worst, latest - t)
+        latest = max(latest, t)
+    return worst
+
+
+def _ass(tmp_path, name, starts):
+    path = tmp_path / name
+    path.write_text(ASS_HEADER + "".join(
+        f"Dialogue: 0,0:00:{s:02d}.00,0:00:{s + 3:02d}.00,Default,,0,0,0,,Line at {s}s\n"
+        for s in starts))
+    return path
+
+
+def _ordered_library(tmp_path, monkeypatch, *, audio=("jpn", "eng"),
+                     subtitle_starts=(5, 20, 35, 50), font=True,
+                     cover_art=False, container="mkv"):
+    """
+    A minute-long file to put through jobs and a revert: video, one audio
+    track per language in `audio`, a styled subtitle (unless
+    `subtitle_starts` is empty) with a font attached, or instead an MP4
+    with cover art. Built by FFmpeg, and checked to be in order itself, so
+    a disordered restore cannot be blamed on the fixture.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    import app.database.session as session_mod
+    import app.core.worker as worker_mod
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    recycle = tmp_path / "recycle"
+    recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    seconds = ORDER_SECONDS
+    cmd = ["ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", f"testsrc=size=64x36:rate=5:duration={seconds}"]
+    maps, meta = ["-map", "0:v"], []
+    for i, lang in enumerate(audio):
+        cmd += ["-f", "lavfi", "-i",
+                f"sine=frequency={440 + 220 * i}:duration={seconds}"]
+        maps += ["-map", f"{i + 1}:a"]
+        meta += [f"-metadata:s:a:{i}", f"language={lang}"]
+    n = len(audio) + 1
+    if subtitle_starts:
+        cmd += ["-i", str(_ass(tmp_path, "subs.ass", subtitle_starts))]
+        maps += ["-map", f"{n}:s"]
+        meta += ["-metadata:s:s:0", "language=eng"]
+        n += 1
+    if cover_art:
+        cover = tmp_path / "cover.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                        "-i", "color=c=red:size=64x64", "-frames:v", "1",
+                        str(cover)], check=True)
+        cmd += ["-i", str(cover)]
+        maps += ["-map", f"{n}:v"]
+        meta += ["-c:v:1", "png", "-disposition:v:1", "attached_pic"]
+    if font:
+        fake_font = tmp_path / "Fixture.ttf"
+        fake_font.write_bytes(b"\0\1\0\0 not a real font, an opaque attachment")
+        meta += ["-attach", str(fake_font), "-metadata:s:t:0",
+                 "mimetype=application/x-truetype-font"]
+
+    path = media_dir / f"Show.{container}"
+    fmt = {"mkv": "matroska", "mp4": "mp4"}[container]
+    subprocess.run(cmd + maps + [
+        "-c:v:0", "libx264", "-preset", "ultrafast", "-g", "25",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "1", "-b:a", "16k",
+        "-c:s", "ass" if container == "mkv" else "mov_text", *meta,
+        "-f", fmt, str(path)], check=True)
+    assert _worst_step_back(path) < 1.0, "the fixture itself is out of order"
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(session_mod, "SessionLocal", factory)
+    monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+
+    db = factory()
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename=path.name,
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container=container,
+                      status="processed")
+    db.add(media)
+    db.commit()
+
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path, "pristine": _summarise(path)}
+
+
+def _run_job_into(lib, ffmpeg_args, *, job_id, fmt, suffix):
+    """
+    _run_job for a job whose output is not Matroska, or which changes the
+    file's extension the way a conversion to MP4 does.
+    """
+    from app.core.revert_capture import capture
+    from app.core.worker import _record_revert_point
+
+    produced = lib["tmp"] / f"job{job_id}.remuxarr_tmp"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lib["path"]),
+                    *ffmpeg_args, "-f", fmt, str(produced)], check=True)
+    captured, error = asyncio.run(capture(
+        input_path=str(lib["path"]), produced_path=str(produced),
+        file_id=lib["media"].id, job_id=job_id,
+        app_cfg={"revert_enabled": True, "revert_require_point": False},
+    ))
+    assert error is None, error
+
+    final = lib["path"].with_suffix(suffix)
+    os.replace(produced, final)
+    if final != lib["path"]:
+        os.remove(lib["path"])
+        lib["path"] = final
+        lib["media"].path = str(final)
+        lib["media"].filename = final.name
+        lib["db"].commit()
+    _record_revert_point(lib["media"].id, captured, str(final), [])
+
+
+def _assert_restored_in_order(lib, outcome):
+    assert outcome.success is True, outcome.error
+    assert _summarise(outcome.restored_path) == lib["pristine"]
+    step = _worst_step_back(outcome.restored_path)
+    assert step < 1.0, (
+        f"the restored file steps {step:.1f}s back in time — a track was "
+        f"written after the rest, where a seeking player never finds it"
+    )
+
+
+def test_subtitles_and_fonts_from_the_sidecar_stay_in_order(tmp_path, monkeypatch):
+    """
+    The case that was reported: an MKV with Japanese and English audio,
+    styled subtitles and a font is converted to MP4, keeping the English
+    audio. MP4 cannot hold the subtitle or the font, so the sidecar gets
+    those and the Japanese audio. The revert read the sidecar through to
+    the end before the MP4, and the video and English audio came back in a
+    second pass after it — subtitles on screen from the start, and gone
+    after the first seek, because seeking lands in the video's pass.
+
+    The Japanese audio is what makes it fail. With only sparse streams in
+    the sidecar, reading it first costs nothing and the file comes out in
+    order anyway.
+    """
+    lib = _ordered_library(tmp_path, monkeypatch)
+
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"],
+                  job_id=1, fmt="mp4", suffix=".mp4")
+
+    _assert_restored_in_order(lib, _revert(lib))
+
+
+def test_an_audio_track_from_the_sidecar_stays_in_order(tmp_path, monkeypatch):
+    """
+    The reverse split: the job dropped the Japanese audio and kept the
+    subtitle and font, so the restore reads those from the processed file
+    and the audio from the sidecar. The audio was the track left behind.
+    """
+    lib = _ordered_library(tmp_path, monkeypatch)
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3",
+                   "-map", "0:t", "-c", "copy"], job_id=1)
+
+    _assert_restored_in_order(lib, _revert(lib))
+
+
+def test_a_subtitle_track_that_ends_early_stays_in_order(tmp_path, monkeypatch):
+    """
+    No font here: a subtitle track alone is enough. Its last line is ten
+    seconds in, and after it the file supplying it was read to the end
+    while the other waited.
+    """
+    lib = _ordered_library(tmp_path, monkeypatch, subtitle_starts=(2, 7),
+                           font=False)
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3", "-c", "copy"],
+             job_id=1)
+
+    _assert_restored_in_order(lib, _revert(lib))
+
+
+def test_cover_art_stays_in_order(tmp_path, monkeypatch):
+    """
+    Cover art in an MP4 is a video stream holding one picture, and to the
+    reading order it is as sparse as a font: once its single packet is out
+    it never catches up.
+    """
+    lib = _ordered_library(tmp_path, monkeypatch, subtitle_starts=(),
+                           font=False, cover_art=True, container="mp4")
+
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3",
+                        "-c", "copy"], job_id=1, fmt="mp4", suffix=".mp4")
+
+    _assert_restored_in_order(lib, _revert(lib))
+
+
+def test_a_second_jobs_sidecar_stays_in_order(tmp_path, monkeypatch):
+    """
+    The first job drops the Japanese audio. The second drops the English
+    audio and the subtitle, so its sidecar mixes the old sidecar's audio
+    with the file's audio, subtitle and font — two inputs again. The
+    sidecar itself came out out of order, and a restore from it could not
+    put that right.
+    """
+    from app.database.models import RevertPoint
+
+    lib = _ordered_library(tmp_path, monkeypatch)
+
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3",
+                   "-map", "0:t", "-c", "copy"], job_id=1)
+    _run_job(lib, ["-map", "0:0", "-map", "0:t", "-c", "copy"], job_id=2)
+
+    lib["db"].expire_all()
+    sidecar = lib["db"].query(RevertPoint).one().sidecar_path
+    step = _worst_step_back(sidecar)
+    assert step < 1.0, f"the second job's sidecar steps {step:.1f}s back in time"
+
+    _assert_restored_in_order(lib, _revert(lib))

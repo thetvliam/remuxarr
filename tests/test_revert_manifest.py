@@ -97,6 +97,17 @@ test_identical_streams_are_matched_one_for_one asserted exactly one loss
 from two identical tracks, which encoded a guess about which one survived.
 Both now expect the whole group, and keep the concern each was written for.
 
+The sidecar builder's sparse streams (ffmpeg._sparse_openings) were added
+later; for a sidecar read from two files they are read through a second
+opening. Run against the suite as it stood first, these survived it and
+are killed here now: the two-file sidecar not remapping
+(test_a_sidecar_from_two_files_reads_sparse_streams_separately), the
+one-file sidecar remapping anyway, which only reads the file twice during
+the job (test_a_sidecar_from_one_file_reads_it_once), and the mov_text
+conversion keyed on the input number a subtitle is read through rather
+than the file it comes from
+(test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar).
+
 No equivalent mutants recorded for this file.
 
 The FFmpeg-backed tests skip rather than fail when no ffmpeg binary is
@@ -687,6 +698,88 @@ def test_sidecar_maps_original_indices_and_drops_chapters():
     assert cmd[cmd.index("-map_chapters") + 1] == "-1"
     assert cmd[cmd.index("-f") + 1] == "matroska"
     assert cmd[-1] == "/recycle/1.remuxarr_revert"
+
+
+def _inputs(cmd):
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+
+
+def _sidecar_sources(cmd):
+    """Each -map as (file, stream index), whatever input number opens the file."""
+    inputs = _inputs(cmd)
+    return [(inputs[int(cmd[i + 1].split(":")[0])], int(cmd[i + 1].split(":")[1]))
+            for i, a in enumerate(cmd) if a == "-map"]
+
+
+def test_a_sidecar_from_two_files_reads_sparse_streams_separately():
+    """
+    A later job's sidecar mixes what this job lost (still in the file) with
+    what an earlier job lost (only in the previous sidecar). That is two
+    inputs, and the same out-of-order writing a restore suffers — see
+    _sparse_openings — so subtitles and attachments are read through their
+    own opening of whichever file holds them.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    jpn, eng, signs, full, font = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(2, "audio", "aac", channels=2, language="eng"),
+        _stream(3, "subtitle", "ass", language="eng"),
+        _stream(4, "subtitle", "ass", language="eng"),
+        _stream(5, "attachment", "ttf", filename="A.ttf"),
+    )["streams"]
+    sources = [(jpn, 1, 0), (eng, 0, 2), (signs, 1, 1), (full, 0, 4), (font, 1, 2)]
+
+    cmd = build_sidecar_command(["/m/Show.mkv", "/recycle/old.remuxarr_revert"],
+                                "/recycle/new.remuxarr_revert", sources)
+
+    assert _sidecar_sources(cmd) == [
+        ("/recycle/old.remuxarr_revert", 0), ("/m/Show.mkv", 2),
+        ("/recycle/old.remuxarr_revert", 1), ("/m/Show.mkv", 4),
+        ("/recycle/old.remuxarr_revert", 2),
+    ]
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    dense_inputs = {maps[0].split(":")[0], maps[1].split(":")[0]}
+    for spec in maps[2:]:
+        assert spec.split(":")[0] not in dense_inputs, spec
+
+
+def test_a_sidecar_from_one_file_reads_it_once():
+    """
+    A first job's sidecar comes from one file, read in its own order, and
+    is already in order. A second opening would only read a large file
+    twice during the job, for nothing.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    lost = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(3, "subtitle", "ass", language="eng"),
+        _stream(5, "attachment", "ttf", filename="A.ttf"),
+    )["streams"]
+    cmd = build_sidecar_command(["/m/Show.mkv"], "/recycle/1.remuxarr_revert",
+                                _from_one(lost))
+
+    assert _inputs(cmd) == ["/m/Show.mkv"]
+
+
+def test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar():
+    """
+    The conversion depends on which FILE a subtitle comes from — only the
+    media file can still hold mov_text — not on the input number it is now
+    read through, which for a subtitle is a second opening.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    jpn, ger = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(4, "subtitle", "mov_text", language="ger"),
+    )["streams"]
+    cmd = build_sidecar_command(["/m/Show.mp4", "/recycle/old.remuxarr_revert"],
+                                "/recycle/new.remuxarr_revert",
+                                [(jpn, 1, 0), (ger, 0, 4)])
+
+    assert cmd[cmd.index("-c:s:0") + 1] == "srt"
 
 
 # ── Against real FFmpeg ──────────────────────────────────────────────────────
