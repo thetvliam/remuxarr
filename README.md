@@ -288,7 +288,8 @@ disable that limit.
 exact original state: every track back, in the original order, with the original
 language tags, titles, default/forced flags and attachments, in the original
 container. If the job converted MKV to MP4, reverting converts it back and
-restores the original file extension.
+restores the original file extension. An AC3 track added with AC3 Forge after
+processing is not part of the original, so reverting removes it.
 
 **When it will refuse.** A revert point records the file as the job left it. If
 something else has written to that file since - Sonarr upgrading the episode is

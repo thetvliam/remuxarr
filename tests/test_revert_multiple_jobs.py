@@ -91,6 +91,12 @@ test_cover_art_stays_in_order; both are also killed by unit tests on the
 command line. A second opening of the wrong file was already killed by
 twenty existing tests, and every video and audio stream reopened as well
 by three existing tests.
+
+The AC3 Forge tests at the end run the real forge. Three of the four fail
+against the forge as it was before capture, with the revert point reading
+as "modified since it was processed"; the fourth, a file with no point
+gaining none, is a guard and passed before too. Their mutants are recorded
+in test_forge_orchestration.
 """
 import asyncio
 import json
@@ -1307,3 +1313,190 @@ def test_a_second_jobs_sidecar_stays_in_order(tmp_path, monkeypatch):
     assert step < 1.0, f"the second job's sidecar steps {step:.1f}s back in time"
 
     _assert_restored_in_order(lib, _revert(lib))
+
+
+# ── AC3 Forge and revert points ──────────────────────────────────────────────
+#
+# The forge rewrites the file in place, so it goes through revert capture the
+# way a job does. These run the real forge — _process_next_forge, its
+# command builders, FFmpeg — against a file a job has already processed.
+
+
+class _QuietSocket:
+    async def broadcast_json(self, payload):
+        pass
+
+
+@pytest.fixture
+def forge_lib(tmp_path, monkeypatch):
+    """
+    Ten seconds of video with Japanese and English AAC 5.1, the layout the
+    forge adds an AC3 track to, registered with revert capture switched on.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
+
+    from app.config import settings as app_settings
+    from app.database.models import Base, MediaFile
+    from app.database.session import update_app_setting
+    import app.core.forge as forge_mod
+    import app.core.worker as worker_mod
+    import app.database.session as session_mod
+
+    media_dir = tmp_path / "media"
+    media_dir.mkdir()
+    recycle = tmp_path / "recycle"
+    recycle.mkdir()
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR", str(recycle), raising=False)
+
+    path = media_dir / "Show.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+        "-f", "lavfi", "-i", "sine=frequency=880:duration=10",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a",
+        "-metadata:s:a:0", "language=jpn", "-metadata:s:a:1", "language=eng",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ac", "6", "-b:a", "64k",
+        "-f", "matroska", str(path)], check=True)
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    for module in (session_mod, worker_mod, forge_mod):
+        monkeypatch.setattr(module, "SessionLocal", factory)
+
+    # The forge reads its settings from the database, not from a dict
+    # handed in the way _run_job's capture gets one.
+    db = factory()
+    update_app_setting(db, "revert_enabled", True)
+
+    # Plex is told about forge rewrites; nothing to tell here.
+    monkeypatch.setattr(worker_mod, "_load_forge_plex_notify_data", lambda _id: None)
+    monkeypatch.setattr(worker_mod, "_pick_temp_dir", lambda _p: str(tmp_path))
+
+    stat = path.stat()
+    media = MediaFile(path=str(path), filename="Show.mkv",
+                      directory=str(media_dir), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv", status="processed")
+    db.add(media)
+    db.commit()
+    return {"db": db, "media": media, "path": path, "recycle": recycle,
+            "tmp": tmp_path}
+
+
+def _forge(lib, *, undo=False):
+    """Queue one forge job for the file and run it through the real worker step."""
+    from app.database.models import Ac3ForgeJob
+    import app.core.worker as worker_mod
+
+    audio = [s for s in _probe(lib["path"])["streams"] if s["codec_type"] == "audio"]
+    english = next(s for s in audio if s["codec_name"] == "aac"
+                   and (s.get("tags") or {}).get("language") == "eng")
+    job = Ac3ForgeJob(file_id=lib["media"].id, is_undo=undo,
+                      status="undo_pending" if undo else "pending",
+                      aac_stream_index=english["index"],
+                      audio_track_count=len(audio))
+    lib["db"].add(job)
+    lib["db"].commit()
+
+    assert asyncio.run(worker_mod._process_next_forge(_QuietSocket())) is True
+    lib["db"].expire_all()
+    return lib["db"].get(Ac3ForgeJob, job.id)
+
+
+def _codecs(path):
+    return [(s["codec_type"], s["codec_name"],
+             (s.get("tags") or {}).get("language"))
+            for s in _probe(path)["streams"]]
+
+
+def test_forging_after_a_job_keeps_the_revert_point_usable(forge_lib):
+    """
+    The forge adds an AC3 track to a file a job processed. It used to leave
+    the revert point as it was, fingerprinting a file that no longer
+    existed, so the entry read "modified since it was processed" and could
+    never be used.
+
+    A revert now gives back the true original — without the forged AC3,
+    which is not part of it.
+    """
+    from app.core.revert_restore import revert_blocked_reason
+    from app.database.models import RevertPoint
+
+    lib = forge_lib
+    pristine = _codecs(lib["path"])
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
+
+    assert _forge(lib).status == "success"
+    assert ("audio", "ac3", "eng") in _codecs(lib["path"]), "the forge added nothing"
+
+    point = lib["db"].query(RevertPoint).one()
+    assert revert_blocked_reason(point, str(lib["path"])) is None
+
+    outcome = _revert(lib)
+    assert outcome.success is True, outcome.error
+    assert _codecs(outcome.restored_path) == pristine
+
+
+def test_undoing_a_forged_track_the_original_had_keeps_it_restorable(forge_lib):
+    """
+    Forged first, processed second: the AC3 was there when the job ran, so
+    the revert point counts it as part of the original. Undoing the forge
+    destroys it, and it used to be destroyed for good — the point never
+    stored it, and its fingerprint no longer matched anyway.
+    """
+    from app.database.models import RevertPoint
+
+    lib = forge_lib
+    assert _forge(lib).status == "success"
+    before_the_job = _codecs(lib["path"])
+    assert ("audio", "ac3", "eng") in before_the_job
+
+    # The job drops the Japanese audio and keeps everything else.
+    _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
+
+    assert _forge(lib, undo=True).status == "undone"
+    assert ("audio", "ac3", "eng") not in _codecs(lib["path"])
+
+    assert lib["db"].query(RevertPoint).count() == 1
+    outcome = _revert(lib)
+    assert outcome.success is True, outcome.error
+    assert _codecs(outcome.restored_path) == before_the_job
+
+
+def test_forging_a_file_with_no_revert_point_creates_none(forge_lib):
+    """Adding a track loses nothing, so there is nothing to keep."""
+    from app.database.models import RevertPoint
+
+    lib = forge_lib
+    assert _forge(lib).status == "success"
+
+    assert lib["db"].query(RevertPoint).count() == 0
+    assert os.listdir(lib["recycle"]) == []
+
+
+def test_a_forge_run_that_cannot_keep_a_revert_point_is_refused(forge_lib, monkeypatch):
+    """
+    With "require a revert point" on, a job that cannot store what it would
+    destroy does not run. A forge run is held to the same rule: here the
+    recycle volume is gone, so the undo stops before touching the file.
+    """
+    from app.config import settings as app_settings
+    from app.database.session import update_app_setting
+
+    lib = forge_lib
+    assert _forge(lib).status == "success"
+    _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
+    before = lib["path"].read_bytes()
+
+    update_app_setting(lib["db"], "revert_require_point", True)
+    monkeypatch.setattr(app_settings, "RECYCLE_DIR",
+                        str(lib["tmp"] / "not-mounted"), raising=False)
+
+    job = _forge(lib, undo=True)
+
+    assert job.status == "undo_failed"
+    assert lib["path"].read_bytes() == before, "the file was rewritten anyway"

@@ -20,6 +20,16 @@ least one test here. Two are worth naming because nothing else catches them:
   • letting the command builders sit OUTSIDE the try, so a ValueError from an
     unknown container escapes uncaught and leaves the row at "processing" —
     the exact wedged state recover_interrupted_jobs exists to clean up.
+
+Revert capture came later — a forge run goes through it as a job does. Ten
+mutants, run against the suite as it stood first and all surviving it, all
+killed now, by the tests at the end of this file and by the real-FFmpeg
+forge tests in test_revert_multiple_jobs: the hook not handed to the run,
+run_forge_command not forwarding it, the point not recorded after success,
+recorded after a failure, fingerprinted from the temp file, the sidecar
+kept after a failed run, kept after an exception, capture not told it is a
+forge run, a capture refusal ignored, and forge sidecars named like a
+queue job's (the last by test_revert_capture).
 """
 import asyncio
 from dataclasses import dataclass
@@ -55,6 +65,8 @@ class _WS:
 
 def _job_data(**over):
     data = {
+        "file_id":              3,
+        "app_cfg":              {"revert_enabled": True},
         "file_path":            "/media/Show/ep.mkv",
         "is_undo":              False,
         "container":            "mkv",
@@ -89,6 +101,9 @@ def forge(monkeypatch, tmp_path):
         "built":     [],
         "ran":       [],
         "plex":      [],
+        "captures":  [],
+        "recorded":  [],
+        "sidecars":  [],
     }
 
     def claim_next_forge_job():
@@ -107,7 +122,13 @@ def forge(monkeypatch, tmp_path):
         return ["ffmpeg", "undo"]
 
     async def run_forge_command(**kw):
+        # Runs the staging hook the way run_staged_subprocess does: before
+        # the swap, and a non-None answer aborts the run.
         calls["ran"].append(kw)
+        if kw.get("before_staging"):
+            error = await kw["before_staging"](kw["temp_path"])
+            if error:
+                return _Result(False, None, None, error)
         return _Result(True, kw["output_path"], 4242, None)
 
     def update_forge_progress(job_id, percent, action):
@@ -149,6 +170,31 @@ def forge(monkeypatch, tmp_path):
         pass
 
     monkeypatch.setattr(worker, "_trigger_plex_notify", _noop_plex)
+
+    # Revert capture: write a stand-in sidecar so a test can see whether it
+    # was kept or discarded, and record what was recorded.
+    import app.core.revert_capture as capture_mod
+    from app.core.revert_capture import CapturedRevertPoint
+
+    forge_mod._capture_answer = None
+
+    async def capture(**kw):
+        calls["captures"].append(kw)
+        sidecar = tmp_path / f"captured_{len(calls['captures'])}.remuxarr_revert"
+        sidecar.write_bytes(b"stored tracks")
+        calls["sidecars"].append(sidecar)
+        if forge_mod._capture_answer is not None:
+            return None, forge_mod._capture_answer
+        return CapturedRevertPoint(
+            sidecar_path=str(sidecar), sidecar_size=13, manifest_json="{}",
+            original_path=kw["input_path"], original_container="mkv",
+        ), None
+
+    monkeypatch.setattr(capture_mod, "capture", capture)
+    monkeypatch.setattr(
+        worker, "_record_revert_point",
+        lambda *args: calls["recorded"].append(args),
+    )
 
     forge_mod._calls = calls
     return forge_mod
@@ -459,3 +505,82 @@ def test_a_failed_job_does_not_touch_plex(forge, monkeypatch):
     _run(_WS())
 
     assert forge._calls["plex"] == []
+
+
+# ── Revert points ────────────────────────────────────────────────────────────
+#
+# A forge run rewrites the file in place, so it goes through the same revert
+# capture a queue job does: captured before the swap, recorded after it, and
+# discarded if the write never happened. The real-FFmpeg consequences are
+# tested in test_revert_multiple_jobs; these pin the orchestration.
+
+def test_a_successful_run_records_its_revert_point(forge):
+    """
+    Recorded against the file, fingerprinted from the file as the forge
+    left it — the media path, since the forge writes in place — and
+    captured as a forge run, so its sidecar cannot take a queue job's name.
+    """
+    _run(_WS())
+
+    calls = forge._calls
+    assert len(calls["captures"]) == 1
+    assert calls["captures"][0]["forge"] is True
+    assert calls["captures"][0]["file_id"] == 3
+    assert calls["captures"][0]["job_id"] == 7
+
+    assert len(calls["recorded"]) == 1
+    file_id, captured, path = calls["recorded"][0]
+    assert (file_id, path) == (3, "/media/Show/ep.mkv")
+    assert captured.sidecar_path == str(calls["sidecars"][0])
+    assert calls["sidecars"][0].exists()
+
+
+def test_a_failed_run_discards_its_captured_sidecar(forge, monkeypatch):
+    """
+    The hook runs before staging, and staging can still fail. A sidecar for
+    a write that never happened describes nothing, and nothing would ever
+    collect it.
+    """
+    async def fails_after_the_hook(**kw):
+        forge._calls["ran"].append(kw)
+        await kw["before_staging"](kw["temp_path"])
+        return _Result(False, None, None, "No space left on device")
+
+    monkeypatch.setattr(forge, "run_forge_command", fails_after_the_hook)
+
+    _run(_WS())
+
+    assert forge._calls["recorded"] == []
+    assert not forge._calls["sidecars"][0].exists(), "sidecar leaked"
+
+
+def test_a_run_that_raises_after_capture_discards_its_sidecar(forge, monkeypatch):
+    async def raises_after_the_hook(**kw):
+        await kw["before_staging"](kw["temp_path"])
+        raise RuntimeError("staging blew up")
+
+    monkeypatch.setattr(forge, "run_forge_command", raises_after_the_hook)
+
+    _run(_WS())
+
+    assert forge._calls["recorded"] == []
+    assert not forge._calls["sidecars"][0].exists(), "sidecar leaked"
+    assert forge._calls["finish"][0]["success"] is False
+
+
+def test_a_capture_refusal_stops_the_run(forge):
+    """
+    With revert_require_point on, capture answers with a reason when it
+    cannot store what the run would destroy. That answer has to reach the
+    runner, which aborts before the swap — a forge run is held to the same
+    rule a queue job is.
+    """
+    forge._capture_answer = "the recycle volume is not mounted"
+
+    _run(_WS())
+
+    finish = forge._calls["finish"][0]
+    assert finish["success"] is False
+    assert finish["error"] == "the recycle volume is not mounted"
+    assert forge._calls["recorded"] == []
+

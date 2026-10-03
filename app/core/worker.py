@@ -2311,6 +2311,34 @@ async def _process_next_forge(ws_manager) -> bool:
     temp_path = os.path.join(tmp_dir, f"forge_{job_id}.forge_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
+    # A forge run rewrites the file in place, as a job does, so it goes
+    # through the same revert capture. Adding an AC3 loses nothing, but an
+    # existing revert point still has to be rebuilt against the file the
+    # forge leaves, or its fingerprint no longer matches and the point is
+    # dead. Undoing a forged AC3 that was there before a job ran removes a
+    # track that point counts as original, and capture stores it.
+    #
+    # Handled the way _run_job handles its capture: held until the swap has
+    # happened, then recorded; deleted on any failure, because a sidecar for
+    # a write that never happened describes nothing.
+    captured: list[CapturedRevertPoint] = []
+
+    async def on_before_staging(produced_path: str) -> str | None:
+        # Unlike _run_job's, this fires at most once: a forge run has no
+        # retry that re-runs the command, so there is no earlier capture
+        # to clear first.
+        result, error = await revert_capture.capture(
+            input_path    = input_path,
+            produced_path = produced_path,
+            file_id       = job_data["file_id"],
+            job_id        = job_id,
+            app_cfg       = job_data["app_cfg"],
+            forge         = True,
+        )
+        if result:
+            captured.append(result)
+        return error
+
     async def on_progress(prog: ForgeProgress) -> None:
         loop.run_in_executor(
             None, update_forge_progress, job_id, prog.percent, prog.action
@@ -2364,13 +2392,27 @@ async def _process_next_forge(ws_manager) -> bool:
             action_label  = action_label,
             progress_callback = on_progress,
             timeout_seconds   = timeout_seconds,
+            before_staging    = on_before_staging,
         )
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
         await loop.run_in_executor(
             None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
+        if result.success:
+            # Before the job is marked finished, for the reason _run_job
+            # gives: a crash in between leaves a usable point.
+            if captured:
+                await loop.run_in_executor(
+                    None, _record_revert_point,
+                    job_data["file_id"], captured[0], input_path,
+                )
+        else:
+            for stale in captured:
+                delete_sidecar(stale.sidecar_path)
         await loop.run_in_executor(
             None, finish_forge_job,
             job_id, result.success, result.output_size, result.error

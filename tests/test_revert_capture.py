@@ -25,7 +25,7 @@ has to either record the sidecar or delete it. A leaked sidecar is
 invisible: nothing scans the recycle volume, and with no row there is
 nothing left to find it by.
 
-Verified by mutation, 14 applied, 14 killed. One initially SURVIVED and
+Verified by mutation, 15 applied, 15 killed. One initially SURVIVED and
 is the more useful finding: removing the recycle-directory readiness
 check entirely. The unmounted-volume test still passed, because without
 the check the run reached FFmpeg, FFmpeg failed on the missing directory,
@@ -54,6 +54,10 @@ The rest, killed on the first run:
   • failed row write keeps the sidecar          → killed
 
 No equivalent mutants.
+
+The fifteenth came with AC3 Forge runs going through capture: forge
+sidecars named like a queue job's, which survived the suite as it stood and
+is killed by test_a_forge_runs_sidecar_cannot_take_a_queue_jobs_name.
 """
 import asyncio
 import json
@@ -1395,3 +1399,17 @@ def test_two_jobs_on_one_file_stage_to_different_names():
     from app.core.revert_capture import staged_sidecar_path
 
     assert staged_sidecar_path(7, 1) != staged_sidecar_path(7, 2)
+
+
+def test_a_forge_runs_sidecar_cannot_take_a_queue_jobs_name():
+    """
+    AC3 Forge jobs number from their own table, so forge job 5 and queue job
+    5 on the same file are different runs with the same number. Sharing a
+    sidecar name, a forge run that failed after capture would delete — as
+    its own leftover — the sidecar the earlier job's revert point holds.
+    """
+    from app.core.revert_capture import sidecar_path_for, staged_sidecar_path
+
+    assert sidecar_path_for(7, 5, forge=True) != sidecar_path_for(7, 5)
+    assert staged_sidecar_path(7, 5, forge=True) != staged_sidecar_path(7, 5)
+

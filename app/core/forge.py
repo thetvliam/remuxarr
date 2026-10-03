@@ -207,9 +207,15 @@ async def run_forge_command(
     action_label:      str,
     progress_callback: Callable[[ForgeProgress], Awaitable[None]] | None = None,
     timeout_seconds:   float | None = None,
+    before_staging:    Callable[[str], Awaitable[str | None]] | None = None,
 ) -> ForgeResult:
     """
     Run a forge FFmpeg command with real-time progress tracking.
+
+    before_staging, if given, is awaited with the path of the finished
+    output before it replaces the file, exactly as for a queue job: a
+    non-None return aborts the run with the file untouched. The worker
+    uses it to capture a revert point.
 
     Writes to temp_path, then atomically renames to output_path on success.
     Always cleans up the temp file on failure.
@@ -261,12 +267,16 @@ async def run_forge_command(
             action=STAGING_ACTION,
         ))
 
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_path)
+
     result = await run_staged_subprocess(
         cmd,
         [StagedOutput(temp_path=temp_path, final_path=output_path)],
         on_progress_line=on_progress_line,
         stderr_tail_lines=20,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
         on_staging_progress=on_staging if progress_callback else None,
     )
 
@@ -695,6 +705,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
 
         return {
             "job_id":             job.id,
+            "file_id":            job.file_id,
             "is_undo":            job.is_undo,
             "file_path":          media.path,
             "filename":           media.filename,
@@ -708,6 +719,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
             # this function already holds the session open. The command
             # builders need it to honour add_faststart_to_mp4.
             "add_faststart":       app_cfg.get("add_faststart_to_mp4", True),
+            # The whole settings dict, for revert capture: it decides from
+            # revert_enabled and revert_require_point, as it does for jobs.
+            "app_cfg":             app_cfg,
         }
     finally:
         db.close()

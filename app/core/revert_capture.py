@@ -194,7 +194,17 @@ class _Unavailable(Exception):
     """The recycle bin could not provide a revert point. Governed by the setting."""
 
 
-def sidecar_path_for(file_id: int, job_id: int) -> str:
+def _job_part(job_id: int, forge: bool) -> str:
+    """
+    The job half of a sidecar's name. AC3 Forge jobs number from their own
+    table, so forge job 5 and queue job 5 on the same file would otherwise
+    share a name — and a forge run that failed after capture would then
+    delete, as its own leftover, the sidecar the earlier job's point holds.
+    """
+    return f"forge{job_id}" if forge else str(job_id)
+
+
+def sidecar_path_for(file_id: int, job_id: int, *, forge: bool = False) -> str:
     """
     Name a sidecar after the file and job that produced it.
 
@@ -203,11 +213,12 @@ def sidecar_path_for(file_id: int, job_id: int) -> str:
     would silently overwrite a revert point another row still points at.
     """
     return os.path.join(
-        app_settings.RECYCLE_DIR, f"{file_id}_{job_id}{SIDECAR_SUFFIX}"
+        app_settings.RECYCLE_DIR,
+        f"{file_id}_{_job_part(job_id, forge)}{SIDECAR_SUFFIX}",
     )
 
 
-def staged_sidecar_path(file_id: int, job_id: int) -> str:
+def staged_sidecar_path(file_id: int, job_id: int, *, forge: bool = False) -> str:
     """
     Where a sidecar is written before it is renamed into place.
 
@@ -231,7 +242,8 @@ def staged_sidecar_path(file_id: int, job_id: int) -> str:
     sidecar write interrupted by a crash. The retention pass ignores it,
     because it only touches names ending in SIDECAR_SUFFIX.
     """
-    return os.path.join(app_settings.RECYCLE_DIR, f"{file_id}_{job_id}.part")
+    return os.path.join(app_settings.RECYCLE_DIR,
+                        f"{file_id}_{_job_part(job_id, forge)}.part")
 
 
 async def _off_loop(fn, *args):
@@ -412,9 +424,14 @@ async def capture(
     file_id: int,
     job_id: int,
     app_cfg: dict,
+    forge: bool = False,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
+
+    forge marks an AC3 Forge run rather than a queue job. It rewrites the
+    file in place just as a job does, so it goes through here too; the flag
+    only changes the sidecar's name and the log lines.
 
     Returns (captured, error). A non-None error is returned straight to the
     staging hook and aborts the run with the source file untouched; it is
@@ -424,6 +441,7 @@ async def capture(
         return None, None
 
     require = bool(app_cfg.get("revert_require_point"))
+    label = f"Forge job {job_id}" if forge else f"Job {job_id}"
 
     try:
         ready, reason = await _off_loop(recycle_dir_status)
@@ -479,8 +497,8 @@ async def capture(
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
         if not lost:
             logger.info(
-                "Job %d: nothing is missing from the original, no revert "
-                "point needed", job_id,
+                "%s: nothing is missing from the original, no revert "
+                "point needed", label,
             )
             return None, None
 
@@ -494,7 +512,7 @@ async def capture(
 
         sources = _plan_sources(lost, has_previous_sidecar=extend)
 
-        sidecar = sidecar_path_for(file_id, job_id)
+        sidecar = sidecar_path_for(file_id, job_id, forge=forge)
         # Staged through a .part, like FFmpeg's outputs.
         #
         # It was not, and that made two things untrue at once. The startup
@@ -507,13 +525,13 @@ async def capture(
         #
         # Writing to .part and renaming means a partial sidecar is always
         # named as one, and a complete sidecar appears atomically.
-        staged = staged_sidecar_path(file_id, job_id)
+        staged = staged_sidecar_path(file_id, job_id, forge=forge)
         try:
             cmd = build_sidecar_command(inputs, staged, sources)
         except SidecarUnsupported as exc:
             logger.info(
-                "Job %d: no revert point possible for %s — %s",
-                job_id, input_path, exc,
+                "%s: no revert point possible for %s — %s",
+                label, input_path, exc,
             )
             return None, None
 
@@ -562,9 +580,9 @@ async def capture(
             raise _Unavailable(f"Sidecar vanished after being written: {exc}") from exc
 
         logger.info(
-            "Job %d: revert point %s (%d stream(s) from the original, "
+            "%s: revert point %s (%d stream(s) from the original, "
             "%.1f MB) → %s",
-            job_id,
+            label,
             "extended" if extend else ("replaced" if existing else "captured"),
             len(lost), size / 1024 / 1024, sidecar,
         )
@@ -584,13 +602,13 @@ async def capture(
             # point, so the cost is the wasted remux and nothing else —
             # which is the only reason refusing is a reasonable option.
             logger.error(
-                "Job %d: refusing to process %s without a revert point — %s",
-                job_id, input_path, exc,
+                "%s: refusing to process %s without a revert point — %s",
+                label, input_path, exc,
             )
             return None, f"No revert point could be recorded: {exc}"
 
         logger.warning(
-            "Job %d: proceeding without a revert point for %s — %s",
-            job_id, input_path, exc,
+            "%s: proceeding without a revert point for %s — %s",
+            label, input_path, exc,
         )
         return None, None
