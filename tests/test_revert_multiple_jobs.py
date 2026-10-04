@@ -104,6 +104,9 @@ another thread; about one run in twenty failed. It now uses a database
 file. The mutants these four tests kill were mapped before and after that
 change and are the same: the hook not given to the run, the runner not
 forwarding it, the point not recorded, and a capture refusal ignored.
+
+The two tests after them check the forge jobs a revert leaves behind; their
+mutants are recorded in test_forge_undo_resolution.
 """
 import asyncio
 import json
@@ -1518,3 +1521,48 @@ def test_a_forge_run_that_cannot_keep_a_revert_point_is_refused(forge_lib, monke
 
     assert job.status == "undo_failed"
     assert lib["path"].read_bytes() == before, "the file was rewritten anyway"
+
+
+def test_a_revert_that_removes_the_forged_track_frees_the_file_for_forging(forge_lib):
+    """
+    Processed, then forged, then reverted: the AC3 goes with the revert. Its
+    forge job used to keep saying "success", so the Forge page listed the
+    file as forged and queueing it again was refused as already processed.
+    """
+    from app.api.routes.forge import QueueForgeRequest, add_to_queue
+    from app.database.models import Ac3ForgeJob
+
+    lib = forge_lib
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
+    forged = _forge(lib)
+    assert forged.status == "success"
+
+    outcome = _revert(lib)
+    assert outcome.success is True, outcome.error
+    assert ("audio", "ac3", "eng") not in _codecs(outcome.restored_path)
+
+    lib["db"].expire_all()
+    job = lib["db"].get(Ac3ForgeJob, forged.id)
+    assert (job.status, job.is_undo) == ("undone", True)
+
+    queued = add_to_queue(QueueForgeRequest(file_id=lib["media"].id), lib["db"])
+    assert queued, "the file could not be queued for forging again"
+
+
+def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
+    """
+    Forged before processing, the AC3 is part of the original: the revert
+    puts it back, and the forge job's "success" is still the truth.
+    """
+    from app.database.models import Ac3ForgeJob
+
+    lib = forge_lib
+    forged = _forge(lib)
+    _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
+
+    outcome = _revert(lib)
+    assert outcome.success is True, outcome.error
+    assert ("audio", "ac3", "eng") in _codecs(outcome.restored_path)
+
+    lib["db"].expire_all()
+    assert lib["db"].get(Ac3ForgeJob, forged.id).status == "success"

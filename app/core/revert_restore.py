@@ -64,6 +64,7 @@ from app.core.ffmpeg import (
 from app.core.probe import ProbeError, extract_format_info, extract_tracks, probe_file
 from app.core.recycle import delete_sidecar
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
+from app.core.timeutil import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,59 @@ def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
     ), None
 
 
+def _settle_forge_jobs(db, file_id: int, tracks: list[dict]) -> None:
+    """
+    Bring the file's AC3 Forge jobs in line with the restored file.
+
+    A revert removes an AC3 forged after processing: it is not part of the
+    original. Its forge job still said "success", so the Forge page listed
+    the file as forged and refused to queue it again until an undo found
+    nothing to remove. An AC3 forged BEFORE processing is part of the
+    original, though, and comes back — its "success" is still true.
+
+    So the restored file decides, through resolve_forge_ac3_for_undo, the
+    test the undo itself uses: "absent" settles the file's finished forge
+    jobs as undone, the state a completed undo leaves; "found" leaves them
+    alone; "mismatch" — an AC3 5.1 where the forge never puts one — is
+    left alone too, as the undo refuses to guess about it.
+
+    "undo_failed" is settled with "success": the AC3 that undo could not
+    remove is gone now as well. Pending and running jobs cannot be here —
+    a revert is refused while the file has one (routes/revert.restore).
+
+    tracks is the probe _apply has just made of the restored file, so a
+    probe that failed never reaches here and the jobs stay as they were.
+    """
+    from app.core.forge import resolve_forge_ac3_for_undo
+    from app.database.models import Ac3ForgeJob
+
+    outcome, _index = resolve_forge_ac3_for_undo(tracks)
+    if outcome == "mismatch":
+        logger.warning(
+            "Forge jobs for file %d left as they are after its revert: the "
+            "restored file has an AC3 5.1 that is not its last audio track",
+            file_id,
+        )
+        return
+    if outcome == "found":
+        return
+
+    jobs = (db.query(Ac3ForgeJob)
+              .filter(Ac3ForgeJob.file_id == file_id,
+                      Ac3ForgeJob.status.in_(("success", "undo_failed")))
+              .all())
+    for job in jobs:
+        job.status = "undone"
+        job.is_undo = True
+        job.completed_at = utcnow()
+        job.error_message = None
+    if jobs:
+        logger.info(
+            "Marked %d AC3 Forge job(s) for file %d undone: the revert "
+            "removed the forged track", len(jobs), file_id,
+        )
+
+
 def _apply(db, plan: _Plan, restored_path: str) -> None:
     """
     Bring the database back in line with the file that is now on disk.
@@ -376,6 +430,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         )
         if fmt_info.get("container"):
             media.container = fmt_info["container"]
+        _settle_forge_jobs(db, media.id, track_list)
     except ProbeError as exc:
         logger.warning(
             "Post-revert track refresh failed for %s: %s — Track rows may be "

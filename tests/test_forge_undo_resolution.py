@@ -371,3 +371,150 @@ def test_original_status_matrix_unchanged():
             f"status={status!r}: expected match={should_match}, got {got!r}"
         )
         db.close()
+
+
+# ── After a revert ───────────────────────────────────────────────────────────
+#
+# A revert removes an AC3 forged after processing, and brings one forged
+# before it back. revert_restore._settle_forge_jobs uses the resolver above,
+# on the probe of the restored file, to bring the file's forge jobs in line.
+#
+# Mutants, run against the suite without these tests first (they were
+# written before the baseline was taken, so it deselected them), all
+# surviving it and all killed now — here, or by the two real-FFmpeg tests
+# at the end of test_revert_multiple_jobs: no settling at all, settling
+# when the AC3 came back, "mismatch" treated as "absent", "undo_failed"
+# left out, every file's jobs settled, a failed probe treated as "absent",
+# and is_undo left unset. A first version of the "came back" mutant was
+# equivalent — a redundant branch made it change nothing — and the branch
+# was removed so the mutant could mean something.
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def forge_db():
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
+
+    from app.database.models import Base, MediaFile
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    for file_id in (1, 2):
+        db.add(MediaFile(id=file_id, path=f"/m/{file_id}.mkv",
+                         filename=f"{file_id}.mkv", directory="/m",
+                         size=1, mtime=1.0))
+    db.commit()
+    return db
+
+
+def _job(db, file_id, status):
+    from app.database.models import Ac3ForgeJob
+
+    job = Ac3ForgeJob(file_id=file_id, status=status,
+                      is_undo=status in ("undo_pending", "undo_failed"))
+    db.add(job)
+    db.commit()
+    return job.id
+
+
+def _statuses(db):
+    from app.database.models import Ac3ForgeJob
+
+    db.expire_all()
+    return {j.id: (j.status, j.is_undo) for j in db.query(Ac3ForgeJob).all()}
+
+
+def test_a_revert_that_removed_the_forged_track_settles_its_jobs_as_undone(forge_db):
+    """
+    What a completed undo leaves: status undone, is_undo set. Until now the
+    job stayed "success", the Forge page listed the file as forged, and
+    queueing it again was refused as already processed.
+    """
+    from app.core.revert_restore import _settle_forge_jobs
+
+    done = _job(forge_db, 1, "success")
+    stuck = _job(forge_db, 1, "undo_failed")
+    failed_add = _job(forge_db, 1, "failed")
+
+    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    forge_db.commit()
+
+    statuses = _statuses(forge_db)
+    assert statuses[done] == ("undone", True)
+    assert statuses[stuck] == ("undone", True), (
+        "the AC3 an undo could not remove is gone now too"
+    )
+    assert statuses[failed_add] == ("failed", False), (
+        "a failed add never forged anything; there is nothing to settle"
+    )
+
+
+def test_a_revert_that_brought_the_forged_track_back_leaves_its_jobs(forge_db):
+    """Forged before processing, the AC3 is part of the original and returns."""
+    from app.core.revert_restore import _settle_forge_jobs
+
+    done = _job(forge_db, 1, "success")
+
+    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)])
+    forge_db.commit()
+
+    assert _statuses(forge_db)[done] == ("success", False)
+
+
+def test_an_ac3_where_the_forge_never_puts_one_is_not_guessed_about(forge_db):
+    """
+    An AC3 5.1 that is not the last audio track: the undo refuses to act on
+    that, and so does this. Settling it as undone would invite a second
+    forge onto a file that may still carry the first.
+    """
+    from app.core.revert_restore import _settle_forge_jobs
+
+    done = _job(forge_db, 1, "success")
+
+    _settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1), _aac51(2)])
+    forge_db.commit()
+
+    assert _statuses(forge_db)[done] == ("success", False)
+
+
+def test_only_the_reverted_files_jobs_are_settled(forge_db):
+    from app.core.revert_restore import _settle_forge_jobs
+
+    mine = _job(forge_db, 1, "success")
+    other = _job(forge_db, 2, "success")
+
+    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    forge_db.commit()
+
+    statuses = _statuses(forge_db)
+    assert statuses[mine] == ("undone", True)
+    assert statuses[other] == ("success", False)
+
+
+def test_a_restored_file_that_could_not_be_probed_leaves_the_jobs(forge_db, monkeypatch):
+    """
+    No probe, no evidence either way. Settling regardless would read the
+    missing track list as "the AC3 is gone" — the revert's bookkeeping
+    reports the probe failure and leaves the next rescan to correct things.
+    """
+    import app.core.revert_restore as restore_mod
+    from app.core.probe import ProbeError
+
+    done = _job(forge_db, 1, "success")
+
+    def unprobeable(*_a, **_k):
+        raise ProbeError("ffprobe could not read the file")
+
+    monkeypatch.setattr(restore_mod, "probe_file", unprobeable)
+    plan = restore_mod._Plan(point_id=1, file_id=1, current_path="/m/1.mkv",
+                             sidecar_path="/r/1.remuxarr_revert", manifest={},
+                             original_path="/m/1.mkv", destination="/m/1.mkv")
+
+    restore_mod._apply(forge_db, plan, "/m/1.mkv")
+    forge_db.commit()
+
+    assert _statuses(forge_db)[done] == ("success", False)
