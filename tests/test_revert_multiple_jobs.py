@@ -97,6 +97,13 @@ against the forge as it was before capture, with the revert point reading
 as "modified since it was processed"; the fourth, a file with no point
 gaining none, is a guard and passed before too. Their mutants are recorded
 in test_forge_orchestration.
+
+Their fixture first used memory_engine(), whose single shared connection
+let the forge's progress writes end the revert-point transaction from
+another thread; about one run in twenty failed. It now uses a database
+file. The mutants these four tests kill were mapped before and after that
+change and are the same: the hook not given to the run, the runner not
+forwarding it, the point not recorded, and a capture refusal ignored.
 """
 import asyncio
 import json
@@ -1335,7 +1342,7 @@ def forge_lib(tmp_path, monkeypatch):
     """
     from sqlalchemy.orm import sessionmaker
 
-    from tests.conftest import memory_engine
+    from sqlalchemy import create_engine
 
     from app.config import settings as app_settings
     from app.database.models import Base, MediaFile
@@ -1362,7 +1369,18 @@ def forge_lib(tmp_path, monkeypatch):
         "-c:a", "aac", "-ac", "6", "-b:a", "64k",
         "-f", "matroska", str(path)], check=True)
 
-    engine = memory_engine()
+    # A database file, not memory_engine(). A forge run writes its progress
+    # from executor threads while the run's own bookkeeping writes from
+    # another, and memory_engine() hands every thread the same connection:
+    # one thread's commit then ends another's transaction mid-flight. That
+    # failed _record_revert_point about one run in twenty, with "cannot
+    # commit - no transaction is active" — after the update had in fact been
+    # committed by the other thread, so its cleanup deleted the sidecar the
+    # point now named. A file gives each thread its own connection, as the
+    # app's own engine does.
+    engine = create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
+                           connect_args={"check_same_thread": False,
+                                         "timeout": 30})
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     for module in (session_mod, worker_mod, forge_mod):
