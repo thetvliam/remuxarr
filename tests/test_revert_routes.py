@@ -20,7 +20,7 @@ The restore endpoint returns as soon as the work is RUNNING, so the tests
 assert what it refuses and what it starts, not what it produces. What it
 produces is tested against real files in test_revert_execution.py.
 
-Verified by mutation, 26 applied, 26 killed:
+Verified by mutation, 30 applied, 30 killed:
 
   • Single-flight check removed                      → killed
   • Flag not rolled back when the thread fails to
@@ -61,6 +61,15 @@ surviving the suite as it stood first:
 The last three are killed by tests that pin the mechanism, the lock being
 held at commit and at acquire, rather than by a race: the window is too
 narrow to hit on purpose.
+
+Added with the notification after a revert (TestNotifyAfterRevert), all
+surviving the suite as it stood first:
+
+  • No announcement after a successful revert       → killed
+  • An announcement after a failed one too          → killed
+  • The announcement made while the file is locked  → killed
+  • The coroutine left open when it cannot be
+    scheduled                                       → killed
 
 No equivalent mutants.
 """
@@ -454,7 +463,7 @@ def test_a_completed_revert_releases_the_flag(client, monkeypatch):
     # Drive the worker body directly: the thread is what clears the flag,
     # and a test that only calls the route races it.
     revert_lock.acquire(file_id=point.file_id, point_id=point.id, path="/m/a.mkv")
-    revert_routes._run_revert(point.id, loop=_DummyLoop())
+    revert_routes._run_revert(point.id, point.file_id, loop=_DummyLoop())
 
     assert revert_lock.is_running() is False
     assert revert_lock.reverting_file_id() is None
@@ -485,6 +494,10 @@ def _no_broadcast(monkeypatch):
 
     monkeypatch.setattr(revert_routes, "broadcast_threadsafe",
                         lambda _payload, _loop: None)
+    # And the Sonarr/Radarr/Plex notification after a successful revert,
+    # at its plain-argument helper for the same reason.
+    monkeypatch.setattr(revert_routes, "_announce_revert",
+                        lambda _file_id, _path, _loop: None)
 
 
 # ── Attach ───────────────────────────────────────────────────────────────────
@@ -591,7 +604,7 @@ def test_the_completion_broadcast_uses_the_key_the_frontend_reads(client,
 
     monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
 
-    revert_routes._run_revert(point.id, loop=None)
+    revert_routes._run_revert(point.id, point.file_id, loop=None)
 
     payload = next(p for p in sent if isinstance(p, dict))
     assert payload["event"] == "revert_complete", (
@@ -617,7 +630,7 @@ def test_a_failed_revert_broadcasts_the_reason(client, monkeypatch):
 
     monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
 
-    revert_routes._run_revert(point.id, loop=None)
+    revert_routes._run_revert(point.id, point.file_id, loop=None)
 
     payload = next(p for p in sent if isinstance(p, dict))
     assert payload["event"] == "revert_complete"
@@ -1148,3 +1161,94 @@ class TestOneWriterPerFile:
 
         assert api.post(f"/api/revert/{point.id}/restore/").status_code == 200
         assert held == [True]
+
+
+# Taken at import, before the autouse fixture replaces it for every test.
+from app.api.routes.revert import _announce_revert as _REAL_ANNOUNCE  # noqa: E402
+
+
+class TestNotifyAfterRevert:
+    """
+    After a successful revert, Sonarr, Radarr and Plex are told about the
+    file as they are after a job — from the revert thread, once the file is
+    unlocked, through _announce_revert. These drive the thread body directly,
+    as the broadcast tests above do.
+    """
+
+    def _drive(self, client, monkeypatch, outcome):
+        import app.api.routes.revert as revert_routes
+
+        _api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+
+        async def fake(_pid, **_k):
+            return outcome
+
+        monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
+
+        announced = []
+        monkeypatch.setattr(
+            revert_routes, "_announce_revert",
+            lambda file_id, path, _loop: announced.append(
+                (file_id, path, revert_lock.is_running())),
+        )
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id, path="/m/a.mkv")
+        revert_routes._run_revert(point.id, point.file_id, loop=None)
+        return point, announced
+
+    def test_a_successful_revert_is_announced_with_the_restored_path(self, client, monkeypatch):
+        from app.core.revert_restore import RestoreOutcome
+
+        point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=True, restored_path="/m/Show.mkv"))
+
+        assert [(f, p) for f, p, _locked in announced] == [(point.file_id, "/m/Show.mkv")]
+
+    def test_a_failed_revert_is_not_announced(self, client, monkeypatch):
+        """The file did not change, so there is nothing for anyone to rescan."""
+        from app.core.revert_restore import RestoreOutcome
+
+        _point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=False, error="Show.mkv has changed size"))
+
+        assert announced == []
+
+    def test_the_announcement_waits_until_the_file_is_unlocked(self, client, monkeypatch):
+        """
+        The quality restore behind it waits up to two minutes for the
+        service's rescan. Announced under the lock, the file would stay
+        closed to jobs, forge runs and other reverts all that time.
+        """
+        from app.core.revert_restore import RestoreOutcome
+
+        _point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=True, restored_path="/m/Show.mkv"))
+
+        assert [locked for _f, _p, locked in announced] == [False]
+
+    def test_an_announcement_that_cannot_be_scheduled_closes_its_coroutine(self, monkeypatch):
+        """
+        If the app's loop is gone, scheduling raises — and the coroutine was
+        already built. Left open it is reported, at some later garbage
+        collection, as a warning against whatever else is running.
+        """
+        import app.api.routes.revert as revert_routes
+
+        made = []
+
+        async def notify(_file_id, _path):
+            return None
+
+        def building(file_id, path):
+            coro = notify(file_id, path)
+            made.append(coro)
+            return coro
+
+        monkeypatch.setattr(revert_routes, "notify_after_revert", building)
+
+        _REAL_ANNOUNCE(1, "/m/Show.mkv", None)
+
+        assert len(made) == 1
+        assert made[0].cr_frame is None, "the coroutine was left open"
+

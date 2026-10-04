@@ -1787,48 +1787,53 @@ def _load_post_job_data(job_id: int) -> dict | None:
 
         cfg = get_app_settings(db)
 
-        def _arr_data(id_attr, enabled_key, url_key, api_key_setting,
-                      local_prefix_key, remote_prefix_key, service_name):
-            if not getattr(job, id_attr):
-                return None
-            if not cfg.get(enabled_key, False):
-                return None
-            url     = (cfg.get(url_key) or "").rstrip("/")
-            api_key = (cfg.get(api_key_setting) or "")
-            if not url or not api_key:
-                logger.warning(
-                    "%s notification skipped for job %d: %s or %s not configured",
-                    service_name, job_id, url_key, api_key_setting,
-                )
-                return None
-            # The *arr reports its own view of the path, which is not
-            # Remuxarr's when the two containers mount the library
-            # differently. Sent already translated so the restore can
-            # compare against what the service will report, using the same
-            # prefixes the webhook uses in the opposite direction.
-            return {
-                "entity_id":   getattr(job, id_attr),
-                "url":         url,
-                "api_key":     api_key,
-                "output_path": translate_path(
-                    job.output_path or "",
-                    cfg.get(local_prefix_key, "") or "",
-                    cfg.get(remote_prefix_key, "") or "",
-                ) or None,
-            }
-
-        sonarr = _arr_data(
-            "sonarr_series_id", "sonarr_enabled",
-            "sonarr_url", "sonarr_api_key",
-            "sonarr_path_prefix_local", "sonarr_path_prefix_remote", "Sonarr",
-        )
-        radarr = _arr_data(
-            "radarr_movie_id", "radarr_enabled",
-            "radarr_url", "radarr_api_key",
-            "radarr_path_prefix_local", "radarr_path_prefix_remote", "Radarr",
-        )
-
+        sonarr = _arr_notify_target(cfg, "sonarr", job.sonarr_series_id,
+                                    job.output_path, f"job {job_id}")
+        radarr = _arr_notify_target(cfg, "radarr", job.radarr_movie_id,
+                                    job.output_path, f"job {job_id}")
         return {"final": final, "sonarr": sonarr, "radarr": radarr}
+
+
+def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
+                       local_path: str | None, context: str) -> dict | None:
+    """
+    What _trigger_arr_notify needs to tell Sonarr or Radarr about a file,
+    or None when there is no one to tell: no series/movie id (the file did
+    not come from that service's webhook), the service off, or its url or
+    key missing.
+
+    service is "sonarr" or "radarr", which is also the prefix of each of
+    its settings. Shared by jobs and reverts; context names which, for the
+    log line.
+    """
+    name = "Sonarr" if service == "sonarr" else "Radarr"
+    if not entity_id:
+        return None
+    if not cfg.get(f"{service}_enabled", False):
+        return None
+    url     = (cfg.get(f"{service}_url") or "").rstrip("/")
+    api_key = (cfg.get(f"{service}_api_key") or "")
+    if not url or not api_key:
+        logger.warning(
+            "%s notification skipped for %s: %s_url or %s_api_key not configured",
+            name, context, service, service,
+        )
+        return None
+    # The *arr reports its own view of the path, which is not Remuxarr's
+    # when the two containers mount the library differently. Sent already
+    # translated so the restore can compare against what the service will
+    # report, using the same prefixes the webhook uses in the opposite
+    # direction.
+    return {
+        "entity_id":   entity_id,
+        "url":         url,
+        "api_key":     api_key,
+        "output_path": translate_path(
+            local_path or "",
+            cfg.get(f"{service}_path_prefix_local", "") or "",
+            cfg.get(f"{service}_path_prefix_remote", "") or "",
+        ) or None,
+    }
 
 
 async def _trigger_arr_notify(
@@ -2047,66 +2052,153 @@ def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
             return None
 
         cfg = get_app_settings(db)
-        if not cfg.get("plex_enabled", False):
-            return None
+        return _plex_refresh_target(db, cfg, media, f"forge job {forge_job_id}")
 
-        url   = (cfg.get("plex_url") or "").rstrip("/")
-        token = cfg.get("plex_token") or ""
-        if not url or not token:
-            logger.warning(
-                "Plex notification skipped for forge job %d: plex_url or "
-                "plex_token not configured",
-                forge_job_id,
+
+def _plex_refresh_target(db, cfg: dict, media: MediaFile,
+                         context: str) -> dict | None:
+    """
+    What _trigger_plex_notify needs to refresh media.path in Plex, or None
+    when Plex is off or unconfigured. Queues the deeper Analyze too, when
+    plex_analyze_backlog_enabled is on: used where a file's tracks changed
+    — a forge run, a revert — which a plain refresh often does not make
+    Plex re-read. context names the caller for the log lines.
+    """
+    if not cfg.get("plex_enabled", False):
+        return None
+
+    url   = (cfg.get("plex_url") or "").rstrip("/")
+    token = cfg.get("plex_token") or ""
+    if not url or not token:
+        logger.warning(
+            "Plex notification skipped for %s: plex_url or "
+            "plex_token not configured",
+            context,
+        )
+        return None
+
+    mappings = cfg.get("plex_path_mappings", [])
+    if not mappings:
+        logger.warning(
+            "Plex notification skipped for %s: no "
+            "plex_path_mappings configured",
+            context,
+        )
+        return None
+
+    # Tracks appearing or disappearing is precisely the case the backlog
+    # exists for: a plain refresh often won't make Plex re-read stream
+    # metadata, and the whole point of forging AC3 — or of a revert — is
+    # that the client sees the tracks the file now has. Queue the deeper
+    # Analyze when the user has opted into it. No expected_language: that
+    # check is for a job that re-tagged a track, and neither caller is one.
+    if cfg.get("plex_analyze_backlog_enabled", False):
+        # Same dedup as the main pipeline's enqueue. Without it a file that
+        # is forged and then undone — or forged twice while the drain is
+        # behind — accumulates a backlog row per operation, and every one
+        # of them issues its own Analyze against the same ratingKey.
+        # Analyze is the expensive Plex call the backlog exists to
+        # rate-limit in the first place, so duplicates defeat the point of
+        # the queue and multiply load on a server that is often a NAS.
+        existing = (
+            db.query(PlexAnalyzeBacklog)
+            .filter(PlexAnalyzeBacklog.file_id == media.id)
+            .first()
+        )
+        if existing:
+            logger.debug(
+                "Plex: %s already queued for backlog analyze, not re-adding "
+                "after %s", media.path, context,
             )
-            return None
-
-        mappings = cfg.get("plex_path_mappings", [])
-        if not mappings:
-            logger.warning(
-                "Plex notification skipped for forge job %d: no "
-                "plex_path_mappings configured",
-                forge_job_id,
+        else:
+            db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
+            db.commit()
+            logger.info(
+                "Plex: queued %s for backlog analyze after %s",
+                media.path, context,
             )
-            return None
 
-        # An audio track appearing or disappearing is precisely the case
-        # the backlog exists for: a plain refresh often won't make Plex
-        # re-read stream metadata, and the whole point of forging AC3 is
-        # that the track becomes visible to the client. Queue the deeper
-        # Analyze when the user has opted into it. No expected_language —
-        # forge changes the codec layout, not language tags.
-        if cfg.get("plex_analyze_backlog_enabled", False):
-            # Same dedup as the main pipeline's enqueue. Without it a file that
-            # is forged and then undone — or forged twice while the drain is
-            # behind — accumulates a backlog row per operation, and every one
-            # of them issues its own Analyze against the same ratingKey.
-            # Analyze is the expensive Plex call the backlog exists to
-            # rate-limit in the first place, so duplicates defeat the point of
-            # the queue and multiply load on a server that is often a NAS.
-            existing = (
-                db.query(PlexAnalyzeBacklog)
-                .filter(PlexAnalyzeBacklog.file_id == media.id)
-                .first()
-            )
-            if existing:
-                logger.debug(
-                    "Plex: %s already queued for backlog analyze, not re-adding "
-                    "after forge job %d", media.path, forge_job_id,
-                )
-            else:
-                db.add(PlexAnalyzeBacklog(file_id=media.id, expected_language=None))
-                db.commit()
-                logger.info(
-                    "Plex: queued %s for backlog analyze after forge job %d",
-                    media.path, forge_job_id,
-                )
+    return {
+        "url":        url,
+        "token":      token,
+        "mappings":   mappings,
+        "local_path": media.path,
+    }
 
-        return {
-            "url":        url,
-            "token":      token,
-            "mappings":   mappings,
-            "local_path": media.path,
-        }
+
+def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
+    """
+    Who to tell about a reverted file: Sonarr or Radarr, and Plex — the
+    same as after a job. A revert changes the tracks and often the
+    extension, so the services' view of the file is as stale as after one.
+
+    The series/movie id comes from the newest queue item for the file that
+    carries one, which is how the file reached Remuxarr from that service's
+    webhook. A file only ever processed from a scan has none, and is not
+    announced to Sonarr or Radarr — as for its jobs.
+
+    restored_path, not MediaFile.path: the revert's own bookkeeping can fail
+    after the file is written, leaving the row on the old path, and it is
+    the file on disk the services need to find.
+    """
+    with SessionLocal() as db:
+        cfg = get_app_settings(db)
+        context = f"the revert of {restored_path}"
+
+        def newest_id(column):
+            row = (db.query(column)
+                     .filter(QueueItem.file_id == file_id, column.isnot(None))
+                     .order_by(QueueItem.id.desc())
+                     .first())
+            return row[0] if row else None
+
+        sonarr = _arr_notify_target(cfg, "sonarr",
+                                    newest_id(QueueItem.sonarr_series_id),
+                                    restored_path, context)
+        radarr = _arr_notify_target(cfg, "radarr",
+                                    newest_id(QueueItem.radarr_movie_id),
+                                    restored_path, context)
+
+        plex = None
+        media = db.get(MediaFile, file_id)
+        if media is not None:
+            plex = _plex_refresh_target(db, cfg, media, context)
+            if plex is not None:
+                plex["local_path"] = restored_path
+
+        return {"sonarr": sonarr, "radarr": radarr, "plex": plex}
+
+
+async def notify_after_revert(file_id: int, restored_path: str) -> None:
+    """
+    Tell Sonarr, Radarr and Plex about a reverted file, as _run_and_broadcast
+    does after a job: rescan then put the quality back, and refresh Plex.
+
+    Runs on the main loop, fire-and-forget, AFTER the revert has released the
+    file — the quality restore can wait up to two minutes for the rescan, and
+    the file must not stay locked against jobs while it does.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        data = await loop.run_in_executor(
+            None, _load_revert_notify_data, file_id, restored_path,
+        )
+    except Exception:
+        logger.exception("Could not load notification settings after a revert")
+        return
+
+    if data["sonarr"]:
+        asyncio.create_task(_trigger_arr_notify(
+            data["sonarr"], loop, notify_sonarr, restore_episode_quality,
+            "Sonarr",
+        ))
+    if data["radarr"]:
+        asyncio.create_task(_trigger_arr_notify(
+            data["radarr"], loop, notify_radarr, restore_movie_quality,
+            "Radarr",
+        ))
+    if data["plex"]:
+        asyncio.create_task(_trigger_plex_notify(data["plex"], loop))
 
 
 async def _trigger_plex_notify(data: dict, loop: asyncio.AbstractEventLoop) -> None:

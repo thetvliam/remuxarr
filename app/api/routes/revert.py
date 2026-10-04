@@ -21,6 +21,7 @@ from app.api.ws_manager import broadcast_threadsafe
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
+from app.core.worker import notify_after_revert
 from app.core.revert_restore import (
     recorded_path, restore_blocked_reason, restore_destination,
     restore_revert_point,
@@ -193,7 +194,7 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
         # thread pool with every sync route handler, and a revert blocking
         # on FFmpeg and ffprobe would starve HTTP requests.
         threading.Thread(
-            target=_run_revert, args=(point_id, loop),
+            target=_run_revert, args=(point_id, point.file_id, loop),
             name="remuxarr-revert", daemon=True,
         ).start()
         started = True
@@ -208,7 +209,13 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
     return {"status": "started", "point_id": point_id}
 
 
-def _run_revert(point_id: int, loop) -> None:
+def _run_revert(point_id: int, file_id: int, loop) -> None:
+    """
+    file_id is passed in rather than read back afterwards: a successful
+    revert deletes the point, and with it the only record of which file
+    it was for.
+    """
+    outcome = None
     try:
         outcome = asyncio.run(restore_revert_point(point_id))
         payload = {
@@ -230,6 +237,31 @@ def _run_revert(point_id: int, loop) -> None:
         revert_lock.release()
 
     broadcast_threadsafe(payload, loop)
+
+    # Sonarr, Radarr and Plex hear about the file as they do after a job.
+    # Only now, with the lock released: the quality restore waits on the
+    # service's rescan, and the file must not stay locked while it does.
+    if outcome is not None and outcome.success:
+        _announce_revert(file_id, outcome.restored_path, loop)
+
+
+def _announce_revert(file_id: int, restored_path: str, loop) -> None:
+    """
+    Hand notify_after_revert to the app's loop from the revert thread.
+
+    The same care as ws_manager.broadcast_threadsafe, for the same reasons:
+    a notification must never turn a finished revert into a crashed thread,
+    and the coroutine has to be closed if it cannot be scheduled — it is
+    built before the call that would schedule it, and left unawaited it
+    surfaces later as a warning attributed to whatever else is running.
+    """
+    coro = notify_after_revert(file_id, restored_path)
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        coro.close()
+        logger.warning("Could not notify other services after reverting %s",
+                       restored_path)
 
 
 @router.get("/{point_id}/candidates/")
