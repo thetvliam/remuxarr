@@ -701,10 +701,39 @@ def build_restore_command(
     # Base codec first, per-stream overrides after — later options win.
     cmd += ["-c", "copy"] + codecs
     cmd += meta
+    cmd += _format_tag_args(manifest)
     # Chapters survive a remux, so the processed file still has them.
     cmd += ["-map_chapters", "0"]
     cmd += ["-f", out_fmt, output_path]
     return cmd
+
+
+def _format_tag_args(manifest: dict) -> list[str]:
+    """
+    The file's own tags — its title and the like, as opposed to each
+    stream's.
+
+    They need saying explicitly. The per-stream -map_metadata above, which
+    stops a track inheriting the processed file's tags, also stops FFmpeg
+    copying the file-level ones, so a restore used to come out with none.
+
+    With the original's tags recorded (manifest["format_tags"]), nothing is
+    copied from the processed file — a converted file's leftovers, an MP4's
+    brand keys in a Matroska, would otherwise ride along — and each recorded
+    tag is written back. A tag the muxer owns, such as Matroska's ENCODER,
+    may still be overwritten by it.
+
+    A manifest from before they were recorded has no "format_tags" key at
+    all, as opposed to an empty dict for a file that had none. For those the
+    processed file's tags are copied: exact after a job that kept the
+    container, and the best there is after one that did not.
+    """
+    if "format_tags" not in manifest:
+        return ["-map_metadata:g", "0:g"]
+    args = ["-map_metadata:g", "-1"]
+    for key, value in manifest["format_tags"].items():
+        args += ["-metadata", f"{key}={value}"]
+    return args
 
 
 # ── Executor — main remux ───────────────────────────────────────────────────────

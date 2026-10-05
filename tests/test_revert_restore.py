@@ -358,6 +358,45 @@ def test_sparse_streams_are_read_through_their_own_opening_of_each_file():
         )
 
 
+def _global_args(cmd):
+    """The -map_metadata:g setting and every global -metadata pair."""
+    mapping = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map_metadata:g"]
+    tags = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-metadata"]
+    return mapping, tags
+
+
+def test_the_files_recorded_tags_are_written_back():
+    """
+    Recorded tags win, alone: nothing is copied from the processed file,
+    whose leftovers — an MP4's brand keys, say — would otherwise ride along
+    into the restored file.
+    """
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest["format_tags"] = {"title": "My Film", "COMMENT": "kept"}
+
+    assert _global_args(_build(manifest)) == (
+        ["-1"], ["title=My Film", "COMMENT=kept"])
+
+
+def test_a_file_that_had_no_tags_gets_none():
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest["format_tags"] = {}
+
+    assert _global_args(_build(manifest)) == (["-1"], [])
+
+
+def test_a_point_from_before_tags_were_recorded_copies_the_processed_files():
+    """
+    No "format_tags" key at all: the point predates them. The processed
+    file's tags are the best left, and exact after a job that kept the
+    container. Copying nothing was the bug.
+    """
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest.pop("format_tags", None)
+
+    assert _global_args(_build(manifest)) == (["0:g"], [])
+
+
 def test_chapters_come_from_the_processed_file():
     """They survive a remux, so the processed file still has them."""
     cmd = _build(_manifest(_entry(0, "video", "h264", processed=0)))

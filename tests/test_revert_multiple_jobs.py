@@ -107,6 +107,17 @@ forwarding it, the point not recorded, and a capture refusal ignored.
 
 The two tests after them check the forge jobs a revert leaves behind; their
 mutants are recorded in test_forge_undo_resolution.
+
+The file's-own-tags tests at the end came with manifest["format_tags"]. All
+four fail against the code before it. Mutants run against the suite as it
+stood first, all surviving it, all killed now — here and by unit tests in
+test_revert_manifest and test_revert_restore: tags not recorded, recorded
+tags not written back, the processed file's tags copied alongside the
+recorded ones, no copy for a point that predates recording, and an
+extended point taking the processed file's tags. The restore's explicit
+-map_metadata:g -1 was not mutated away: the per-stream -map_metadata
+already stops the global copy, so removing it is equivalent today, and it
+is there so the restore does not depend on that side effect.
 """
 import asyncio
 import json
@@ -1566,3 +1577,108 @@ def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
 
     lib["db"].expire_all()
     assert lib["db"].get(Ac3ForgeJob, forged.id).status == "success"
+
+
+# ── The file's own tags ────────────────────────────────────────────────────────
+#
+# A title, a comment, whatever the release put on the file rather than on a
+# stream. The restore used to drop them all: its per-stream -map_metadata
+# also stops FFmpeg copying the file-level tags.
+
+
+def _tagged_library(tmp_path, monkeypatch):
+    """
+    _library's file with a title and a custom tag of the kind mkvmerge
+    keeps, and a French track for the jobs to drop: a job that loses
+    nothing leaves no revert point.
+    """
+    lib = _library(tmp_path, monkeypatch, audio=[(440, "eng"), (880, "fre")])
+    tagged = lib["path"].with_name("tagged.mkv")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lib["path"]),
+                    "-map", "0", "-c", "copy", "-metadata", "title=My Film",
+                    "-metadata", "RELEASE_GROUP=Fixture",
+                    "-f", "matroska", str(tagged)], check=True)
+    os.replace(tagged, lib["path"])
+    stat = lib["path"].stat()
+    lib["media"].size, lib["media"].mtime = stat.st_size, stat.st_mtime
+    lib["db"].commit()
+    lib["pristine"] = _summarise(lib["path"])
+    return lib
+
+
+def _file_tags(path):
+    tags = _probe(path)["format"].get("tags") or {}
+    return {k.lower(): v for k, v in tags.items()}
+
+
+def test_a_revert_through_mp4_gives_the_file_its_own_tags_back(tmp_path, monkeypatch):
+    """
+    MP4 holds only standard keys, so a custom one like RELEASE_GROUP is
+    already gone from the converted file; only what capture recorded can
+    bring it back. And nothing of
+    the MP4's own — its brand keys — comes along into the Matroska.
+    """
+    lib = _tagged_library(tmp_path, monkeypatch)
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1, fmt="mp4",
+                  suffix=".mp4")
+    assert "release_group" not in _file_tags(lib["path"]), "the MP4 kept it after all"
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    tags = _file_tags(outcome.restored_path)
+    assert tags["title"] == "My Film"
+    assert tags["release_group"] == "Fixture"
+    assert "major_brand" not in tags and "compatible_brands" not in tags
+
+
+def test_a_revert_after_a_matroska_job_keeps_the_files_own_tags(tmp_path, monkeypatch):
+    lib = _tagged_library(tmp_path, monkeypatch)
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    tags = _file_tags(outcome.restored_path)
+    assert (tags["title"], tags["release_group"]) == ("My Film", "Fixture")
+
+
+def test_a_second_job_does_not_replace_the_recorded_tags(tmp_path, monkeypatch):
+    """
+    The second job's input is the MP4 the first left, tags already gone.
+    Its capture extends the point and must keep the original's tags, not
+    record the MP4's in their place.
+    """
+    lib = _tagged_library(tmp_path, monkeypatch)
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1, fmt="mp4",
+                  suffix=".mp4")
+    _run_job_into(lib, ["-map", "0", "-c", "copy",
+                        "-metadata:s:a:0", "language=ger"],
+                  job_id=2, fmt="mp4", suffix=".mp4")
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert _file_tags(outcome.restored_path)["release_group"] == "Fixture"
+
+
+def test_a_point_from_before_tags_were_recorded_still_keeps_them(tmp_path, monkeypatch):
+    """
+    Points captured before this have no format_tags. Their revert copies
+    the processed file's tags — after a Matroska job, the original's.
+    """
+    from app.database.models import RevertPoint
+
+    lib = _tagged_library(tmp_path, monkeypatch)
+    _run_job(lib, ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
+
+    point = lib["db"].query(RevertPoint).one()
+    manifest = json.loads(point.manifest)
+    manifest.pop("format_tags", None)
+    point.manifest = json.dumps(manifest)
+    lib["db"].commit()
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert _file_tags(outcome.restored_path)["title"] == "My Film"

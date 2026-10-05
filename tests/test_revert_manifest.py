@@ -782,6 +782,24 @@ def test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar():
     assert cmd[cmd.index("-c:s:0") + 1] == "srt"
 
 
+def test_the_manifest_records_the_files_own_tags():
+    """
+    The title and the like belong to the file, not to a stream. A
+    conversion to MP4 drops most of them, so the original's are recorded
+    here rather than read back from the processed file at restore time.
+    """
+    from app.core.revert import build_manifest
+
+    probe = {"streams": [], "format": {"tags": {
+        "title": "My Film", "COMMENT": "kept by the release"}}}
+
+    manifest = build_manifest(probe, original_path="/m/a.mkv",
+                              original_container="matroska")
+
+    assert manifest["format_tags"] == {"title": "My Film",
+                                       "COMMENT": "kept by the release"}
+
+
 # ── Against real FFmpeg ──────────────────────────────────────────────────────
 
 def _build_source(tmp_path):

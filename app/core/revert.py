@@ -123,6 +123,14 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # the cheapest signal that separates them, and the only one in
         # this manifest that a stream-by-stream comparison cannot see.
         "duration": _as_float(probe_data.get("format", {}).get("duration")),
+        # The file's own tags — title, comments, whatever the release
+        # carried — verbatim. Recorded rather than read back from the
+        # processed file at restore time, because a conversion loses them
+        # there: an MP4 keeps only a handful of standard keys. Optional:
+        # manifests written before it lack it, and build_restore_command
+        # falls back for those. Not a version bump, which would make capture
+        # replace — and so discard — every existing point.
+        "format_tags": dict(probe_data.get("format", {}).get("tags") or {}),
     }
 
 
