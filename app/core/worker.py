@@ -555,6 +555,12 @@ def _needs_audio_transcode_retry(result) -> bool:
     )
 
 
+def _reencoded_indices(decision: ProcessingDecision) -> set[int]:
+    """The input streams a decision re-encodes rather than copies."""
+    return {a.stream_index for a in decision.actions
+            if a.action_type == "transcode_track"}
+
+
 def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
     """
     Return a copy of the decision where every audio copy_track action is
@@ -887,6 +893,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     will_create = _files_the_job_will_create(extract_actions)
 
+    # Which input streams the run now executing re-encodes rather than
+    # copies, for capture: a re-encode can look exactly like the original
+    # (AAC to AAC) and must still be stored. Set from the decision each run
+    # uses — the first attempt's, then the corrupt-audio retry's.
+    reencoded_by_this_run: set[int] = _reencoded_indices(decision)
+
     async def on_before_staging(produced_path: str) -> str | None:
         # Cleared BEFORE capturing, not after.
         #
@@ -914,6 +926,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             file_id       = file_dict["id"],
             job_id        = job_id,
             app_cfg       = app_cfg,
+            reencoded     = frozenset(reencoded_by_this_run),
         )
         if result:
             captured.append(result)
@@ -977,6 +990,8 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
+                reencoded_by_this_run.clear()
+                reencoded_by_this_run.update(_reencoded_indices(retry_decision))
                 result, _ = await execute_ffmpeg_combined(
                     input_path           = input_path,
                     output_path          = output_path,
@@ -1101,6 +1116,8 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id, file_dict["path"],
                 )
                 retry_decision = _make_audio_transcode_decision(decision)
+                reencoded_by_this_run.clear()
+                reencoded_by_this_run.update(_reencoded_indices(retry_decision))
                 result = await execute_ffmpeg(
                     input_path        = input_path,
                     output_path       = output_path,

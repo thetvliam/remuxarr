@@ -55,6 +55,11 @@ empty-error guard exists identically in both detectors, and the mutation
 above touched one copy. Mutating the other confirms both are covered, but
 it was never run against the unmutated suite, so it is evidence that the
 duplicate is pinned now — not that it was exposed before.
+
+What the retry tells revert capture came later: the input streams it
+re-encodes, so an AAC-to-AAC re-encode is still stored. Removing that from
+each of the two retry sites survived the suite as it stood, and each is
+killed by its own test at the end of this file.
 """
 import asyncio
 from types import SimpleNamespace
@@ -384,3 +389,82 @@ def test_an_unrelated_failure_runs_ffmpeg_only_once(rig):
 
     assert len(rig.ffmpeg_calls) == 1
     assert rig.finish_calls[0][4] == DISK_FAILURE
+
+
+# ── What the retry tells revert capture ──────────────────────────────────────
+#
+# The retry re-encodes the audio, and an AAC re-encode of an AAC track looks
+# to capture's matching exactly like the original — so capture is told which
+# input streams the running attempt re-encodes, and stores those whatever the
+# matching says (revert_capture._unmatch_reencoded).
+
+@pytest.fixture
+def capturing_rig(rig, monkeypatch):
+    """
+    rig, with each fake executor running the staging hook as the real ones
+    do — only for a run that succeeded — and capture replaced by a recorder.
+    """
+    import app.core.revert_capture as capture_mod
+
+    rig.captures = []
+
+    async def capture(**kwargs):
+        rig.captures.append(kwargs)
+        return None, None
+
+    monkeypatch.setattr(capture_mod, "capture", capture)
+
+    async def staging_ffmpeg(**kwargs):
+        rig.ffmpeg_calls.append(kwargs)
+        result = rig.results.pop(0)
+        if result.success:
+            await kwargs["before_staging"]("/produced.mkv")
+        return result
+
+    async def staging_combined(**kwargs):
+        rig.combined_calls.append(kwargs)
+        result = rig.results.pop(0)
+        if result.success:
+            await kwargs["before_staging"]("/produced.mkv")
+        return result, []
+
+    monkeypatch.setattr(worker, "execute_ffmpeg", staging_ffmpeg)
+    monkeypatch.setattr(worker, "execute_ffmpeg_combined", staging_combined)
+    return rig
+
+
+def test_the_two_pass_retry_tells_capture_what_it_re_encoded(capturing_rig):
+    rig = capturing_rig
+    rig.actions = [copy_video(), copy_audio(stream_index=1)]
+    rig.results = [ffmpeg_result(rig, False, CORRUPT_AUDIO),
+                   ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert [c["reencoded"] for c in rig.captures] == [frozenset({1})]
+
+
+def test_the_combined_retry_tells_capture_what_it_re_encoded(capturing_rig):
+    rig = capturing_rig
+    rig.actions = [
+        copy_audio(stream_index=2),
+        Action(action_type="extract_subtitle", description="extract eng",
+               track_type="subtitle", stream_index=3,
+               external_path="/media/Show.eng.srt"),
+    ]
+    rig.results = [ffmpeg_result(rig, False, UNKNOWN_TIMESTAMP),
+                   ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert [c["reencoded"] for c in rig.captures] == [frozenset({2})]
+
+
+def test_a_job_that_copied_its_audio_reports_nothing_re_encoded(capturing_rig):
+    rig = capturing_rig
+    rig.actions = [copy_video(), copy_audio(stream_index=1)]
+    rig.results = [ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert [c["reencoded"] for c in rig.captures] == [frozenset()]

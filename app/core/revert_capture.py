@@ -340,6 +340,41 @@ def _plan_sources(
     return sources
 
 
+def _unmatch_reencoded(
+    matches: list[tuple[dict, int | None]],
+    reencoded: frozenset[int],
+    *,
+    extend: bool,
+) -> list[tuple[dict, int | None]]:
+    """
+    Count a re-encoded track as lost, whatever the matching says.
+
+    A job's corrupt-audio retry re-encodes every kept audio track to AAC
+    (worker._make_audio_transcode_decision). When the original was AAC
+    too, the re-encode has the same codec, channels and sample rate, so
+    matching pairs the two and nothing is stored — and a revert brings
+    back the lossy copy under the original's name. The bytes the original
+    had are only in the file this run was handed, so the track is lost
+    from the point of view of a revert, and stored from there.
+
+    reencoded holds input stream indices. On a first job that is the
+    manifest stream's own index; on a later one, the processed_index the
+    previous capture recorded against the file this job was handed.
+
+    Each such stream is marked "reencoded" in the manifest, and a marked
+    stream is never paired with a later file again. Otherwise the next job
+    would match its stored original against the file's re-encode, and
+    _reannotate would drop the stored copy in favour of the file's.
+    """
+    out = []
+    for stream, index in matches:
+        source_index = stream.get("processed_index") if extend else stream.get("index")
+        if source_index is not None and source_index in reencoded:
+            stream["reencoded"] = True
+        out.append((stream, None if stream.get("reencoded") else index))
+    return out
+
+
 def _reannotate(
     matches: list[tuple[dict, int | None]],
     sources: list[tuple[dict, int, int]],
@@ -425,6 +460,7 @@ async def capture(
     job_id: int,
     app_cfg: dict,
     forge: bool = False,
+    reencoded: frozenset[int] = frozenset(),
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
@@ -432,6 +468,9 @@ async def capture(
     forge marks an AC3 Forge run rather than a queue job. It rewrites the
     file in place just as a job does, so it goes through here too; the flag
     only changes the sidecar's name and the log lines.
+
+    reencoded is the input stream indices this run re-encoded rather than
+    copied — see _unmatch_reencoded.
 
     Returns (captured, error). A non-None error is returned straight to the
     staging hook and aborts the run with the source file untouched; it is
@@ -491,7 +530,8 @@ async def capture(
             manifest = existing.manifest
             container = manifest.get("container")
 
-        matches = match_streams(manifest, produced_probe)
+        matches = _unmatch_reencoded(
+            match_streams(manifest, produced_probe), reencoded, extend=extend)
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
