@@ -340,6 +340,16 @@ def _plan_sources(
     return sources
 
 
+def _discard_partial(staged: str) -> None:
+    """Remove a sidecar write that did not complete; already gone is fine."""
+    try:
+        os.remove(staged)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove the partial sidecar %s: %s", staged, exc)
+
+
 def _unmatch_reencoded(
     matches: list[tuple[dict, int | None]],
     reencoded: frozenset[int],
@@ -575,42 +585,54 @@ async def capture(
             )
             return None, None
 
-        await _run(cmd)
-
-        # Check the sidecar we just wrote actually has the layout the
-        # indices assume. sidecar_index is positional, and _plan_sources
-        # orders attachments last so map order and file order coincide —
-        # but that is a claim about the Matroska muxer, not a guarantee,
-        # and it is the exact claim that was wrong before. A mismatch means
-        # every index past the divergence points at the wrong stream, which
-        # produces a revert that succeeds and rebuilds the file with tracks
-        # and metadata shuffled. Refusing is the only safe answer.
+        # From here until the rename, a .part may exist. Any way out of
+        # this block but the rename removes it: FFmpeg failing part-way, the
+        # layout check refusing what it wrote, the rename itself failing —
+        # and cancellation, which is a BaseException and would slip past
+        # an "except Exception". Left behind, a .part is collected only by
+        # the startup sweep, counts against nothing, and on a nearly full
+        # volume each failed attempt added another. Removed synchronously:
+        # a cancelled task may not get to await anything more.
         try:
-            written = await _off_loop(probe_file, staged)
-        except ProbeError as exc:
-            raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
+            await _run(cmd)
 
-        expected = [stream.get("type") for stream, _i, _x in sources]
-        actual = [s.get("codec_type") for s in written.get("streams", [])]
-        if expected != actual:
-            raise _Unavailable(
-                f"The sidecar was written with a different stream order than "
-                f"requested ({actual} rather than {expected}); refusing to "
-                f"record indices that would point at the wrong streams."
-            )
+            # Check the sidecar we just wrote actually has the layout the
+            # indices assume. sidecar_index is positional, and _plan_sources
+            # orders attachments last so map order and file order coincide —
+            # but that is a claim about the Matroska muxer, not a guarantee,
+            # and it is the exact claim that was wrong before. A mismatch means
+            # every index past the divergence points at the wrong stream, which
+            # produces a revert that succeeds and rebuilds the file with tracks
+            # and metadata shuffled. Refusing is the only safe answer.
+            try:
+                written = await _off_loop(probe_file, staged)
+            except ProbeError as exc:
+                raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
 
-        # Re-resolve where every original stream lives, now that both the
-        # sidecar and the processed file have changed. _reannotate's
-        # docstring covers why it happens here and not at restore time,
-        # and what sidecar_index means; that reasoning lived in both
-        # places and only one copy would get corrected.
-        # Renamed only once the layout check has passed, so a sidecar at
-        # the real path is always one that was written completely AND
-        # verified.
-        try:
-            await _off_loop(os.replace, staged, sidecar)
-        except OSError as exc:
-            raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+            expected = [stream.get("type") for stream, _i, _x in sources]
+            actual = [s.get("codec_type") for s in written.get("streams", [])]
+            if expected != actual:
+                raise _Unavailable(
+                    f"The sidecar was written with a different stream order than "
+                    f"requested ({actual} rather than {expected}); refusing to "
+                    f"record indices that would point at the wrong streams."
+                )
+
+            # Re-resolve where every original stream lives, now that both the
+            # sidecar and the processed file have changed. _reannotate's
+            # docstring covers why it happens here and not at restore time,
+            # and what sidecar_index means; that reasoning lived in both
+            # places and only one copy would get corrected.
+            # Renamed only once the layout check has passed, so a sidecar at
+            # the real path is always one that was written completely AND
+            # verified.
+            try:
+                await _off_loop(os.replace, staged, sidecar)
+            except OSError as exc:
+                raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+        except BaseException:
+            _discard_partial(staged)
+            raise
 
         _reannotate(matches, sources)
 

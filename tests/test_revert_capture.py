@@ -25,7 +25,7 @@ has to either record the sidecar or delete it. A leaked sidecar is
 invisible: nothing scans the recycle volume, and with no row there is
 nothing left to find it by.
 
-Verified by mutation, 15 applied, 15 killed. One initially SURVIVED and
+Verified by mutation, 19 applied, 19 killed. One initially SURVIVED and
 is the more useful finding: removing the recycle-directory readiness
 check entirely. The unmounted-volume test still passed, because without
 the check the run reached FFmpeg, FFmpeg failed on the missing directory,
@@ -58,6 +58,14 @@ No equivalent mutants.
 The fifteenth came with AC3 Forge runs going through capture: forge
 sidecars named like a queue job's, which survived the suite as it stood and
 is killed by test_a_forge_runs_sidecar_cannot_take_a_queue_jobs_name.
+
+Four more came with removing a .part left by a write that did not finish.
+Three survived the suite as it stood and are killed by the tests at the
+end: no cleanup at all, cleanup that misses cancellation (except Exception
+rather than BaseException), and cleanup aimed at the finished sidecar's
+path instead of the .part. The fourth, cleanup swallowing the failure, was
+already killed by two existing tests that expect the failure to reach the
+job.
 """
 import asyncio
 import json
@@ -1413,3 +1421,75 @@ def test_a_forge_runs_sidecar_cannot_take_a_queue_jobs_name():
     assert sidecar_path_for(7, 5, forge=True) != sidecar_path_for(7, 5)
     assert staged_sidecar_path(7, 5, forge=True) != staged_sidecar_path(7, 5)
 
+
+
+# ── A sidecar write that does not finish ─────────────────────────────────────
+#
+# Sidecars are written to a .part and renamed into place once checked. A .part
+# left by a write that failed was collected only by the startup sweep and
+# counted against no limit; on a nearly full recycle volume, each failed
+# attempt added another.
+
+def _write_then(monkeypatch, exc):
+    """FFmpeg standing in: write the .part, then fail with exc."""
+    import app.core.revert_capture as rc
+
+    async def fake(cmd):
+        with open(cmd[-1], "wb") as f:
+            f.write(b"x" * 2048)
+        raise exc
+
+    monkeypatch.setattr(rc, "_run", fake)
+
+
+def test_ffmpeg_failing_part_way_leaves_no_partial_sidecar(recycle, monkeypatch):
+    import app.core.revert_capture as rc
+
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _write_then(monkeypatch, rc._Unavailable("FFmpeg failed writing the sidecar (rc=1)"))
+
+    _, error = _capture(
+        app_cfg={"revert_enabled": True, "revert_require_point": True},
+    )
+
+    assert error is not None, "the failure no longer reaches the job"
+    assert os.listdir(recycle) == []
+
+
+def test_a_sidecar_refused_for_its_layout_leaves_nothing_behind(recycle, monkeypatch):
+    """The layout check reads the .part; refusing it must not leave it."""
+    import app.core.revert_capture as rc
+
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _patch_ffmpeg(monkeypatch)
+    real_probe = rc.probe_file
+
+    def misread_sidecar(path, *a, **k):
+        if path.endswith(".part"):
+            return {"streams": [{"codec_type": "data"}], "format": {}}
+        return real_probe(path, *a, **k)
+
+    monkeypatch.setattr(rc, "probe_file", misread_sidecar)
+
+    _, error = _capture(
+        app_cfg={"revert_enabled": True, "revert_require_point": True},
+    )
+
+    assert error is not None
+    assert os.listdir(recycle) == []
+
+
+def test_a_cancelled_sidecar_write_leaves_nothing_and_stays_cancelled(recycle, monkeypatch):
+    """
+    Cancelling a job, or its timeout, arrives as CancelledError, which is not
+    an Exception: a cleanup written as "except Exception" lets it through
+    with the .part still on disk. And the cancellation itself has to carry
+    on to the job.
+    """
+    _patch_probes(monkeypatch, _ORIGINAL, _PRODUCED)
+    _write_then(monkeypatch, asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        _capture(app_cfg={"revert_enabled": True, "revert_require_point": False})
+
+    assert os.listdir(recycle) == []
