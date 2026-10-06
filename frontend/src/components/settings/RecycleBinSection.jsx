@@ -148,6 +148,19 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
         </div>
       )}
 
+      {/* A revert resets the file's record so the next scan looks at it
+        * afresh — deliberately, so "revert, fix the rule, rescan" works.
+        * Without the rule fixed, that scan processes it the same way again,
+        * which is easy to miss when the scan is a scheduled one. Said here,
+        * where it is read before reverting. */}
+      {data.recycle_bin_ready && (
+        <Note tone="dim">
+        A reverted file goes back to your rules: if the rule that changed it
+        still applies, the next scan will process it again. Change the rule
+        first, or turn on dry-run mode.
+        </Note>
+      )}
+
       <SubHeading label="RESTORABLE" count={attached.length} />
       {attached.length === 0 ? (
         <EmptyState msg="Nothing stored yet — process a file with the recycle bin on and its removed tracks are kept here" />

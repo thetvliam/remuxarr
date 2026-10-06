@@ -23,7 +23,7 @@
  * are pinned: an unmounted volume must not read as an empty bin, and a
  * revert point whose stored tracks are gone must not offer to match.
  *
- * Verified by mutation, 18 applied, 18 killed:
+ * Verified by mutation, 19 applied, 19 killed:
  *
  *   • Revert acting on the first click                  → killed
  *   • ConfirmBtn firing without confirming              → killed
@@ -44,6 +44,8 @@
  *   • Bulk discards left usable during a revert            → killed
  *   • "restores as" read from original_path rather than
  *     restore_path                                      → killed
+ *   • The note that the next scan processes a reverted
+ *     file again removed                               → killed
  *
  * That last one survived at first. The panel's handler is only passed by
  * attach, so removing the "is this structured?" check left restore's
@@ -440,6 +442,16 @@ describe("presentation", () => {
 
     expect(await screen.findByText(/no longer restore anything/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "MATCH" })).toBeNull();
+  });
+
+  it("says, before anything is reverted, that the next scan looks at the file again", async () => {
+    /* A revert resets the file's record so the next scan re-evaluates it,
+     * and with the rule unchanged that scan processes it the same way —
+     * overnight, with scheduled scans on. Easy to miss unless it is said
+     * where the Revert button is. */
+    setup();
+
+    expect(await screen.findByText(/next scan will process it again/i)).toBeTruthy();
   });
 
   it("warns when reverting will rename the file back", async () => {

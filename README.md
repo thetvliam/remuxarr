@@ -291,6 +291,11 @@ container. If the job converted MKV to MP4, reverting converts it back and
 restores the original file extension. An AC3 track added with AC3 Forge after
 processing is not part of the original, so reverting removes it.
 
+A reverted file goes back to your rules. The next scan looks at it afresh, so
+if the rule that changed it still applies, that scan processes it again - and
+with scheduled scans on, that can happen overnight. Change the rule first, or
+turn on dry-run mode, before reverting.
+
 **When it will refuse.** A revert point records the file as the job left it. If
 something else has written to that file since - Sonarr upgrading the episode is
 the usual case - the stored tracks belong to a different release, and muxing

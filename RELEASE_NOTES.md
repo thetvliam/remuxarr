@@ -63,3 +63,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - Recycle bin (beta): when a revert fails, its message now shows the whole reason and stays on screen long enough to read, instead of being cut off after a few words.
+
+## Changed
+
+- Recycle bin (beta): the recycle bin now says that a reverted file goes back to your rules, so the next scan will process it again unless you change the rule first or turn on dry-run mode.
