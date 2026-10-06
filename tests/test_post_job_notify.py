@@ -41,6 +41,17 @@ in _claim_next, and blanking it there changes nothing any test here
 asserts. That is correct — _claim_next is part of the queue lifecycle this
 file deliberately does not reach — but it is a real hole in worker.py's
 remaining 168 uncovered statements, not an equivalent mutant.
+
+Reverts came later and reuse these pieces: the *arr target builder was
+lifted out of _load_post_job_data into _arr_notify_target, and the forge's
+Plex body into _plex_refresh_target, so jobs, forge runs and reverts share
+one copy of each. Mutants for the revert path, run against the suite as it
+stood first: the newest-item ordering reversed, the "carries an id" filter
+dropped, Plex given the file's old path, and Radarr dispatched through
+Sonarr's calls all survived it and are killed by the tests at the end.
+Two were already killed through the shared helpers: the path left
+untranslated, and the Analyze queued with its setting off. The route side
+is in test_revert_routes.
 """
 import asyncio
 import json
@@ -607,3 +618,93 @@ def test_a_failing_email_send_never_escapes_the_trigger(db, monkeypatch):
     run(lambda loop: worker._trigger_email_notify(
         {"kind": "failure", "cfg": {}, "filename": "S.mkv",
          "error": "e", "count": 1}, loop))
+
+
+# ── After a revert ───────────────────────────────────────────────────────────
+#
+# A revert changes the tracks and often the extension, so the services hear
+# about it as they do after a job: _load_revert_notify_data decides who, and
+# notify_after_revert dispatches through the same triggers.
+
+def test_a_revert_takes_each_id_from_the_newest_queue_item_carrying_it(db):
+    """
+    A file processed twice has two queue items, and the newer one is the
+    service's current view of it — a series re-added in Sonarr gets a new
+    id. The older one is history.
+    """
+    settings(db, **ARR_ON)
+    job(db, 1, sonarr_series_id=11, radarr_movie_id=21)
+    job(db, 2, sonarr_series_id=12, radarr_movie_id=22, with_media=False)
+
+    data = worker._load_revert_notify_data(1, "/media/Show.mkv")
+
+    assert data["sonarr"]["entity_id"] == 12
+    assert data["radarr"]["entity_id"] == 22
+
+
+def test_a_newer_queue_item_without_an_id_does_not_hide_an_older_one(db):
+    """A later scan-queued job carries no id; the webhook's earlier one still counts."""
+    settings(db, **ARR_ON)
+    job(db, 1, radarr_movie_id=21)
+    job(db, 2, with_media=False)
+
+    data = worker._load_revert_notify_data(1, "/media/Show.mkv")
+
+    assert data["radarr"]["entity_id"] == 21
+
+
+def test_a_revert_announces_the_restored_path(db):
+    """
+    Converted to MP4, reverted to MKV: the services have to look for the
+    MKV. Sonarr and Radarr get it translated into their own view; Plex gets
+    it as Remuxarr sees it, and maps it itself.
+    """
+    settings(db, **ARR_ON, **PLEX_ON, sonarr_path_prefix_local="/media",
+             sonarr_path_prefix_remote="/tv")
+    media(db, 1, "/media/Show.mp4")
+    job(db, 1, with_media=False, sonarr_series_id=11)
+
+    data = worker._load_revert_notify_data(1, "/media/Show.mkv")
+
+    assert data["sonarr"]["output_path"] == "/tv/Show.mkv"
+    assert data["plex"]["local_path"] == "/media/Show.mkv"
+
+
+def test_a_file_that_never_came_from_a_webhook_only_reaches_plex(db):
+    settings(db, **ARR_ON, **PLEX_ON)
+    job(db, 1)
+
+    data = worker._load_revert_notify_data(1, "/media/Show.mkv")
+
+    assert data["sonarr"] is None and data["radarr"] is None
+    assert data["plex"] is not None
+
+
+def test_after_a_revert_each_service_gets_its_own_notifier(db, monkeypatch):
+    """The copy-paste guard again, at the dispatch: Radarr through Radarr's calls."""
+    calls = []
+
+    async def arr(data, _loop, notify_fn, restore_fn, name):
+        calls.append((name, data["entity_id"], notify_fn, restore_fn))
+
+    async def plex(data, _loop):
+        calls.append(("Plex", data["local_path"]))
+
+    monkeypatch.setattr(worker, "_trigger_arr_notify", arr)
+    monkeypatch.setattr(worker, "_trigger_plex_notify", plex)
+    monkeypatch.setattr(worker, "_load_revert_notify_data", lambda _f, _p: {
+        "sonarr": {"entity_id": 11}, "radarr": {"entity_id": 22},
+        "plex": {"local_path": "/media/Show.mkv"},
+    })
+
+    async def driver():
+        await worker.notify_after_revert(1, "/media/Show.mkv")
+        await asyncio.sleep(0)
+
+    asyncio.run(driver())
+
+    assert sorted(calls, key=lambda c: c[0]) == [
+        ("Plex", "/media/Show.mkv"),
+        ("Radarr", 22, worker.notify_radarr, worker.restore_movie_quality),
+        ("Sonarr", 11, worker.notify_sonarr, worker.restore_episode_quality),
+    ]

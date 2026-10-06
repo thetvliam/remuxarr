@@ -35,7 +35,7 @@
  * as an answer — which is the whole of the bug — so a mock without them
  * could not show it. Both mocks below now answer skips the way it does.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -140,6 +140,59 @@ async function answerCard(user) {
 
 const applyButton = () => screen.getByRole("button", { name: /^Apply/ });
 const applyRequest = () => posted.find(p => p.url.includes("/review/apply"))?.body;
+
+/* Finding things by what they are called rather than where they fall.
+ *
+ * An indexed query — the third Delete on the page — moves whenever a card
+ * gains a control or another card arrives above it, and the test then
+ * clicks something else and fails for a reason that has nothing to do with
+ * what it tests. These find the card by its heading, the row by its track's
+ * name, and the button by its label. Both test cards share their tracks, so
+ * a track name alone is never enough: everything is looked up inside a card.
+ */
+
+/* The card under a heading: the smallest element holding the heading and
+ * the card's Show files button ("Hide files" once pressed). Not the Skip
+ * button: that sits in a header row beside the heading, and the smallest
+ * element holding both is that row, without the tracks. */
+function card(heading) {
+  let el = screen.getByText(heading);
+  while (el && !within(el).queryByRole("button", { name: /^(Show|Hide) files/ })) {
+    el = el.parentElement;
+  }
+  if (!el) throw new Error(`No card under "${heading}"`);
+  return el;
+}
+
+/* A card's own answer for one track. The card's track rows render before
+ * its file list, so the first row with the track's name is the card's even
+ * when a file below has been opened and shows the same names. */
+async function choose(user, heading, track, choice) {
+  const row = within(card(heading)).getAllByText(track)[0].parentElement;
+  await user.click(within(row).getByRole("button", { name: choice }));
+}
+
+/* Both of a card's tracks given the same answer. */
+async function chooseAll(user, heading, choice) {
+  await screen.findByText(heading);
+  for (const track of ["Signs", "Track 2"]) await choose(user, heading, track, choice);
+}
+
+/* One file's own answer for one track, opening the card's file list and the
+ * file's row as needed. Looked up inside the file's row, so the card's rows
+ * of the same names are never in reach. */
+async function chooseForFile(user, heading, filename, track, choice) {
+  const name = new RegExp(filename.replace(/\./g, "\\."));
+  if (!within(card(heading)).queryByRole("button", { name })) {
+    await user.click(within(card(heading)).getByRole("button", { name: /^Show files/ }));
+  }
+  const fileRow = within(card(heading)).getByRole("button", { name }).parentElement;
+  if (!within(fileRow).queryByText(track)) {
+    await user.click(within(fileRow).getByRole("button", { name }));
+  }
+  const row = within(fileRow).getByText(track).parentElement;
+  await user.click(within(row).getByRole("button", { name: choice }));
+}
 
 describe("what Apply carries", () => {
   it("sends each file's own stream numbers, not the card's slots", async () => {
@@ -600,7 +653,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
 
     expect(applyButton()).toHaveTextContent("Apply: 2 decided");
@@ -621,7 +674,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP], [reprobed]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
     await user.click(applyButton());
 
@@ -638,10 +691,8 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP, SECOND], [SECOND]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
-    const deletes = () => screen.getAllByRole("button", { name: "Delete" });
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, GROUP.heading, "Delete");
+    await chooseAll(user, SECOND.heading, "Delete");
     expect(applyButton()).toHaveTextContent("Apply: 3 decided");
 
     await refresh(rerender, loads, SECOND.heading);
@@ -665,7 +716,7 @@ describe("a refresh while choices are staged", () => {
     const loads = mockLoads([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await refresh(rerender, loads, GROUP.heading);
     await waitFor(() => expect(applyButton()).toHaveTextContent("Apply: 3 decided"));
 
@@ -685,7 +736,7 @@ describe("a refresh while choices are staged", () => {
     ] } });
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await user.click(applyButton());
 
     await waitFor(() => expect(toast).toHaveBeenCalled());
@@ -763,7 +814,6 @@ describe("which cards are previewed", () => {
    * through update the page. */
   const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
 
-  const deletes = () => screen.getAllByRole("button", { name: "Delete" });
 
   async function refresh(rerender, state, heading) {
     const before = state.loads;
@@ -777,13 +827,12 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP, SECOND]]);
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, SECOND.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2], [3]]));
 
-    await user.click(screen.getAllByRole("button", { name: "Keep" })[2]);
+    await choose(user, SECOND.heading, "Signs", "Keep");
     await quiet();
     expect(state.previews).toEqual([[1, 2], [3], [3]]);
   });
@@ -794,11 +843,11 @@ describe("which cards are previewed", () => {
     render(page(0));
 
     await screen.findByText(SECOND.heading);
-    await user.click(deletes()[0]);
-    await user.click(deletes()[2]);
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await choose(user, SECOND.heading, "Signs", "Delete");
     // Each click below completes a card, the second well inside 250ms.
-    await user.click(deletes()[1]);
-    await user.click(deletes()[3]);
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    await choose(user, SECOND.heading, "Track 2", "Delete");
     await quiet();
 
     expect(state.previews).toContainEqual([1, 2]);
@@ -810,7 +859,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await screen.findByText(LINE);
     await refresh(rerender, state, GROUP.heading);
     await quiet();
@@ -829,7 +878,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     await refresh(rerender, state, GROUP.heading);
 
@@ -847,7 +896,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [joined]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await screen.findByText(LINE);
     state.mode = "hang";
     await refresh(rerender, state, GROUP.heading);
@@ -860,11 +909,10 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP, SECOND]], { mode: "fail" });
     render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     state.mode = "ok";
-    await user.click(deletes()[2]);
-    await user.click(deletes()[3]);
+    await chooseAll(user, SECOND.heading, "Delete");
 
     await waitFor(() => expect(state.previews.slice(1)).toContainEqual([1, 2]));
     // Both cards now have their line, the one that failed included.
@@ -884,7 +932,7 @@ describe("which cards are previewed", () => {
     const state = mockPreviews([[GROUP], [replaced]]);
     const { rerender } = render(page(0));
 
-    await answerCard(user);
+    await chooseAll(user, GROUP.heading, "Delete");
     await waitFor(() => expect(state.previews).toEqual([[1, 2]]));
     await refresh(rerender, state, GROUP.heading);
 
@@ -954,12 +1002,7 @@ describe("previews that land late", () => {
     <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
   const release = fn => act(async () => { fn(); });
   const quiet = () => act(() => new Promise(resolve => setTimeout(resolve, 400)));
-  const buttons = name => screen.getAllByRole("button", { name });
-
-  async function answerBoth(user, choice, from = 0) {
-    await user.click(buttons(choice)[from]);
-    await user.click(buttons(choice)[from + 1]);
-  }
+  const answerBoth = (user, choice) => chooseAll(user, GROUP.heading, choice);
 
   it("does not let a slow preview for answers since changed replace the newer line", async () => {
     const user = userEvent.setup();
@@ -1034,7 +1077,7 @@ describe("previews that land late", () => {
     await waitFor(() => expect(state.requests).toHaveLength(1));
     await release(() => state.requests[0].resolve("mp4"));
     await screen.findByText(DELETED);
-    await user.click(buttons("Keep")[0]);
+    await choose(user, GROUP.heading, "Signs", "Keep");
     await waitFor(() => expect(state.requests).toHaveLength(2));   // old files, held
 
     rerender(page(1));
@@ -1074,14 +1117,14 @@ describe("previews that land late", () => {
     render(page(0));
     await screen.findByText(SECOND.heading);
 
-    await user.click(buttons("Delete")[0]);
-    await user.click(buttons("Delete")[2]);
-    await user.click(buttons("Delete")[1]);
-    await user.click(buttons("Delete")[3]);
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await choose(user, SECOND.heading, "Signs", "Delete");
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    await choose(user, SECOND.heading, "Track 2", "Delete");
     await waitFor(() => expect(state.requests).toHaveLength(1));
     expect(state.requests[0].ids).toEqual([1, 2]);
 
-    await user.click(buttons("Keep")[2]);                          // second card changes
+    await choose(user, SECOND.heading, "Signs", "Keep");                      // second card changes
     await waitFor(() => expect(state.requests).toHaveLength(2));
     await release(() => state.requests[0].resolve("mp4"));
     await quiet();
@@ -1202,5 +1245,258 @@ describe("page loads a refresh has overtaken", () => {
 
     expect(screen.getByText(THIRD.heading)).toBeInTheDocument();
     expect(screen.queryByText(SECOND.heading)).toBeNull();
+  });
+});
+
+/**
+ * Answering file by file.
+ *
+ * A card is decided once every file has an answer for every track, its own
+ * or the card's. Before, only the card's own row counted, so a card answered
+ * entirely file by file showed every choice made and sent nothing.
+ *
+ * Mutation, 3 applied against the unchanged suite. One was already killed,
+ * by "sends a file's own answer only for that file" above, and is recorded
+ * here as covered rather than claimed below:
+ *
+ *   • only the card's row counted, as before         → killed below
+ *   • any complete file enough, rather than every    → killed below
+ *   • a file with answers of its own ignoring the
+ *     card's for the tracks it has not set           → already covered
+ */
+describe("answering file by file", () => {
+  /* Sets both of one file's tracks on the file itself. */
+  async function answerFile(user, filename, first, second) {
+    await chooseForFile(user, GROUP.heading, filename, "Signs", first);
+    await chooseForFile(user, GROUP.heading, filename, "Track 2", second);
+  }
+
+  async function showFiles(user) {
+    await screen.findByText(GROUP.heading);
+    await user.click(screen.getByRole("button", { name: /Show files/ }));
+  }
+
+  it("counts a card whose every file was answered on its own", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await answerFile(user, "ep01.mkv", "Delete", "Keep");
+    await answerFile(user, "ep02.mkv", "Keep", "Delete");
+    expect(applyButton()).toHaveTextContent("Apply: 2 decided");
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "keep" } },
+      { file_id: 2, answers: { 4: "keep", 5: "remove" } },
+    ]);
+  });
+
+  it("does not count it while any file is still unanswered", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await answerFile(user, "ep01.mkv", "Delete", "Keep");
+
+    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
+  });
+
+  it("counts a track answered on the card and the rest file by file", async () => {
+    // The card answers the first track for every file; each file answers
+    // the second on its own.
+    const user = userEvent.setup();
+    mockApi();
+    show();
+    await showFiles(user);
+
+    await choose(user, GROUP.heading, "Signs", "Delete");
+    await chooseForFile(user, GROUP.heading, "ep01.mkv", "Track 2", "Keep");
+    await chooseForFile(user, GROUP.heading, "ep02.mkv", "Track 2", "Delete");
+    await user.click(applyButton());
+
+    await waitFor(() => expect(applyRequest()).toBeTruthy());
+    expect(applyRequest().files).toEqual([
+      { file_id: 1, answers: { 2: "remove", 3: "keep" } },
+      { file_id: 2, answers: { 4: "remove", 5: "remove" } },
+    ]);
+  });
+});
+
+/**
+ * Files the preview refused.
+ *
+ * The preview checks each answer the way Apply will and reports the ones it
+ * cannot carry out, so that a card can say so while it is still being
+ * answered. The page dropped that half of the response, and a card with a
+ * file refused described every file as fine until Apply said otherwise.
+ *
+ * Each mutation below survived the whole suite before these existed:
+ *
+ *   • the refusals ignored
+ *   • a response that is not OK read as a result
+ *   • the "of M" taken from the refusals rather than the card's files
+ *   • the first refusal's reason put against the card's first file
+ *   • the last refusal's reason given rather than the first
+ *   • "(and N more)" never added
+ *   • a reason's own full stop kept, so the sentence ends twice
+ */
+describe("files the preview refused", () => {
+  const EP03 = { file_id: 4, filename: "ep03.mkv",
+                 path: "/media/tv/Show/Season 1/ep03.mkv", streams: [8, 9] };
+  const THREE = { ...GROUP, file_count: 3, files: [...GROUP.files, EP03] };
+
+  /* Its own mock rather than an option on mockApi: that one answers every
+   * preview with no refusals, and the tests above rely on it. Here the
+   * preview refuses the files named in `refusals`, each with its own
+   * reason, and answers the rest; `status` answers every preview with that
+   * HTTP status for as long as it is set. */
+  function mockRefusing({ groups = [GROUP], refusals = {} } = {}) {
+    toast = vi.fn();
+    const state = { status: 200, previews: 0 };
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        return { ok: true, json: async () => ({
+          groups: structuredClone(groups), total_groups: groups.length,
+          total_files: groups.reduce((n, g) => n + g.file_count, 0),
+        }) };
+      }
+      if (u.includes("/review/preview")) {
+        state.previews += 1;
+        if (state.status !== 200) {
+          return { ok: false, status: state.status,
+                   json: async () => ({ detail: "Too many files to preview at once" }) };
+        }
+        const files = JSON.parse(opts.body).files;
+        return { ok: true, json: async () => ({
+          outcomes: files.filter(f => !refusals[f.file_id]).map(f => ({
+            file_id: f.file_id, current_container: "mkv", target_container: "mp4",
+            will_process: true, still_in_review: false, blocked_beyond_subtitles: false,
+          })),
+          errors: files.filter(f => refusals[f.file_id])
+            .map(f => ({ file_id: f.file_id, error: refusals[f.file_id] })),
+        }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return state;
+  }
+
+  const deleteBoth = user => chooseAll(user, GROUP.heading, "Delete");
+
+  const page = key =>
+    <ReviewPage api={API} toast={toast} onReviewResolved={() => {}} reviewRefreshKey={key} />;
+
+  it("names the refused file and its reason, then the outcome for the rest", async () => {
+    const user = userEvent.setup();
+    mockRefusing({ refusals: {
+      2: "Cannot extract stream 5: extracting it is what failed. Choose keep or remove.",
+    } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      "1 of 2 files can't be answered as chosen: ep02.mkv: Cannot extract stream 5: "
+      + "extracting it is what failed. Choose keep or remove. "
+      + "The others: Converts to MP4, 2 deleted",
+    )).toBeInTheDocument();
+  });
+
+  it("gives the first refusal against its own file and counts the rest", async () => {
+    // Two refusals with different reasons, neither on the card's first file.
+    const user = userEvent.setup();
+    mockRefusing({ groups: [THREE], refusals: {
+      2: "No such stream on this file: 5. It may have been re-probed since the page loaded.",
+      4: "No file waiting in review — it may have been answered or re-scanned already",
+    } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      "2 of 3 files can't be answered as chosen: ep02.mkv: No such stream on this file: 5. "
+      + "It may have been re-probed since the page loaded (and 1 more). "
+      + "The others: Converts to MP4, 2 deleted",
+    )).toBeInTheDocument();
+  });
+
+  it("says none can be when every file was refused", async () => {
+    const user = userEvent.setup();
+    // The endpoint's own wording, dash and all.
+    const changed = "The tracks flagged for this file have changed since it was "
+      + "shown — nothing can be previewed for it";
+    mockRefusing({ refusals: { 1: changed, 2: changed } });
+    render(page(0));
+
+    await deleteBoth(user);
+
+    expect(await screen.findByText(
+      `None of these files can be answered as chosen: ep01.mkv: ${changed} (and 1 more)`,
+    )).toBeInTheDocument();
+  });
+
+  it("treats a response that is not OK as a failed preview, and asks again", async () => {
+    // A failed preview is asked again on the next change or refresh; one
+    // read as a result is remembered as answered, so a refresh that brings
+    // the same card back asks nothing and the card stays without a line.
+    const user = userEvent.setup();
+    const state = mockRefusing();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rerender } = render(page(0));
+
+    state.status = 400;
+    await deleteBoth(user);
+    await waitFor(() => expect(state.previews).toBe(1));
+    await act(() => new Promise(resolve => setTimeout(resolve, 50)));
+    expect(screen.queryByText(/Converts to MP4/)).toBeNull();
+
+    state.status = 200;
+    rerender(page(1));
+
+    expect(await screen.findByText("Converts to MP4, 2 deleted")).toBeInTheDocument();
+    console.error.mockRestore();
+  });
+});
+
+describe("the reload after Apply", () => {
+  /* The page reloads its cards itself after Apply, rather than leaving it to
+   * the refresh its parent runs, so that answered cards leaving the page does
+   * not depend on App.jsx passing onReviewResolved down. Rendered here with
+   * no callback at all.
+   *
+   * Removing the reload was already killed before this existed, but only by
+   * the late-previews test above, which waits for a second load as part of
+   * its setup. Nothing asserted the cards leaving. */
+  it("takes the answered cards off the page with no parent to refresh it", async () => {
+    const user = userEvent.setup();
+    let answered = false;
+    global.fetch = vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const groups = answered ? [] : [GROUP];
+        return { ok: true, json: async () => ({
+          groups: structuredClone(groups), total_groups: groups.length,
+          total_files: groups.reduce((n, g) => n + g.file_count, 0),
+        }) };
+      }
+      if (u.includes("/review/apply")) {
+        answered = true;
+        const body = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({
+          outcomes: body.files.map(f => ({ file_id: f.file_id })), errors: [] }) };
+      }
+      return { ok: true, json: async () => ({ outcomes: [], errors: [] }) };
+    });
+    render(<ReviewPage api={API} toast={vi.fn()} />);
+
+    await chooseAll(user, GROUP.heading, "Delete");
+    await user.click(screen.getByRole("button", { name: /^Apply/ }));
+
+    await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
   });
 });

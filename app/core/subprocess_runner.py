@@ -256,6 +256,7 @@ async def run_staged_subprocess(
     timeout_seconds: float | None = None,
     before_staging: Callable[[], Awaitable[str | None]] | None = None,
     on_staging_progress: Callable[[float], Awaitable[None]] | None = None,
+    timeout_label: str = "Job",
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
@@ -263,6 +264,8 @@ async def run_staged_subprocess(
     timeout_seconds: if set and > 0, the entire subprocess (drain + wait) is
     wrapped in asyncio.wait_for() with this limit.  On timeout the process is
     killed and a clean failure result is returned.  Set to None or 0 to disable.
+    timeout_label names the run in that result's message: "Job timed out
+    after...", or for a revert, "Revert timed out after...".
 
     before_staging: called once the subprocess has succeeded and every temp
     is verified present, but before anything on the destination is touched —
@@ -338,7 +341,7 @@ async def run_staged_subprocess(
             minutes = int(effective_timeout // 60)
             return SubprocessRunResult(
                 success=False,
-                error=f"Job timed out after {minutes} minute(s) — process killed",
+                error=f"{timeout_label} timed out after {minutes} minute(s) — process killed",
                 returncode=None,
             )
         except asyncio.CancelledError:

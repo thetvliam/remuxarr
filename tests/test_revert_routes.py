@@ -20,7 +20,7 @@ The restore endpoint returns as soon as the work is RUNNING, so the tests
 assert what it refuses and what it starts, not what it produces. What it
 produces is tested against real files in test_revert_execution.py.
 
-Verified by mutation, 11 applied, 11 killed:
+Verified by mutation, 30 applied, 30 killed:
 
   • Single-flight check removed                      → killed
   • Flag not rolled back when the thread fails to
@@ -34,6 +34,42 @@ Verified by mutation, 11 applied, 11 killed:
   • Attach refusal returning no reasons               → killed
   • Discard leaving the sidecar on the volume         → killed
   • Empty-bin ignoring detached_only                  → killed
+
+Added with restore_destination, both surviving the suite before it:
+
+  • restore_path reporting the recorded path          → killed
+  • Listing skipping the destination collision check  → killed
+
+Added with the forge as a third writer (TestOneWriterPerFile), all of them
+surviving the suite as it stood first:
+
+  • Queue claim ignoring a forge run in progress     → killed
+  • Queue claim held back by any forge job, finished
+    ones included                                    → killed
+  • Forge claim ignoring the file being reverted     → killed
+  • Forge claim ignoring a queue job in progress     → killed
+  • Forge claim held back by any queue item          → killed
+  • Revert ignoring the forge queue                  → killed
+  • Revert missing a pending forge job               → killed
+  • Revert missing a processing forge job            → killed
+  • Revert missing an undo_pending forge job         → killed
+  • Revert held back by a finished forge job         → killed
+  • Queue claim outside CLAIM_LOCK                   → killed
+  • Forge claim outside CLAIM_LOCK                   → killed
+  • Revert's checks and acquire outside CLAIM_LOCK   → killed
+
+The last three are killed by tests that pin the mechanism, the lock being
+held at commit and at acquire, rather than by a race: the window is too
+narrow to hit on purpose.
+
+Added with the notification after a revert (TestNotifyAfterRevert), all
+surviving the suite as it stood first:
+
+  • No announcement after a successful revert       → killed
+  • An announcement after a failed one too          → killed
+  • The announcement made while the file is locked  → killed
+  • The coroutine left open when it cannot be
+    scheduled                                       → killed
 
 No equivalent mutants.
 """
@@ -274,6 +310,61 @@ def test_the_listing_and_the_revert_agree(client, tmp_path):
 
 # ── Restore: what it refuses ─────────────────────────────────────────────────
 
+def _live_point(db, recycle, media_file, original_path):
+    """A usable point on `media_file`, captured when it lived at `original_path`."""
+    from app.database.models import MediaFile, RevertPoint
+
+    media_file.write_bytes(b"processed output")
+    stat = media_file.stat()
+    media = MediaFile(path=str(media_file), filename=media_file.name,
+                      directory=str(media_file.parent), size=stat.st_size,
+                      mtime=stat.st_mtime, container=media_file.suffix[1:])
+    db.add(media)
+    db.commit()
+    sidecar = recycle / f"{media.id}.remuxarr_revert"
+    sidecar.write_bytes(b"stored tracks")
+    db.add(RevertPoint(file_id=media.id, sidecar_path=str(sidecar),
+                       sidecar_size=1, manifest="{}",
+                       original_path=str(original_path),
+                       processed_size=stat.st_size,
+                       processed_mtime=stat.st_mtime))
+    db.commit()
+
+
+def test_the_listing_says_where_a_revert_will_write(client, tmp_path):
+    """
+    The row tells the user what name the file will come back under, so the
+    listing has to give the name the revert will actually use: the current
+    one with the original extension, not the one recorded at capture. This
+    file was renamed after the job that turned it into an MP4.
+    """
+    api, db, recycle = client
+    _live_point(db, recycle, tmp_path / "New Name.mp4",
+                original_path=tmp_path / "Old Name.mkv")
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restore_path"] == str(tmp_path / "New Name.mkv")
+    assert entry["restorable"] is True
+
+
+def test_a_point_whose_revert_would_overwrite_a_file_is_not_offered(client, tmp_path):
+    """
+    The revert refuses when another file already sits where it would
+    write. The list has to know that too, or it offers a Revert button the
+    revert then turns down.
+    """
+    api, db, recycle = client
+    _live_point(db, recycle, tmp_path / "Show.mp4",
+                original_path=tmp_path / "Show.mkv")
+    (tmp_path / "Show.mkv").write_bytes(b"a different file the user has")
+
+    entry = api.get("/api/revert/").json()["attached"][0]
+
+    assert entry["restorable"] is False
+    assert "Show.mkv" in entry["blocked_reason"]
+
+
 def test_restoring_a_detached_point_is_refused(client):
     api, db, recycle = client
     _media, point, _sidecar = _seed(db, recycle, detached=True)
@@ -372,7 +463,7 @@ def test_a_completed_revert_releases_the_flag(client, monkeypatch):
     # Drive the worker body directly: the thread is what clears the flag,
     # and a test that only calls the route races it.
     revert_lock.acquire(file_id=point.file_id, point_id=point.id, path="/m/a.mkv")
-    revert_routes._run_revert(point.id, loop=_DummyLoop())
+    revert_routes._run_revert(point.id, point.file_id, loop=_DummyLoop())
 
     assert revert_lock.is_running() is False
     assert revert_lock.reverting_file_id() is None
@@ -403,6 +494,10 @@ def _no_broadcast(monkeypatch):
 
     monkeypatch.setattr(revert_routes, "broadcast_threadsafe",
                         lambda _payload, _loop: None)
+    # And the Sonarr/Radarr/Plex notification after a successful revert,
+    # at its plain-argument helper for the same reason.
+    monkeypatch.setattr(revert_routes, "_announce_revert",
+                        lambda _file_id, _path, _loop: None)
 
 
 # ── Attach ───────────────────────────────────────────────────────────────────
@@ -509,7 +604,7 @@ def test_the_completion_broadcast_uses_the_key_the_frontend_reads(client,
 
     monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
 
-    revert_routes._run_revert(point.id, loop=None)
+    revert_routes._run_revert(point.id, point.file_id, loop=None)
 
     payload = next(p for p in sent if isinstance(p, dict))
     assert payload["event"] == "revert_complete", (
@@ -535,7 +630,7 @@ def test_a_failed_revert_broadcasts_the_reason(client, monkeypatch):
 
     monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
 
-    revert_routes._run_revert(point.id, loop=None)
+    revert_routes._run_revert(point.id, point.file_id, loop=None)
 
     payload = next(p for p in sent if isinstance(p, dict))
     assert payload["event"] == "revert_complete"
@@ -868,3 +963,292 @@ class TestTheBinCannotBeEmptiedDuringARevert:
 
         assert r.status_code == 200
         assert not sidecar.exists()
+
+
+class TestOneWriterPerFile:
+    """
+    Three things rewrite a media file in place — queue jobs, AC3 Forge runs
+    and revert — and two of them on one file race, the loser's output
+    silently replacing the winner's. Queue and forge tasks run side by side
+    once max_concurrent_jobs is above 1. See revert_lock, THREE WRITERS.
+
+    Each writer skips a file another holds, and only that file: the tests
+    pair each refusal with something unrelated that still moves, and with
+    a finished job of the other kind that must not hold anything back.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _claims_see_the_test_db(self, client, monkeypatch):
+        """worker.py and forge.py each hold their own SessionLocal reference."""
+        import app.core.forge as forge_mod
+        import app.core.worker as worker_mod
+        import app.database.session as session_mod
+
+        monkeypatch.setattr(worker_mod, "SessionLocal", session_mod.SessionLocal)
+        monkeypatch.setattr(forge_mod, "SessionLocal", session_mod.SessionLocal)
+
+    def _file(self, db):
+        from app.database.models import MediaFile
+
+        n = next(_seq)
+        media = MediaFile(path=f"/media/w{n}.mkv", filename=f"w{n}.mkv",
+                          directory="/media", size=1, mtime=1.0)
+        db.add(media)
+        db.commit()
+        return media
+
+    def _queued(self, db, media, status="pending"):
+        from app.database.models import QueueItem
+
+        item = QueueItem(file_id=media.id, status=status, priority=1)
+        db.add(item)
+        db.commit()
+        return item.id
+
+    def _forge(self, db, media, status="pending"):
+        from app.database.models import Ac3ForgeJob
+
+        job = Ac3ForgeJob(file_id=media.id, status=status,
+                          is_undo=status == "undo_pending")
+        db.add(job)
+        db.commit()
+        return job.id
+
+    # ── The queue ────────────────────────────────────────────────────────
+
+    def test_a_queue_job_waits_while_the_forge_rewrites_its_file(self, client):
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        forging, other = self._file(db), self._file(db)
+        self._forge(db, forging, "processing")
+        self._queued(db, forging)
+        other_item = self._queued(db, other)
+
+        assert _claim_next() == other_item
+        assert _claim_next() is None, (
+            "the worker claimed a file the forge is rewriting"
+        )
+
+    def test_a_finished_forge_job_does_not_hold_back_the_queue(self, client):
+        """Every forged file keeps a 'success' row; only a running one counts."""
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        media = self._file(db)
+        self._forge(db, media, "success")
+        item = self._queued(db, media)
+
+        assert _claim_next() == item
+
+    # ── The forge ────────────────────────────────────────────────────────
+
+    def test_a_forge_job_waits_while_its_file_is_reverted(self, client):
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        reverting, other = self._file(db), self._file(db)
+        self._forge(db, reverting)
+        other_job = self._forge(db, other)
+
+        revert_lock.acquire(file_id=reverting.id, point_id=1, path=reverting.path)
+
+        assert claim_next_forge_job() == other_job
+        assert claim_next_forge_job() is None, (
+            "the forge claimed the file a revert is rewriting"
+        )
+
+    def test_a_forge_job_waits_while_the_queue_processes_its_file(self, client):
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        busy, other = self._file(db), self._file(db)
+        self._queued(db, busy, "processing")
+        self._forge(db, busy)
+        other_job = self._forge(db, other)
+
+        assert claim_next_forge_job() == other_job
+        assert claim_next_forge_job() is None, (
+            "the forge claimed a file a queue job is rewriting"
+        )
+
+    def test_a_finished_queue_item_does_not_hold_back_the_forge(self, client):
+        """Every processed file keeps a completed queue item."""
+        from app.core.forge import claim_next_forge_job
+
+        _api, db, _recycle = client
+        media = self._file(db)
+        self._queued(db, media, "completed")
+        job = self._forge(db, media)
+
+        assert claim_next_forge_job() == job
+
+    # ── Revert ───────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("status", ["pending", "undo_pending", "processing"])
+    def test_a_revert_is_refused_while_the_forge_holds_the_file(self, client, status):
+        """
+        Waiting counts, as it does for the queue: the forge may pick the
+        job up at any moment, and the revert would lose that race.
+        """
+        api, db, recycle = client
+        media, point, _sidecar = _seed(db, recycle)
+        self._forge(db, media, status)
+
+        r = api.post(f"/api/revert/{point.id}/restore/")
+
+        assert r.status_code == 409
+        assert "AC3 Forge" in r.json()["detail"]
+        assert revert_lock.is_running() is False
+
+    def test_a_finished_forge_job_does_not_block_a_revert(self, client):
+        api, db, recycle = client
+        media, point, _sidecar = _seed(db, recycle)
+        self._forge(db, media, "success")
+
+        assert api.post(f"/api/revert/{point.id}/restore/").status_code == 200
+
+    # ── Taking turns ─────────────────────────────────────────────────────
+
+    def test_each_claim_commits_under_the_shared_lock(self, client, monkeypatch):
+        """
+        A check that a file is free and the claim that takes it have to
+        happen as one step, or two writers in different threads can both
+        see the file free and both take it. The race itself is too narrow
+        to reproduce in a test, so this pins the mechanism: each claim's
+        commit happens while CLAIM_LOCK is held.
+        """
+        from sqlalchemy.orm import Session
+
+        from app.core.forge import claim_next_forge_job
+        from app.core.worker import _claim_next
+
+        _api, db, _recycle = client
+        self._queued(db, self._file(db))
+        self._forge(db, self._file(db))
+
+        held = []
+        real_commit = Session.commit
+
+        def recording_commit(session):
+            held.append(revert_lock.CLAIM_LOCK.locked())
+            return real_commit(session)
+
+        monkeypatch.setattr(Session, "commit", recording_commit)
+
+        assert _claim_next() is not None
+        queue_commits, held[:] = list(held), []
+        assert claim_next_forge_job() is not None
+        forge_commits = list(held)
+
+        assert queue_commits and all(queue_commits), "queue claim outside the lock"
+        assert forge_commits and all(forge_commits), "forge claim outside the lock"
+
+    def test_starting_a_revert_holds_the_shared_lock_until_acquired(self, client,
+                                                                     monkeypatch):
+        """The route's checks and its acquire are one step for the same reason."""
+        api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+
+        held = []
+        real_acquire = revert_lock.acquire
+
+        def recording_acquire(*args, **kwargs):
+            held.append(revert_lock.CLAIM_LOCK.locked())
+            return real_acquire(*args, **kwargs)
+
+        monkeypatch.setattr(revert_lock, "acquire", recording_acquire)
+
+        assert api.post(f"/api/revert/{point.id}/restore/").status_code == 200
+        assert held == [True]
+
+
+# Taken at import, before the autouse fixture replaces it for every test.
+from app.api.routes.revert import _announce_revert as _REAL_ANNOUNCE  # noqa: E402
+
+
+class TestNotifyAfterRevert:
+    """
+    After a successful revert, Sonarr, Radarr and Plex are told about the
+    file as they are after a job — from the revert thread, once the file is
+    unlocked, through _announce_revert. These drive the thread body directly,
+    as the broadcast tests above do.
+    """
+
+    def _drive(self, client, monkeypatch, outcome):
+        import app.api.routes.revert as revert_routes
+
+        _api, db, recycle = client
+        _media, point, _sidecar = _seed(db, recycle)
+
+        async def fake(_pid, **_k):
+            return outcome
+
+        monkeypatch.setattr(revert_routes, "restore_revert_point", fake)
+
+        announced = []
+        monkeypatch.setattr(
+            revert_routes, "_announce_revert",
+            lambda file_id, path, _loop: announced.append(
+                (file_id, path, revert_lock.is_running())),
+        )
+
+        revert_lock.acquire(file_id=point.file_id, point_id=point.id, path="/m/a.mkv")
+        revert_routes._run_revert(point.id, point.file_id, loop=None)
+        return point, announced
+
+    def test_a_successful_revert_is_announced_with_the_restored_path(self, client, monkeypatch):
+        from app.core.revert_restore import RestoreOutcome
+
+        point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=True, restored_path="/m/Show.mkv"))
+
+        assert [(f, p) for f, p, _locked in announced] == [(point.file_id, "/m/Show.mkv")]
+
+    def test_a_failed_revert_is_not_announced(self, client, monkeypatch):
+        """The file did not change, so there is nothing for anyone to rescan."""
+        from app.core.revert_restore import RestoreOutcome
+
+        _point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=False, error="Show.mkv has changed size"))
+
+        assert announced == []
+
+    def test_the_announcement_waits_until_the_file_is_unlocked(self, client, monkeypatch):
+        """
+        The quality restore behind it waits up to two minutes for the
+        service's rescan. Announced under the lock, the file would stay
+        closed to jobs, forge runs and other reverts all that time.
+        """
+        from app.core.revert_restore import RestoreOutcome
+
+        _point, announced = self._drive(client, monkeypatch, RestoreOutcome(
+            success=True, restored_path="/m/Show.mkv"))
+
+        assert [locked for _f, _p, locked in announced] == [False]
+
+    def test_an_announcement_that_cannot_be_scheduled_closes_its_coroutine(self, monkeypatch):
+        """
+        If the app's loop is gone, scheduling raises — and the coroutine was
+        already built. Left open it is reported, at some later garbage
+        collection, as a warning against whatever else is running.
+        """
+        import app.api.routes.revert as revert_routes
+
+        made = []
+
+        async def notify(_file_id, _path):
+            return None
+
+        def building(file_id, path):
+            coro = notify(file_id, path)
+            made.append(coro)
+            return coro
+
+        monkeypatch.setattr(revert_routes, "notify_after_revert", building)
+
+        _REAL_ANNOUNCE(1, "/m/Show.mkv", None)
+
+        assert len(made) == 1
+        assert made[0].cr_frame is None, "the coroutine was left open"
+

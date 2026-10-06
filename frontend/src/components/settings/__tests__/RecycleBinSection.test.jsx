@@ -23,7 +23,7 @@
  * are pinned: an unmounted volume must not read as an empty bin, and a
  * revert point whose stored tracks are gone must not offer to match.
  *
- * Verified by mutation, 17 applied, 17 killed:
+ * Verified by mutation, 18 applied, 18 killed:
  *
  *   • Revert acting on the first click                  → killed
  *   • ConfirmBtn firing without confirming              → killed
@@ -42,6 +42,8 @@
  *   • Structured refusals routed back to the toast        → killed
  *   • A string refusal swallowed by the panel             → killed
  *   • Bulk discards left usable during a revert            → killed
+ *   • "restores as" read from original_path rather than
+ *     restore_path                                      → killed
  *
  * That last one survived at first. The panel's handler is only passed by
  * attach, so removing the "is this structured?" check left restore's
@@ -74,6 +76,7 @@ const ATTACHED = {
   current_path: "/media/tv/Show/S01E01.mkv",
   current_filename: "S01E01.mkv",
   original_path: "/media/tv/Show/S01E01.mkv",
+  restore_path: "/media/tv/Show/S01E01.mkv",
   sidecar_size: 52428800,
   created_at: "2026-08-01T10:00:00Z",
   detached_at: null,
@@ -445,12 +448,33 @@ describe("presentation", () => {
         attached: [{ ...ATTACHED,
           current_filename: "S01E01.mp4",
           current_path: "/media/tv/Show/S01E01.mp4",
-          original_path: "/media/tv/Show/S01E01.mkv" }],
+          original_path: "/media/tv/Show/S01E01.mkv",
+          restore_path: "/media/tv/Show/S01E01.mkv" }],
           detached: [],
       },
     });
 
     expect(await screen.findByText(/restores as S01E01\.mkv/i)).toBeTruthy();
+  });
+
+  it("names the file the revert will write, not the name recorded at capture", async () => {
+    /* Renamed after the job turned it into an MP4. The revert keeps the new
+     * name and puts back only the extension, and restore_path is the
+     * server's word for that. original_path is the old name, and showing
+     * it would promise a rename the revert no longer does. */
+    setup({
+      listing: {
+        attached: [{ ...ATTACHED,
+          current_filename: "New Name.mp4",
+          current_path: "/media/tv/Show/New Name.mp4",
+          original_path: "/media/tv/Show/Old Name.mkv",
+          restore_path: "/media/tv/Show/New Name.mkv" }],
+          detached: [],
+      },
+    });
+
+    expect(await screen.findByText(/restores as New Name\.mkv/i)).toBeTruthy();
+    expect(screen.queryByText(/Old Name/)).toBeNull();
   });
 
   it("surfaces the backend's reason for a refusal rather than a generic error", async () => {

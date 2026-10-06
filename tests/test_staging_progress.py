@@ -389,15 +389,25 @@ ffmpeg_required = pytest.mark.skipif(
     shutil.which("ffmpeg") is None, reason="ffmpeg not available",
 )
 
+# Ten seconds, not one. Several tests here assert that FFmpeg's own phase
+# gets close to its share of the bar, and FFmpeg's last progress report
+# lands somewhat short of the end. With FFmpeg 8.1 — the build the image
+# ships, and CI's since it was made to match — a one-second clip reported
+# its last progress at 78%, which read as a job that never reached its
+# share (70.4 against a floor of 81). A ten-second clip clears that floor
+# on 8.1 and on Ubuntu's 6.1 alike; a real file is far longer still.
+FIXTURE_SECONDS = 10
+
 
 def _tiny_job(tmp_path, settings):
-    """A real one-second file with a droppable foreign audio track."""
+    """A real short file with a droppable foreign audio track."""
     source = tmp_path / "source.mkv"
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-         "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+         "-f", "lavfi", "-i",
+         f"testsrc=size=160x120:rate=10:duration={FIXTURE_SECONDS}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={FIXTURE_SECONDS}",
+         "-f", "lavfi", "-i", f"sine=frequency=880:duration={FIXTURE_SECONDS}",
          "-map", "0:v", "-map", "1:a", "-map", "2:a",
          "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=fre",
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
@@ -529,8 +539,9 @@ def _forge_job(tmp_path):
     source = tmp_path / "source.mkv"
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-f", "lavfi", "-i",
+         f"testsrc=size=160x120:rate=10:duration={FIXTURE_SECONDS}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={FIXTURE_SECONDS}",
          "-map", "0:v", "-map", "1:a",
          "-c:v", "libx264", "-pix_fmt", "yuv420p",
          "-c:a", "aac", "-ac", "6",

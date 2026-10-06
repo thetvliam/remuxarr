@@ -61,6 +61,53 @@ The remaining mutations, killed on the first run:
   • mov_text override dropped                    → killed (real ffmpeg fails)
   • subtitle_ordinal counting every mapped stream→ killed
 
+Look-alike groups (revert._pair_pass) were added later: a pass now pairs a
+group of streams its key cannot tell apart only when at least as many
+survived as the original had, and otherwise reports the whole group lost.
+Mutants applied to the new code and run against the suite as it stood
+first; five survived it, which is the baseline, and are killed here now:
+
+  • An uneven group paired in order (the old
+    behaviour)                                   → killed, by five of
+                                                    the look-alike tests here
+                                                    and four real-FFmpeg ones
+                                                    in the multi-job module
+  • An uneven group's survivors left in the pool → killed
+  • An uneven group's originals carried on to
+    the next pass                                → killed
+  • The rule switched off in the exact pass only → killed
+  • What a pass hands on kept in group order
+    rather than manifest order                   → killed
+
+Two more were already killed elsewhere and are not this file's to claim:
+equal counts treated as uneven (test_revert_capture's
+test_the_manifest_records_where_every_stream_ended_up), and survivors chosen
+by payload whatever the pass (the fixture of test_revert_execution's
+test_revert_puts_the_dropped_track_back).
+
+The loop mutants in the list above — passes reversed, pass 2 or 3 removed,
+pass 1 on payload, remaining.pop() dropped — targeted code that rewrite
+replaced. Re-aimed at the new loop they were run again and all were killed,
+by tests that existed before it.
+
+Two tests changed with it. test_retag_and_drop_together_are_told_apart
+asserted that only the dropped track was reported; it passed because the
+untagged track came first, and the reverse order lost data. And
+test_identical_streams_are_matched_one_for_one asserted exactly one loss
+from two identical tracks, which encoded a guess about which one survived.
+Both now expect the whole group, and keep the concern each was written for.
+
+The sidecar builder's sparse streams (ffmpeg._sparse_openings) were added
+later; for a sidecar read from two files they are read through a second
+opening. Run against the suite as it stood first, these survived it and
+are killed here now: the two-file sidecar not remapping
+(test_a_sidecar_from_two_files_reads_sparse_streams_separately), the
+one-file sidecar remapping anyway, which only reads the file twice during
+the job (test_a_sidecar_from_one_file_reads_it_once), and the mov_text
+conversion keyed on the input number a subtitle is read through rather
+than the file it comes from
+(test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar).
+
 No equivalent mutants recorded for this file.
 
 The FFmpeg-backed tests skip rather than fail when no ffmpeg binary is
@@ -235,10 +282,22 @@ def test_retagged_track_is_not_reported_as_lost():
     assert find_lost_streams(original, processed) == []
 
 
-def test_retag_and_drop_together_are_told_apart():
+def test_retag_and_drop_of_lookalikes_captures_both():
     """
     Both happen in one job routinely: fix an undefined tag on one track,
-    drop a foreign-language track in the same pass.
+    drop a foreign-language track in the same pass. When the two share
+    codec and layout, nothing in the processed file says which of them is
+    the survivor — the language that would have said so is the thing the
+    job rewrote.
+
+    This test used to assert that only the French track was reported, and
+    its docstring said the two were "told apart". They were not: the
+    untagged track happened to come first, and the payload pass paired the
+    first look-alike with the survivor. Put the French track first and the
+    same code stored the English survivor and lost the French one for
+    good — test_retag_and_drop_is_safe_in_either_order below. Reporting
+    both is the only answer that is right in both orders, and it costs one
+    redundant track on the recycle volume.
     """
     from app.core.revert import find_lost_streams
 
@@ -251,26 +310,145 @@ def test_retag_and_drop_together_are_told_apart():
     )
 
     lost = find_lost_streams(original, processed)
-    assert [s["index"] for s in lost] == [2]
+    assert [s["index"] for s in lost] == [1, 2]
 
 
-def test_identical_streams_are_matched_one_for_one():
+def test_retag_and_drop_is_safe_in_either_order():
     """
-    Two identical tracks in, one out, means exactly one was lost. Without
-    consuming a match when it is used, both would pair against the single
-    survivor and the loss would go unreported — the under-capture failure.
+    The order that lost data. French first, then the untagged English
+    track the job keeps and tags; the French one is destroyed. Pairing in
+    order hands the survivor to the French original, so the sidecar would
+    hold English twice and French not at all.
     """
     from app.core.revert import find_lost_streams
 
     original = _manifest(
-        _stream(1, "audio", "aac", channels=2, language="eng"),
-        _stream(2, "audio", "aac", channels=2, language="eng"),
+        _stream(1, "audio", "ac3", channels=6, language="fre"),
+        _stream(2, "audio", "ac3", channels=6, language=None),
+    )
+    processed = _probe(
+        _stream(1, "audio", "ac3", channels=6, language="eng"),
+    )
+
+    lost = find_lost_streams(original, processed)
+    assert 1 in [s["index"] for s in lost], (
+        "the destroyed French track was paired with the surviving English "
+        "one and would never be stored"
+    )
+    assert [s["index"] for s in lost] == [1, 2]
+
+
+def test_identical_twins_where_one_survived_are_both_captured():
+    """
+    Two tracks identical in payload AND metadata, one out. Exactly one was
+    lost, and nothing in either file says which.
+
+    That is not a case where it does not matter. A full subtitle track and
+    a forced-only one can share every field the match compares, and a
+    review answer is stored per track — see scanner.descriptors_by_stream,
+    which numbers look-alikes apart — so the user can remove either. Pair
+    the first original with the survivor and a job that removed the FIRST
+    stores the survivor twice, while the removed track's content is gone.
+
+    So both are reported. The original version of this test asserted
+    exactly one, which held the right concern (a single survivor must not
+    be paired with both originals, leaving the loss unreported) with the
+    wrong conclusion. Reporting both still guarantees the loss is seen.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(1, "subtitle", "subrip", language="eng"),
+        _stream(2, "subtitle", "subrip", language="eng"),
+    )
+    processed = _probe(
+        _stream(1, "subtitle", "subrip", language="eng"),
+    )
+
+    lost = find_lost_streams(original, processed)
+    assert [s["index"] for s in lost] == [1, 2]
+
+
+def test_an_unresolved_survivor_is_not_handed_to_a_looser_pass():
+    """
+    A group the language pass gives up on still used up its survivor.
+
+    Two English tracks, one survives with a new title; a French track of
+    the same codec and layout is destroyed. The language pass cannot say
+    which English track survived and reports both. If the survivor were
+    left in the pool, the payload pass would pair it with the French
+    original instead, and the destroyed French track would be recorded as
+    still present.
+    """
+    from app.core.revert import find_lost_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="eng", title="Main"),
+        _stream(2, "audio", "aac", channels=2, language="eng",
+                title="Commentary"),
+        _stream(3, "audio", "aac", channels=2, language="fre"),
     )
     processed = _probe(
         _stream(1, "audio", "aac", channels=2, language="eng"),
     )
 
-    assert len(find_lost_streams(original, processed)) == 1
+    lost = find_lost_streams(original, processed)
+    assert [s["index"] for s in lost] == [1, 2, 3]
+
+
+def test_a_group_reported_lost_does_not_compete_in_a_later_pass():
+    """
+    The other half of settling a group: its originals are finished with.
+
+    The two English tracks are reported lost at the language pass. The
+    untagged track was kept and tagged Spanish, which only the payload
+    pass can see. Were the English originals still in play there, three
+    look-alikes would compete for one Spanish survivor and all three would
+    be reported lost — including the Spanish track, which is plainly still
+    in the file.
+    """
+    from app.core.revert import match_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="eng", title="Main"),
+        _stream(2, "audio", "aac", channels=2, language="eng",
+                title="Commentary"),
+        _stream(3, "audio", "aac", channels=2, language=None),
+    )
+    processed = _probe(
+        _stream(1, "audio", "aac", channels=2, language="eng"),
+        _stream(2, "audio", "aac", channels=2, language="spa"),
+    )
+
+    by_index = {s["index"]: idx for s, idx in match_streams(original, processed)}
+    assert by_index == {1: None, 2: None, 3: 2}
+
+
+def test_later_passes_pair_in_file_order():
+    """
+    Pairing look-alikes in order is only right if the order is the file's.
+
+    The language pass groups by language, so what it hands on can come out
+    grouped — the two French tracks together, then the German one — unless
+    it is put back into manifest order. All three were re-tagged, so the
+    payload pass pairs them, and grouped order would give the second
+    French original the second survivor and the German original the third.
+    """
+    from app.core.revert import match_streams
+
+    original = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="fre"),
+        _stream(2, "audio", "aac", channels=2, language="ger"),
+        _stream(3, "audio", "aac", channels=2, language="fre"),
+    )
+    processed = _probe(
+        _stream(1, "audio", "aac", channels=2, language="eng"),
+        _stream(2, "audio", "aac", channels=2, language="spa"),
+        _stream(3, "audio", "aac", channels=2, language="ita"),
+    )
+
+    by_index = {s["index"]: idx for s, idx in match_streams(original, processed)}
+    assert by_index == {1: 1, 2: 2, 3: 3}
 
 
 def test_the_right_one_of_two_similar_tracks_is_reported():
@@ -520,6 +698,106 @@ def test_sidecar_maps_original_indices_and_drops_chapters():
     assert cmd[cmd.index("-map_chapters") + 1] == "-1"
     assert cmd[cmd.index("-f") + 1] == "matroska"
     assert cmd[-1] == "/recycle/1.remuxarr_revert"
+
+
+def _inputs(cmd):
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+
+
+def _sidecar_sources(cmd):
+    """Each -map as (file, stream index), whatever input number opens the file."""
+    inputs = _inputs(cmd)
+    return [(inputs[int(cmd[i + 1].split(":")[0])], int(cmd[i + 1].split(":")[1]))
+            for i, a in enumerate(cmd) if a == "-map"]
+
+
+def test_a_sidecar_from_two_files_reads_sparse_streams_separately():
+    """
+    A later job's sidecar mixes what this job lost (still in the file) with
+    what an earlier job lost (only in the previous sidecar). That is two
+    inputs, and the same out-of-order writing a restore suffers — see
+    _sparse_openings — so subtitles and attachments are read through their
+    own opening of whichever file holds them.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    jpn, eng, signs, full, font = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(2, "audio", "aac", channels=2, language="eng"),
+        _stream(3, "subtitle", "ass", language="eng"),
+        _stream(4, "subtitle", "ass", language="eng"),
+        _stream(5, "attachment", "ttf", filename="A.ttf"),
+    )["streams"]
+    sources = [(jpn, 1, 0), (eng, 0, 2), (signs, 1, 1), (full, 0, 4), (font, 1, 2)]
+
+    cmd = build_sidecar_command(["/m/Show.mkv", "/recycle/old.remuxarr_revert"],
+                                "/recycle/new.remuxarr_revert", sources)
+
+    assert _sidecar_sources(cmd) == [
+        ("/recycle/old.remuxarr_revert", 0), ("/m/Show.mkv", 2),
+        ("/recycle/old.remuxarr_revert", 1), ("/m/Show.mkv", 4),
+        ("/recycle/old.remuxarr_revert", 2),
+    ]
+    maps = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
+    dense_inputs = {maps[0].split(":")[0], maps[1].split(":")[0]}
+    for spec in maps[2:]:
+        assert spec.split(":")[0] not in dense_inputs, spec
+
+
+def test_a_sidecar_from_one_file_reads_it_once():
+    """
+    A first job's sidecar comes from one file, read in its own order, and
+    is already in order. A second opening would only read a large file
+    twice during the job, for nothing.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    lost = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(3, "subtitle", "ass", language="eng"),
+        _stream(5, "attachment", "ttf", filename="A.ttf"),
+    )["streams"]
+    cmd = build_sidecar_command(["/m/Show.mkv"], "/recycle/1.remuxarr_revert",
+                                _from_one(lost))
+
+    assert _inputs(cmd) == ["/m/Show.mkv"]
+
+
+def test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar():
+    """
+    The conversion depends on which FILE a subtitle comes from — only the
+    media file can still hold mov_text — not on the input number it is now
+    read through, which for a subtitle is a second opening.
+    """
+    from app.core.ffmpeg import build_sidecar_command
+
+    jpn, ger = _manifest(
+        _stream(1, "audio", "aac", channels=2, language="jpn"),
+        _stream(4, "subtitle", "mov_text", language="ger"),
+    )["streams"]
+    cmd = build_sidecar_command(["/m/Show.mp4", "/recycle/old.remuxarr_revert"],
+                                "/recycle/new.remuxarr_revert",
+                                [(jpn, 1, 0), (ger, 0, 4)])
+
+    assert cmd[cmd.index("-c:s:0") + 1] == "srt"
+
+
+def test_the_manifest_records_the_files_own_tags():
+    """
+    The title and the like belong to the file, not to a stream. A
+    conversion to MP4 drops most of them, so the original's are recorded
+    here rather than read back from the processed file at restore time.
+    """
+    from app.core.revert import build_manifest
+
+    probe = {"streams": [], "format": {"tags": {
+        "title": "My Film", "COMMENT": "kept by the release"}}}
+
+    manifest = build_manifest(probe, original_path="/m/a.mkv",
+                              original_container="matroska")
+
+    assert manifest["format_tags"] == {"title": "My Film",
+                                       "COMMENT": "kept by the release"}
 
 
 # ── Against real FFmpeg ──────────────────────────────────────────────────────

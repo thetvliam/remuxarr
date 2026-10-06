@@ -194,7 +194,17 @@ class _Unavailable(Exception):
     """The recycle bin could not provide a revert point. Governed by the setting."""
 
 
-def sidecar_path_for(file_id: int, job_id: int) -> str:
+def _job_part(job_id: int, forge: bool) -> str:
+    """
+    The job half of a sidecar's name. AC3 Forge jobs number from their own
+    table, so forge job 5 and queue job 5 on the same file would otherwise
+    share a name — and a forge run that failed after capture would then
+    delete, as its own leftover, the sidecar the earlier job's point holds.
+    """
+    return f"forge{job_id}" if forge else str(job_id)
+
+
+def sidecar_path_for(file_id: int, job_id: int, *, forge: bool = False) -> str:
     """
     Name a sidecar after the file and job that produced it.
 
@@ -203,11 +213,12 @@ def sidecar_path_for(file_id: int, job_id: int) -> str:
     would silently overwrite a revert point another row still points at.
     """
     return os.path.join(
-        app_settings.RECYCLE_DIR, f"{file_id}_{job_id}{SIDECAR_SUFFIX}"
+        app_settings.RECYCLE_DIR,
+        f"{file_id}_{_job_part(job_id, forge)}{SIDECAR_SUFFIX}",
     )
 
 
-def staged_sidecar_path(file_id: int, job_id: int) -> str:
+def staged_sidecar_path(file_id: int, job_id: int, *, forge: bool = False) -> str:
     """
     Where a sidecar is written before it is renamed into place.
 
@@ -231,7 +242,8 @@ def staged_sidecar_path(file_id: int, job_id: int) -> str:
     sidecar write interrupted by a crash. The retention pass ignores it,
     because it only touches names ending in SIDECAR_SUFFIX.
     """
-    return os.path.join(app_settings.RECYCLE_DIR, f"{file_id}_{job_id}.part")
+    return os.path.join(app_settings.RECYCLE_DIR,
+                        f"{file_id}_{_job_part(job_id, forge)}.part")
 
 
 async def _off_loop(fn, *args):
@@ -328,6 +340,51 @@ def _plan_sources(
     return sources
 
 
+def _discard_partial(staged: str) -> None:
+    """Remove a sidecar write that did not complete; already gone is fine."""
+    try:
+        os.remove(staged)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove the partial sidecar %s: %s", staged, exc)
+
+
+def _unmatch_reencoded(
+    matches: list[tuple[dict, int | None]],
+    reencoded: frozenset[int],
+    *,
+    extend: bool,
+) -> list[tuple[dict, int | None]]:
+    """
+    Count a re-encoded track as lost, whatever the matching says.
+
+    A job's corrupt-audio retry re-encodes every kept audio track to AAC
+    (worker._make_audio_transcode_decision). When the original was AAC
+    too, the re-encode has the same codec, channels and sample rate, so
+    matching pairs the two and nothing is stored — and a revert brings
+    back the lossy copy under the original's name. The bytes the original
+    had are only in the file this run was handed, so the track is lost
+    from the point of view of a revert, and stored from there.
+
+    reencoded holds input stream indices. On a first job that is the
+    manifest stream's own index; on a later one, the processed_index the
+    previous capture recorded against the file this job was handed.
+
+    Each such stream is marked "reencoded" in the manifest, and a marked
+    stream is never paired with a later file again. Otherwise the next job
+    would match its stored original against the file's re-encode, and
+    _reannotate would drop the stored copy in favour of the file's.
+    """
+    out = []
+    for stream, index in matches:
+        source_index = stream.get("processed_index") if extend else stream.get("index")
+        if source_index is not None and source_index in reencoded:
+            stream["reencoded"] = True
+        out.append((stream, None if stream.get("reencoded") else index))
+    return out
+
+
 def _reannotate(
     matches: list[tuple[dict, int | None]],
     sources: list[tuple[dict, int, int]],
@@ -412,9 +469,18 @@ async def capture(
     file_id: int,
     job_id: int,
     app_cfg: dict,
+    forge: bool = False,
+    reencoded: frozenset[int] = frozenset(),
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
+
+    forge marks an AC3 Forge run rather than a queue job. It rewrites the
+    file in place just as a job does, so it goes through here too; the flag
+    only changes the sidecar's name and the log lines.
+
+    reencoded is the input stream indices this run re-encoded rather than
+    copied — see _unmatch_reencoded.
 
     Returns (captured, error). A non-None error is returned straight to the
     staging hook and aborts the run with the source file untouched; it is
@@ -424,6 +490,7 @@ async def capture(
         return None, None
 
     require = bool(app_cfg.get("revert_require_point"))
+    label = f"Forge job {job_id}" if forge else f"Job {job_id}"
 
     try:
         ready, reason = await _off_loop(recycle_dir_status)
@@ -473,14 +540,15 @@ async def capture(
             manifest = existing.manifest
             container = manifest.get("container")
 
-        matches = match_streams(manifest, produced_probe)
+        matches = _unmatch_reencoded(
+            match_streams(manifest, produced_probe), reencoded, extend=extend)
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
         if not lost:
             logger.info(
-                "Job %d: nothing is missing from the original, no revert "
-                "point needed", job_id,
+                "%s: nothing is missing from the original, no revert "
+                "point needed", label,
             )
             return None, None
 
@@ -494,7 +562,7 @@ async def capture(
 
         sources = _plan_sources(lost, has_previous_sidecar=extend)
 
-        sidecar = sidecar_path_for(file_id, job_id)
+        sidecar = sidecar_path_for(file_id, job_id, forge=forge)
         # Staged through a .part, like FFmpeg's outputs.
         #
         # It was not, and that made two things untrue at once. The startup
@@ -507,52 +575,64 @@ async def capture(
         #
         # Writing to .part and renaming means a partial sidecar is always
         # named as one, and a complete sidecar appears atomically.
-        staged = staged_sidecar_path(file_id, job_id)
+        staged = staged_sidecar_path(file_id, job_id, forge=forge)
         try:
             cmd = build_sidecar_command(inputs, staged, sources)
         except SidecarUnsupported as exc:
             logger.info(
-                "Job %d: no revert point possible for %s — %s",
-                job_id, input_path, exc,
+                "%s: no revert point possible for %s — %s",
+                label, input_path, exc,
             )
             return None, None
 
-        await _run(cmd)
-
-        # Check the sidecar we just wrote actually has the layout the
-        # indices assume. sidecar_index is positional, and _plan_sources
-        # orders attachments last so map order and file order coincide —
-        # but that is a claim about the Matroska muxer, not a guarantee,
-        # and it is the exact claim that was wrong before. A mismatch means
-        # every index past the divergence points at the wrong stream, which
-        # produces a revert that succeeds and rebuilds the file with tracks
-        # and metadata shuffled. Refusing is the only safe answer.
+        # From here until the rename, a .part may exist. Any way out of
+        # this block but the rename removes it: FFmpeg failing part-way, the
+        # layout check refusing what it wrote, the rename itself failing —
+        # and cancellation, which is a BaseException and would slip past
+        # an "except Exception". Left behind, a .part is collected only by
+        # the startup sweep, counts against nothing, and on a nearly full
+        # volume each failed attempt added another. Removed synchronously:
+        # a cancelled task may not get to await anything more.
         try:
-            written = await _off_loop(probe_file, staged)
-        except ProbeError as exc:
-            raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
+            await _run(cmd)
 
-        expected = [stream.get("type") for stream, _i, _x in sources]
-        actual = [s.get("codec_type") for s in written.get("streams", [])]
-        if expected != actual:
-            raise _Unavailable(
-                f"The sidecar was written with a different stream order than "
-                f"requested ({actual} rather than {expected}); refusing to "
-                f"record indices that would point at the wrong streams."
-            )
+            # Check the sidecar we just wrote actually has the layout the
+            # indices assume. sidecar_index is positional, and _plan_sources
+            # orders attachments last so map order and file order coincide —
+            # but that is a claim about the Matroska muxer, not a guarantee,
+            # and it is the exact claim that was wrong before. A mismatch means
+            # every index past the divergence points at the wrong stream, which
+            # produces a revert that succeeds and rebuilds the file with tracks
+            # and metadata shuffled. Refusing is the only safe answer.
+            try:
+                written = await _off_loop(probe_file, staged)
+            except ProbeError as exc:
+                raise _Unavailable(f"Could not read the sidecar just written: {exc}") from exc
 
-        # Re-resolve where every original stream lives, now that both the
-        # sidecar and the processed file have changed. _reannotate's
-        # docstring covers why it happens here and not at restore time,
-        # and what sidecar_index means; that reasoning lived in both
-        # places and only one copy would get corrected.
-        # Renamed only once the layout check has passed, so a sidecar at
-        # the real path is always one that was written completely AND
-        # verified.
-        try:
-            await _off_loop(os.replace, staged, sidecar)
-        except OSError as exc:
-            raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+            expected = [stream.get("type") for stream, _i, _x in sources]
+            actual = [s.get("codec_type") for s in written.get("streams", [])]
+            if expected != actual:
+                raise _Unavailable(
+                    f"The sidecar was written with a different stream order than "
+                    f"requested ({actual} rather than {expected}); refusing to "
+                    f"record indices that would point at the wrong streams."
+                )
+
+            # Re-resolve where every original stream lives, now that both the
+            # sidecar and the processed file have changed. _reannotate's
+            # docstring covers why it happens here and not at restore time,
+            # and what sidecar_index means; that reasoning lived in both
+            # places and only one copy would get corrected.
+            # Renamed only once the layout check has passed, so a sidecar at
+            # the real path is always one that was written completely AND
+            # verified.
+            try:
+                await _off_loop(os.replace, staged, sidecar)
+            except OSError as exc:
+                raise _Unavailable(f"Could not stage the sidecar into place: {exc}") from exc
+        except BaseException:
+            _discard_partial(staged)
+            raise
 
         _reannotate(matches, sources)
 
@@ -562,9 +642,9 @@ async def capture(
             raise _Unavailable(f"Sidecar vanished after being written: {exc}") from exc
 
         logger.info(
-            "Job %d: revert point %s (%d stream(s) from the original, "
+            "%s: revert point %s (%d stream(s) from the original, "
             "%.1f MB) → %s",
-            job_id,
+            label,
             "extended" if extend else ("replaced" if existing else "captured"),
             len(lost), size / 1024 / 1024, sidecar,
         )
@@ -584,13 +664,13 @@ async def capture(
             # point, so the cost is the wasted remux and nothing else —
             # which is the only reason refusing is a reasonable option.
             logger.error(
-                "Job %d: refusing to process %s without a revert point — %s",
-                job_id, input_path, exc,
+                "%s: refusing to process %s without a revert point — %s",
+                label, input_path, exc,
             )
             return None, f"No revert point could be recorded: {exc}"
 
         logger.warning(
-            "Job %d: proceeding without a revert point for %s — %s",
-            job_id, input_path, exc,
+            "%s: proceeding without a revert point for %s — %s",
+            label, input_path, exc,
         )
         return None, None

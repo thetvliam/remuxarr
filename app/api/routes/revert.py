@@ -21,8 +21,12 @@ from app.api.ws_manager import broadcast_threadsafe
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar, recycle_dir_status
 from app.core.revert_match import attach, find_candidates, list_detached
-from app.core.revert_restore import restore_revert_point, revert_blocked_reason
-from app.database.models import MediaFile, QueueItem, RevertPoint
+from app.core.worker import notify_after_revert
+from app.core.revert_restore import (
+    recorded_path, restore_blocked_reason, restore_destination,
+    restore_revert_point,
+)
+from app.database.models import Ac3ForgeJob, MediaFile, QueueItem, RevertPoint
 from app.database.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,8 @@ router = APIRouter(prefix="/api/revert", tags=["revert"])
 # Queue states that mean the worker is about to write, or is writing, this
 # file. Reverting underneath either produces two writers for one path.
 _ACTIVE_QUEUE_STATES = ("pending", "processing")
+# A forge job writes the file in place too, adding or undoing an AC3 track.
+_ACTIVE_FORGE_STATES = ("pending", "undo_pending", "processing")
 
 
 class AttachRequest(BaseModel):
@@ -54,8 +60,15 @@ def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
     # an entry the revert then refuses makes the button look broken
     # rather than the file look changed, and the user has no way to tell
     # which — so the reason travels with the row.
-    problem = (revert_blocked_reason(point, media.path) if media else
+    problem = (restore_blocked_reason(point, media.path) if media else
                "This revert point is not attached to a file.")
+
+    # Where a revert would write, from the function the revert uses, so the
+    # row can say so before the user presses anything. Absent for a point
+    # with no file: there is nothing to derive it from until it is matched.
+    original = recorded_path(point)
+    destination = (restore_destination(original, media.path)
+                   if media and original else None)
 
     return {
         "id": point.id,
@@ -63,6 +76,7 @@ def _serialise(point: RevertPoint, media: MediaFile | None) -> dict:
         "current_path": media.path if media else None,
         "current_filename": media.filename if media else None,
         "original_path": point.original_path,
+        "restore_path": destination,
         "original_container": point.original_container,
         "sidecar_size": point.sidecar_size,
         "created_at": point.created_at,
@@ -133,28 +147,45 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
     # Refusing beats racing. The worker writes through a staged swap and so
     # does revert, so the loser's output silently replaces the winner's and
     # the result is whichever finished second — with a revert point and a
-    # queue item that both now describe a file that never existed.
-    active = (db.query(QueueItem)
-                .filter(QueueItem.file_id == point.file_id,
-                        QueueItem.status.in_(_ACTIVE_QUEUE_STATES))
-                .first())
-    if active:
-        raise HTTPException(
-            409,
-            f"This file is {active.status} in the queue. Wait for it to "
-            f"finish, or remove it from the queue, before reverting.",
-        )
-
+    # queue item that both now describe a file that never existed. The
+    # forge writes the same way. See revert_lock, THREE WRITERS.
+    #
+    # The checks and the acquire happen under CLAIM_LOCK, so a queue or
+    # forge claim running in its executor thread cannot take this file
+    # between the check that found it free and the acquire that holds it.
     media = db.get(MediaFile, point.file_id)
+    with revert_lock.CLAIM_LOCK:
+        active = (db.query(QueueItem)
+                    .filter(QueueItem.file_id == point.file_id,
+                            QueueItem.status.in_(_ACTIVE_QUEUE_STATES))
+                    .first())
+        if active:
+            raise HTTPException(
+                409,
+                f"This file is {active.status} in the queue. Wait for it to "
+                f"finish, or remove it from the queue, before reverting.",
+            )
 
-    # Acquired before the thread starts, and carrying the file id: from
-    # here until release() the worker will not claim a job for this file,
-    # which closes the half of the exclusion that did not exist. The check
-    # above only covers jobs queued BEFORE this point — a scan running
-    # during the revert would otherwise queue this same file and the
-    # worker would pick it straight up.
-    revert_lock.acquire(point.file_id, point_id,
-                        media.path if media else None)
+        forging = (db.query(Ac3ForgeJob)
+                     .filter(Ac3ForgeJob.file_id == point.file_id,
+                             Ac3ForgeJob.status.in_(_ACTIVE_FORGE_STATES))
+                     .first())
+        if forging:
+            raise HTTPException(
+                409,
+                "This file has an AC3 Forge job waiting or running. Wait "
+                "for it to finish, or remove it from the forge queue, "
+                "before reverting.",
+            )
+
+        # Acquired before the thread starts, and carrying the file id: from
+        # here until release() neither the worker nor the forge will claim
+        # a job for this file. The checks above only cover jobs queued
+        # BEFORE this point — a scan running during the revert would
+        # otherwise queue this same file and the worker would pick it
+        # straight up.
+        revert_lock.acquire(point.file_id, point_id,
+                            media.path if media else None)
     started = False
     try:
         loop = asyncio.get_running_loop()
@@ -163,7 +194,7 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
         # thread pool with every sync route handler, and a revert blocking
         # on FFmpeg and ffprobe would starve HTTP requests.
         threading.Thread(
-            target=_run_revert, args=(point_id, loop),
+            target=_run_revert, args=(point_id, point.file_id, loop),
             name="remuxarr-revert", daemon=True,
         ).start()
         started = True
@@ -178,7 +209,13 @@ async def restore(point_id: int, db: Session = Depends(get_db)):
     return {"status": "started", "point_id": point_id}
 
 
-def _run_revert(point_id: int, loop) -> None:
+def _run_revert(point_id: int, file_id: int, loop) -> None:
+    """
+    file_id is passed in rather than read back afterwards: a successful
+    revert deletes the point, and with it the only record of which file
+    it was for.
+    """
+    outcome = None
     try:
         outcome = asyncio.run(restore_revert_point(point_id))
         payload = {
@@ -200,6 +237,31 @@ def _run_revert(point_id: int, loop) -> None:
         revert_lock.release()
 
     broadcast_threadsafe(payload, loop)
+
+    # Sonarr, Radarr and Plex hear about the file as they do after a job.
+    # Only now, with the lock released: the quality restore waits on the
+    # service's rescan, and the file must not stay locked while it does.
+    if outcome is not None and outcome.success:
+        _announce_revert(file_id, outcome.restored_path, loop)
+
+
+def _announce_revert(file_id: int, restored_path: str, loop) -> None:
+    """
+    Hand notify_after_revert to the app's loop from the revert thread.
+
+    The same care as ws_manager.broadcast_threadsafe, for the same reasons:
+    a notification must never turn a finished revert into a crashed thread,
+    and the coroutine has to be closed if it cannot be scheduled — it is
+    built before the call that would schedule it, and left unawaited it
+    surfaces later as a warning attributed to whatever else is running.
+    """
+    coro = notify_after_revert(file_id, restored_path)
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        coro.close()
+        logger.warning("Could not notify other services after reverting %s",
+                       restored_path)
 
 
 @router.get("/{point_id}/candidates/")

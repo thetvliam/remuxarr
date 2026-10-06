@@ -31,12 +31,47 @@ jobs:
       # undocumented property of the runner image, skipif turns its
       # disappearance into a green build rather than a red one, and the loss
       # would be silent. Installing it explicitly makes the dependency real.
-      - name: Install FFmpeg
+      #
+      # The SAME build the image ships (Dockerfile, stage 2), not Ubuntu's.
+      # Ubuntu's apt FFmpeg is 6.1, and the two behave differently in ways the
+      # tests reach: when muxing from two inputs, 6.1 and 8.1 schedule their
+      # reads differently, and 8.1 reports progress on a short clip
+      # differently. Tests passing against a binary nobody runs prove little.
+      # Same asset, same two URLs, same version check as the Dockerfile —
+      # keep them in step when the FFmpeg line is bumped.
+      - name: Install FFmpeg (the build the Docker image ships)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          set -eu
+          asset="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
+          ok=""
+          for url in \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${asset}" \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/${asset}"; do
+            echo "Trying FFmpeg download: $url"
+            if curl -fsSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ffmpeg.tar.xz" "$url"; then
+              ok=1; break
+            fi
+            echo "  failed, trying the next source" >&2
+          done
+          if [ -z "$ok" ]; then
+            echo "Could not download FFmpeg 8.1 from any source." >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf "$RUNNER_TEMP/ffmpeg.tar.xz" -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1 | grep -q 'version n8.1' \
+            || { echo "Downloaded ffmpeg is not the expected 8.1 build" >&2; exit 1; }
+          echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+
+      # A separate step because $GITHUB_PATH only applies to the steps after
+      # the one that writes it. The runner image may carry its own ffmpeg in
+      # /usr/bin; this fails if that one, not ours, is what the tests will find.
+      - name: Confirm the tests will use that FFmpeg
+        run: |
           ffmpeg -version | head -1
           ffprobe -version | head -1
+          ffmpeg -version | head -1 | grep -q 'version n8.1'
+          ffprobe -version | head -1 | grep -q 'version n8.1'
 
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app

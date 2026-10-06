@@ -207,9 +207,15 @@ async def run_forge_command(
     action_label:      str,
     progress_callback: Callable[[ForgeProgress], Awaitable[None]] | None = None,
     timeout_seconds:   float | None = None,
+    before_staging:    Callable[[str], Awaitable[str | None]] | None = None,
 ) -> ForgeResult:
     """
     Run a forge FFmpeg command with real-time progress tracking.
+
+    before_staging, if given, is awaited with the path of the finished
+    output before it replaces the file, exactly as for a queue job: a
+    non-None return aborts the run with the file untouched. The worker
+    uses it to capture a revert point.
 
     Writes to temp_path, then atomically renames to output_path on success.
     Always cleans up the temp file on failure.
@@ -261,12 +267,16 @@ async def run_forge_command(
             action=STAGING_ACTION,
         ))
 
+    async def _before_staging() -> str | None:
+        return await before_staging(temp_path)
+
     result = await run_staged_subprocess(
         cmd,
         [StagedOutput(temp_path=temp_path, final_path=output_path)],
         on_progress_line=on_progress_line,
         stderr_tail_lines=20,
         timeout_seconds=timeout_seconds,
+        before_staging=_before_staging if before_staging else None,
         on_staging_progress=on_staging if progress_callback else None,
     )
 
@@ -491,17 +501,34 @@ def claim_next_forge_job() -> int | None:
     """
     Claim the next pending or undo_pending forge job.
     Returns the job ID, or None if the forge queue is empty.
+
+    Not one for a file another writer holds — a revert in progress, or a
+    queue job in progress, which can run beside a forge task once
+    max_concurrent_jobs is above 1. See revert_lock, THREE WRITERS. The
+    job is skipped, not the queue: it is claimed on a later pass.
     """
-    from app.database.models import Ac3ForgeJob
+    from app.core import revert_lock
+
+    with revert_lock.CLAIM_LOCK:
+        return _claim_next_forge_job_locked(revert_lock.reverting_file_id())
+
+
+def _claim_next_forge_job_locked(reverting: int | None) -> int | None:
+    from app.database.models import Ac3ForgeJob, QueueItem
 
     db = SessionLocal()
     try:
-        job = (
+        query = (
             db.query(Ac3ForgeJob)
             .filter(Ac3ForgeJob.status.in_(["pending", "undo_pending"]))
-            .order_by(Ac3ForgeJob.created_at.asc())
-            .first()
         )
+        if reverting is not None:
+            query = query.filter(Ac3ForgeJob.file_id != reverting)
+        processing = (db.query(QueueItem.file_id)
+                        .filter(QueueItem.status == "processing"))
+        query = query.filter(Ac3ForgeJob.file_id.notin_(processing))
+
+        job = query.order_by(Ac3ForgeJob.created_at.asc()).first()
         if job is None:
             return None
 
@@ -678,6 +705,7 @@ def load_forge_job_data(job_id: int) -> dict | None:
 
         return {
             "job_id":             job.id,
+            "file_id":            job.file_id,
             "is_undo":            job.is_undo,
             "file_path":          media.path,
             "filename":           media.filename,
@@ -691,6 +719,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
             # this function already holds the session open. The command
             # builders need it to honour add_faststart_to_mp4.
             "add_faststart":       app_cfg.get("add_faststart_to_mp4", True),
+            # The whole settings dict, for revert capture: it decides from
+            # revert_enabled and revert_require_point, as it does for jobs.
+            "app_cfg":             app_cfg,
         }
     finally:
         db.close()

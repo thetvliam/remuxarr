@@ -123,6 +123,14 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # the cheapest signal that separates them, and the only one in
         # this manifest that a stream-by-stream comparison cannot see.
         "duration": _as_float(probe_data.get("format", {}).get("duration")),
+        # The file's own tags — title, comments, whatever the release
+        # carried — verbatim. Recorded rather than read back from the
+        # processed file at restore time, because a conversion loses them
+        # there: an MP4 keeps only a handful of standard keys. Optional:
+        # manifests written before it lack it, and build_restore_command
+        # falls back for those. Not a version bump, which would make capture
+        # replace — and so discard — every existing point.
+        "format_tags": dict(probe_data.get("format", {}).get("tags") or {}),
     }
 
 
@@ -178,6 +186,63 @@ def _full_key(stream: dict) -> tuple:
     )
 
 
+def _pair_pass(key_fn, unmatched: list[dict], remaining: list[dict],
+               matched: dict[int, int | None]) -> tuple[list[dict], list[dict]]:
+    """
+    One matching pass. Records what it decides in `matched` and returns
+    (still_unmatched, still_remaining) for the next, looser pass.
+
+    Streams are grouped by key, and each group is settled by comparing how
+    many the original had with how many the processed file has:
+
+      • At least as many in the processed file — paired in order, so the
+        nth original look-alike takes the nth survivor. The order is the
+        only evidence left once the key is equal, and this is what the
+        matching always did; it rests on the job not reordering the tracks
+        of a type, which build_ffmpeg_command does not.
+      • Fewer, but some — the group is settled as LOST, every member of
+        it, and its survivors are consumed without being paired. Which of
+        them survived is exactly what this key cannot say, and a wrong
+        guess stores a surviving track while the destroyed one is gone
+        for good. Over-capturing only costs disk, and restore takes a
+        stream from the sidecar when it has one, so the result is the
+        pristine original either way.
+
+        Consuming the survivors matters as much as giving up on the
+        originals: left in the pool, a later and looser pass would hand
+        them to some other original that merely shares a codec.
+      • None — nothing to decide here; the group goes on to the next pass.
+
+    still_unmatched keeps manifest order, because the next pass pairs in
+    order within its own groups, and those can mix members of several
+    groups from this one.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for original in unmatched:
+        groups.setdefault(key_fn(original), []).append(original)
+
+    settled: set[int] = set()
+    consumed: set[int] = set()
+    for key, originals in groups.items():
+        candidates = [c for c in remaining if key_fn(c) == key]
+        if not candidates:
+            continue
+        if len(candidates) >= len(originals):
+            for original, candidate in zip(originals, candidates):
+                matched[id(original)] = candidate["index"]
+                settled.add(id(original))
+                consumed.add(id(candidate))
+        else:
+            for original in originals:
+                matched[id(original)] = None
+                settled.add(id(original))
+            for candidate in candidates:
+                consumed.add(id(candidate))
+
+    return ([o for o in unmatched if id(o) not in settled],
+            [c for c in remaining if id(c) not in consumed])
+
+
 def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int | None]]:
     """
     Pair every manifest entry with its index in the processed file, or None
@@ -211,9 +276,18 @@ def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int
 
     Anything still unmatched on the original side was destroyed.
 
-    The one case this cannot resolve is two streams identical in both
-    payload AND metadata where only one survived — and there it does not
-    need to, because the two are interchangeable by construction.
+    Every pass pairs a group of look-alikes only when the pairing cannot be
+    wrong — see _pair_pass. When fewer of them survived than the original
+    had, a key that cannot tell them apart cannot say WHICH survived, and
+    the whole group is reported lost. Guessing here was the bug: a job
+    that drops a French track and re-tags an untagged English one of the
+    same codec and layout left both looking alike to pass 3, which paired
+    the French original with the surviving English track. The sidecar then
+    stored the English track a second time and the French one was never
+    stored at all, and the revert reported success with two English tracks.
+    Identical metadata does not make two streams interchangeable either —
+    a full subtitle and a forced-only one can share every field this
+    compares, and a review answer can remove either of them.
 
     Where it is uncertain, it errs towards "lost". The two failure modes
     are not symmetric: capturing a stream that actually survived costs
@@ -229,34 +303,13 @@ def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int
 
     remaining = list(processed)
     matched: dict[int, int | None] = {}
-    unmatched = []
+    unmatched = list(manifest.get("streams", []))
 
-    # Pass 1 — exact.
-    for original in manifest.get("streams", []):
-        key = _full_key(original)
-        for i, candidate in enumerate(remaining):
-            if _full_key(candidate) == key:
-                matched[id(original)] = candidate["index"]
-                remaining.pop(i)
-                break
-        else:
-            unmatched.append(original)
-
-    # Passes 2 and 3 — progressively looser, each over what the previous
-    # could not place. Running them as a sequence rather than merging them
-    # is what stops a loose match claiming a stream a tighter one owns.
-    for key_fn in (_language_key, _payload_key):
-        still_unmatched = []
-        for original in unmatched:
-            key = key_fn(original)
-            for i, candidate in enumerate(remaining):
-                if key_fn(candidate) == key:
-                    matched[id(original)] = candidate["index"]
-                    remaining.pop(i)
-                    break
-            else:
-                still_unmatched.append(original)
-        unmatched = still_unmatched
+    # Progressively looser, each over what the previous could not place.
+    # Running them as a sequence rather than merging them is what stops a
+    # loose match claiming a stream a tighter one owns.
+    for key_fn in (_full_key, _language_key, _payload_key):
+        unmatched, remaining = _pair_pass(key_fn, unmatched, remaining, matched)
 
     for original in unmatched:
         matched[id(original)] = None

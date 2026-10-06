@@ -22,7 +22,7 @@ Everything else follows from "the bytes are what matter":
   • The database is updated only afterwards, and a bookkeeping failure
     never turns a successful restore into a reported failure.
 
-Verified by mutation, 14 applied, 14 killed. Two initially SURVIVED, and
+Verified by mutation, 26 applied, 26 killed. Two initially SURVIVED, and
 both had the same root cause: no test drove a FAILING FFmpeg run, only
 failing validation. Removing the missing-sidecar check survived because
 FFmpeg's own failure on a missing input surfaces as "temp file(s) missing
@@ -50,7 +50,33 @@ The full list:
   • Bookkeeping exception propagated as a failed
     revert                                        → killed
 
+Where a revert writes (restore_destination) came later: the current name
+and folder with the original extension, instead of the path recorded at
+capture. Mutants run against the suite as it stood first; all but the
+first two below survived it, and are killed here now:
+
+  • Destination keeps the current extension      → killed, already, by
+                                                    the container-change
+                                                    test above
+  • Collision check firing on the file itself    → killed, already, by
+                                                    every real revert
+  • Destination is the recorded path (the old
+    behaviour)                                   → killed
+  • Recorded folder with the current name        → killed
+  • Collision check removed                      → killed
+  • Temp folder sized from the recorded path     → killed
+  • Temp folder sized from the destination       → killed
+  • Processed file removed when the RECORDED
+    path differs, deleting the restored file     → killed
+
 No equivalent mutants.
+
+The time limit came later: the revert takes job_timeout_minutes as jobs
+do. Four mutants, all surviving the suite as it stood, all killed by the
+tests at the end: no limit passed, minutes not converted to seconds, the
+"Revert" label not passed, and the runner ignoring its label. A fifth, 0
+treated as an immediate timeout rather than none, was not applied: the
+runner itself treats a 0 limit as none, so it would change nothing.
 """
 import asyncio
 import json
@@ -510,6 +536,177 @@ def test_reverting_a_container_change_removes_the_processed_file(env):
     assert env["media"].path == str(env["path"])
 
 
+# ── Where a revert writes ────────────────────────────────────────────────────
+#
+# To the file as it is called now, with the original extension. The path
+# recorded at capture is only right while nobody renames the file, and a
+# point matched back to a renamed file still carries the old one.
+
+
+def _rename_and_match_back(env, new_path):
+    """
+    Rename the processed file and put its point back on it the way the app
+    does: the scan detaches the point and replaces the row, and the user
+    matches the point to the renamed file.
+    """
+    from app.core.revert_match import attach
+    from app.core.timeutil import utcnow_naive
+    from app.database.models import MediaFile, RevertPoint
+
+    db = env["db"]
+    new_path.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(env["path"], new_path)
+
+    point = db.get(RevertPoint, env["point"].id)
+    point.file_id = None
+    point.detached_at = utcnow_naive()
+    db.delete(db.get(MediaFile, env["media"].id))
+    db.commit()
+
+    stat = new_path.stat()
+    media = MediaFile(path=str(new_path), filename=new_path.name,
+                      directory=str(new_path.parent), size=stat.st_size,
+                      mtime=stat.st_mtime, container="mkv", status="processed")
+    db.add(media)
+    db.commit()
+
+    outcome = attach(point.id, media.id)
+    assert outcome.success is True, outcome.error
+    db.expire_all()
+    assert db.get(RevertPoint, point.id).file_id == media.id
+    return media
+
+
+@ffmpeg_required
+def test_a_renamed_file_is_reverted_under_its_new_name(env):
+    """
+    Sonarr renamed the episode after the job; the point was matched back.
+    The revert used to write to the name recorded at capture, delete the
+    renamed file, and leave Sonarr pointing at a file that was gone.
+    """
+    renamed = env["media_dir"] / "Show - S01E01 - Pilot.mkv"
+    media = _rename_and_match_back(env, renamed)
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    assert outcome.restored_path == str(renamed)
+    assert _summarise(renamed) == env["original_streams"]
+    assert not env["path"].exists(), "the old name came back"
+
+    env["db"].expire_all()
+    assert env["db"].get(type(media), media.id).path == str(renamed)
+
+
+@ffmpeg_required
+def test_a_renamed_conversion_comes_back_with_its_new_name(env):
+    """
+    The job turned Show.mkv into Show.mp4 and the user renamed that. Only
+    the extension the job changed goes back; the new name stays, and the
+    processed file it replaces is removed.
+    """
+    renamed = env["media_dir"] / "New Name.mp4"
+    _rename_and_match_back(env, renamed)
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    restored = env["media_dir"] / "New Name.mkv"
+    assert outcome.restored_path == str(restored)
+    assert _summarise(restored) == env["original_streams"]
+    assert not renamed.exists(), "the processed file was left behind"
+    assert not env["path"].exists(), "the old name came back"
+
+
+@ffmpeg_required
+def test_a_file_in_a_renamed_folder_is_reverted_where_it_now_is(env, monkeypatch):
+    """
+    A renamed series folder used to make the revert fail outright, because
+    the recorded folder no longer exists.
+
+    TEMP_DIR is made to look full so the temp file falls back to a folder
+    derived from a path, which is where the recorded folder used to be
+    used too — on Unraid, a large file and a RAM-backed TEMP_DIR do this.
+    """
+    import app.core.ffmpeg as ffmpeg_mod
+
+    real_usage = ffmpeg_mod.shutil.disk_usage
+    temp_dir = str(env["media_dir"].parent / "tmp")
+
+    def full_temp_dir(path):
+        usage = real_usage(path)
+        if os.path.abspath(path) == os.path.abspath(temp_dir):
+            return usage._replace(free=0)
+        return usage
+
+    monkeypatch.setattr(ffmpeg_mod.shutil, "disk_usage", full_temp_dir)
+
+    moved = env["media_dir"].parent / "Renamed Show" / "Show.mkv"
+    _rename_and_match_back(env, moved)
+    os.rmdir(env["media_dir"])
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    assert outcome.restored_path == str(moved)
+    assert _summarise(moved) == env["original_streams"]
+
+
+@ffmpeg_required
+def test_temp_space_is_judged_from_the_file_that_exists(env, monkeypatch):
+    """
+    _pick_temp_dir sizes the temp file from the path it is given, and reads
+    a missing path as zero bytes. For a conversion the destination does not
+    exist yet, so it must be given the current file — otherwise a large
+    revert is sent to a RAM-backed TEMP_DIR however little room it has.
+    """
+    import app.core.revert_restore as restore_mod
+
+    seen = []
+    real_pick = restore_mod._pick_temp_dir
+
+    def recording_pick(path):
+        seen.append(path)
+        return real_pick(path)
+
+    monkeypatch.setattr(restore_mod, "_pick_temp_dir", recording_pick)
+
+    converted = env["media_dir"] / "Show.mp4"
+    _rename_and_match_back(env, converted)
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    assert seen == [str(converted)]
+
+
+@ffmpeg_required
+def test_a_revert_does_not_overwrite_another_file(env):
+    """
+    The job turned Show.mkv into Show.mp4; since then a different Show.mkv
+    has appeared beside it. Reverting would replace that file without a
+    word, and drop its database row as stale. It refuses instead, names the
+    file early enough to survive the toast's 60 characters, and leaves both
+    files and the revert point as they were.
+    """
+    from app.database.models import RevertPoint
+
+    converted = env["media_dir"] / "Show.mp4"
+    _rename_and_match_back(env, converted)
+    other = env["media_dir"] / "Show.mkv"
+    other.write_bytes(b"a different file the user has")
+    converted_bytes = converted.read_bytes()
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is False
+    assert "Show.mkv" in outcome.error[:60]
+    assert other.read_bytes() == b"a different file the user has"
+    assert converted.read_bytes() == converted_bytes
+    env["db"].expire_all()
+    assert env["db"].get(RevertPoint, env["point"].id) is not None
+
+
 # ── Bookkeeping is not the restore ───────────────────────────────────────────
 
 @ffmpeg_required
@@ -530,3 +727,50 @@ def test_a_database_failure_does_not_report_a_failed_revert(env, monkeypatch):
 
     assert outcome.success is True
     assert _summarise(env["path"]) == env["original_streams"]
+
+
+# ── A revert that stalls ─────────────────────────────────────────────────────
+#
+# Jobs and forge runs give FFmpeg the Job Timeout setting; a revert gave it
+# nothing, so a stalled FFmpeg — a share that stops answering — kept the file
+# locked against every other writer until a restart.
+
+def test_a_revert_takes_its_time_limit_from_the_job_timeout_setting():
+    from app.core.revert_restore import _timeout_seconds
+
+    assert _timeout_seconds({"job_timeout_minutes": 120}) == 7200.0
+    assert _timeout_seconds({"job_timeout_minutes": 0}) is None, "0 means no limit"
+    assert _timeout_seconds({}) == 7200.0, "the setting's default"
+
+
+@ffmpeg_required
+def test_a_stalled_revert_is_stopped_and_leaves_everything_as_it_was(env, monkeypatch):
+    """
+    FFmpeg here is a stand-in that never finishes. The limit is cut to a
+    second for the test; the setting itself counts in minutes.
+    """
+    import app.core.revert_restore as restore_mod
+    from app.config import settings as app_settings
+    from app.database.models import RevertPoint
+
+    stall = env["media_dir"].parent / "stalling-ffmpeg"
+    # exec, so the process the runner kills is the one holding its pipes —
+    # a shell left waiting on a child sleep would keep them open for the
+    # full thirty seconds after the kill.
+    stall.write_text("#!/bin/sh\nexec sleep 30\n")
+    stall.chmod(0o755)
+    monkeypatch.setattr(app_settings, "FFMPEG_PATH", str(stall))
+    monkeypatch.setattr(restore_mod, "_timeout_seconds", lambda _cfg: 1.0)
+    before = env["path"].read_bytes()
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is False
+    assert outcome.error.startswith("Revert timed out"), outcome.error
+    assert env["path"].read_bytes() == before, "the file was touched"
+    env["db"].expire_all()
+    assert env["db"].get(RevertPoint, env["point"].id) is not None, (
+        "the revert point is gone, so the revert cannot be tried again"
+    )
+    leftovers = [p for p in env["media_dir"].parent.rglob("*.remuxarr_tmp")]
+    assert leftovers == [], leftovers

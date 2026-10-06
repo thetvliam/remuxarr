@@ -60,9 +60,20 @@ export const answersForFile = (file, answers, fileAnswers) => {
 
 const blank = () => ({ answers: {}, files: {}, skipped: false });
 
+/* Decided: every file has an answer for every track, its own or the card's.
+ *
+ * It used to need the card's own row complete, so a card answered file by
+ * file — each episode set on its own because they differ — showed every
+ * choice made and still sent nothing. A file's own answer for one track
+ * does not stand in for the rest: a track it has not set itself takes the
+ * card's, as answersForFile does when it builds what is sent. */
 const isDecided = (group, staged) =>
     !staged?.skipped
-    && (group.tracks || []).every((_t, slot) => staged?.answers?.[slot] !== undefined);
+    && (group.files || []).every(file => {
+        const own = staged?.files?.[file.file_id] || {};
+        return (group.tracks || []).every((_t, slot) =>
+            (own[slot] ?? staged?.answers?.[slot]) !== undefined);
+    });
 
 /* What a card's outcome line was worked out for, besides its answers: which
  * files, their stream numbers, and each file as last probed. A file replaced
@@ -130,6 +141,34 @@ export const outcomeLine = (group, staged, previewed) => {
     const line = `Converts ${converting} of ${total} to MP4${tail}. `
         + `The other ${total - converting} stay as they are`;
     return stuck ? `${line} whatever you choose here.` : `${line}.`;
+};
+
+/* The outcome line with the files the preview refused put first.
+ *
+ * The preview checks each answer the way Apply will, so that a card can say
+ * a choice cannot be carried out while it is still being made. The page
+ * used to drop that half of the response, so a card with one file refused
+ * said "Converts to MP4" about all of them and the refusal surfaced only
+ * after Apply.
+ *
+ * `line` is worked out from the files that were answerable, as it always
+ * was; this says how many were not, and why. The first refusal is given
+ * with its file's name, because the reasons name stream numbers and those
+ * differ from file to file — a reason read against the wrong file points at
+ * the wrong track. The rest are counted, not listed: a card of forty files
+ * refused for the same cause would otherwise be forty copies of one
+ * sentence. */
+const withRefusals = (group, line, errors) => {
+    if (!errors || errors.length === 0) return line;
+    const [first] = errors;
+    const file = (group.files || []).find(f => f.file_id === first.file_id);
+    const more = errors.length > 1 ? ` (and ${errors.length - 1} more)` : "";
+    const reason = `${file ? file.filename : `File ${first.file_id}`}: `
+        + `${String(first.error).replace(/\.$/, "")}${more}`;
+    if (!line) return `None of these files can be answered as chosen: ${reason}`;
+    const total = (group.files || []).length;
+    return `${errors.length} of ${total} files can't be answered as chosen: ${reason}. `
+        + `The others: ${line}`;
 };
 
 export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
@@ -341,6 +380,13 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(body),
                     });
+                    /* A refusal of the whole request, not of some files in
+                     * it: the file limit is the one the endpoint raises
+                     * itself, and a malformed body or a crash answers the
+                     * same way. Its body is an error, and read as a result
+                     * it has no outcomes and showed nothing, silently. It is
+                     * a failed preview. */
+                    if (!r.ok) throw new Error(`Preview answered ${r.status}`);
                     const data = await r.json();
                     /* Used only if the card has not changed since this was
                      * sent. A response can outlive its question: a slow one
@@ -349,7 +395,8 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                     if (previewed.current[group.key] !== record) continue;
                     setOutcomes(prev => ({
                         ...prev,
-                        [group.key]: outcomeLine(group, card, data.outcomes),
+                        [group.key]: withRefusals(group,
+                            outcomeLine(group, card, data.outcomes), data.errors),
                     }));
                 } catch (err) {
                     /* No line rather than a guessed one. A sentence the engine
@@ -423,6 +470,19 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
              * this it would land on a card with no answers — one the server
              * refused, still on the page — and the line shows regardless. */
             previewed.current = {};
+            /* Reloaded here, and then again: in the app onReviewResolved
+             * bumps reviewRefreshKey, and the refresh effect above loads the
+             * first page a second time once this one has finished. The two
+             * run one after the other, not together, so nothing is dropped;
+             * the second fetches the same list and replaces the first.
+             *
+             * The bump is not for the cards. It is for the language sections
+             * rendered below them, which watch that key (see
+             * refreshAfterReviewResolved in useAppData). Leaving the cards'
+             * reload to it instead would make answered cards leaving the
+             * page depend on App.jsx passing the callback down, and there is
+             * no App-level test to notice if it stopped. One extra request
+             * per Apply is the price. */
             await loadPage(0);
             onReviewResolved?.();
         } catch (err) {

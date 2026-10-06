@@ -71,6 +71,24 @@ routing the audio through an .m4a first, as the other fixtures here do,
 puts the residue on the original itself and the test proves nothing.
 
 No equivalent mutants.
+
+Sparse streams (ffmpeg._sparse_openings) came later: subtitles, attachments
+and cover art are read through a second opening of their file, because
+mixed into the inputs feeding video and audio they left restored files out
+of time order. That made "input 1 is the sidecar" untrue for them, and two
+tests here asserted it — test_the_sidecar_wins_when_a_stream_is_in_both and
+test_attachments_get_no_metadata_options. Both now resolve each -map to its
+file (_sources) and still check the same thing. The mutants they killed
+before were run again after, killed by the same tests: the sidecar/processed
+preference swapped, and attachments given metadata options.
+
+Mutants for the sparse-stream change, run against the suite as it stood
+first; recorded in full in test_revert_multiple_jobs, which holds the
+real-FFmpeg tests that check the file that results. Killed here by
+test_sparse_streams_are_read_through_their_own_opening_of_each_file: no
+second openings at all, the restore reading sparse streams from the main
+inputs, only subtitles treated as sparse, only attachments, and cover art
+not treated as sparse.
 """
 import json
 import shutil
@@ -118,6 +136,24 @@ def _maps(cmd):
     return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map"]
 
 
+def _sources(cmd):
+    """
+    Each -map as (file, stream index), resolving the input number to the
+    file it opens. A file can be opened more than once — sparse streams
+    are read through their own opening — so the input number alone no
+    longer says which file a stream comes from.
+    """
+    inputs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-i"]
+    out = []
+    for spec in _maps(cmd):
+        number, index = spec.split(":")
+        out.append((inputs[int(number)], int(index)))
+    return out
+
+
+PROCESSED, SIDECAR = "/m/Show.mkv", "/recycle/1.remuxarr_revert"
+
+
 # ── Sourcing and order ───────────────────────────────────────────────────────
 
 def test_streams_are_pulled_from_whichever_file_holds_them():
@@ -161,7 +197,7 @@ def test_the_sidecar_wins_when_a_stream_is_in_both():
         _entry(1, "subtitle", "subrip", processed=1, sidecar=0, language="eng"),
     ))
 
-    assert _maps(cmd) == ["0:0", "1:0"]
+    assert _sources(cmd) == [(PROCESSED, 0), (SIDECAR, 0)]
 
 
 def test_a_stream_in_neither_file_is_refused():
@@ -282,7 +318,83 @@ def test_attachments_get_no_metadata_options():
     ))
 
     assert _meta_for(cmd, 1) == {}
-    assert "1:0" in _maps(cmd)
+    assert (SIDECAR, 0) in _sources(cmd)
+
+
+def _input_of(cmd, out_index):
+    return int(_maps(cmd)[out_index].split(":")[0])
+
+
+def test_sparse_streams_are_read_through_their_own_opening_of_each_file():
+    """
+    Subtitles, attachments and cover art are read from a second opening of
+    whichever file holds them, never from the input that feeds video and
+    audio. Mixed into those inputs, FFmpeg reads their file ahead while the
+    other waits, and the restored file comes out with tracks written after
+    their time — see _sparse_openings. The real-FFmpeg tests in
+    test_revert_multiple_jobs check the file that results; this pins which
+    streams go where.
+    """
+    cmd = _build(_manifest(
+        _entry(0, "video", "h264", processed=0),
+        _entry(1, "audio", "aac", sidecar=0, language="jpn"),
+        _entry(2, "audio", "aac", processed=1, language="eng"),
+        _entry(3, "subtitle", "ass", processed=2, language="eng"),
+        _entry(4, "subtitle", "ass", sidecar=1, language="eng"),
+        _entry(5, "attachment", "ttf", processed=3, filename="A.ttf"),
+        _entry(6, "attachment", "ttf", sidecar=2, filename="B.ttf"),
+        _entry(7, "video", "png", processed=4, disposition=["attached_pic"]),
+    ))
+
+    assert _sources(cmd) == [
+        (PROCESSED, 0), (SIDECAR, 0), (PROCESSED, 1), (PROCESSED, 2),
+        (SIDECAR, 1), (PROCESSED, 3), (SIDECAR, 2), (PROCESSED, 4),
+    ]
+    dense = {_input_of(cmd, 0), _input_of(cmd, 1), _input_of(cmd, 2)}
+    for out_index in (3, 4, 5, 6, 7):
+        assert _input_of(cmd, out_index) not in dense, (
+            f"output stream {out_index} is read from an input that also "
+            f"feeds video or audio"
+        )
+
+
+def _global_args(cmd):
+    """The -map_metadata:g setting and every global -metadata pair."""
+    mapping = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-map_metadata:g"]
+    tags = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-metadata"]
+    return mapping, tags
+
+
+def test_the_files_recorded_tags_are_written_back():
+    """
+    Recorded tags win, alone: nothing is copied from the processed file,
+    whose leftovers — an MP4's brand keys, say — would otherwise ride along
+    into the restored file.
+    """
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest["format_tags"] = {"title": "My Film", "COMMENT": "kept"}
+
+    assert _global_args(_build(manifest)) == (
+        ["-1"], ["title=My Film", "COMMENT=kept"])
+
+
+def test_a_file_that_had_no_tags_gets_none():
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest["format_tags"] = {}
+
+    assert _global_args(_build(manifest)) == (["-1"], [])
+
+
+def test_a_point_from_before_tags_were_recorded_copies_the_processed_files():
+    """
+    No "format_tags" key at all: the point predates them. The processed
+    file's tags are the best left, and exact after a job that kept the
+    container. Copying nothing was the bug.
+    """
+    manifest = _manifest(_entry(0, "video", "h264", processed=0))
+    manifest.pop("format_tags", None)
+
+    assert _global_args(_build(manifest)) == (["0:g"], [])
 
 
 def test_chapters_come_from_the_processed_file():

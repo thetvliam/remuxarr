@@ -51,7 +51,9 @@ RUN apt-get update \
 #
 # If this ever needs bumping to a new major FFmpeg line, change the "8.1"
 # in the two URLs (and the grep check) to the new version — the "latest"
-# tag itself stays the same.
+# tag itself stays the same. CI installs the same asset in
+# .github/workflows/ci.yml so the tests run against this build; change it
+# there too.
 RUN set -eu; \
     STABLE_ASSET="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"; \
     URLS="\

@@ -384,6 +384,66 @@ class SidecarUnsupported(Exception):
 _SUBTITLE_TRANSCODE = {"mov_text": "srt"}
 
 
+def _is_sparse(stream: dict) -> bool:
+    """
+    Whether a manifest stream carries packets only now and then, rather
+    than continuously the way video and audio do.
+
+    Subtitles, attachments and data streams are, and so is cover art: a
+    video or audio stream flagged attached_pic holds one picture for the
+    whole file. See _sparse_openings for why it matters.
+    """
+    if stream.get("type") in ("video", "audio"):
+        return "attached_pic" in (stream.get("disposition") or [])
+    return True
+
+
+def _sparse_openings(paths: list[str],
+                     sources: list[tuple[dict, int]]) -> dict[int, int]:
+    """
+    For each input that supplies a sparse stream, the input number of a
+    second opening of the same file, which is where those streams are to
+    be read from. The caller adds the openings as inputs, in input-number
+    order, after `paths`.
+
+    Why: mixing streams from two files, FFmpeg keeps reading whichever
+    input feeds the output track that is furthest behind, and a sparse
+    track is always behind — between subtitle lines, and permanently for
+    an attachment or cover art, which never send a packet after the first.
+    So its file is read ahead while the other file waits, the muxer stops
+    waiting after ten seconds, and the delayed packets are written later in
+    the file than their time. Measured on FFmpeg 8.1, the build the image
+    ships: a restore whose fonts came from one file put the whole of the
+    other file's tracks after the end of the first, as a second pass
+    through the timeline, and a player that seeks to a video frame never
+    meets the subtitles or audio stored in the other pass. That is our
+    reading of FFmpeg's behaviour, borne out by every measurement rather
+    than confirmed in its source.
+
+    Read from a file of their own, sparse streams can run ahead without
+    holding anything up — the inputs feeding video and audio stay in step
+    — and the file comes out in order. The cost is one more sequential
+    read of each file that supplies them.
+
+    Not -max_interleave_delta 0, which also fixes the order: it does so by
+    holding packets in memory until every track has one, and a subtitle
+    track that ends early made it buffer the rest of the file.
+    """
+    openings: dict[int, int] = {}
+    for stream, input_number in sources:
+        if _is_sparse(stream) and input_number not in openings:
+            openings[input_number] = len(paths) + len(openings)
+    return openings
+
+
+def _opening_args(paths: list[str], openings: dict[int, int]) -> list[str]:
+    """The -i arguments for the second openings, in input-number order."""
+    args: list[str] = []
+    for source, _number in sorted(openings.items(), key=lambda item: item[1]):
+        args += ["-i", paths[source]]
+    return args
+
+
 def build_sidecar_command(
     inputs: list[str],
     sidecar_path: str,
@@ -422,9 +482,16 @@ def build_sidecar_command(
             "file with no tracks."
         )
 
+    # A sidecar read from one file is read in that file's own order and
+    # comes out in order. One read from two — a later job adding to a
+    # revert point — is a mix, and gets the same treatment as a restore.
+    openings = (_sparse_openings(inputs, [(s, n) for s, n, _i in sources])
+                if len(inputs) > 1 else {})
+
     cmd = [app_settings.FFMPEG_PATH]
     for path in inputs:
         cmd += ["-i", path]
+    cmd += _opening_args(inputs, openings)
     cmd += ["-y", "-v", "error"]
 
     # Output-side subtitle ordinal, which is what -c:s:N addresses. It
@@ -434,7 +501,9 @@ def build_sidecar_command(
     overrides: list[str] = []
 
     for stream, input_number, stream_index in sources:
-        cmd += ["-map", f"{input_number}:{stream_index}"]
+        read_from = (openings.get(input_number, input_number)
+                     if _is_sparse(stream) else input_number)
+        cmd += ["-map", f"{read_from}:{stream_index}"]
         if stream.get("type") == "subtitle":
             # Only streams coming from a real media file can still be
             # mov_text; anything already in a previous sidecar was
@@ -500,10 +569,48 @@ def build_restore_command(
             f"No FFmpeg muxer known for original container {container!r}."
         )
 
+    # Where each stream comes from: input 0 is the processed file, input 1
+    # the sidecar.
+    #
+    # The sidecar wins when a stream is somehow in both. Capture makes the
+    # two annotations mutually exclusive today, so this ordering costs
+    # nothing now — but it is stated rather than left to chance, because
+    # the direction matters the moment that changes. Matching errs towards
+    # "lost", so an over-captured stream is one the sidecar holds in its
+    # ORIGINAL codec and tagging while the processed file holds the job's
+    # rewritten version. Preferring the processed copy would quietly
+    # restore the very thing being reverted — a MKV → MP4 conversion, for
+    # instance, would put the mov_text subtitle back instead of the SubRip
+    # original.
+    located: list[tuple[int, int]] = []
+    for stream in streams:
+        sidecar_index = stream.get("sidecar_index")
+        processed_index = stream.get("processed_index")
+        if sidecar_index is not None:
+            located.append((1, sidecar_index))
+        elif processed_index is not None:
+            located.append((0, processed_index))
+        else:
+            # Neither annotation present. Either the manifest was written
+            # before capture recorded them, or the stream was lost and
+            # never made it into the sidecar. Both mean this file cannot
+            # be rebuilt faithfully, and a partial rebuild is worse than
+            # an honest refusal — it would report success while quietly
+            # dropping a track the user asked to get back.
+            raise RestoreUnsupported(
+                f"Stream {stream.get('index')} is in neither the processed "
+                f"file nor the sidecar."
+            )
+
+    paths = [processed_path, sidecar_path]
+    openings = _sparse_openings(
+        paths, [(stream, n) for stream, (n, _i) in zip(streams, located)])
+
     cmd = [
         app_settings.FFMPEG_PATH,
         "-i", processed_path,
         "-i", sidecar_path,
+        *_opening_args(paths, openings),
         "-y",
         "-v", "error",
         "-nostats",
@@ -519,35 +626,13 @@ def build_restore_command(
     # the manifest or in either input.
     subtitle_ordinal = 0
 
-    for out_index, stream in enumerate(streams):
-        sidecar_index = stream.get("sidecar_index")
-        processed_index = stream.get("processed_index")
+    for out_index, (stream, (input_number, stream_index)) in enumerate(
+            zip(streams, located)):
+        sidecar_index = stream_index if input_number == 1 else None
 
-        # The sidecar wins when a stream is somehow in both. Capture makes
-        # the two annotations mutually exclusive today, so this ordering
-        # costs nothing now — but it is stated rather than left to chance,
-        # because the direction matters the moment that changes. Matching
-        # errs towards "lost", so an over-captured stream is one the
-        # sidecar holds in its ORIGINAL codec and tagging while the
-        # processed file holds the job's rewritten version. Preferring the
-        # processed copy would quietly restore the very thing being
-        # reverted — a MKV → MP4 conversion, for instance, would put the
-        # mov_text subtitle back instead of the SubRip original.
-        if sidecar_index is not None:
-            maps += ["-map", f"1:{sidecar_index}"]
-        elif processed_index is not None:
-            maps += ["-map", f"0:{processed_index}"]
-        else:
-            # Neither annotation present. Either the manifest was written
-            # before capture recorded them, or the stream was lost and
-            # never made it into the sidecar. Both mean this file cannot
-            # be rebuilt faithfully, and a partial rebuild is worse than
-            # an honest refusal — it would report success while quietly
-            # dropping a track the user asked to get back.
-            raise RestoreUnsupported(
-                f"Stream {stream.get('index')} is in neither the processed "
-                f"file nor the sidecar."
-            )
+        read_from = (openings.get(input_number, input_number)
+                     if _is_sparse(stream) else input_number)
+        maps += ["-map", f"{read_from}:{stream_index}"]
 
         # Undo any conversion capture applied on the way into the sidecar.
         #
@@ -616,10 +701,39 @@ def build_restore_command(
     # Base codec first, per-stream overrides after — later options win.
     cmd += ["-c", "copy"] + codecs
     cmd += meta
+    cmd += _format_tag_args(manifest)
     # Chapters survive a remux, so the processed file still has them.
     cmd += ["-map_chapters", "0"]
     cmd += ["-f", out_fmt, output_path]
     return cmd
+
+
+def _format_tag_args(manifest: dict) -> list[str]:
+    """
+    The file's own tags — its title and the like, as opposed to each
+    stream's.
+
+    They need saying explicitly. The per-stream -map_metadata above, which
+    stops a track inheriting the processed file's tags, also stops FFmpeg
+    copying the file-level ones, so a restore used to come out with none.
+
+    With the original's tags recorded (manifest["format_tags"]), nothing is
+    copied from the processed file — a converted file's leftovers, an MP4's
+    brand keys in a Matroska, would otherwise ride along — and each recorded
+    tag is written back. A tag the muxer owns, such as Matroska's ENCODER,
+    may still be overwritten by it.
+
+    A manifest from before they were recorded has no "format_tags" key at
+    all, as opposed to an empty dict for a file that had none. For those the
+    processed file's tags are copied: exact after a job that kept the
+    container, and the best there is after one that did not.
+    """
+    if "format_tags" not in manifest:
+        return ["-map_metadata:g", "0:g"]
+    args = ["-map_metadata:g", "-1"]
+    for key, value in manifest["format_tags"].items():
+        args += ["-metadata", f"{key}={value}"]
+    return args
 
 
 # ── Executor — main remux ───────────────────────────────────────────────────────

@@ -288,7 +288,8 @@ disable that limit.
 exact original state: every track back, in the original order, with the original
 language tags, titles, default/forced flags and attachments, in the original
 container. If the job converted MKV to MP4, reverting converts it back and
-restores the original filename.
+restores the original file extension. An AC3 track added with AC3 Forge after
+processing is not part of the original, so reverting removes it.
 
 **When it will refuse.** A revert point records the file as the job left it. If
 something else has written to that file since - Sonarr upgrading the episode is
@@ -301,7 +302,9 @@ to revert.
 to - a rename looks the same as a deletion from the outside. The entry moves to
 **Unmatched** rather than being thrown away, and can be matched back: a renamed
 file is byte-for-byte identical, so it is identified by its fingerprint rather
-than guessed at.
+than guessed at. Reverting it then keeps its new name and folder. A revert
+will not overwrite another file: if one already has the name it would write,
+the entry says so and does not offer to revert.
 
 **Extracted subtitle files** are removed again when you revert, since their
 content goes back inside the file - but only the ones that job created. If you

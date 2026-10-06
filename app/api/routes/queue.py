@@ -799,9 +799,10 @@ def queue_stats(db: Session = Depends(get_db)):
 # reason. Note that the OpenAPI schema lists both routes either way — the
 # path is registered, just unreachable — so only a real request finds this.
 #
-# Approving a threshold review sets und_audio_threshold_acknowledged, and
+# Approving a threshold review set und_audio_threshold_acknowledged, and
 # nothing ever set it back: one write site, True, and no route to False.
-# The file is exempt from the gate for good.
+# The file was exempt from the gate for good. The Approve button is gone;
+# Confirm correct in Audio Language Review is what sets it now.
 #
 # That matters more than a stray flag usually would. The Approve button used
 # to say it would "process the file now, keeping every audio track", which
@@ -1019,8 +1020,10 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
     review flag also resurfaces on the next DELTA scan — deliberately
     so: full scans already re-flag it (the underlying condition still
     holds), so this makes the two scan types consistent rather than
-    changing what "skip" means. Permanent suppression has its own
-    dedicated mechanism (Approve sets und_audio_threshold_acknowledged).
+    changing what "skip" means. Lasting suppression has its own
+    mechanism: Confirm correct in Audio Language Review sets
+    und_audio_threshold_acknowledged, and CLEAR CONFIRMATION under
+    Confirmed undefined-audio tracks on the Review page takes it back.
     """
     item = db.get(QueueItem, item_id)
     if not item:
