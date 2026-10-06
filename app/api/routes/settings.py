@@ -782,7 +782,9 @@ SETTINGS_SCHEMA = [
         "description": "Maximum time in minutes a single FFmpeg job may run "
                        "before it is killed and marked as failed. Protects the "
                        "queue from stalling if FFmpeg hangs on a corrupt or "
-                       "unusual file. Set to 0 to disable the timeout entirely. "
+                       "unusual file. Also applies to AC3 Forge runs and to "
+                       "recycle bin reverts. Set to 0 to disable the timeout "
+                       "entirely. "
                        "Default: 120 (2 hours), which comfortably covers any "
                        "legitimate 4K file.",
     },

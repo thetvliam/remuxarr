@@ -273,6 +273,18 @@ def _plan(db, point_id: int) -> tuple[_Plan | None, str | None]:
     ), None
 
 
+def _timeout_seconds(app_cfg: dict) -> float | None:
+    """
+    The FFmpeg time limit for a revert: job_timeout_minutes, as jobs and
+    forge runs use. A revert reads and writes the whole file as a job does,
+    and without a limit a stalled FFmpeg — a share that stops answering —
+    kept the file locked against every other writer until a restart.
+    0 or empty means no limit, as it does for jobs.
+    """
+    minutes = app_cfg.get("job_timeout_minutes", 120)
+    return float(minutes) * 60 if minutes else None
+
+
 def _settle_forge_jobs(db, file_id: int, tracks: list[dict]) -> None:
     """
     Bring the file's AC3 Forge jobs in line with the restored file.
@@ -452,10 +464,11 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     Validation, then a staged write, then the database. Any failure before
     the swap leaves the file untouched.
     """
-    from app.database.session import SessionLocal
+    from app.database.session import SessionLocal, get_app_settings
 
     with SessionLocal() as db:
         plan, error = _plan(db, point_id)
+        timeout_seconds = _timeout_seconds(get_app_settings(db))
     if plan is None:
         logger.info("Revert point %d refused: %s", point_id, error)
         return RestoreOutcome(success=False, error=error)
@@ -488,6 +501,8 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         [StagedOutput(temp_path=temp_output, final_path=plan.destination)],
         on_progress_line=on_progress,
         stderr_tail_lines=30,
+        timeout_seconds=timeout_seconds,
+        timeout_label="Revert",
     )
 
     if not result.success:

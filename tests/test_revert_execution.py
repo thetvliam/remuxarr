@@ -22,7 +22,7 @@ Everything else follows from "the bytes are what matter":
   • The database is updated only afterwards, and a bookkeeping failure
     never turns a successful restore into a reported failure.
 
-Verified by mutation, 22 applied, 22 killed. Two initially SURVIVED, and
+Verified by mutation, 26 applied, 26 killed. Two initially SURVIVED, and
 both had the same root cause: no test drove a FAILING FFmpeg run, only
 failing validation. Removing the missing-sidecar check survived because
 FFmpeg's own failure on a missing input surfaces as "temp file(s) missing
@@ -70,6 +70,13 @@ first two below survived it, and are killed here now:
     path differs, deleting the restored file     → killed
 
 No equivalent mutants.
+
+The time limit came later: the revert takes job_timeout_minutes as jobs
+do. Four mutants, all surviving the suite as it stood, all killed by the
+tests at the end: no limit passed, minutes not converted to seconds, the
+"Revert" label not passed, and the runner ignoring its label. A fifth, 0
+treated as an immediate timeout rather than none, was not applied: the
+runner itself treats a 0 limit as none, so it would change nothing.
 """
 import asyncio
 import json
@@ -720,3 +727,50 @@ def test_a_database_failure_does_not_report_a_failed_revert(env, monkeypatch):
 
     assert outcome.success is True
     assert _summarise(env["path"]) == env["original_streams"]
+
+
+# ── A revert that stalls ─────────────────────────────────────────────────────
+#
+# Jobs and forge runs give FFmpeg the Job Timeout setting; a revert gave it
+# nothing, so a stalled FFmpeg — a share that stops answering — kept the file
+# locked against every other writer until a restart.
+
+def test_a_revert_takes_its_time_limit_from_the_job_timeout_setting():
+    from app.core.revert_restore import _timeout_seconds
+
+    assert _timeout_seconds({"job_timeout_minutes": 120}) == 7200.0
+    assert _timeout_seconds({"job_timeout_minutes": 0}) is None, "0 means no limit"
+    assert _timeout_seconds({}) == 7200.0, "the setting's default"
+
+
+@ffmpeg_required
+def test_a_stalled_revert_is_stopped_and_leaves_everything_as_it_was(env, monkeypatch):
+    """
+    FFmpeg here is a stand-in that never finishes. The limit is cut to a
+    second for the test; the setting itself counts in minutes.
+    """
+    import app.core.revert_restore as restore_mod
+    from app.config import settings as app_settings
+    from app.database.models import RevertPoint
+
+    stall = env["media_dir"].parent / "stalling-ffmpeg"
+    # exec, so the process the runner kills is the one holding its pipes —
+    # a shell left waiting on a child sleep would keep them open for the
+    # full thirty seconds after the kill.
+    stall.write_text("#!/bin/sh\nexec sleep 30\n")
+    stall.chmod(0o755)
+    monkeypatch.setattr(app_settings, "FFMPEG_PATH", str(stall))
+    monkeypatch.setattr(restore_mod, "_timeout_seconds", lambda _cfg: 1.0)
+    before = env["path"].read_bytes()
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is False
+    assert outcome.error.startswith("Revert timed out"), outcome.error
+    assert env["path"].read_bytes() == before, "the file was touched"
+    env["db"].expire_all()
+    assert env["db"].get(RevertPoint, env["point"].id) is not None, (
+        "the revert point is gone, so the revert cannot be tried again"
+    )
+    leftovers = [p for p in env["media_dir"].parent.rglob("*.remuxarr_tmp")]
+    assert leftovers == [], leftovers
