@@ -282,7 +282,8 @@ second copy. A job that removes nothing stores nothing.
 
 **What it costs.** Bounded twice, in **Settings → Recycle Bin**: 7 days and
 20GB by default. Both apply - whichever is reached first. Set either to 0 to
-disable that limit.
+disable that limit. **Clear Database** in Settings → Danger Zone also empties
+the recycle bin.
 
 **Reverting.** Each entry in **Settings → Recycle Bin** restores the file to its
 exact original state: every track back, in the original order, with the original
@@ -290,6 +291,11 @@ language tags, titles, default/forced flags and attachments, in the original
 container. If the job converted MKV to MP4, reverting converts it back and
 restores the original file extension. An AC3 track added with AC3 Forge after
 processing is not part of the original, so reverting removes it.
+
+A reverted file goes back to your rules. The next scan looks at it afresh, so
+if the rule that changed it still applies, that scan processes it again - and
+with scheduled scans on, that can happen overnight. Change the rule first, or
+turn on dry-run mode, before reverting.
 
 **When it will refuse.** A revert point records the file as the job left it. If
 something else has written to that file since - Sonarr upgrading the episode is

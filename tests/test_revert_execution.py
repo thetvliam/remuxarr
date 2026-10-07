@@ -22,7 +22,7 @@ Everything else follows from "the bytes are what matter":
   • The database is updated only afterwards, and a bookkeeping failure
     never turns a successful restore into a reported failure.
 
-Verified by mutation, 26 applied, 26 killed. Two initially SURVIVED, and
+Verified by mutation, 29 applied, 29 killed. Two initially SURVIVED, and
 both had the same root cause: no test drove a FAILING FFmpeg run, only
 failing validation. Removing the missing-sidecar check survived because
 FFmpeg's own failure on a missing input surfaces as "temp file(s) missing
@@ -77,6 +77,14 @@ tests at the end: no limit passed, minutes not converted to seconds, the
 "Revert" label not passed, and the runner ignoring its label. A fifth, 0
 treated as an immediate timeout rather than none, was not applied: the
 runner itself treats a 0 limit as none, so it would change nothing.
+
+A rescan carrying an earlier webhook's Sonarr/Radarr IDs (scanner.
+newest_arr_ids) came later. Three mutants survived the suite as it stood
+and are killed by the two rescan tests here: no carry-over, a webhook's own
+ID overridden by the carried one, and the Radarr ID not carried. Two more,
+the newest-item ordering reversed and the has-an-ID filter dropped, were
+already killed by the revert-notification tests in test_post_job_notify,
+which use the same lookup.
 """
 import asyncio
 import json
@@ -330,6 +338,56 @@ def test_a_delta_scan_actually_re_evaluates_the_reverted_file(env):
         "the reverted file was skipped by a delta scan — it is only "
         "reachable via a forced full rescan"
     )
+
+
+def _rescan_after_revert(env, **webhook_ids):
+    """
+    Revert, then have a scan pick the file up, after an earlier webhook job
+    for it left Sonarr and Radarr IDs on its queue item. Returns the queue
+    item the scan created.
+    """
+    from tests.conftest import BASE_SETTINGS
+    from app.core.scanner import ScanStats, _process_file
+    from app.database.models import QueueItem
+
+    env["db"].add(QueueItem(file_id=env["media"].id, status="completed",
+                            priority=1, sonarr_series_id=11,
+                            radarr_movie_id=22))
+    env["db"].commit()
+
+    _revert(env["point"].id)
+    env["db"].expire_all()
+    _process_file(env["db"], str(env["path"]), BASE_SETTINGS,
+                  force_probe=False, dry_run=False, stats=ScanStats(),
+                  **webhook_ids)
+
+    env["db"].expire_all()
+    return (env["db"].query(QueueItem)
+              .filter(QueueItem.file_id == env["media"].id)
+              .order_by(QueueItem.id.desc())
+              .first())
+
+
+@ffmpeg_required
+def test_a_rescan_after_a_revert_keeps_the_services_ids(env):
+    """
+    A scan has no Sonarr or Radarr ID of its own, so the job it queued
+    finished without telling them — and after a revert that job turns the
+    file back into what the rules make of it, while Sonarr still expects
+    the reverted file. The IDs an earlier webhook job left are carried over.
+    """
+    queued = _rescan_after_revert(env)
+
+    assert queued.status in ("pending", "manual_review"), queued.status
+    assert (queued.sonarr_series_id, queued.radarr_movie_id) == (11, 22)
+
+
+@ffmpeg_required
+def test_an_id_the_webhook_brings_wins_over_a_carried_one(env):
+    """A webhook's ID is the service's current word; an older item's is history."""
+    queued = _rescan_after_revert(env, sonarr_series_id=99)
+
+    assert (queued.sonarr_series_id, queued.radarr_movie_id) == (99, 22)
 
 
 @ffmpeg_required

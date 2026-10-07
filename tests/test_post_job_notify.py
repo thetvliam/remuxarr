@@ -42,6 +42,10 @@ asserts. That is correct — _claim_next is part of the queue lifecycle this
 file deliberately does not reach — but it is a real hole in worker.py's
 remaining 168 uncovered statements, not an equivalent mutant.
 
+The newest-ID lookup has since moved to scanner.newest_arr_ids, shared
+with scans that carry an earlier webhook's IDs; the tests below still kill
+its mutants.
+
 Reverts came later and reuse these pieces: the *arr target builder was
 lifted out of _load_post_job_data into _arr_notify_target, and the forge's
 Plex body into _plex_refresh_target, so jobs, forge runs and reverts share

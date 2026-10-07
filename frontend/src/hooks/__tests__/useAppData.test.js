@@ -56,7 +56,7 @@ vi.mock("../useWebSocket", () => ({
   useWebSocket: (_url, onMessage) => { ws.onMessage = onMessage; return true; },
 }));
 
-const { useAppData } = await import("../useAppData");
+const { useAppData, TOAST_MS, REVERT_FAILURE_TOAST_MS } = await import("../useAppData");
 
 /* ── Harness ────────────────────────────────────────────────────────────── */
 
@@ -857,6 +857,48 @@ describe("useAppData — revert_complete", () => {
     const last = result.current.toasts.at(-1);
     expect(last.tone).toBe("error");
     expect(last.msg).toContain("changed size");
+  });
+
+  it("shows the whole reason, not the first sixty characters of it", () => {
+    /* The reason is recorded nowhere else: the entry just goes back to
+     * offering Revert. It used to be cut to 60 characters, which rarely
+     * reached the part that said what to do. */
+    const { result } = renderHook(() => useAppData());
+    const reason = 'Another file already exists as "Show - S01E01 - Pilot.mkv", ' +
+      "and reverting would overwrite it. Move or rename that file, then revert.";
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: false, error: reason });
+    });
+
+    expect(result.current.toasts.at(-1).msg).toBe(`Revert failed: ${reason}`);
+  });
+
+  it("leaves a failed revert's reason up long enough to read", () => {
+    const { result } = renderHook(() => useAppData());
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: false,
+        error: "Revert timed out after 120 minute(s) — process killed" });
+    });
+
+    act(() => { vi.advanceTimersByTime(TOAST_MS + 100); });
+    expect(result.current.toasts.at(-1)?.msg).toContain("timed out");
+
+    act(() => { vi.advanceTimersByTime(REVERT_FAILURE_TOAST_MS - TOAST_MS); });
+    expect(result.current.toasts).toHaveLength(0);
+  });
+
+  it("lets a successful revert's toast go at the usual time", () => {
+    const { result } = renderHook(() => useAppData());
+
+    act(() => {
+      ws.onMessage({ event: "revert_complete", success: true,
+        restored_path: "/media/tv/Show/S01E01.mkv" });
+    });
+    act(() => { vi.advanceTimersByTime(TOAST_MS + 100); });
+
+    expect(result.current.toasts).toHaveLength(0);
   });
 
   it("refreshes the panel when a job completes, not only when one reverts", () => {

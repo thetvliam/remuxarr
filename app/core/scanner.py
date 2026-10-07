@@ -679,6 +679,24 @@ def remove_orphaned_media_files(db: Session, file_ids: list[int]) -> int:
 
     return removed
 
+def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
+    """
+    The Sonarr series ID and Radarr movie ID from the newest queue items for
+    the file that carry one — each looked up on its own, so a newer item
+    without an ID (a scan's) does not hide an older webhook one. The newest,
+    because a series re-added in Sonarr gets a new ID and the older item's
+    is history. None where no item ever had one.
+    """
+    def newest(column):
+        row = (db.query(column)
+                 .filter(QueueItem.file_id == file_id, column.isnot(None))
+                 .order_by(QueueItem.id.desc())
+                 .first())
+        return row[0] if row else None
+
+    return newest(QueueItem.sonarr_series_id), newest(QueueItem.radarr_movie_id)
+
+
 def _process_file(
     db:          Session,
     path:        str,
@@ -869,6 +887,19 @@ def _process_file(
         has_faststart=faststart,
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
+
+    # A scan has no Sonarr/Radarr ID of its own; only a webhook brings one.
+    # A file that came through a webhook before keeps its IDs on that older
+    # queue item, so carry them over, or the job this scan queues finishes
+    # without telling Sonarr or Radarr. That matters most after a revert:
+    # the rescan turns the file back into what the rules make of it — an
+    # .mkv back into an .mp4 — while the service still expects the .mkv.
+    if media_file.id is not None:
+        known_sonarr, known_radarr = newest_arr_ids(db, media_file.id)
+        if sonarr_series_id is None:
+            sonarr_series_id = known_sonarr
+        if radarr_movie_id is None:
+            radarr_movie_id = known_radarr
 
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:

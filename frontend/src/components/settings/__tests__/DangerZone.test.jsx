@@ -13,6 +13,10 @@
  *
  * The two-click confirmation is covered here as well, since firing the wipe
  * on a single click is the failure that cannot be undone.
+ *
+ * The description has to say the wipe empties the recycle bin. Removing
+ * that wording survived the tests as they stood; "says that it empties the
+ * recycle bin" kills it.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -86,6 +90,16 @@ describe("DangerZone", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("says that it empties the recycle bin", () => {
+    /* It deletes every revert point and its stored tracks, deliberately —
+     * file ids are reused after a wipe — and that is every undo gone.
+     * Someone clearing the database for a fresh scan has to be told
+     * before the second click, not find out afterwards. */
+    setup();
+
+    expect(screen.getByText(/empties the recycle bin/i)).toBeTruthy();
   });
 
   it("sends nothing on the first click", async () => {

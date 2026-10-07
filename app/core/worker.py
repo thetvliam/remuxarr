@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1533,11 +1533,42 @@ def _record_revert_point(
                 captured.replaces_sidecar_path != captured.sidecar_path:
             delete_sidecar(captured.replaces_sidecar_path)
     except Exception:
+        # A failure here does not prove the row is absent. A commit can
+        # raise after it has written, and the superseded-sidecar removal
+        # above runs after the commit; either way the row may now name this
+        # sidecar, and deleting it would leave a revert point whose stored
+        # tracks are gone — along with the earlier jobs', since the sidecar
+        # it replaced was the only other copy. So the database decides.
+        if _sidecar_is_recorded(captured.sidecar_path):
+            logger.exception(
+                "Recording the revert point for file %d raised, but it was "
+                "recorded; keeping its sidecar", file_id,
+            )
+        else:
+            logger.exception(
+                "Could not record revert point for file %d — discarding the "
+                "sidecar", file_id,
+            )
+            delete_sidecar(captured.sidecar_path)
+
+
+def _sidecar_is_recorded(sidecar_path: str) -> bool:
+    """
+    Whether a revert point names sidecar_path. True when that cannot be
+    found out, too: a sidecar nothing names is collected by the retention
+    sweep's orphan pass within the hour, while deleting one a row does name
+    cannot be undone — so doubt keeps the file.
+    """
+    try:
+        with SessionLocal() as db:
+            return (db.query(RevertPoint.id)
+                      .filter(RevertPoint.sidecar_path == sidecar_path)
+                      .first()) is not None
+    except Exception:
         logger.exception(
-            "Could not record revert point for file %d — discarding the sidecar",
-            file_id,
+            "Could not check whether %s is recorded; keeping it", sidecar_path,
         )
-        delete_sidecar(captured.sidecar_path)
+        return True
 
 
 def _finish_job(
@@ -2162,18 +2193,10 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
         cfg = get_app_settings(db)
         context = f"the revert of {restored_path}"
 
-        def newest_id(column):
-            row = (db.query(column)
-                     .filter(QueueItem.file_id == file_id, column.isnot(None))
-                     .order_by(QueueItem.id.desc())
-                     .first())
-            return row[0] if row else None
-
-        sonarr = _arr_notify_target(cfg, "sonarr",
-                                    newest_id(QueueItem.sonarr_series_id),
+        sonarr_id, radarr_id = newest_arr_ids(db, file_id)
+        sonarr = _arr_notify_target(cfg, "sonarr", sonarr_id,
                                     restored_path, context)
-        radarr = _arr_notify_target(cfg, "radarr",
-                                    newest_id(QueueItem.radarr_movie_id),
+        radarr = _arr_notify_target(cfg, "radarr", radarr_id,
                                     restored_path, context)
 
         plex = None

@@ -4,6 +4,11 @@ import { basename } from "../utils";
 import { useWebSocket } from "./useWebSocket";
 import { useBreakpoint } from "./useBreakpoint";
 
+// How long a toast stays up, and how long a failed revert's stays: its
+// reason runs to a sentence or two and is recorded nowhere else.
+export const TOAST_MS = 5000;
+export const REVERT_FAILURE_TOAST_MS = 15000;
+
 /* ── Routing helpers ──────────────────────────────────────────────────────── */
 
 /* "themes" is the developer theme editor. It is deliberately absent from
@@ -351,13 +356,17 @@ export function useAppData() {
    * fallback, which is a real colour.
    *
    * The value is only ever a key into toastTone, so passing a hex here
-   * degrades to the fallback rather than rendering that colour. */
-  const toast = useCallback((msg, tone) => {
+   * degrades to the fallback rather than rendering that colour.
+   *
+   * The third argument is how long the toast stays, in milliseconds. Five
+   * seconds suits a status line; a failure whose reason is the only record
+   * of what went wrong gets longer — see revert_complete. */
+  const toast = useCallback((msg, tone, durationMs = TOAST_MS) => {
     const id = Date.now() + Math.random();
     setToasts(t => [...t, { id, msg, tone }].slice(-8));
     const isOtherToast = (x) => x.id !== id;
     const dismiss = () => setToasts(t => t.filter(isOtherToast));
-    setTimeout(dismiss, 5000);
+    setTimeout(dismiss, durationMs);
   }, []);
 
   /* ── Data fetching ────────────────────────────────────────────────────── */
@@ -593,12 +602,19 @@ export function useAppData() {
              * toast carries the outcome because the panel may not even be
              * on screen by the time a large file finishes. */
             setRevertRefreshKey(k => k + 1);
-            toast(
-              msg.success
-              ? `Reverted: ${basename(msg.restored_path || "")}`
-              : `Revert failed${msg.error ? `: ${String(msg.error).slice(0, 60)}` : ""}`,
-                  msg.success ? "success" : "error",
-            );
+            /* A failure's reason is shown whole and left up longer. It is
+             * recorded nowhere else — the entry just goes back to offering
+             * Revert — and the reasons run to a sentence or two ("Another
+             * file already exists as …, and reverting would overwrite it"),
+             * so the 60 characters it used to be cut to rarely reached the
+             * part that said what to do. Toasts wrap, so length is no
+             * problem for the layout. */
+            if (msg.success) {
+              toast(`Reverted: ${basename(msg.restored_path || "")}`, "success");
+            } else {
+              toast(`Revert failed${msg.error ? `: ${String(msg.error)}` : ""}`,
+                    "error", REVERT_FAILURE_TOAST_MS);
+            }
             break;
 
           case "file_queued":
