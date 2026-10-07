@@ -1533,11 +1533,42 @@ def _record_revert_point(
                 captured.replaces_sidecar_path != captured.sidecar_path:
             delete_sidecar(captured.replaces_sidecar_path)
     except Exception:
+        # A failure here does not prove the row is absent. A commit can
+        # raise after it has written, and the superseded-sidecar removal
+        # above runs after the commit; either way the row may now name this
+        # sidecar, and deleting it would leave a revert point whose stored
+        # tracks are gone — along with the earlier jobs', since the sidecar
+        # it replaced was the only other copy. So the database decides.
+        if _sidecar_is_recorded(captured.sidecar_path):
+            logger.exception(
+                "Recording the revert point for file %d raised, but it was "
+                "recorded; keeping its sidecar", file_id,
+            )
+        else:
+            logger.exception(
+                "Could not record revert point for file %d — discarding the "
+                "sidecar", file_id,
+            )
+            delete_sidecar(captured.sidecar_path)
+
+
+def _sidecar_is_recorded(sidecar_path: str) -> bool:
+    """
+    Whether a revert point names sidecar_path. True when that cannot be
+    found out, too: a sidecar nothing names is collected by the retention
+    sweep's orphan pass within the hour, while deleting one a row does name
+    cannot be undone — so doubt keeps the file.
+    """
+    try:
+        with SessionLocal() as db:
+            return (db.query(RevertPoint.id)
+                      .filter(RevertPoint.sidecar_path == sidecar_path)
+                      .first()) is not None
+    except Exception:
         logger.exception(
-            "Could not record revert point for file %d — discarding the sidecar",
-            file_id,
+            "Could not check whether %s is recorded; keeping it", sidecar_path,
         )
-        delete_sidecar(captured.sidecar_path)
+        return True
 
 
 def _finish_job(

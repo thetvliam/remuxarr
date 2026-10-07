@@ -25,7 +25,7 @@ has to either record the sidecar or delete it. A leaked sidecar is
 invisible: nothing scans the recycle volume, and with no row there is
 nothing left to find it by.
 
-Verified by mutation, 19 applied, 19 killed. One initially SURVIVED and
+Verified by mutation, 24 applied, 24 killed. One initially SURVIVED and
 is the more useful finding: removing the recycle-directory readiness
 check entirely. The unmounted-volume test still passed, because without
 the check the run reached FFmpeg, FFmpeg failed on the missing directory,
@@ -66,6 +66,17 @@ rather than BaseException), and cleanup aimed at the finished sidecar's
 path instead of the .part. The fourth, cleanup swallowing the failure, was
 already killed by two existing tests that expect the failure to reach the
 job.
+
+Five more came with _record_revert_point asking the database before it
+discards a sidecar after a failure: no check, the check reversed, doubt
+read as "not recorded", any revert point counting as this one, and never
+discarding. All five survived the suite as it stood (with the test below
+that changed deselected) and are killed now. That test is
+test_a_failed_row_write_discards_the_sidecar: it made the database
+unreachable and expected the sidecar gone, which the new rule keeps
+instead. It now fails the commit without writing, which still has to
+discard; "never discarding" was the mutant it killed before the rewrite
+and is the one it kills after.
 """
 import asyncio
 import json
@@ -1102,33 +1113,139 @@ def test_the_row_fingerprints_the_file_as_the_job_left_it(db, tmp_path):
     assert row.processed_mtime == pytest.approx(produced.stat().st_mtime)
 
 
+def _captured(sidecar, *, replaces=None):
+    from app.core.revert_capture import CapturedRevertPoint
+
+    return CapturedRevertPoint(
+        sidecar_path=str(sidecar), sidecar_size=7, manifest_json="{}",
+        original_path="/m/Show.mkv", original_container="matroska",
+        replaces_point_id=replaces.id if replaces else None,
+        replaces_sidecar_path=replaces.sidecar_path if replaces else None,
+    )
+
+
 def test_a_failed_row_write_discards_the_sidecar(db, recycle, monkeypatch):
     """
-    A sidecar with no row is unreachable: nothing scans the recycle volume
-    and nothing else records the path. Keeping it would leak the disk the
-    retention cap exists to bound.
+    The commit fails and writes nothing: no row names the sidecar, so it is
+    unreachable, and keeping it would only spend the disk the retention cap
+    is there to bound.
+
+    This test used to make SessionLocal itself raise, and expected the
+    sidecar gone. That case — the database unreachable — now keeps the file
+    (test_a_recording_failure_the_database_cannot_explain_keeps_the_sidecar),
+    because the handler can no longer assume a failure means "not recorded";
+    the leak this test guards against is covered here, by a commit that
+    really did not happen.
     """
+    from sqlalchemy.orm import Session
+
     from app.core.worker import _record_revert_point
-    from app.core.revert_capture import CapturedRevertPoint
+    from app.database.models import RevertPoint
+
+    # Another file's point, already recorded: it says nothing about this
+    # sidecar, and must not be read as "recorded".
+    db.add(RevertPoint(file_id=8, sidecar_path=str(recycle / "8_1.remuxarr_revert"),
+                       sidecar_size=1, manifest="{}", original_path="/m/Other.mkv"))
+    db.commit()
+
+    sidecar = recycle / "7_1.remuxarr_revert"
+    sidecar.write_bytes(b"payload")
+
+    def refuses(session):
+        session.rollback()
+        raise RuntimeError("disk I/O error")
+
+    monkeypatch.setattr(Session, "commit", refuses)
+
+    _record_revert_point(7, _captured(sidecar), None)
+
+    assert not sidecar.exists(), "sidecar leaked after the row write failed"
+
+
+def test_a_commit_that_wrote_and_then_raised_keeps_the_sidecar(db, recycle, monkeypatch):
+    """
+    The case that made the forge tests flaky, made deterministic: the row is
+    in the database, and the commit still raised. Discarding the sidecar
+    then left a revert point whose stored tracks were missing.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.core.revert_restore import revert_blocked_reason
+    from app.core.worker import _record_revert_point
+    from app.database.models import RevertPoint
+
+    sidecar = recycle / "7_1.remuxarr_revert"
+    sidecar.write_bytes(b"payload")
+    real_commit = Session.commit
+
+    def writes_then_raises(session):
+        real_commit(session)
+        raise RuntimeError("cannot commit - no transaction is active")
+
+    monkeypatch.setattr(Session, "commit", writes_then_raises)
+
+    _record_revert_point(7, _captured(sidecar), None)
+    monkeypatch.setattr(Session, "commit", real_commit)
+
+    assert sidecar.exists(), "the sidecar a recorded point names was deleted"
+    point = db.query(RevertPoint).one()
+    assert point.sidecar_path == str(sidecar)
+    assert "missing" not in (revert_blocked_reason(point, "/m/Show.mkv") or "")
+
+
+def test_a_failure_after_the_commit_keeps_the_new_sidecar(db, recycle, monkeypatch):
+    """
+    Removing the superseded sidecar runs after the commit. If it raises, the
+    new row is already in place and names the new sidecar.
+    """
+    import app.core.worker as worker_mod
+    from app.database.models import RevertPoint
+
+    old = recycle / "7_1.remuxarr_revert"
+    old.write_bytes(b"earlier jobs")
+    existing = RevertPoint(file_id=7, sidecar_path=str(old), sidecar_size=12,
+                           manifest="{}", original_path="/m/Show.mkv")
+    db.add(existing)
+    db.commit()
+    new = recycle / "7_2.remuxarr_revert"
+    new.write_bytes(b"earlier jobs and this one")
+
+    real_delete = worker_mod.delete_sidecar
+
+    def delete(path):
+        if path == str(old):
+            raise OSError("Input/output error")
+        return real_delete(path)
+
+    monkeypatch.setattr(worker_mod, "delete_sidecar", delete)
+
+    worker_mod._record_revert_point(7, _captured(new, replaces=existing), None)
+
+    db.expire_all()
+    assert db.get(RevertPoint, existing.id).sidecar_path == str(new)
+    assert new.exists(), "the sidecar the updated point names was deleted"
+
+
+def test_a_recording_failure_the_database_cannot_explain_keeps_the_sidecar(recycle, monkeypatch):
+    """
+    With the database unreachable there is no telling whether a row names
+    the sidecar. Kept, a file nothing names is collected by the retention
+    sweep's orphan pass within the hour; deleted, one a row does name is
+    gone for good.
+    """
     import app.core.worker as worker_mod
 
     sidecar = recycle / "7_1.remuxarr_revert"
     sidecar.write_bytes(b"payload")
 
-    def boom():
+    def unreachable():
         raise RuntimeError("database is gone")
 
-    monkeypatch.setattr(worker_mod, "SessionLocal", boom)
+    monkeypatch.setattr(worker_mod, "SessionLocal", unreachable)
 
-    _record_revert_point(
-        7,
-        CapturedRevertPoint(sidecar_path=str(sidecar), sidecar_size=7,
-                            manifest_json="{}", original_path="/m/Show.mkv",
-                            original_container="matroska"),
-        None,
-    )
+    worker_mod._record_revert_point(7, _captured(sidecar), None)
 
-    assert not sidecar.exists(), "sidecar leaked after the row write failed"
+    assert sidecar.exists()
 
 
 # ── Sidecar lifecycle through _run_job ───────────────────────────────────────
