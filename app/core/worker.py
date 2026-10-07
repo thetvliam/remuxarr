@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -2193,18 +2193,10 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
         cfg = get_app_settings(db)
         context = f"the revert of {restored_path}"
 
-        def newest_id(column):
-            row = (db.query(column)
-                     .filter(QueueItem.file_id == file_id, column.isnot(None))
-                     .order_by(QueueItem.id.desc())
-                     .first())
-            return row[0] if row else None
-
-        sonarr = _arr_notify_target(cfg, "sonarr",
-                                    newest_id(QueueItem.sonarr_series_id),
+        sonarr_id, radarr_id = newest_arr_ids(db, file_id)
+        sonarr = _arr_notify_target(cfg, "sonarr", sonarr_id,
                                     restored_path, context)
-        radarr = _arr_notify_target(cfg, "radarr",
-                                    newest_id(QueueItem.radarr_movie_id),
+        radarr = _arr_notify_target(cfg, "radarr", radarr_id,
                                     restored_path, context)
 
         plex = None

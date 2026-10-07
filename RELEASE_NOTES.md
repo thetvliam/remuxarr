@@ -63,6 +63,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - Recycle bin (beta): when a revert fails, its message now shows the whole reason and stays on screen long enough to read, instead of being cut off after a few words.
+- A job queued by a library scan now tells Sonarr or Radarr about the file when an earlier job for it came from their webhook. After a revert, the rescan that processes the file again no longer leaves Sonarr expecting the reverted file.
 
 ## Changed
 
