@@ -282,7 +282,8 @@ second copy. A job that removes nothing stores nothing.
 
 **What it costs.** Bounded twice, in **Settings → Recycle Bin**: 7 days and
 20GB by default. Both apply - whichever is reached first. Set either to 0 to
-disable that limit.
+disable that limit. **Clear Database** in Settings → Danger Zone also empties
+the recycle bin.
 
 **Reverting.** Each entry in **Settings → Recycle Bin** restores the file to its
 exact original state: every track back, in the original order, with the original

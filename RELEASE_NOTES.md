@@ -67,3 +67,4 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Changed
 
 - Recycle bin (beta): the recycle bin now says that a reverted file goes back to your rules, so the next scan will process it again unless you change the rule first or turn on dry-run mode.
+- Clear Database now says that it also empties the recycle bin, deleting every stored revert point.
