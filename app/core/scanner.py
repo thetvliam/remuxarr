@@ -1035,6 +1035,9 @@ def _process_file(
             # API response, and a stale number there is worth less than
             # no number.
             existing_skip.original_size = current_size
+            # Unguarded for the reason given at the in-progress update below.
+            existing_skip.sonarr_series_id = sonarr_series_id
+            existing_skip.radarr_movie_id  = radarr_movie_id
         else:
             db.add(QueueItem(
                 file_id       = media_file.id,
@@ -1043,6 +1046,14 @@ def _process_file(
                 reason        = decision.reason,
                 original_size = current_size,
                 completed_at  = utcnow(),
+                # Kept on a skip as well. A skipped row can be the only
+                # trace of the webhook that announced the file, and
+                # newest_arr_ids reads it back when a later scan queues
+                # work for it — a settings change that makes the file need
+                # a conversion, say. Without it that job finished without
+                # telling Sonarr or Radarr the file had moved.
+                sonarr_series_id = sonarr_series_id,
+                radarr_movie_id  = radarr_movie_id,
             ))
 
         db.commit()
@@ -1056,6 +1067,23 @@ def _process_file(
     ).first()
 
     if in_progress:
+        # The job that is already there takes the IDs this call brought.
+        # One way to get here is a scan queueing a freshly imported file
+        # before Sonarr's or Radarr's webhook has fired: the scan has
+        # no IDs, the webhook finds the job waiting, and returning without
+        # this dropped the IDs, so the job finished without telling the
+        # service. Read back by _load_post_job_data after the job ends,
+        # which is why a processing row is updated too.
+        #
+        # No "is not None" guard, here or on the skip row above: when the
+        # call brought no ID, newest_arr_ids has already resolved it to the
+        # newest one any queue item for this file carries, and this row is
+        # one of them. The value can only be this row's own ID or a newer
+        # one, never None over a real one. A guard was tried, and removing
+        # it changed no test's outcome, including the one that scans a row
+        # holding an ID with no ID in hand.
+        in_progress.sonarr_series_id = sonarr_series_id
+        in_progress.radarr_movie_id  = radarr_movie_id
         db.commit()
         return
 

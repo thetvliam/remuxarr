@@ -56,6 +56,24 @@ Sonarr's calls all survived it and are killed by the tests at the end.
 Two were already killed through the shared helpers: the path left
 untranslated, and the Analyze queued with its setting off. The route side
 is in test_revert_routes.
+
+Webhook IDs reaching the job, at the end of this file, came later still.
+The loaders could only notify a job that carried an ID, and two scanner
+branches dropped the webhook's before any job did: the one that finds a
+job already pending or processing, and the one that records a skip. Ten
+mutations, each run against the whole 1699-test suite before these tests
+existed, all ten survived. Six took the ID away: from the waiting job, from
+a new skipped row, and from an existing skipped row, each once for Sonarr
+and once for Radarr. All six are killed, each only by the tests for its own
+service and branch. The other four removed an "is not None" guard from each
+of the four assignments, and survived these tests as well, including the
+one that scans a row holding an ID with no ID in hand: newest_arr_ids has
+already resolved a missing ID from the file's own queue items, of which the
+row being updated is one. The guards were deleted rather than kept, so
+those four are retired, not survivors. Four of the six were re-aimed at the
+unguarded lines afterwards and re-run against the final code; that run
+shows the code is pinned now, and the baseline above is what shows it was
+not before.
 """
 import asyncio
 import json
@@ -712,3 +730,139 @@ def test_after_a_revert_each_service_gets_its_own_notifier(db, monkeypatch):
         ("Radarr", 22, worker.notify_radarr, worker.restore_movie_quality),
         ("Sonarr", 11, worker.notify_sonarr, worker.restore_episode_quality),
     ]
+
+
+# ── Webhook IDs reaching the job ─────────────────────────────────────────────
+#
+# The loaders above can only notify a job that carries an ID, and the ID
+# arrives with a webhook. Two ways it used to be dropped before any job
+# carried it: a webhook finding the file already queued (a scan got there
+# first) left the waiting job without it, and a webhook whose file needed
+# nothing recorded the skip without it, so a later job for the same file had
+# nothing to inherit. Driven through the real _process_file, via
+# queue_single_file, with only the probe faked.
+
+SERVICES = [("sonarr", "sonarr_series_id"), ("radarr", "radarr_movie_id")]
+
+
+def _probe_mkv():
+    """An MKV that needs only a container change under the defaults."""
+    return {"format": {"format_name": "matroska,webm", "duration": "1.0"},
+            "streams": [
+                {"index": 0, "codec_type": "video", "codec_name": "h264"},
+                {"index": 1, "codec_type": "audio", "codec_name": "aac",
+                 "channels": 2, "tags": {"language": "eng"},
+                 "disposition": {"default": 1}},
+            ]}
+
+
+@pytest.fixture
+def episode(db, tmp_path, monkeypatch):
+    from app.core import scanner
+
+    monkeypatch.setattr(scanner, "probe_file", lambda *_a, **_kw: _probe_mkv())
+    settings(db, **ARR_ON)
+    path = tmp_path / "Show - S01E01.mkv"
+    path.write_bytes(b"\0" * 64)
+    return str(path)
+
+
+def _arrives(db, path, **ids):
+    """
+    A webhook when given an ID, a full scan's per-file pass when not: both
+    are queue_single_file, which probes whatever the stored size and mtime.
+
+    Run on an emptied session, closed before and after, because each
+    webhook gets a session of its own in production (webhooks._queue_sync).
+    Arriving on a session that still holds rows the test loaded is not a
+    faithful stand-in: queueing bulk-deletes the skipped row, SQLite can
+    hand its id to the new job, and the held row then makes SQLAlchemy warn
+    about a clashing identity. Confirmed against the scanner both before
+    and after this change: the warning needs the held row in the same
+    session, and does not occur with a session per arrival.
+    """
+    from app.core.scanner import queue_single_file
+
+    db.close()
+    queue_single_file(db, path, **ids)
+    db.close()
+
+
+def _rows(db):
+    return db.query(QueueItem).order_by(QueueItem.id).all()
+
+
+def _notified_entity(db, job_id, service):
+    target = worker._load_post_job_data(job_id)[service]
+    return target["entity_id"] if target else None
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+@pytest.mark.parametrize("service, column", SERVICES)
+def test_a_webhook_gives_its_id_to_the_job_already_queued(
+        db, episode, service, column, status):
+    """
+    A scan queued the file first, with no ID; the webhook then finds the
+    job waiting, or already running, and queues nothing of its own. The ID
+    must land on that job, which is the one the post-job loader reads.
+    """
+    _arrives(db, episode)
+    [job] = _rows(db)
+    assert job.status == "pending"
+    job.status = status
+    db.commit()
+
+    _arrives(db, episode, **{column: 42})
+
+    [job] = _rows(db)
+    assert getattr(job, column) == 42
+    assert _notified_entity(db, job.id, service) == 42
+
+
+@pytest.mark.parametrize("service, column", SERVICES)
+def test_a_skipped_file_keeps_the_webhook_id_for_a_later_job(
+        db, episode, service, column):
+    """
+    Imported when it needed nothing, so the webhook's only record is the
+    skip. A later setting makes it need a conversion, and the job a full
+    scan queues for it must still tell the service the file has moved.
+    """
+    settings(db, prefer_mp4_container=False)
+    _arrives(db, episode, **{column: 42})
+    [skip] = _rows(db)
+    assert skip.status == "skipped"
+    assert getattr(skip, column) == 42
+
+    settings(db, prefer_mp4_container=True)
+    _arrives(db, episode)
+
+    [job] = _rows(db)
+    assert job.status == "pending"
+    assert getattr(job, column) == 42
+    assert _notified_entity(db, job.id, service) == 42
+
+
+@pytest.mark.parametrize("service, column", SERVICES)
+def test_a_skip_already_recorded_takes_the_webhook_id(db, episode, service, column):
+    """A scan recorded the skip first; the webhook updates that same row."""
+    settings(db, prefer_mp4_container=False)
+    _arrives(db, episode)
+    _arrives(db, episode, **{column: 42})
+
+    [skip] = _rows(db)
+    assert skip.status == "skipped"
+    assert getattr(skip, column) == 42
+
+
+@pytest.mark.parametrize("prefer_mp4, status", [(True, "pending"), (False, "skipped")])
+@pytest.mark.parametrize("service, column", SERVICES)
+def test_a_later_scan_never_clears_an_id(db, episode, service, column,
+                                         prefer_mp4, status):
+    """A scan brings no ID, and that is not the service saying there is none."""
+    settings(db, prefer_mp4_container=prefer_mp4)
+    _arrives(db, episode, **{column: 42})
+    _arrives(db, episode)
+
+    [row] = _rows(db)
+    assert row.status == status
+    assert getattr(row, column) == 42

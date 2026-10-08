@@ -63,3 +63,4 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - The Job Timeout setting now also applies to files whose only work is extracting subtitles to SRT. A hung extraction there used to hold its worker slot until you pressed Abort or restarted the container; it now fails at the timeout like any other FFmpeg run.
+- Sonarr and Radarr are now told about a processed file in two cases that used to miss them: when a library scan had already queued the file before the import webhook arrived, and when a file that needed nothing on import was processed later (after a settings change, for example). Before, those jobs finished without asking the service to rescan, so if Remuxarr changed the file's container (.mkv to .mp4, say), Sonarr or Radarr was left holding the old file name.
