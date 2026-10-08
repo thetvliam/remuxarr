@@ -86,6 +86,13 @@ throughout, since it shells out to ffprobe and has its own coverage.
 
 Run from the project root:
     pytest tests/test_scan_library.py -v
+
+Two more came with the cleanup pass re-reading a row before deleting it.
+Removing that re-read survived the suite as it stood and is killed by both
+tests at the end: a job that renamed the file while the scan walked, and
+one that finished during the cleanup. A second mutant, dropping an
+up-front re-read of every row, was equivalent once the per-row re-read
+existed, so the up-front one was removed rather than kept untested.
 """
 import os
 
@@ -408,3 +415,112 @@ def test_the_scan_mode_reaches_every_file(db, tmp_path, monkeypatch):
     assert [(c["force_probe"], c["dry_run"]) for c in calls] == [
         (True, False), (False, False),
     ]
+
+
+# ── A job that renames a file while the scan that queued it is still going ───
+#
+# A scan queues files as it walks, and the worker runs those jobs while the
+# walk carries on. A job that changes the container renames the file and
+# updates its row. The scan's session could still hold the old path, and its
+# cleanup pass then deleted the live row as missing — the file's history with
+# it, and its revert point left unmatched. These need two real sessions, so
+# they use a database file rather than memory_engine()'s one shared
+# connection.
+
+def _two_sessions(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database.models import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
+                           connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    return factory
+
+
+def _queued_mkv(scan, lib):
+    from app.database.models import MediaFile, QueueItem
+
+    mkv = lib / "Show.mkv"
+    mkv.write_bytes(b"original")
+    media = MediaFile(path=str(mkv), filename=mkv.name, directory=str(lib),
+                      size=8, mtime=1.0)
+    scan.add(media)
+    scan.commit()
+    scan.add(QueueItem(file_id=media.id, status="pending", priority=5))
+    scan.commit()
+    return media
+
+
+def _job_converts_to_mp4(factory, media_id, lib):
+    """What the worker does to the row and the disk for an MKV → MP4 job."""
+    from app.database.models import MediaFile, QueueItem
+
+    worker = factory()
+    mkv, mp4 = lib / "Show.mkv", lib / "Show.mp4"
+    os.remove(mkv)
+    mp4.write_bytes(b"processed")
+    row = worker.get(MediaFile, media_id)
+    row.path, row.filename = str(mp4), mp4.name
+    worker.query(QueueItem).filter(QueueItem.file_id == media_id).one().status = "success"
+    worker.commit()
+    worker.close()
+
+
+def test_a_file_a_job_renamed_during_the_scan_is_not_removed(tmp_path):
+    """
+    The scan read the row after queueing it — it logs the file's name —
+    so its session held the .mkv path when the job moved the file to .mp4.
+    """
+    from app.core.scanner import cleanup_deleted_files
+    from app.database.models import MediaFile, QueueItem
+
+    factory = _two_sessions(tmp_path)
+    lib = tmp_path / "tv"
+    lib.mkdir()
+    scan = factory()
+    media = _queued_mkv(scan, lib)
+    assert media.filename == "Show.mkv"      # the scan's log line reads it
+
+    _job_converts_to_mp4(factory, media.id, lib)
+
+    assert cleanup_deleted_files(scan, [str(lib)]) == 0
+
+    check = factory()
+    assert check.get(MediaFile, media.id).path == str(lib / "Show.mp4")
+    assert check.query(QueueItem).count() == 1, "the file's history went with it"
+
+
+def test_a_job_that_finishes_during_the_cleanup_is_not_removed(tmp_path, monkeypatch):
+    """
+    The cleanup lists the rows, then works through them. A job can rename
+    the file between the two: the listed path is gone, the row is not.
+    """
+    import app.core.scanner as scanner_mod
+    from app.core.scanner import cleanup_deleted_files
+    from app.database.models import MediaFile
+
+    factory = _two_sessions(tmp_path)
+    lib = tmp_path / "tv"
+    lib.mkdir()
+    scan = factory()
+    media = _queued_mkv(scan, lib)
+    mkv = str(lib / "Show.mkv")
+
+    real_exists = os.path.exists
+    finished = []
+
+    def exists(path):
+        # The first look at the .mkv is the moment the job finishes.
+        if path == mkv and not finished:
+            finished.append(True)
+            _job_converts_to_mp4(factory, media.id, lib)
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(scanner_mod.os.path, "exists", exists)
+
+    assert cleanup_deleted_files(scan, [str(lib)]) == 0
+    assert factory().get(MediaFile, media.id) is not None

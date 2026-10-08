@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from app.core.timeutil import utcnow
 
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
@@ -598,6 +599,21 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     for media in candidates:
         if os.path.exists(media.path):
             continue   # still on disk — leave it alone
+        # Read this row afresh before acting on it. The scan queues files as
+        # it walks and the worker runs those jobs meanwhile; a job that
+        # changes the container renames the file and updates its row. This
+        # session can still hold the old path — the walk read the row after
+        # queueing it, and a query does not overwrite what a session already
+        # holds — and a job can also finish while this loop runs. Acting on
+        # the old path deleted the live row: the file's history with it, and
+        # its revert point left unmatched. Only rows whose listed path is
+        # missing get here, so the extra read is rare.
+        try:
+            db.refresh(media)
+        except InvalidRequestError:
+            continue   # gone already — deleted by someone else meanwhile
+        if os.path.exists(media.path):
+            continue
 
         # Skip files whose job is currently running — deleting mid-job would
         # cause confusing errors in the worker.  The job will fail naturally.
