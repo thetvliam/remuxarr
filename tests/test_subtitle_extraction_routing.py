@@ -42,6 +42,23 @@ from zero; extracting the loop counter instead of the action's stream;
 ignoring extraction failures entirely; dropping the stream number from
 the hard-failure message; and storing the collected pair the wrong way
 round. All ten are killed by the tests below.
+
+The job timeout reaches this path too, which it once did not: a hung
+extraction held its worker slot until Abort or a restart. Three more
+mutations, each run against the whole 1696-test suite before the timeout
+tests existed, all three survived: the worker not passing the timeout to
+the extraction; execute_subtitle_extraction not passing it on to the
+subprocess runner; and the worker passing the setting's minutes where
+seconds are expected. 13 applied, 13 killed. The first is killed by both
+timeout tests, the second only by the one that runs the real extraction,
+and the third only by the one that checks the seconds: a fraction of a
+minute read as seconds still times out, so the end-to-end test cannot see
+it.
+
+The harness's fake extraction gained a timeout_seconds parameter in the
+same change. It names its keywords exactly, so the new keyword would have
+raised TypeError in every test here; that mechanical fix was part of the
+baseline the three mutations ran against.
 """
 import asyncio
 from types import SimpleNamespace
@@ -99,7 +116,9 @@ def rig(monkeypatch, tmp_path):
         path=str(media),
         actions=[],
         results={},          # stream_index -> (success, error)
+        app_cfg={},          # what _load_job_data hands _run_job as settings
         extraction_calls=[],
+        extraction_timeouts=[],
         ffmpeg_calls=[],
         flag_calls=[],
         finish_calls=[],
@@ -115,12 +134,14 @@ def rig(monkeypatch, tmp_path):
             {"id": job_id, "is_dry_run": False},
             {"id": 1, "path": rig.path, "filename": "Show.mkv", "size": 0},
             [{"stream_index": 2, "track_type": "subtitle"}],
-            {},
+            rig.app_cfg,
             decision,
         )
 
-    async def fake_extraction(*, input_path, stream_index, output_srt_path, job_id):
+    async def fake_extraction(*, input_path, stream_index, output_srt_path,
+                              job_id, timeout_seconds):
         rig.extraction_calls.append((stream_index, output_srt_path))
+        rig.extraction_timeouts.append(timeout_seconds)
         success, error = rig.results.get(stream_index, (True, None))
         return SimpleNamespace(success=success, error=error, output_path=output_srt_path)
 
@@ -322,3 +343,61 @@ def test_a_hard_failure_after_an_encoding_failure_still_fails_the_job(rig):
 
     assert rig.flag_calls == []
     assert "stream 5" in failure_message(rig)
+
+
+# ── The job timeout ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("minutes, seconds", [(3, 180.0), (0, None)])
+def test_every_extraction_is_given_the_job_timeout(rig, minutes, seconds):
+    """
+    In seconds, as run_staged_subprocess takes it, and to every extraction
+    rather than the first. 0 is the setting's "no timeout", which is None
+    by the time it reaches the runner.
+    """
+    rig.app_cfg = {"job_timeout_minutes": minutes}
+    rig.actions = [extraction(2, "/a.srt"), extraction(5, "/b.srt")]
+
+    run(rig)
+
+    assert rig.extraction_timeouts == [seconds, seconds]
+
+
+def test_a_hung_extraction_is_killed_at_the_job_timeout(rig, monkeypatch, tmp_path):
+    """
+    The real extraction and the real subprocess runner, with the FFmpeg
+    command swapped for one that never finishes in time. The timeout is a
+    fraction of a minute so the test takes under a second; the setting is
+    whole minutes in the UI, but the worker multiplies whatever it holds.
+
+    Against the code before the timeout reached this path, the stand-in
+    command ran its full five seconds and the job then failed on the
+    output it never wrote, with no mention of a timeout. The failure must
+    also be a hard one: a timeout is not an encoding problem,
+    and routing it to review would offer the user a Keep/Remove choice
+    about a subtitle nothing is wrong with.
+    """
+    import time
+
+    import app.core.ffmpeg as ffmpeg
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(worker, "execute_subtitle_extraction",
+                        ffmpeg.execute_subtitle_extraction)
+    monkeypatch.setattr(ffmpeg, "build_extract_subtitle_command",
+                        lambda *args, **kwargs: ["sleep", "5"])
+    monkeypatch.setattr(app_settings, "TEMP_DIR", str(tmp_path / "tmp"))
+    rig.app_cfg = {"job_timeout_minutes": 0.01}
+    srt = tmp_path / "Show.eng.srt"
+    rig.actions = [extraction(2, str(srt))]
+
+    started = time.monotonic()
+    run(rig)
+    elapsed = time.monotonic() - started
+
+    message = failure_message(rig)
+    assert "timed out" in message
+    assert "stream 2" in message
+    assert rig.flag_calls == []
+    assert rig.ffmpeg_calls == []
+    assert not srt.exists()
+    assert elapsed < 4

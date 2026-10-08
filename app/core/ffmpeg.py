@@ -850,6 +850,7 @@ async def execute_subtitle_extraction(
     stream_index: int,
     output_srt_path: str,
     job_id: int,
+    timeout_seconds: float | None = None,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -867,6 +868,13 @@ async def execute_subtitle_extraction(
     ExtractionResult(success=False) rather than re-raised. worker.py's
     two-pass fallback path calls this in a loop and checks the result
     object — it expects a result, not a raised exception.
+
+    timeout_seconds is the job timeout, applied to this one command the
+    same way execute_ffmpeg applies it to the remux. It used to be absent,
+    so the job_timeout_minutes setting reached the remux and the combined
+    pass but not this: an extraction FFmpeg that hung held its worker slot
+    until Abort or a restart. It reads the same source file the remux does,
+    so whatever can hang one can hang the other.
     """
     # See execute_ffmpeg's docstring for why the temp name is derived from
     # job_id rather than the destination filename. stream_index (already
@@ -888,6 +896,7 @@ async def execute_subtitle_extraction(
             # always drains stdout, but it just reaches EOF immediately here.
             on_progress_line=None,
             stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
         )
 
         if not result.success:

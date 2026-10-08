@@ -1050,11 +1050,16 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     "event": "job_progress", "job_id": job_id,
                     "progress": 0.0, "current_action": label, "speed": "",
                 })
+                # Each extraction gets the full timeout, as each FFmpeg
+                # command in this function does — the corrupt-audio retry
+                # gets a fresh one too. A timeout here is a hard failure:
+                # its message matches none of the encoding patterns below.
                 ext_result = await execute_subtitle_extraction(
                     input_path     = input_path,
                     stream_index   = action.stream_index,
                     output_srt_path= action.external_path,
                     job_id         = job_id,
+                    timeout_seconds= timeout_seconds,
                 )
                 if not ext_result.success:
                     if _is_subtitle_encoding_failure(ext_result.error):

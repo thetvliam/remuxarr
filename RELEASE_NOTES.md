@@ -62,11 +62,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- Recycle bin (beta): when a revert fails, its message now shows the whole reason and stays on screen long enough to read, instead of being cut off after a few words.
-- A job queued by a library scan now tells Sonarr or Radarr about the file when an earlier job for it came from their webhook. After a revert, the rescan that processes the file again no longer leaves Sonarr expecting the reverted file.
-- A file that a job converted while a library scan was still running could be dropped from Remuxarr when that scan finished, taking its history with it and leaving its recycle bin entry unmatched. The scan now checks the file's current record before removing anything.
-
-## Changed
-
-- Recycle bin (beta): the recycle bin now says that a reverted file goes back to your rules, so the next scan will process it again unless you change the rule first or turn on dry-run mode.
-- Clear Database now says that it also empties the recycle bin, deleting every stored revert point.
+- The Job Timeout setting now also applies to files whose only work is extracting subtitles to SRT. A hung extraction there used to hold its worker slot until you pressed Abort or restarted the container; it now fails at the timeout like any other FFmpeg run.
