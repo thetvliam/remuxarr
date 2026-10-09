@@ -1396,8 +1396,42 @@ def _load_job_data(job_id: int):
             return None
 
         media: MediaFile | None = db.get(MediaFile, job.file_id)
-        if media is None or not os.path.exists(media.path):
+        if media is None:
             _finish_job(job_id, False, None, None, "File not found on disk")
+            return None
+        if not os.path.exists(media.path):
+            # Gone before its turn. Whether that is worth a failure depends on
+            # what else is gone with it.
+            #
+            # The folder still there means the file went on its own: Sonarr
+            # or Radarr upgraded it to a release with another extension,
+            # renamed or deleted it. Nothing went wrong in Remuxarr, so the
+            # job is cancelled, as one whose file changes while it runs is
+            # (_cancel_for_changed_source), and the failure-email breaker
+            # never hears of it.
+            #
+            # The folder gone as well is what an unmounted share or an array
+            # that has not started looks like, and that is exactly when the
+            # failures and the email should still come. A file directly in a
+            # scan path is treated the same way: an unmounted mount point is
+            # still there as an empty folder, so its existing proves nothing.
+            folder = os.path.dirname(media.path)
+            roots = {os.path.normpath(p)
+                     for p in (get_app_settings(db).get("scan_paths") or [])}
+            if os.path.isdir(folder) and os.path.normpath(folder) not in roots:
+                _cancel_for_changed_source(
+                    job_id,
+                    f"{media.filename} is no longer on disk: it was deleted, "
+                    f"renamed or replaced before its turn came. Nothing was done.",
+                )
+            else:
+                _finish_job(
+                    job_id, False, None, None,
+                    "File not found on disk, and Remuxarr cannot tell whether "
+                    "it was removed or its library is not mounted. If your "
+                    "library is on a network share or an array, check that it "
+                    "is mounted.",
+                )
             return None
 
         # A row that has never been probed for fonts — every row from before
@@ -1876,7 +1910,8 @@ def _fingerprint(path: str) -> tuple[int, float] | None:
 
 def _cancel_for_changed_source(job_id: int, reason: str) -> None:
     """
-    End a job whose source changed while it ran, and decide the file again.
+    End a job whose source changed while it ran, or was gone by the time
+    its turn came (_load_job_data), and decide the file again.
 
     Cancelled, not failed. Nothing went wrong in Remuxarr: something else
     replaced, renamed or removed the file, and a failure would put it in

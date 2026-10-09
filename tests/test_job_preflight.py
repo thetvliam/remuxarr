@@ -43,6 +43,18 @@ audio and subtitle language overrides on the way into the decision engine;
 and probing faststart for every container rather than only mp4. All
 twelve are killed by the tests below — no survivors, and none recorded as
 equivalent.
+
+A file gone by pickup is no longer always a failure. With its folder still
+there it is cancelled, through the same helper a job whose file changes
+mid-run uses; with the folder gone too, or the file directly in a scan path,
+it still fails, because that is what an unmounted library looks like. The
+test that pinned the old failure was rewritten for this, so the baseline for
+these five mutations was the rest of the suite with that one test
+deselected (1749 tests): always failing, always cancelling, ignoring scan
+paths, not calling the cancel helper, and the old message for the failure.
+All five survived it; all five are killed here, the first, second and
+fourth also by test_source_changed_mid_job.py, which runs the real worker.
+17 applied, 17 killed.
 """
 import json
 import os
@@ -190,20 +202,73 @@ def test_a_job_whose_media_row_is_gone_is_failed_rather_than_loaded(rig):
     assert rig.finish_calls == [(1, False, None, None, "File not found on disk")]
 
 
-def test_a_file_deleted_from_disk_is_failed_rather_than_loaded(rig):
+def test_a_file_gone_from_its_folder_is_cancelled_rather_than_loaded(rig):
     """
-    The row surviving its file is the ordinary case — something moved or
-    deleted the media between the scan and the pickup. Without the on-disk
-    check the job proceeds to ffmpeg and fails there instead, with an
-    error describing the wrong problem.
+    The row surviving its file is the ordinary case — Sonarr or Radarr
+    upgraded it to another extension, renamed or deleted it between the
+    scan and the pickup. Without the on-disk check the job proceeds to
+    ffmpeg and fails there instead, with an error describing the wrong
+    problem.
+
+    This used to be recorded as a failure, which put it in the Failed tab
+    and counted it towards the failure email, for something nothing in
+    Remuxarr got wrong. With its folder still there it is cancelled
+    instead. The job is at "processing", as _claim_next leaves it before
+    this runs.
     """
     media_row(rig)
-    queue_row(rig)
+    queue_row(rig, status="processing")
     os.remove(rig.path)
 
     assert worker._load_job_data(1) is None
-    assert rig.finish_calls == [(1, False, None, None, "File not found on disk")]
-    assert job(rig).status == "pending"      # left for _finish_job to settle
+    assert rig.finish_calls == []
+    assert job(rig).status == "cancelled"
+    assert "no longer on disk" in job(rig).error_message
+    assert (file_row(rig).size, file_row(rig).mtime) == (-1, -1.0)
+
+
+MISSING_LIBRARY = (
+    "File not found on disk, and Remuxarr cannot tell whether it was removed "
+    "or its library is not mounted. If your library is on a network share or "
+    "an array, check that it is mounted."
+)
+
+
+def test_a_file_gone_with_its_folder_is_still_a_failure(rig, tmp_path):
+    """
+    The folder going too is what an unmounted share or an array that has
+    not started looks like. That is exactly when the failures, and the
+    email they lead to, should still come.
+    """
+    folder = tmp_path / "Show" / "Season 01"
+    folder.mkdir(parents=True)
+    rig.path = str(folder / "Show - S01E01.mkv")
+    open(rig.path, "wb").close()
+    media_row(rig)
+    queue_row(rig, status="processing")
+    os.remove(rig.path)
+    folder.rmdir()
+
+    assert worker._load_job_data(1) is None
+    assert rig.finish_calls == [(1, False, None, None, MISSING_LIBRARY)]
+    assert job(rig).status == "processing"   # left for _finish_job to settle
+
+
+def test_a_file_directly_in_a_scan_path_is_still_a_failure(rig):
+    """
+    An unmounted mount point is still there, as an empty folder, so a scan
+    path existing proves nothing about whether the library is mounted.
+    """
+    from app.database.models import AppSetting
+
+    rig.db.add(AppSetting(key="scan_paths",
+                          value=json.dumps([os.path.dirname(rig.path) + "/"])))
+    media_row(rig)
+    queue_row(rig, status="processing")
+    os.remove(rig.path)
+
+    assert worker._load_job_data(1) is None
+    assert rig.finish_calls == [(1, False, None, None, MISSING_LIBRARY)]
 
 
 # ── Outcome one: manual review ───────────────────────────────────────────────

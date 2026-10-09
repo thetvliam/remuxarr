@@ -38,6 +38,9 @@ deleted after a conversion without checking it is still the file the job
 read. 19 applied, 19 killed, by this file and by the swap-hook tests in
 test_staging_hook.py, test_audio_transcode_retry.py and
 test_source_file_preservation.py.
+
+A file gone before its job's turn came later and is covered under "Gone
+before its turn"; its mutation record is in test_job_preflight.py.
 """
 import asyncio
 import glob
@@ -377,6 +380,42 @@ def test_a_file_appearing_at_the_output_name_is_not_overwritten(lib, monkeypatch
     assert_cancelled_cleanly(lib, job_id, "appeared or changed at the name")
     assert _sha(target) == newcomer_sha, "the file at the output name was overwritten"
     assert _sha(source) == source_sha
+
+
+# ── Gone before its turn ─────────────────────────────────────────────────────
+
+def test_a_file_gone_before_its_turn_is_cancelled_not_failed(lib):
+    """
+    Sonarr upgraded the episode to a release with another extension, or
+    deleted it, while the job waited in the queue. The job used to fail
+    with "File not found on disk" and count towards the failure email.
+    """
+    source = _make(lib.library / "Show" / "Show - S05E01.mkv")
+    job_id = _queue(lib, source)
+    os.remove(source)
+
+    _run_next(lib)
+
+    job = _job(lib, job_id)
+    assert job.status == "cancelled", (job.status, job.error)
+    assert "no longer on disk" in job.error
+    assert _failures_counted(lib) == 0
+    assert [j[1] for j in _jobs_for(lib, job.file_id)] == ["cancelled"]
+
+
+def test_a_file_gone_with_its_folder_still_fails_and_is_counted(lib):
+    """The shape of an unmounted share: a failure, and the email counts it."""
+    folder = lib.library / "Show" / "Season 02"
+    source = _make(folder / "Show - S02E01.mkv")
+    job_id = _queue(lib, source)
+    shutil.rmtree(folder)
+
+    _run_next(lib)
+
+    job = _job(lib, job_id)
+    assert job.status == "failed", (job.status, job.error)
+    assert "check that it is mounted" in job.error
+    assert _failures_counted(lib) == 1
 
 
 # ── What counts as changed ───────────────────────────────────────────────────
