@@ -60,6 +60,14 @@ What the retry tells revert capture came later: the input streams it
 re-encodes, so an AAC-to-AAC re-encode is still stored. Removing that from
 each of the two retry sites survived the suite as it stood, and each is
 killed by its own test at the end of this file.
+
+The check that the source has not changed under the job (before_swap,
+see test_source_changed_mid_job.py) came later still. The four calls in
+_run_job each pass it, and each was mutated separately to pass None
+instead; all four survived the 1711-test suite. All four are killed by
+test_the_retry_is_checked_at_the_swap_like_the_first_attempt, the two
+first-attempt calls also by the end-to-end tests, which cannot reach a
+retry with real FFmpeg.
 """
 import asyncio
 from types import SimpleNamespace
@@ -354,6 +362,37 @@ def test_the_combined_retry_re_runs_with_the_audio_transcoded(rig):
     first, retry = rig.combined_calls
     assert audio_actions(first)[0].action_type == "copy_track"
     assert audio_actions(retry)[0].action_type == "transcode_track"
+
+
+@pytest.mark.parametrize("path", ["two-pass", "combined"])
+def test_the_retry_is_checked_at_the_swap_like_the_first_attempt(rig, path):
+    """
+    Every run is handed the job's before_swap hook — the check that the
+    source has not changed under the job before the output replaces it.
+    The retry is a second call written out separately at each site, so it
+    can lose the hook on its own; the same hook object both times is what
+    shows it is the job's, not a stand-in.
+    """
+    if path == "two-pass":
+        rig.actions = [copy_video(), copy_audio()]
+        calls = rig.ffmpeg_calls
+    else:
+        rig.actions = [
+            copy_audio(),
+            Action(action_type="extract_subtitle", description="extract eng",
+                   track_type="subtitle", stream_index=3,
+                   external_path="/media/Show.eng.srt"),
+        ]
+        calls = rig.combined_calls
+    rig.results = [ffmpeg_result(rig, False, CORRUPT_AUDIO),
+                   ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert len(calls) == 2
+    first, retry = calls
+    assert callable(first["before_swap"])
+    assert retry["before_swap"] is first["before_swap"]
 
 
 def test_the_retry_decides_the_outcome_the_job_records(rig):

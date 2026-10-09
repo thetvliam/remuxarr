@@ -62,11 +62,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- Recycle bin (beta): when a revert fails, its message now shows the whole reason and stays on screen long enough to read, instead of being cut off after a few words.
-- A job queued by a library scan now tells Sonarr or Radarr about the file when an earlier job for it came from their webhook. After a revert, the rescan that processes the file again no longer leaves Sonarr expecting the reverted file.
-- A file that a job converted while a library scan was still running could be dropped from Remuxarr when that scan finished, taking its history with it and leaving its recycle bin entry unmatched. The scan now checks the file's current record before removing anything.
-
-## Changed
-
-- Recycle bin (beta): the recycle bin now says that a reverted file goes back to your rules, so the next scan will process it again unless you change the rule first or turn on dry-run mode.
-- Clear Database now says that it also empties the recycle bin, deleting every stored revert point.
+- The Job Timeout setting now also applies to files whose only work is extracting subtitles to SRT. A hung extraction there used to hold its worker slot until you pressed Abort or restarted the container; it now fails at the timeout like any other FFmpeg run.
+- Sonarr and Radarr are now told about a processed file in two cases that used to miss them: when a library scan had already queued the file before the import webhook arrived, and when a file that needed nothing on import was processed later (after a settings change, for example). Before, those jobs finished without asking the service to rescan, so if Remuxarr changed the file's container (.mkv to .mp4, say), Sonarr or Radarr was left holding the old file name.
+- If Sonarr or Radarr upgrades, renames or deletes a file while Remuxarr is processing it, the job now stops without writing anything, shows as cancelled (not failed, and not counted towards failure emails), and whatever is at that path is checked again. Before, the job reported success after overwriting the upgrade (or deleting it, during an MKV-to-MP4 conversion), writing a deleted file back, or leaving a renamed file under both names. A file that disappears while still waiting in the queue is now cancelled the same way instead of failing with "File not found on disk"; if its folder has disappeared too, it still fails, since that can mean a share or array is not mounted.
+- When Sonarr or Radarr renames a file, Remuxarr now moves the file's record to the new name instead of starting a new one. Its review answers, history and revert point stay with it, and a job waiting on it runs instead of failing with "File not found on disk". This needs the Rename trigger on the webhook; renames made any other way behave as before.
+- Stopping or updating the container while a file is being processed no longer turns that job into a failure ("Job did not complete cleanly") that counted towards failure emails. The job goes back in the queue and runs again when the container starts. If the job had already replaced the file, it is recorded as the success it was. A crash or a forced kill is handled as before: the job is marked as interrupted.

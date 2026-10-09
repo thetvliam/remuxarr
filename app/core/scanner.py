@@ -695,6 +695,90 @@ def remove_orphaned_media_files(db: Session, file_ids: list[int]) -> int:
 
     return removed
 
+def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
+    """
+    Point a file's record at its new name after Sonarr or Radarr renamed it.
+
+    Without this a rename looked like a deletion plus a new file: the new
+    name got a fresh record, and the next scan deleted the old one with
+    everything hung off its id — the user's review answers, the file's
+    history, a pending job (which failed first, "File not found on disk"),
+    and the link to its revert point. The record is moved instead, so all
+    of that follows by id.
+
+    Only the services' Rename webhook calls this, because only it says
+    which old name became which new one. A rename nobody announced still
+    goes the old way.
+
+    The disk has to agree before anything moves; otherwise this returns
+    without touching the database and the caller carries on as before:
+
+      no_record            nothing is recorded under the old name
+      still_at_old_path    the old name still exists, so whatever happened,
+                           it was not a rename of that file
+      missing_at_new_path  nothing is at the new name to point at
+      new_path_busy        the new name has a record whose job is running;
+                           deleting a record under a running job is what
+                           cleanup_deleted_files refuses to do as well
+
+    A record already at the new name with nothing running is replaced. A
+    scan landing between the rename and this call creates exactly that:
+    a fresh record with no history, for the same file. It goes through
+    _delete_media_file_and_related so nothing it owns is orphaned.
+
+    Extracted subtitle paths on the file's SubtitleLanguageFlags follow
+    the file when the sidecar is found under the new name and not under
+    the old. _build_srt_path names a sidecar after the media file's stem,
+    so the new name is the same suffix on the new stem. Whether the
+    service renamed the sidecar at all is not assumed either way.
+
+    Returns "moved" or one of the reasons above. Commits only on "moved".
+    """
+    if old_path == new_path:
+        return "unchanged"
+    media = db.query(MediaFile).filter(MediaFile.path == old_path).first()
+    if media is None:
+        return "no_record"
+    if os.path.exists(old_path):
+        return "still_at_old_path"
+    if not os.path.exists(new_path):
+        return "missing_at_new_path"
+
+    occupant = db.query(MediaFile).filter(MediaFile.path == new_path).first()
+    if occupant is not None:
+        running = (db.query(QueueItem.id)
+                     .filter(QueueItem.file_id == occupant.id,
+                             QueueItem.status == "processing")
+                     .first())
+        if running:
+            return "new_path_busy"
+        _delete_media_file_and_related(db, occupant)
+        db.flush()   # the path is UNIQUE; the old row must be gone first
+
+    old_stem = os.path.splitext(old_path)[0]
+    new_stem = os.path.splitext(new_path)[0]
+
+    media.path      = new_path
+    media.filename  = os.path.basename(new_path)
+    media.directory = os.path.dirname(new_path)
+
+    flags = (db.query(SubtitleLanguageFlag)
+               .filter(SubtitleLanguageFlag.file_id == media.id,
+                       SubtitleLanguageFlag.extracted_path.isnot(None))
+               .all())
+    for flag in flags:
+        if not flag.extracted_path.startswith(old_stem):
+            continue
+        renamed = new_stem + flag.extracted_path[len(old_stem):]
+        if os.path.exists(renamed) and not os.path.exists(flag.extracted_path):
+            flag.extracted_path = renamed
+
+    db.commit()
+    logger.info("Renamed: record %d now points at %s (was %s)",
+                media.id, new_path, old_path)
+    return "moved"
+
+
 def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
     """
     The Sonarr series ID and Radarr movie ID from the newest queue items for
@@ -1035,6 +1119,9 @@ def _process_file(
             # API response, and a stale number there is worth less than
             # no number.
             existing_skip.original_size = current_size
+            # Unguarded for the reason given at the in-progress update below.
+            existing_skip.sonarr_series_id = sonarr_series_id
+            existing_skip.radarr_movie_id  = radarr_movie_id
         else:
             db.add(QueueItem(
                 file_id       = media_file.id,
@@ -1043,6 +1130,14 @@ def _process_file(
                 reason        = decision.reason,
                 original_size = current_size,
                 completed_at  = utcnow(),
+                # Kept on a skip as well. A skipped row can be the only
+                # trace of the webhook that announced the file, and
+                # newest_arr_ids reads it back when a later scan queues
+                # work for it — a settings change that makes the file need
+                # a conversion, say. Without it that job finished without
+                # telling Sonarr or Radarr the file had moved.
+                sonarr_series_id = sonarr_series_id,
+                radarr_movie_id  = radarr_movie_id,
             ))
 
         db.commit()
@@ -1056,6 +1151,23 @@ def _process_file(
     ).first()
 
     if in_progress:
+        # The job that is already there takes the IDs this call brought.
+        # One way to get here is a scan queueing a freshly imported file
+        # before Sonarr's or Radarr's webhook has fired: the scan has
+        # no IDs, the webhook finds the job waiting, and returning without
+        # this dropped the IDs, so the job finished without telling the
+        # service. Read back by _load_post_job_data after the job ends,
+        # which is why a processing row is updated too.
+        #
+        # No "is not None" guard, here or on the skip row above: when the
+        # call brought no ID, newest_arr_ids has already resolved it to the
+        # newest one any queue item for this file carries, and this row is
+        # one of them. The value can only be this row's own ID or a newer
+        # one, never None over a real one. A guard was tried, and removing
+        # it changed no test's outcome, including the one that scans a row
+        # holding an ID with no ID in hand.
+        in_progress.sonarr_series_id = sonarr_series_id
+        in_progress.radarr_movie_id  = radarr_movie_id
         db.commit()
         return
 

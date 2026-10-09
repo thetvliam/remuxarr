@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1696 tests across 75 test files, plus 594 frontend tests under
+1759 tests across 78 test files, plus 594 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -51,7 +51,7 @@ has its own mutant and its own test.
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
-`test_background_tasks.py`. Four more follow one job through `worker.py` in
+`test_clean_shutdown.py`, `test_background_tasks.py`. Four more follow one job through `worker.py` in
 order: `test_worker_loop.py` on the pool that claims it and the three places a
 running job is tracked at once, `test_job_preflight.py` on the re-decision
 against current settings between queueing and execution,
@@ -65,8 +65,8 @@ acts on it.
 `test_source_file_preservation.py`, `test_forge_and_staging.py`,
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
-`test_subtitle_cascade_review.py`, `test_staging_progress.py`. Some run a
-real subprocess against real
+`test_subtitle_cascade_review.py`, `test_staging_progress.py`,
+`test_source_changed_mid_job.py`. Some run a real subprocess against real
 temp files; a few need real ffmpeg/ffprobe and skip when the binaries are
 absent (CI installs them, so they always run there).
 `test_attachment_preservation.py` pins the `-map` arguments against the bug
@@ -82,7 +82,7 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
-`test_arr_client.py`, `test_arr_notifications.py`,
+`test_rename_tracking.py`, `test_arr_client.py`, `test_arr_notifications.py`,
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
 `test_email_notify.py`, `test_post_job_notify.py`.
 `test_arr_quality_restore.py` covers putting a file's quality back after a
@@ -205,8 +205,8 @@ The recurring shapes, so the next reader does not re-derive them:
   emergency-cleanup handler of last resort. The only assertion available is
   "it did not crash", which the surrounding tests already establish.
 - **Guards whose real caller is covered elsewhere.** The worker loop's
-  `CancelledError` break is reached through `stop_worker`, which has its own
-  tests; asserting it directly means cancelling a task mid-iteration to check
+  `CancelledError` break is reached through `stop_worker`, which
+  `test_clean_shutdown.py` drives; asserting it directly means cancelling a task mid-iteration to check
   that nothing escaped.
 - **Short-circuits whose only observable difference is on input nothing
   sends.** `broadcast_json` returns early when no client is connected. With an

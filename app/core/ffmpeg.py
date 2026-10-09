@@ -748,6 +748,7 @@ async def execute_ffmpeg(
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds: float | None = None,
     before_staging: Callable[[str], Awaitable[str | None]] | None = None,
+    before_swap: Callable[[], Awaitable[str | None]] | None = None,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
@@ -820,6 +821,7 @@ async def execute_ffmpeg(
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
+        before_swap=before_swap,
     )
 
     if not result.success:
@@ -850,6 +852,7 @@ async def execute_subtitle_extraction(
     stream_index: int,
     output_srt_path: str,
     job_id: int,
+    timeout_seconds: float | None = None,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -867,6 +870,13 @@ async def execute_subtitle_extraction(
     ExtractionResult(success=False) rather than re-raised. worker.py's
     two-pass fallback path calls this in a loop and checks the result
     object — it expects a result, not a raised exception.
+
+    timeout_seconds is the job timeout, applied to this one command the
+    same way execute_ffmpeg applies it to the remux. It used to be absent,
+    so the job_timeout_minutes setting reached the remux and the combined
+    pass but not this: an extraction FFmpeg that hung held its worker slot
+    until Abort or a restart. It reads the same source file the remux does,
+    so whatever can hang one can hang the other.
     """
     # See execute_ffmpeg's docstring for why the temp name is derived from
     # job_id rather than the destination filename. stream_index (already
@@ -888,6 +898,7 @@ async def execute_subtitle_extraction(
             # always drains stdout, but it just reaches EOF immediately here.
             on_progress_line=None,
             stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
         )
 
         if not result.success:
@@ -1005,6 +1016,7 @@ async def execute_ffmpeg_combined(
     progress_callback:    Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds:      float | None = None,
     before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
+    before_swap:          Callable[[], Awaitable[str | None]] | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
     Single-pass combined remux + subtitle extraction.
@@ -1022,9 +1034,11 @@ async def execute_ffmpeg_combined(
 
     before_staging, if given, is awaited with the path of the finished main
     output while it is still a temp file and every original is untouched —
-    the only point where the source and the result both exist. Returning an
+    the first point where the source and the result both exist. Returning an
     error string from it aborts the whole run with nothing swapped into
-    place. See run_staged_subprocess for the full contract.
+    place. before_swap is the last such point, after the copy to the
+    destination, and is passed straight through. See run_staged_subprocess
+    for the full contract of both.
 
     Thin adapter over run_staged_subprocess(): the main output AND every
     SRT sidecar are passed to it as one staged set, so all outputs land
@@ -1127,6 +1141,7 @@ async def execute_ffmpeg_combined(
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
+        before_swap=before_swap,
     )
 
     if not result.success:

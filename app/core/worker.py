@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ScanStats, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -240,7 +240,32 @@ async def start_worker() -> None:
     logger.info("Background worker started (paused=%s)", _paused)
 
 
+# How long a clean stop waits for running jobs to wind down. Docker gives a
+# container ten seconds between SIGTERM and SIGKILL unless told otherwise, and
+# neither docker-compose.yml nor the Unraid template sets a longer stop
+# timeout, so this leaves room for the rest of the shutdown inside that.
+SHUTDOWN_JOB_GRACE_SECONDS = 8.0
+
+
 async def stop_worker() -> None:
+    """
+    Stop claiming jobs, and stop the ones running, so they can be re-run.
+
+    It used to stop only the claiming loop. Running jobs were then cancelled
+    by the event loop's own teardown after the lifespan had returned, found
+    still at "processing", and force-failed by the emergency net in
+    _run_and_broadcast — "Job did not complete cleanly (finalisation
+    failed)", counted towards the failure email. Every container update did
+    that to whatever was running.
+
+    Now each job task is cancelled here and waited for. A job cancelled
+    before it replaced anything goes back to "pending" (_run_and_broadcast,
+    _requeue_cut_off_job); one whose output was already swapped in finishes
+    its bookkeeping first (_run_job), so it is recorded as the success it
+    was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
+    kill, and recover_interrupted_jobs fails it on the next start, as a
+    crash is.
+    """
     # _worker_task is only READ here, never reassigned — no `global`
     # needed for it specifically (only _running, which IS reassigned
     # below, actually requires the declaration).
@@ -252,6 +277,19 @@ async def stop_worker() -> None:
             await _worker_task
         except asyncio.CancelledError:
             pass
+
+    jobs = [task for task in _active_task_registry.values() if not task.done()]
+    for task in jobs:
+        task.cancel()
+    if jobs:
+        _done, still_running = await asyncio.wait(
+            jobs, timeout=SHUTDOWN_JOB_GRACE_SECONDS)
+        if still_running:
+            logger.warning(
+                "%d job(s) still running after %.0f s; they will be marked "
+                "interrupted on the next start",
+                len(still_running), SHUTDOWN_JOB_GRACE_SECONDS,
+            )
     logger.info("Background worker stopped")
 
 
@@ -353,31 +391,43 @@ async def _run_and_broadcast(
     job_id: int, ws_manager, loop: asyncio.AbstractEventLoop
 ) -> None:
     """Wrap _run_job with the completed broadcast."""
+    cancelled = False
     try:
         await _run_job(job_id, ws_manager, loop)
     except asyncio.CancelledError:
-        # User abort: abort_job() marked the DB row "cancelled" and then
-        # called task.cancel(), which raised this here at _run_job's await
-        # point. We re-raise so the task still ends cancelled — the
+        # Two things cancel a job task, and they leave the row differently.
+        # abort_job() marks it "cancelled" before calling task.cancel();
+        # stop_worker() cancels it as the container shuts down and leaves
+        # it at "processing", which the finally below puts back in the
+        # queue. We re-raise so the task still ends cancelled — the
         # broadcast itself happens in the finally below, which runs to
         # completion even under cancellation (see the note there). This
-        # branch exists so an abort is explicit and logged rather than an
-        # unlabelled BaseException silently skipping past `except
+        # branch exists so a cancellation is explicit and logged rather
+        # than an unlabelled BaseException silently skipping past `except
         # Exception`.
-        logger.info("Job %d cancelled by user abort — finalising", job_id)
+        cancelled = True
+        logger.info("Job %d cancelled — finalising", job_id)
         raise
     except Exception:
         logger.exception("_run_job raised for job %d — attempting emergency cleanup", job_id)
     finally:
         # This block runs on EVERY exit path — normal return, exception,
         # and cancellation. It is safe under cancellation specifically
-        # because abort_job() issues a single task.cancel(): the resulting
-        # CancelledError is delivered once, at _run_job's await, so by the
-        # time control reaches here the cancellation is already consumed
-        # and the awaits below (executor calls + the broadcast) complete
-        # normally. That's what guarantees EVERY connected client gets the
-        # "cancelled" job_completed event, not just the one that clicked
-        # abort (which also re-fetches over REST). Verified empirically.
+        # because abort_job() and stop_worker() each issue a single
+        # task.cancel(): the resulting CancelledError is delivered once, at
+        # _run_job's await, so by the time control reaches here the
+        # cancellation is already consumed and the awaits below (executor
+        # calls + the broadcast) complete normally. That's what guarantees
+        # EVERY connected client gets the "cancelled" job_completed event,
+        # not just the one that clicked abort (which also re-fetches over
+        # REST). Verified empirically.
+        #
+        # A cancelled job still at "processing" was cut off by a shutdown
+        # (an abort has already marked its row). It goes back to the queue
+        # before anything below reads the row, so the emergency net does
+        # not take it for a job whose finalisation failed.
+        if cancelled:
+            await loop.run_in_executor(None, _requeue_cut_off_job, job_id)
         post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
         if post_job:
             final = post_job["final"]
@@ -799,6 +849,44 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     input_path  = file_dict["path"]
     output_path = determine_output_path(input_path, decision)
 
+    # ── What the job started from ──────────────────────────────────────────
+    # The source, and the name a container change will write to, as they
+    # are now. Checked again before the revert capture and once more after
+    # the output has been copied beside its destination, just before it
+    # replaces anything: if either has changed, something else wrote to
+    # the library while this job ran, and swapping the output in would
+    # overwrite or resurrect a file this job never read. Sonarr or Radarr
+    # importing an upgrade, deleting or renaming are the ordinary causes.
+    source_print = _fingerprint(input_path)
+    target_print = (_fingerprint(output_path)
+                    if output_path != input_path else None)
+    changed: list[str] = []    # why the job stopped, once it has
+
+    def what_changed() -> str | None:
+        name = os.path.basename(input_path)
+        now = _fingerprint(input_path)
+        if now != source_print:
+            if now is None:
+                return f"{name} is no longer there (deleted or renamed)"
+            return f"{name} was replaced or modified"
+        if output_path != input_path and _fingerprint(output_path) != target_print:
+            return (f"{os.path.basename(output_path)} appeared or changed at "
+                    f"the name this job writes to")
+        return None
+
+    def stop_if_changed() -> str | None:
+        detail = what_changed()
+        if detail is None:
+            return None
+        message = (f"The file changed on disk while it was being processed: "
+                   f"{detail}. Nothing was written.")
+        changed.append(message)
+        logger.warning("Job %d: %s", job_id, message)
+        return message
+
+    async def on_before_swap() -> str | None:
+        return stop_if_changed()
+
     # ── Disk space pre-flight ──────────────────────────────────────────────
     # Check before spawning FFmpeg to give a clear, immediate error rather
     # than a cryptic mid-encode failure.  Skipped if stat() is unavailable
@@ -882,8 +970,10 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     # ── Revert point capture ───────────────────────────────────────────────
     # The hook fires inside run_staged_subprocess, after FFmpeg has
-    # succeeded and before anything on disk is replaced — the only window
-    # where the source and the result both exist. See revert_capture.py.
+    # succeeded and before the result is copied anywhere — the first point
+    # where the source and the result both exist, and the one capture
+    # needs, since it reads the result from the temp directory. See
+    # revert_capture.py.
     #
     # The captured sidecar is held here rather than recorded immediately:
     # the run can still fail after the hook (staging can hit ENOSPC), and a
@@ -920,6 +1010,15 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             delete_sidecar(stale.sidecar_path)
         captured.clear()
 
+        # Before capturing, not only at the swap. Capture probes the
+        # source to record what it was: a replaced source would be
+        # recorded as the original, and a missing one, with a revert point
+        # required, fails the job outright before the swap check is ever
+        # reached.
+        stopped = stop_if_changed()
+        if stopped:
+            return stopped
+
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
@@ -947,6 +1046,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 progress_callback   = on_progress,
                 timeout_seconds     = timeout_seconds,
                 before_staging      = on_before_staging,
+                before_swap         = on_before_swap,
             )
 
             if not result.success and _is_subtitle_encoding_failure(result.error):
@@ -1002,6 +1102,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     progress_callback    = on_progress,
                     timeout_seconds      = timeout_seconds,
                     before_staging       = on_before_staging,
+                    before_swap          = on_before_swap,
                 )
 
             # All-or-nothing staging: result.success now guarantees every
@@ -1050,11 +1151,16 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     "event": "job_progress", "job_id": job_id,
                     "progress": 0.0, "current_action": label, "speed": "",
                 })
+                # Each extraction gets the full timeout, as each FFmpeg
+                # command in this function does — the corrupt-audio retry
+                # gets a fresh one too. A timeout here is a hard failure:
+                # its message matches none of the encoding patterns below.
                 ext_result = await execute_subtitle_extraction(
                     input_path     = input_path,
                     stream_index   = action.stream_index,
                     output_srt_path= action.external_path,
                     job_id         = job_id,
+                    timeout_seconds= timeout_seconds,
                 )
                 if not ext_result.success:
                     if _is_subtitle_encoding_failure(ext_result.error):
@@ -1106,6 +1212,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 progress_callback = on_progress,
                 timeout_seconds   = timeout_seconds,
                 before_staging    = on_before_staging,
+                before_swap       = on_before_swap,
             )
 
             if _needs_audio_transcode_retry(result):
@@ -1127,6 +1234,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     progress_callback = on_progress,
                     timeout_seconds   = timeout_seconds,
                     before_staging    = on_before_staging,
+                    before_swap       = on_before_swap,
                 )
 
     except Exception as exc:
@@ -1138,30 +1246,81 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         )
         return
 
-    if result.success:
-        # If the container changed, delete the now-replaced original
-        if output_path != input_path and os.path.exists(input_path):
+    if changed:
+        # Stopped by the check above, with nothing swapped into place. What
+        # this job produced describes a file that is no longer the one on
+        # disk, so it all goes: the revert sidecar, and any subtitle files
+        # the two-pass path extracted from the old source before the remux
+        # was refused (only those this job created; one that was there
+        # before the job is not ours to remove). Then the job is cancelled
+        # rather than failed, and whatever is at the path now is decided
+        # afresh: a webhook announcing the new file while this job ran
+        # found the job in progress and queued nothing of its own.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        for path in will_create:
             try:
-                os.remove(input_path)
-                logger.info("Removed original after container change: %s", input_path)
+                os.remove(path)
+            except FileNotFoundError:
+                pass
             except OSError as exc:
-                logger.warning("Could not remove original %s: %s", input_path, exc)
-
-        # Recorded BEFORE the job is marked finished. The swap has already
-        # happened by this point, so the sidecar genuinely describes what is
-        # now on disk; writing the row first means a crash in between leaves
-        # a usable revert point and a job that recover_interrupted_jobs will
-        # sort out, rather than a sidecar on the volume that nothing
-        # references and nothing will ever collect.
-        if captured:
-            await loop.run_in_executor(
-                None, _record_revert_point,
-                file_dict["id"], captured[0], result.output_path, will_create,
-            )
-
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
         await loop.run_in_executor(
-            None, _finish_job, job_id, True, result.output_path, result.output_size, None
+            None, _cancel_for_changed_source, job_id, changed[0]
         )
+        return
+
+    if result.success:
+        def complete() -> None:
+            # If the container changed, delete the now-replaced original —
+            # but only if it is still the file this job read. Something can
+            # replace it in the moment between the swap and here, and that
+            # file is not this job's to delete.
+            if output_path != input_path and os.path.exists(input_path):
+                if _fingerprint(input_path) != source_print:
+                    logger.warning(
+                        "Job %d: not removing %s after the container change — "
+                        "it changed while the job ran and is not the file the "
+                        "job converted", job_id, input_path,
+                    )
+                else:
+                    try:
+                        os.remove(input_path)
+                        logger.info("Removed original after container change: %s", input_path)
+                    except OSError as exc:
+                        logger.warning("Could not remove original %s: %s", input_path, exc)
+
+            # Recorded BEFORE the job is marked finished. The swap has
+            # already happened by this point, so the sidecar genuinely
+            # describes what is now on disk; writing the row first means a
+            # crash in between leaves a usable revert point and a job that
+            # recover_interrupted_jobs will sort out, rather than a sidecar
+            # on the volume that nothing references and nothing will ever
+            # collect.
+            if captured:
+                _record_revert_point(
+                    file_dict["id"], captured[0], result.output_path, will_create,
+                )
+
+            _finish_job(job_id, True, result.output_path, result.output_size, None)
+
+        # One executor call that a cancellation does not interrupt. The
+        # output is already in place, so this job has to be recorded as the
+        # success it is: stop_worker cancels running jobs on a clean stop,
+        # and a job cut off here, between the swap and _finish_job, would
+        # otherwise be left at "processing" and put back in the queue —
+        # to be re-run against a file it had already converted, whose
+        # original may now be gone. On cancellation the bookkeeping is
+        # waited for and the cancellation then let through, so a job
+        # still at "processing" when one arrives never replaced anything.
+        # The same shield-then-await shape as the staging copy in
+        # run_staged_subprocess.
+        tail = asyncio.ensure_future(loop.run_in_executor(None, complete))
+        try:
+            await asyncio.shield(tail)
+        except asyncio.CancelledError:
+            await tail
+            raise
     else:
         # The main remux failed AFTER subtitles were already extracted to
         # disk. Leave the extracted .srt files in place — they're valid,
@@ -1304,8 +1463,42 @@ def _load_job_data(job_id: int):
             return None
 
         media: MediaFile | None = db.get(MediaFile, job.file_id)
-        if media is None or not os.path.exists(media.path):
+        if media is None:
             _finish_job(job_id, False, None, None, "File not found on disk")
+            return None
+        if not os.path.exists(media.path):
+            # Gone before its turn. Whether that is worth a failure depends on
+            # what else is gone with it.
+            #
+            # The folder still there means the file went on its own: Sonarr
+            # or Radarr upgraded it to a release with another extension,
+            # renamed or deleted it. Nothing went wrong in Remuxarr, so the
+            # job is cancelled, as one whose file changes while it runs is
+            # (_cancel_for_changed_source), and the failure-email breaker
+            # never hears of it.
+            #
+            # The folder gone as well is what an unmounted share or an array
+            # that has not started looks like, and that is exactly when the
+            # failures and the email should still come. A file directly in a
+            # scan path is treated the same way: an unmounted mount point is
+            # still there as an empty folder, so its existing proves nothing.
+            folder = os.path.dirname(media.path)
+            roots = {os.path.normpath(p)
+                     for p in (get_app_settings(db).get("scan_paths") or [])}
+            if os.path.isdir(folder) and os.path.normpath(folder) not in roots:
+                _cancel_for_changed_source(
+                    job_id,
+                    f"{media.filename} is no longer on disk: it was deleted, "
+                    f"renamed or replaced before its turn came. Nothing was done.",
+                )
+            else:
+                _finish_job(
+                    job_id, False, None, None,
+                    "File not found on disk, and Remuxarr cannot tell whether "
+                    "it was removed or its library is not mounted. If your "
+                    "library is on a network share or an array, check that it "
+                    "is mounted.",
+                )
             return None
 
         # A row that has never been probed for fonts — every row from before
@@ -1761,6 +1954,103 @@ def _finish_job(
         )
     finally:
         db.close()
+
+
+def _fingerprint(path: str) -> tuple[int, float] | None:
+    """
+    Size and mtime, or None when the path cannot be stat'ed.
+
+    The identity revert already relies on (RevertPoint.processed_size and
+    processed_mtime): a file whose size and mtime both match is treated as
+    the same file. Inode is left out on purpose. A move between disks
+    underneath the same path — Unraid's mover taking a file from cache to
+    array, for instance — may give an unchanged file a new inode. Whether
+    it does on a real Unraid share has not been checked, so inode is not
+    relied on in either direction.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime
+
+
+def _requeue_cut_off_job(job_id: int) -> None:
+    """
+    Put a job a shutdown cut off back in the queue, as though never claimed.
+
+    Only a row still at "processing": an aborted job is "cancelled" already
+    and stays so, and one that finished before the cancellation reached it
+    keeps its outcome. _run_job finishes its bookkeeping before letting a
+    cancellation through once the output has been swapped in, so a job
+    still at "processing" here never replaced anything, and running it
+    again from the start is safe.
+    """
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "pending"
+        job.started_at     = None
+        job.progress       = 0.0
+        job.current_action = None
+        db.commit()
+        logger.info("Job %d was cut off by shutdown — back in the queue", job_id)
+
+
+def _cancel_for_changed_source(job_id: int, reason: str) -> None:
+    """
+    End a job whose source changed while it ran, or was gone by the time
+    its turn came (_load_job_data), and decide the file again.
+
+    Cancelled, not failed. Nothing went wrong in Remuxarr: something else
+    replaced, renamed or removed the file, and a failure would put it in
+    the Failed tab and count towards the failure-email breaker, which
+    reads only success, failed and dry_run (_load_email_notify_data).
+
+    The scan stamp is reset the way abort_job resets it, so a delta scan
+    looks at the file again even if the re-evaluation below cannot. Then,
+    if anything is at the path now, it is probed and decided at once —
+    the same evaluation a retry runs — and the Sonarr and Radarr IDs carry
+    over through newest_arr_ids from this job's own row.
+
+    A job no longer at "processing" (aborted by the user meanwhile) is
+    left as it is.
+    """
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "cancelled"
+        job.error_message  = reason
+        job.completed_at   = utcnow()
+        job.progress       = 0.0
+        job.current_action = None
+        path = None
+        if job.media_file:
+            path = job.media_file.path
+            job.media_file.size   = -1
+            job.media_file.mtime  = -1.0
+            job.media_file.status = "skipped"
+        db.commit()
+        logger.info("Job %d cancelled: %s", job_id, reason)
+
+        if not path or not os.path.exists(path):
+            return
+        try:
+            cfg = get_app_settings(db)
+            _process_file(
+                db, path, cfg,
+                force_probe = True,
+                dry_run     = cfg.get("dry_run_mode", False),
+                stats       = ScanStats(),
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Job %d: re-evaluating %s after its source changed failed — "
+                "the next scan will pick it up", job_id, path,
+            )
 
 
 def _emergency_fail_job(job_id: int, reason: str) -> None:

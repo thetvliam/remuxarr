@@ -14,7 +14,10 @@ Field names and shapes here are taken from Radarr's own source
 wire), not guessed. previousPath is included in the rename fixtures
 because Radarr really does send it, precisely to assert we DON'T queue
 it (the file no longer exists at that path post-rename — queuing it
-would probe-fail).
+would probe-fail). It is read for something else: _sonarr_renames and
+_radarr_renames pair it with the new path so the file's record can be
+moved, which the tests at the end of this file pin, and
+test_rename_tracking.py follows through the handlers.
 
 These target the pure path-extraction helpers directly. Run from the
 project root:
@@ -22,7 +25,8 @@ project root:
 """
 
 
-from app.api.routes.webhooks import _radarr_paths, _sonarr_paths
+from app.api.routes.webhooks import (_radarr_paths, _radarr_renames,
+                                     _sonarr_paths, _sonarr_renames)
 
 
 # ── Real Radarr payload shapes (camelCase, as serialized on the wire) ──────
@@ -183,3 +187,42 @@ def test_both_handlers_treat_rename_as_array():
         ]
     })
     assert len(r) == 2 and len(s) == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Old and new paths, paired, for moving the file's record
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_radarr_rename_pairs_each_old_path_with_its_new_one():
+    assert _radarr_renames(_radarr_rename_payload()) == [
+        ("/movies/Blade Runner 2049 (2017)/old name.mkv",
+         "/movies/Blade Runner 2049 (2017)/Blade Runner 2049 (2017) Bluray-2160p.mkv"),
+        ("/movies/Blade Runner 2049 (2017)/old name 1080.mkv",
+         "/movies/Blade Runner 2049 (2017)/Blade Runner 2049 (2017) Bluray-1080p.mkv"),
+    ]
+
+
+def test_sonarr_rename_pairs_each_old_path_with_its_new_one():
+    payload = {
+        "eventType": "Rename",
+        "series": {"id": 7},
+        "renamedEpisodeFiles": [
+            {"previousPath": "/tv/Show/S01E01 - TBA.mkv",
+             "path": "/tv/Show/S01E01 - Pilot.mkv"},
+            {"previousPath": "/tv/Show/S01E02 - TBA.mkv",
+             "path": "/tv/Show/S01E02 - Second.mkv"},
+        ],
+    }
+    assert _sonarr_renames(payload) == [
+        ("/tv/Show/S01E01 - TBA.mkv", "/tv/Show/S01E01 - Pilot.mkv"),
+        ("/tv/Show/S01E02 - TBA.mkv", "/tv/Show/S01E02 - Second.mkv"),
+    ]
+
+
+def test_an_element_missing_either_path_moves_nothing():
+    """And a Download payload, which has no renamed files at all, moves nothing."""
+    assert _sonarr_renames({"renamedEpisodeFiles": [
+        {"path": "/tv/new.mkv"}, {"previousPath": "/tv/old.mkv"}, {},
+    ]}) == []
+    assert _radarr_renames(_radarr_download_payload()) == []
+
