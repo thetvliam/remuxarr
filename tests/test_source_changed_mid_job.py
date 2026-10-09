@@ -328,6 +328,36 @@ def test_a_file_renamed_mid_job_is_not_left_under_both_names(lib, monkeypatch):
     assert [j[1] for j in _jobs_for(lib, _job(lib, job_id).file_id)] == ["cancelled"]
 
 
+def test_a_rename_the_webhook_reports_mid_job_is_picked_up_under_the_new_name(
+        lib, monkeypatch):
+    """
+    With the Rename webhook arriving while the job runs, the file's record
+    has moved to the new name by the time the job stops (see
+    test_rename_tracking.py). The re-evaluation then reads the record's
+    path, so the file is queued again under its new name, on the same
+    record, rather than dropped.
+    """
+    source = _make(lib.library / "Show - S01E07 - TBA.mp4")
+    renamed = source.replace(" - TBA", " - The Title")
+    job_id = _queue(lib, source)
+
+    def sonarr_renames_and_reports_it():
+        os.rename(source, renamed)
+        with lib.Session() as db:
+            assert scanner.move_renamed_file(db, source, renamed) == "moved"
+
+    during_the_copy(monkeypatch, sonarr_renames_and_reports_it)
+
+    _run_next(lib)
+
+    assert_cancelled_cleanly(lib, job_id, "is no longer there")
+    file_id = _job(lib, job_id).file_id
+    with lib.Session() as db:
+        assert db.get(MediaFile, file_id).path == renamed
+    assert [j[1] for j in _jobs_for(lib, file_id)] == ["cancelled", "pending"]
+    assert not os.path.exists(source)
+
+
 def test_a_file_appearing_at_the_output_name_is_not_overwritten(lib, monkeypatch):
     """
     The source untouched, and something else written to the name the

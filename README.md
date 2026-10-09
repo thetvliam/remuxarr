@@ -304,13 +304,18 @@ them in would produce a file that plays and is quietly wrong. Those entries stay
 listed with the reason shown, so you can discard them, but they will not offer
 to revert.
 
-**If a file is renamed**, Remuxarr loses track of which file the entry belongs
-to - a rename looks the same as a deletion from the outside. The entry moves to
-**Unmatched** rather than being thrown away, and can be matched back: a renamed
-file is byte-for-byte identical, so it is identified by its fingerprint rather
-than guessed at. Reverting it then keeps its new name and folder. A revert
-will not overwrite another file: if one already has the name it would write,
-the entry says so and does not offer to revert.
+**If Sonarr or Radarr renames a file** and its Remuxarr webhook includes the
+Rename trigger, the entry stays with the file: the webhook says which old name
+became which new one, so the file keeps its record, and its revert point,
+history and review answers with it.
+
+**If anything else renames a file**, Remuxarr loses track of which file the
+entry belongs to - a rename looks the same as a deletion from the outside. The
+entry moves to **Unmatched** rather than being thrown away, and can be matched
+back: a renamed file is byte-for-byte identical, so it is identified by its
+fingerprint rather than guessed at. Reverting it then keeps its new name and
+folder. A revert will not overwrite another file: if one already has the name
+it would write, the entry says so and does not offer to revert.
 
 **Extracted subtitle files** are removed again when you revert, since their
 content goes back inside the file - but only the ones that job created. If you

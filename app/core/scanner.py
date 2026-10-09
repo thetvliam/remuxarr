@@ -695,6 +695,90 @@ def remove_orphaned_media_files(db: Session, file_ids: list[int]) -> int:
 
     return removed
 
+def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
+    """
+    Point a file's record at its new name after Sonarr or Radarr renamed it.
+
+    Without this a rename looked like a deletion plus a new file: the new
+    name got a fresh record, and the next scan deleted the old one with
+    everything hung off its id — the user's review answers, the file's
+    history, a pending job (which failed first, "File not found on disk"),
+    and the link to its revert point. The record is moved instead, so all
+    of that follows by id.
+
+    Only the services' Rename webhook calls this, because only it says
+    which old name became which new one. A rename nobody announced still
+    goes the old way.
+
+    The disk has to agree before anything moves; otherwise this returns
+    without touching the database and the caller carries on as before:
+
+      no_record            nothing is recorded under the old name
+      still_at_old_path    the old name still exists, so whatever happened,
+                           it was not a rename of that file
+      missing_at_new_path  nothing is at the new name to point at
+      new_path_busy        the new name has a record whose job is running;
+                           deleting a record under a running job is what
+                           cleanup_deleted_files refuses to do as well
+
+    A record already at the new name with nothing running is replaced. A
+    scan landing between the rename and this call creates exactly that:
+    a fresh record with no history, for the same file. It goes through
+    _delete_media_file_and_related so nothing it owns is orphaned.
+
+    Extracted subtitle paths on the file's SubtitleLanguageFlags follow
+    the file when the sidecar is found under the new name and not under
+    the old. _build_srt_path names a sidecar after the media file's stem,
+    so the new name is the same suffix on the new stem. Whether the
+    service renamed the sidecar at all is not assumed either way.
+
+    Returns "moved" or one of the reasons above. Commits only on "moved".
+    """
+    if old_path == new_path:
+        return "unchanged"
+    media = db.query(MediaFile).filter(MediaFile.path == old_path).first()
+    if media is None:
+        return "no_record"
+    if os.path.exists(old_path):
+        return "still_at_old_path"
+    if not os.path.exists(new_path):
+        return "missing_at_new_path"
+
+    occupant = db.query(MediaFile).filter(MediaFile.path == new_path).first()
+    if occupant is not None:
+        running = (db.query(QueueItem.id)
+                     .filter(QueueItem.file_id == occupant.id,
+                             QueueItem.status == "processing")
+                     .first())
+        if running:
+            return "new_path_busy"
+        _delete_media_file_and_related(db, occupant)
+        db.flush()   # the path is UNIQUE; the old row must be gone first
+
+    old_stem = os.path.splitext(old_path)[0]
+    new_stem = os.path.splitext(new_path)[0]
+
+    media.path      = new_path
+    media.filename  = os.path.basename(new_path)
+    media.directory = os.path.dirname(new_path)
+
+    flags = (db.query(SubtitleLanguageFlag)
+               .filter(SubtitleLanguageFlag.file_id == media.id,
+                       SubtitleLanguageFlag.extracted_path.isnot(None))
+               .all())
+    for flag in flags:
+        if not flag.extracted_path.startswith(old_stem):
+            continue
+        renamed = new_stem + flag.extracted_path[len(old_stem):]
+        if os.path.exists(renamed) and not os.path.exists(flag.extracted_path):
+            flag.extracted_path = renamed
+
+    db.commit()
+    logger.info("Renamed: record %d now points at %s (was %s)",
+                media.id, new_path, old_path)
+    return "moved"
+
+
 def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
     """
     The Sonarr series ID and Radarr movie ID from the newest queue items for

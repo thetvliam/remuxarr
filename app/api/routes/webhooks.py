@@ -33,6 +33,10 @@ Supported event types
 ---------------------
 Sonarr : Download, Rename  (Test returns 200 immediately)
 Radarr : Download, Rename  (Test returns 200 immediately)
+
+A Rename also moves each renamed file's record from its old name to its
+new one before anything is queued — see _move_renamed and
+scanner.move_renamed_file.
 """
 import asyncio
 import logging
@@ -41,7 +45,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.api.ws_manager import ws_manager
 from app.config import settings
-from app.core.scanner import queue_single_file
+from app.core.scanner import move_renamed_file, queue_single_file
 from app.core.pathmap import translate_path
 from app.database.session import SessionLocal, get_app_settings
 
@@ -99,6 +103,7 @@ async def sonarr_webhook(request: Request):
 
     paths     = _sonarr_paths(payload)
     series_id = _sonarr_series_id(payload)
+    await _move_renamed(_sonarr_renames(payload), series_id=series_id)
     await _debounce_all(paths, series_id)
     return {"status": "accepted", "files": len(paths)}
 
@@ -116,8 +121,50 @@ async def radarr_webhook(request: Request):
 
     paths    = _radarr_paths(payload)
     movie_id = _radarr_movie_id(payload)
+    await _move_renamed(_radarr_renames(payload), radarr_movie_id=movie_id)
     await _debounce_all(paths, radarr_movie_id=movie_id)
     return {"status": "accepted", "files": len(paths)}
+
+
+# ── Renames ────────────────────────────────────────────────────────────────────
+
+async def _move_renamed(
+    pairs: list[tuple[str, str]],
+    series_id:       int | None = None,
+    radarr_movie_id: int | None = None,
+) -> None:
+    """
+    Move each renamed file's record to its new name, at receipt.
+
+    Before the debounce rather than inside it: the debounce waits ten
+    seconds by default, and a scan in that window would give the new name
+    a record of its own and could delete the old one along with its
+    history. Both paths are translated the same way the queued path is. A
+    move that fails is logged and the webhook still goes on to queue the
+    new name, which is what happened to every rename before this existed.
+    """
+    loop = asyncio.get_running_loop()
+    for raw_old, raw_new in pairs:
+        old = await loop.run_in_executor(
+            None, _resolve_translated_path_sync, raw_old, series_id, radarr_movie_id,
+        )
+        new = await loop.run_in_executor(
+            None, _resolve_translated_path_sync, raw_new, series_id, radarr_movie_id,
+        )
+        outcome = await loop.run_in_executor(None, _move_sync, old, new)
+        logger.info("Rename %s -> %s: %s", old, new, outcome)
+
+
+def _move_sync(old: str, new: str) -> str:
+    db = SessionLocal()
+    try:
+        return move_renamed_file(db, old, new)
+    except Exception:
+        db.rollback()
+        logger.exception("Could not move the record for %s to %s", old, new)
+        return "failed"
+    finally:
+        db.close()
 
 
 # ── Debounce engine ────────────────────────────────────────────────────────────
@@ -251,6 +298,11 @@ def _sonarr_paths(payload: dict) -> list[str]:
     return list(dict.fromkeys(paths))   # dedupe while preserving order
 
 
+def _sonarr_renames(payload: dict) -> list[tuple[str, str]]:
+    """(previousPath, path) for each file a Sonarr Rename event moved."""
+    return _renames(payload.get("renamedEpisodeFiles", []))
+
+
 def _radarr_movie_id(payload: dict) -> int | None:
     """Extract the Radarr movie ID from a webhook payload."""
     try:
@@ -276,16 +328,36 @@ def _radarr_paths(payload: dict) -> list[str]:
     # -handled Sonarr sibling already uses.
     #
     # Each element also carries "previousPath" (the pre-rename full
-    # path). We deliberately take only "path" (the NEW location), exactly
-    # as _sonarr_paths does: after a rename the file no longer exists at
+    # path). Only "path" (the NEW location) is queued, exactly as
+    # _sonarr_paths does: after a rename the file no longer exists at
     # previousPath, so queuing it would just probe-fail on a missing
-    # file. The stale MediaFile row still sitting at the old path is
-    # cleaned up by the scanner's own orphan/delete handling, not here.
+    # file. previousPath is read by _radarr_renames instead, which moves
+    # the file's record from the old name to the new one.
     for item in payload.get("renamedMovieFiles", []):
         if item.get("path"):
             paths.append(item["path"])
 
     return list(dict.fromkeys(paths))
+
+
+def _radarr_renames(payload: dict) -> list[tuple[str, str]]:
+    """(previousPath, path) for each file a Radarr Rename event moved."""
+    return _renames(payload.get("renamedMovieFiles", []))
+
+
+def _renames(items) -> list[tuple[str, str]]:
+    """
+    Both services' renamed-file elements carry the old full path as
+    previousPath beside the new one as path (WebhookRenamedEpisodeFile and
+    WebhookRenamedMovieFile, checked in their source). An element missing
+    either is skipped: without both there is nothing to move.
+    """
+    pairs = []
+    for item in items or []:
+        old, new = item.get("previousPath"), item.get("path")
+        if old and new:
+            pairs.append((old, new))
+    return list(dict.fromkeys(pairs))
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

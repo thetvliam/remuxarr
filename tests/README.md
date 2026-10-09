@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1734 tests across 76 test files, plus 594 frontend tests under
+1750 tests across 77 test files, plus 594 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -82,7 +82,7 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
-`test_arr_client.py`, `test_arr_notifications.py`,
+`test_rename_tracking.py`, `test_arr_client.py`, `test_arr_notifications.py`,
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
 `test_email_notify.py`, `test_post_job_notify.py`.
 `test_arr_quality_restore.py` covers putting a file's quality back after a
