@@ -65,6 +65,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -416,7 +417,7 @@ def test_the_swap_hook_runs_after_the_copy_and_before_anything_is_replaced(tmp_p
 
     async def hook():
         seen["original"] = final.read_bytes()
-        seen["part"] = open(part, "rb").read() if os.path.exists(part) else None
+        seen["part"] = Path(part).read_bytes() if os.path.exists(part) else None
         return None
 
     res = _run(_writer_cmd([(str(temp), "NEW")]), [output], before_swap=hook)
