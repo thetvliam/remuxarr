@@ -23,10 +23,17 @@ WHAT THESE TESTS PIN
   • in-place success        -> source must SURVIVE (the regression)
   • container-change success -> source must be DELETED (the guard's real purpose)
   • failure                  -> source must SURVIVE regardless of paths
+  • container-change success, but the original replaced after the swap
+                             -> the replacement must SURVIVE
 
 The third matters because a fix for the first that simply never deletes would
 pass test one while breaking container conversions, leaving both the old and
 new file on disk.
+
+The fourth came with the check that the source has not changed under the
+job (test_source_changed_mid_job.py): the deletion now also requires the
+original to still be the file the job read. Removing that condition
+survived the whole 1711-test suite and is killed by the fourth test.
 """
 import asyncio
 from types import SimpleNamespace
@@ -64,7 +71,7 @@ def scenario(tmp_path, monkeypatch):
 
     finished = {}
 
-    def build(output_path=None, success=True):
+    def build(output_path=None, success=True, after_swap=None):
         # None means "in place" — determine_output_path returns the input
         # unchanged, which is what it really does when no container change is
         # planned. Resolved here so no test has to patch a module global
@@ -84,6 +91,8 @@ def scenario(tmp_path, monkeypatch):
             if success:
                 with open(out, "wb") as f:
                     f.write(b"REMUXED-MEDIA-BYTES")
+            if after_swap:
+                after_swap()
             return SimpleNamespace(
                 success=success,
                 output_path=out if success else None,
@@ -145,6 +154,32 @@ def test_container_change_success_deletes_the_original(scenario, tmp_path):
 
 
 # ── Failure paths must never delete ──────────────────────────────────────────
+
+def test_a_container_change_keeps_an_original_replaced_after_the_swap(
+        scenario, tmp_path):
+    """
+    The guard's other half. Something can put a different file at the old
+    name between the swap and this line — Sonarr importing an upgrade that
+    keeps the old extension, say. That file is not the one the job
+    converted, and deleting it destroys the upgrade.
+    """
+    replaced = {}
+
+    def sonarr_imports_an_upgrade():
+        source.write_bytes(b"UPGRADED-RELEASE")
+        replaced["done"] = True
+
+    source, finished = scenario(output_path=tmp_path / "Movie.mp4", success=True,
+                                after_swap=sonarr_imports_an_upgrade)
+
+    _run()
+
+    assert replaced.get("done")
+    assert source.exists(), "the upgrade at the old name was deleted"
+    assert source.read_bytes() == b"UPGRADED-RELEASE"
+    assert (tmp_path / "Movie.mp4").read_bytes() == b"REMUXED-MEDIA-BYTES"
+    assert finished["ok"] is True
+
 
 def test_failed_container_change_keeps_the_source(scenario, tmp_path):
     """

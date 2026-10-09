@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ScanStats, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -799,6 +799,44 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     input_path  = file_dict["path"]
     output_path = determine_output_path(input_path, decision)
 
+    # ── What the job started from ──────────────────────────────────────────
+    # The source, and the name a container change will write to, as they
+    # are now. Checked again before the revert capture and once more after
+    # the output has been copied beside its destination, just before it
+    # replaces anything: if either has changed, something else wrote to
+    # the library while this job ran, and swapping the output in would
+    # overwrite or resurrect a file this job never read. Sonarr or Radarr
+    # importing an upgrade, deleting or renaming are the ordinary causes.
+    source_print = _fingerprint(input_path)
+    target_print = (_fingerprint(output_path)
+                    if output_path != input_path else None)
+    changed: list[str] = []    # why the job stopped, once it has
+
+    def what_changed() -> str | None:
+        name = os.path.basename(input_path)
+        now = _fingerprint(input_path)
+        if now != source_print:
+            if now is None:
+                return f"{name} is no longer there (deleted or renamed)"
+            return f"{name} was replaced or modified"
+        if output_path != input_path and _fingerprint(output_path) != target_print:
+            return (f"{os.path.basename(output_path)} appeared or changed at "
+                    f"the name this job writes to")
+        return None
+
+    def stop_if_changed() -> str | None:
+        detail = what_changed()
+        if detail is None:
+            return None
+        message = (f"The file changed on disk while it was being processed: "
+                   f"{detail}. Nothing was written.")
+        changed.append(message)
+        logger.warning("Job %d: %s", job_id, message)
+        return message
+
+    async def on_before_swap() -> str | None:
+        return stop_if_changed()
+
     # ── Disk space pre-flight ──────────────────────────────────────────────
     # Check before spawning FFmpeg to give a clear, immediate error rather
     # than a cryptic mid-encode failure.  Skipped if stat() is unavailable
@@ -882,8 +920,10 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     # ── Revert point capture ───────────────────────────────────────────────
     # The hook fires inside run_staged_subprocess, after FFmpeg has
-    # succeeded and before anything on disk is replaced — the only window
-    # where the source and the result both exist. See revert_capture.py.
+    # succeeded and before the result is copied anywhere — the first point
+    # where the source and the result both exist, and the one capture
+    # needs, since it reads the result from the temp directory. See
+    # revert_capture.py.
     #
     # The captured sidecar is held here rather than recorded immediately:
     # the run can still fail after the hook (staging can hit ENOSPC), and a
@@ -920,6 +960,15 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             delete_sidecar(stale.sidecar_path)
         captured.clear()
 
+        # Before capturing, not only at the swap. Capture probes the
+        # source to record what it was: a replaced source would be
+        # recorded as the original, and a missing one, with a revert point
+        # required, fails the job outright before the swap check is ever
+        # reached.
+        stopped = stop_if_changed()
+        if stopped:
+            return stopped
+
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
@@ -947,6 +996,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 progress_callback   = on_progress,
                 timeout_seconds     = timeout_seconds,
                 before_staging      = on_before_staging,
+                before_swap         = on_before_swap,
             )
 
             if not result.success and _is_subtitle_encoding_failure(result.error):
@@ -1002,6 +1052,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     progress_callback    = on_progress,
                     timeout_seconds      = timeout_seconds,
                     before_staging       = on_before_staging,
+                    before_swap          = on_before_swap,
                 )
 
             # All-or-nothing staging: result.success now guarantees every
@@ -1111,6 +1162,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 progress_callback = on_progress,
                 timeout_seconds   = timeout_seconds,
                 before_staging    = on_before_staging,
+                before_swap       = on_before_swap,
             )
 
             if _needs_audio_transcode_retry(result):
@@ -1132,6 +1184,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     progress_callback = on_progress,
                     timeout_seconds   = timeout_seconds,
                     before_staging    = on_before_staging,
+                    before_swap       = on_before_swap,
                 )
 
     except Exception as exc:
@@ -1143,14 +1196,48 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         )
         return
 
-    if result.success:
-        # If the container changed, delete the now-replaced original
-        if output_path != input_path and os.path.exists(input_path):
+    if changed:
+        # Stopped by the check above, with nothing swapped into place. What
+        # this job produced describes a file that is no longer the one on
+        # disk, so it all goes: the revert sidecar, and any subtitle files
+        # the two-pass path extracted from the old source before the remux
+        # was refused (only those this job created; one that was there
+        # before the job is not ours to remove). Then the job is cancelled
+        # rather than failed, and whatever is at the path now is decided
+        # afresh: a webhook announcing the new file while this job ran
+        # found the job in progress and queued nothing of its own.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        for path in will_create:
             try:
-                os.remove(input_path)
-                logger.info("Removed original after container change: %s", input_path)
+                os.remove(path)
+            except FileNotFoundError:
+                pass
             except OSError as exc:
-                logger.warning("Could not remove original %s: %s", input_path, exc)
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        await loop.run_in_executor(
+            None, _cancel_for_changed_source, job_id, changed[0]
+        )
+        return
+
+    if result.success:
+        # If the container changed, delete the now-replaced original — but
+        # only if it is still the file this job read. Something can replace
+        # it in the moment between the swap and here, and that file is not
+        # this job's to delete.
+        if output_path != input_path and os.path.exists(input_path):
+            if _fingerprint(input_path) != source_print:
+                logger.warning(
+                    "Job %d: not removing %s after the container change — "
+                    "it changed while the job ran and is not the file the "
+                    "job converted", job_id, input_path,
+                )
+            else:
+                try:
+                    os.remove(input_path)
+                    logger.info("Removed original after container change: %s", input_path)
+                except OSError as exc:
+                    logger.warning("Could not remove original %s: %s", input_path, exc)
 
         # Recorded BEFORE the job is marked finished. The swap has already
         # happened by this point, so the sidecar genuinely describes what is
@@ -1766,6 +1853,79 @@ def _finish_job(
         )
     finally:
         db.close()
+
+
+def _fingerprint(path: str) -> tuple[int, float] | None:
+    """
+    Size and mtime, or None when the path cannot be stat'ed.
+
+    The identity revert already relies on (RevertPoint.processed_size and
+    processed_mtime): a file whose size and mtime both match is treated as
+    the same file. Inode is left out on purpose. A move between disks
+    underneath the same path — Unraid's mover taking a file from cache to
+    array, for instance — may give an unchanged file a new inode. Whether
+    it does on a real Unraid share has not been checked, so inode is not
+    relied on in either direction.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime
+
+
+def _cancel_for_changed_source(job_id: int, reason: str) -> None:
+    """
+    End a job whose source changed while it ran, and decide the file again.
+
+    Cancelled, not failed. Nothing went wrong in Remuxarr: something else
+    replaced, renamed or removed the file, and a failure would put it in
+    the Failed tab and count towards the failure-email breaker, which
+    reads only success, failed and dry_run (_load_email_notify_data).
+
+    The scan stamp is reset the way abort_job resets it, so a delta scan
+    looks at the file again even if the re-evaluation below cannot. Then,
+    if anything is at the path now, it is probed and decided at once —
+    the same evaluation a retry runs — and the Sonarr and Radarr IDs carry
+    over through newest_arr_ids from this job's own row.
+
+    A job no longer at "processing" (aborted by the user meanwhile) is
+    left as it is.
+    """
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "cancelled"
+        job.error_message  = reason
+        job.completed_at   = utcnow()
+        job.progress       = 0.0
+        job.current_action = None
+        path = None
+        if job.media_file:
+            path = job.media_file.path
+            job.media_file.size   = -1
+            job.media_file.mtime  = -1.0
+            job.media_file.status = "skipped"
+        db.commit()
+        logger.info("Job %d cancelled: %s", job_id, reason)
+
+        if not path or not os.path.exists(path):
+            return
+        try:
+            cfg = get_app_settings(db)
+            _process_file(
+                db, path, cfg,
+                force_probe = True,
+                dry_run     = cfg.get("dry_run_mode", False),
+                stats       = ScanStats(),
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Job %d: re-evaluating %s after its source changed failed — "
+                "the next scan will pick it up", job_id, path,
+            )
 
 
 def _emergency_fail_job(job_id: int, reason: str) -> None:

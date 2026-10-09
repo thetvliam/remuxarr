@@ -1,11 +1,13 @@
 """
-run_staged_subprocess's before_staging hook.
+run_staged_subprocess's two hooks, before_staging and before_swap.
 
-The hook exists for one reason: it is the only point in a run where the
-original file and the finished output both exist. One line further on,
-os.replace starts overwriting originals and the pre-job state is gone.
-Every test here is really about that window and about the promise that
-declining inside it costs nothing.
+before_staging exists for one reason: it is the first point in a run where
+the original file and the finished output both exist, before anything is
+copied to the destination. before_swap, at the end of this file, is the
+last: after the copy, immediately before os.replace starts overwriting
+originals and the pre-job state is gone. Every test here is really about
+those windows and about the promise that declining inside one costs
+nothing.
 
 Three properties, in the order they matter:
 
@@ -46,6 +48,18 @@ The rest, killed on the first run:
   • Return value truthiness inverted          → killed
 
 No equivalent mutants.
+
+before_swap came later, with four mutations of its own, each run against
+the whole 1711-test suite first, all four survived: the runner never
+calling the hook; the runner ignoring an error the hook returns; and each of the
+two adapters not passing it through. All four are killed here, and the
+adapter two also by test_source_changed_mid_job.py, which runs whole jobs.
+13 applied, 13 killed.
+
+The ".part" checks in the before_staging tests above look for "a.mkv.part",
+a name staged_part_path does not produce (it names the copy after the temp
+file), so they cannot fail. The before_swap tests compute the name with
+staged_part_path. The older checks are left for their own change.
 """
 import asyncio
 import os
@@ -55,8 +69,9 @@ import subprocess
 import pytest
 
 from app.core.decision import analyze_file
-from app.core.ffmpeg import execute_ffmpeg_combined
-from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
+from app.core.ffmpeg import execute_ffmpeg, execute_ffmpeg_combined
+from app.core.subprocess_runner import (StagedOutput, run_staged_subprocess,
+                                        staged_part_path)
 from tests.conftest import make_file_info, make_track
 
 
@@ -379,4 +394,114 @@ def test_adapter_hook_can_abort_a_real_job(tmp_path, settings):
 
     assert result.success is False
     assert "revert point" in result.error
+    assert source.read_bytes() == original_bytes, "source was modified anyway"
+
+
+# ── The last look: before_swap ───────────────────────────────────────────────
+#
+# The second hook, after the copy to the destination rather than before it.
+# The copy can take minutes on a slow array, and a source replaced during it
+# was overwritten by a check that had already passed. Same contract as
+# before_staging; what differs is only where it sits, so that is what the
+# first test pins. Leftover .part files are looked for under the name
+# staged_part_path really gives them.
+
+def test_the_swap_hook_runs_after_the_copy_and_before_anything_is_replaced(tmp_path):
+    temp = tmp_path / "a.tmp"
+    final = tmp_path / "a.mkv"
+    final.write_bytes(b"ORIGINAL")
+    output = StagedOutput(temp_path=str(temp), final_path=str(final))
+    part = staged_part_path(output)
+    seen = {}
+
+    async def hook():
+        seen["original"] = final.read_bytes()
+        seen["part"] = open(part, "rb").read() if os.path.exists(part) else None
+        return None
+
+    res = _run(_writer_cmd([(str(temp), "NEW")]), [output], before_swap=hook)
+
+    assert res.success is True
+    assert seen["original"] == b"ORIGINAL", "the original was already replaced"
+    assert seen["part"] == b"NEW", "the copy to the destination had not happened"
+    assert final.read_bytes() == b"NEW", "the swap did not happen afterwards"
+    assert not os.path.exists(part)
+
+
+def test_declining_at_the_swap_leaves_every_original_and_nothing_else(tmp_path):
+    temps = [tmp_path / f"{n}.tmp" for n in ("a", "b")]
+    finals = [tmp_path / f"{n}.mkv" for n in ("a", "b")]
+    for f in finals:
+        f.write_bytes(b"ORIGINAL")
+    outputs = [StagedOutput(temp_path=str(t), final_path=str(f))
+               for t, f in zip(temps, finals)]
+
+    async def hook():
+        return "the source changed underneath the run"
+
+    res = _run(_writer_cmd([(str(t), "NEW") for t in temps]), outputs,
+               before_swap=hook)
+
+    assert res.success is False
+    assert res.error == "the source changed underneath the run"
+    assert all(f.read_bytes() == b"ORIGINAL" for f in finals)
+    assert not any(t.exists() for t in temps), "temp left behind"
+    assert not any(os.path.exists(staged_part_path(o)) for o in outputs), \
+        ".part left behind"
+
+
+@pytest.mark.parametrize("earlier", ["subprocess fails", "before_staging declines"])
+def test_the_swap_hook_is_not_reached_when_an_earlier_step_stops_the_run(
+        tmp_path, earlier):
+    temp = tmp_path / "a.tmp"
+    final = tmp_path / "a.mkv"
+    final.write_bytes(b"ORIGINAL")
+    calls = []
+
+    async def swap_hook():
+        calls.append(1)
+        return None
+
+    async def declining():
+        return "declined"
+
+    if earlier == "subprocess fails":
+        cmd, kw = ["/bin/sh", "-c", "exit 3"], {}
+    else:
+        cmd, kw = _writer_cmd([(str(temp), "NEW")]), {"before_staging": declining}
+
+    res = _run(cmd, [StagedOutput(temp_path=str(temp), final_path=str(final))],
+               before_swap=swap_hook, **kw)
+
+    assert res.success is False
+    assert calls == []
+
+
+@ffmpeg_required
+@pytest.mark.parametrize("adapter", ["execute_ffmpeg", "execute_ffmpeg_combined"])
+def test_both_adapters_hand_the_swap_hook_to_the_runner(tmp_path, settings, adapter):
+    """
+    Each adapter builds its own call to run_staged_subprocess, so each can
+    drop the hook on its own. Real FFmpeg, for the reason the adapter tests
+    above give.
+    """
+    source, decision, tracks = _tiny_job(tmp_path, settings)
+    original_bytes = source.read_bytes()
+
+    async def hook():
+        return "the source changed underneath the run"
+
+    if adapter == "execute_ffmpeg":
+        result = asyncio.run(execute_ffmpeg(
+            str(source), str(source), decision, tracks, job_id=1,
+            before_swap=hook,
+        ))
+    else:
+        result, _ = asyncio.run(execute_ffmpeg_combined(
+            str(source), str(source), decision, tracks, [], job_id=1,
+            before_swap=hook,
+        ))
+
+    assert result.success is False
+    assert result.error == "the source changed underneath the run"
     assert source.read_bytes() == original_bytes, "source was modified anyway"

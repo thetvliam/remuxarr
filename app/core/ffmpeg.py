@@ -748,6 +748,7 @@ async def execute_ffmpeg(
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds: float | None = None,
     before_staging: Callable[[str], Awaitable[str | None]] | None = None,
+    before_swap: Callable[[], Awaitable[str | None]] | None = None,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
@@ -820,6 +821,7 @@ async def execute_ffmpeg(
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
+        before_swap=before_swap,
     )
 
     if not result.success:
@@ -1014,6 +1016,7 @@ async def execute_ffmpeg_combined(
     progress_callback:    Callable[[FFmpegProgress], Awaitable[None]] | None = None,
     timeout_seconds:      float | None = None,
     before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
+    before_swap:          Callable[[], Awaitable[str | None]] | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
     Single-pass combined remux + subtitle extraction.
@@ -1031,9 +1034,11 @@ async def execute_ffmpeg_combined(
 
     before_staging, if given, is awaited with the path of the finished main
     output while it is still a temp file and every original is untouched —
-    the only point where the source and the result both exist. Returning an
+    the first point where the source and the result both exist. Returning an
     error string from it aborts the whole run with nothing swapped into
-    place. See run_staged_subprocess for the full contract.
+    place. before_swap is the last such point, after the copy to the
+    destination, and is passed straight through. See run_staged_subprocess
+    for the full contract of both.
 
     Thin adapter over run_staged_subprocess(): the main output AND every
     SRT sidecar are passed to it as one staged set, so all outputs land
@@ -1136,6 +1141,7 @@ async def execute_ffmpeg_combined(
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
+        before_swap=before_swap,
     )
 
     if not result.success:

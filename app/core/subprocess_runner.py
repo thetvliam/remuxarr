@@ -257,6 +257,7 @@ async def run_staged_subprocess(
     before_staging: Callable[[], Awaitable[str | None]] | None = None,
     on_staging_progress: Callable[[float], Awaitable[None]] | None = None,
     timeout_label: str = "Job",
+    before_swap: Callable[[], Awaitable[str | None]] | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
@@ -269,9 +270,19 @@ async def run_staged_subprocess(
 
     before_staging: called once the subprocess has succeeded and every temp
     is verified present, but before anything on the destination is touched —
-    the only point at which the originals and the finished outputs both
+    the first point at which the originals and the finished outputs both
     exist.  Return None to continue, or an error string to abort the run with
     every original untouched.  See the call site for the full contract.
+
+    before_swap: called after every output has been copied to its staged
+    .part beside its destination, immediately before the swap — the last
+    point at which declining still leaves every original untouched. Same
+    contract as before_staging: None continues, an error string aborts and
+    removes every .part and temp. It exists because the copy is not short:
+    at the tens of MB/s a parity array stages at (see _STAGE_FLUSH_BYTES), a
+    large file takes minutes, and anything that has to be true of the
+    destination when it is overwritten has to be checked after that, not
+    before it.
 
     on_staging_progress: called with 0.0 when the copy to the destination
     starts, with the fraction of total bytes flushed to disk as it runs, and
@@ -382,12 +393,13 @@ async def run_staged_subprocess(
                 returncode=proc.returncode,
             )
 
-        # ── Last look at both versions of the file ─────────────────────────
-        # This is the only moment in the run where the ORIGINAL and the
+        # ── First look at both versions of the file ────────────────────────
+        # This is the first moment in the run where the ORIGINAL and the
         # finished OUTPUT both exist: the subprocess has succeeded, every
         # temp is verified present, and nothing on the destination has
-        # been touched yet. One line further down the originals start
-        # being overwritten and the pre-job state is gone.
+        # been touched yet. The staging copy below runs next, and the
+        # before_swap hook after it is the last such moment; past that the
+        # originals start being overwritten and the pre-job state is gone.
         #
         # That window is what the revert feature's capture needs — it
         # compares the two to work out what the job actually destroyed,
@@ -545,6 +557,24 @@ async def run_staged_subprocess(
             except Exception:
                 pass
             raise
+
+        # ── Last look, after the copy ──────────────────────────────────────
+        # Every .part is on the destination and flushed; nothing has been
+        # swapped. Declining here costs the copy and nothing else, and the
+        # cleanup is the same as a staging failure's. A hook that RAISES
+        # falls to the outer handler, as before_staging's does.
+        if before_swap is not None:
+            swap_error = await before_swap()
+            if swap_error:
+                for p in part_paths + [staged_part_path(o) for o in outputs]:
+                    cleanup_temp_file(p)
+                for o in outputs:
+                    cleanup_temp_file(o.temp_path)
+                return SubprocessRunResult(
+                    success=False,
+                    error=swap_error,
+                    returncode=proc.returncode,
+                )
 
         for o in outputs:
             os.replace(staged_part_path(o), o.final_path)
