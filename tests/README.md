@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1754 tests across 77 test files, plus 594 frontend tests under
+1759 tests across 78 test files, plus 594 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -51,7 +51,7 @@ has its own mutant and its own test.
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
-`test_background_tasks.py`. Four more follow one job through `worker.py` in
+`test_clean_shutdown.py`, `test_background_tasks.py`. Four more follow one job through `worker.py` in
 order: `test_worker_loop.py` on the pool that claims it and the three places a
 running job is tracked at once, `test_job_preflight.py` on the re-decision
 against current settings between queueing and execution,
@@ -205,8 +205,8 @@ The recurring shapes, so the next reader does not re-derive them:
   emergency-cleanup handler of last resort. The only assertion available is
   "it did not crash", which the surrounding tests already establish.
 - **Guards whose real caller is covered elsewhere.** The worker loop's
-  `CancelledError` break is reached through `stop_worker`, which has its own
-  tests; asserting it directly means cancelling a task mid-iteration to check
+  `CancelledError` break is reached through `stop_worker`, which
+  `test_clean_shutdown.py` drives; asserting it directly means cancelling a task mid-iteration to check
   that nothing escaped.
 - **Short-circuits whose only observable difference is on input nothing
   sends.** `broadcast_json` returns early when no client is connected. With an

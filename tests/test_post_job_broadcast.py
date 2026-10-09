@@ -132,6 +132,7 @@ def rig(monkeypatch):
         during_job=None,    # awaited inside the fake _run_job
         run_job_args=[],
         emergency=[],
+        requeued=[],
         arr=[],
         plex=[],
         email=[],
@@ -143,6 +144,10 @@ def rig(monkeypatch):
             await rig.during_job()
 
     monkeypatch.setattr(worker, "_run_job", fake_run_job)
+    # The re-queue after a cancellation is the one database write on the
+    # abort path. Left real, it reaches the shared SessionLocal; the clean
+    # stop it serves is driven against real rows in test_clean_shutdown.py.
+    monkeypatch.setattr(worker, "_requeue_cut_off_job", rig.requeued.append)
     monkeypatch.setattr(worker, "_load_post_job_data",   lambda job_id: rig.post_job)
     monkeypatch.setattr(worker, "_load_plex_notify_data", lambda job_id: rig.plex_data)
     monkeypatch.setattr(worker, "_load_email_notify_data", lambda job_id: rig.email_data)
@@ -296,6 +301,7 @@ def test_an_aborted_job_stays_cancelled_and_still_broadcasts(rig):
     run_and_abort(rig)
 
     assert [m["status"] for m in rig.ws.sent] == ["cancelled"]
+    assert rig.requeued == [1]
 
 
 # ── The stuck-at-processing safety net ───────────────────────────────────────

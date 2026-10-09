@@ -240,7 +240,32 @@ async def start_worker() -> None:
     logger.info("Background worker started (paused=%s)", _paused)
 
 
+# How long a clean stop waits for running jobs to wind down. Docker gives a
+# container ten seconds between SIGTERM and SIGKILL unless told otherwise, and
+# neither docker-compose.yml nor the Unraid template sets a longer stop
+# timeout, so this leaves room for the rest of the shutdown inside that.
+SHUTDOWN_JOB_GRACE_SECONDS = 8.0
+
+
 async def stop_worker() -> None:
+    """
+    Stop claiming jobs, and stop the ones running, so they can be re-run.
+
+    It used to stop only the claiming loop. Running jobs were then cancelled
+    by the event loop's own teardown after the lifespan had returned, found
+    still at "processing", and force-failed by the emergency net in
+    _run_and_broadcast — "Job did not complete cleanly (finalisation
+    failed)", counted towards the failure email. Every container update did
+    that to whatever was running.
+
+    Now each job task is cancelled here and waited for. A job cancelled
+    before it replaced anything goes back to "pending" (_run_and_broadcast,
+    _requeue_cut_off_job); one whose output was already swapped in finishes
+    its bookkeeping first (_run_job), so it is recorded as the success it
+    was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
+    kill, and recover_interrupted_jobs fails it on the next start, as a
+    crash is.
+    """
     # _worker_task is only READ here, never reassigned — no `global`
     # needed for it specifically (only _running, which IS reassigned
     # below, actually requires the declaration).
@@ -252,6 +277,19 @@ async def stop_worker() -> None:
             await _worker_task
         except asyncio.CancelledError:
             pass
+
+    jobs = [task for task in _active_task_registry.values() if not task.done()]
+    for task in jobs:
+        task.cancel()
+    if jobs:
+        _done, still_running = await asyncio.wait(
+            jobs, timeout=SHUTDOWN_JOB_GRACE_SECONDS)
+        if still_running:
+            logger.warning(
+                "%d job(s) still running after %.0f s; they will be marked "
+                "interrupted on the next start",
+                len(still_running), SHUTDOWN_JOB_GRACE_SECONDS,
+            )
     logger.info("Background worker stopped")
 
 
@@ -353,31 +391,43 @@ async def _run_and_broadcast(
     job_id: int, ws_manager, loop: asyncio.AbstractEventLoop
 ) -> None:
     """Wrap _run_job with the completed broadcast."""
+    cancelled = False
     try:
         await _run_job(job_id, ws_manager, loop)
     except asyncio.CancelledError:
-        # User abort: abort_job() marked the DB row "cancelled" and then
-        # called task.cancel(), which raised this here at _run_job's await
-        # point. We re-raise so the task still ends cancelled — the
+        # Two things cancel a job task, and they leave the row differently.
+        # abort_job() marks it "cancelled" before calling task.cancel();
+        # stop_worker() cancels it as the container shuts down and leaves
+        # it at "processing", which the finally below puts back in the
+        # queue. We re-raise so the task still ends cancelled — the
         # broadcast itself happens in the finally below, which runs to
         # completion even under cancellation (see the note there). This
-        # branch exists so an abort is explicit and logged rather than an
-        # unlabelled BaseException silently skipping past `except
+        # branch exists so a cancellation is explicit and logged rather
+        # than an unlabelled BaseException silently skipping past `except
         # Exception`.
-        logger.info("Job %d cancelled by user abort — finalising", job_id)
+        cancelled = True
+        logger.info("Job %d cancelled — finalising", job_id)
         raise
     except Exception:
         logger.exception("_run_job raised for job %d — attempting emergency cleanup", job_id)
     finally:
         # This block runs on EVERY exit path — normal return, exception,
         # and cancellation. It is safe under cancellation specifically
-        # because abort_job() issues a single task.cancel(): the resulting
-        # CancelledError is delivered once, at _run_job's await, so by the
-        # time control reaches here the cancellation is already consumed
-        # and the awaits below (executor calls + the broadcast) complete
-        # normally. That's what guarantees EVERY connected client gets the
-        # "cancelled" job_completed event, not just the one that clicked
-        # abort (which also re-fetches over REST). Verified empirically.
+        # because abort_job() and stop_worker() each issue a single
+        # task.cancel(): the resulting CancelledError is delivered once, at
+        # _run_job's await, so by the time control reaches here the
+        # cancellation is already consumed and the awaits below (executor
+        # calls + the broadcast) complete normally. That's what guarantees
+        # EVERY connected client gets the "cancelled" job_completed event,
+        # not just the one that clicked abort (which also re-fetches over
+        # REST). Verified empirically.
+        #
+        # A cancelled job still at "processing" was cut off by a shutdown
+        # (an abort has already marked its row). It goes back to the queue
+        # before anything below reads the row, so the emergency net does
+        # not take it for a job whose finalisation failed.
+        if cancelled:
+            await loop.run_in_executor(None, _requeue_cut_off_job, job_id)
         post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
         if post_job:
             final = post_job["final"]
@@ -1221,39 +1271,56 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return
 
     if result.success:
-        # If the container changed, delete the now-replaced original — but
-        # only if it is still the file this job read. Something can replace
-        # it in the moment between the swap and here, and that file is not
-        # this job's to delete.
-        if output_path != input_path and os.path.exists(input_path):
-            if _fingerprint(input_path) != source_print:
-                logger.warning(
-                    "Job %d: not removing %s after the container change — "
-                    "it changed while the job ran and is not the file the "
-                    "job converted", job_id, input_path,
+        def complete() -> None:
+            # If the container changed, delete the now-replaced original —
+            # but only if it is still the file this job read. Something can
+            # replace it in the moment between the swap and here, and that
+            # file is not this job's to delete.
+            if output_path != input_path and os.path.exists(input_path):
+                if _fingerprint(input_path) != source_print:
+                    logger.warning(
+                        "Job %d: not removing %s after the container change — "
+                        "it changed while the job ran and is not the file the "
+                        "job converted", job_id, input_path,
+                    )
+                else:
+                    try:
+                        os.remove(input_path)
+                        logger.info("Removed original after container change: %s", input_path)
+                    except OSError as exc:
+                        logger.warning("Could not remove original %s: %s", input_path, exc)
+
+            # Recorded BEFORE the job is marked finished. The swap has
+            # already happened by this point, so the sidecar genuinely
+            # describes what is now on disk; writing the row first means a
+            # crash in between leaves a usable revert point and a job that
+            # recover_interrupted_jobs will sort out, rather than a sidecar
+            # on the volume that nothing references and nothing will ever
+            # collect.
+            if captured:
+                _record_revert_point(
+                    file_dict["id"], captured[0], result.output_path, will_create,
                 )
-            else:
-                try:
-                    os.remove(input_path)
-                    logger.info("Removed original after container change: %s", input_path)
-                except OSError as exc:
-                    logger.warning("Could not remove original %s: %s", input_path, exc)
 
-        # Recorded BEFORE the job is marked finished. The swap has already
-        # happened by this point, so the sidecar genuinely describes what is
-        # now on disk; writing the row first means a crash in between leaves
-        # a usable revert point and a job that recover_interrupted_jobs will
-        # sort out, rather than a sidecar on the volume that nothing
-        # references and nothing will ever collect.
-        if captured:
-            await loop.run_in_executor(
-                None, _record_revert_point,
-                file_dict["id"], captured[0], result.output_path, will_create,
-            )
+            _finish_job(job_id, True, result.output_path, result.output_size, None)
 
-        await loop.run_in_executor(
-            None, _finish_job, job_id, True, result.output_path, result.output_size, None
-        )
+        # One executor call that a cancellation does not interrupt. The
+        # output is already in place, so this job has to be recorded as the
+        # success it is: stop_worker cancels running jobs on a clean stop,
+        # and a job cut off here, between the swap and _finish_job, would
+        # otherwise be left at "processing" and put back in the queue —
+        # to be re-run against a file it had already converted, whose
+        # original may now be gone. On cancellation the bookkeeping is
+        # waited for and the cancellation then let through, so a job
+        # still at "processing" when one arrives never replaced anything.
+        # The same shield-then-await shape as the staging copy in
+        # run_staged_subprocess.
+        tail = asyncio.ensure_future(loop.run_in_executor(None, complete))
+        try:
+            await asyncio.shield(tail)
+        except asyncio.CancelledError:
+            await tail
+            raise
     else:
         # The main remux failed AFTER subtitles were already extracted to
         # disk. Leave the extracted .srt files in place — they're valid,
@@ -1906,6 +1973,29 @@ def _fingerprint(path: str) -> tuple[int, float] | None:
     except OSError:
         return None
     return stat.st_size, stat.st_mtime
+
+
+def _requeue_cut_off_job(job_id: int) -> None:
+    """
+    Put a job a shutdown cut off back in the queue, as though never claimed.
+
+    Only a row still at "processing": an aborted job is "cancelled" already
+    and stays so, and one that finished before the cancellation reached it
+    keeps its outcome. _run_job finishes its bookkeeping before letting a
+    cancellation through once the output has been swapped in, so a job
+    still at "processing" here never replaced anything, and running it
+    again from the start is safe.
+    """
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "pending"
+        job.started_at     = None
+        job.progress       = 0.0
+        job.current_action = None
+        db.commit()
+        logger.info("Job %d was cut off by shutdown — back in the queue", job_id)
 
 
 def _cancel_for_changed_source(job_id: int, reason: str) -> None:
