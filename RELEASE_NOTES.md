@@ -67,3 +67,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Changed
 
 - Trailers, featurettes and other extras named the way Plex or Jellyfin expect, and the copies Plex's Optimize writes to a Plex Versions folder, are now skipped. This is a new setting beside Exclude Patterns, Skip Trailers and Extras, which is on unless you turn it off. Any already in Remuxarr are removed from it at the next scan, along with their waiting jobs and reviews; the files themselves are not touched. A scan that excludes any files now says how many in its summary.
+
+## Fixed
+
+- A file Sonarr or Radarr sends in the ten seconds (by default) before Remuxarr stops or restarts is no longer lost. Webhooks are now recorded as they arrive, and any not yet queued when the container stops are queued when it starts again, with their Sonarr or Radarr ID. Before, such a file waited for a library scan, if you have them scheduled, and was then processed without the ID, so Sonarr or Radarr was not told when it finished.

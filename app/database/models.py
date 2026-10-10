@@ -446,6 +446,37 @@ class NotificationState(Base):
     breaker_tripped       = Column(Boolean, default=False)
 
 
+class WebhookIntake(Base):
+    """
+    A file a Sonarr or Radarr webhook asked for that has not been queued yet.
+
+    The webhook is answered at once and the file queued after a debounce
+    (WEBHOOK_DEBOUNCE_SECONDS), held until then by an in-memory timer. This
+    row is that timer's record on disk: written before the webhook is
+    answered, deleted once the queue attempt has run, and replayed on the
+    next start if the container stopped in between. See
+    app/api/routes/webhooks.py.
+
+    One row per path. A second event for the same file replaces the row, so
+    the newest IDs win and the row id changes; each timer deletes only the
+    row it was armed with. There is no file_id: the file may have no record
+    until it is queued.
+
+    AUTOINCREMENT is what makes "the row id changes" true. Without it SQLite
+    hands out one more than the largest id currently in the table, so
+    replacing the only row gives the new one the old one's id, and the first
+    timer's late delete removes the second event's row.
+    """
+    __tablename__ = "webhook_intake"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id               = Column(Integer, primary_key=True)
+    path             = Column(String, nullable=False, unique=True)
+    sonarr_series_id = Column(Integer, nullable=True)
+    radarr_movie_id  = Column(Integer, nullable=True)
+    received_at      = Column(DateTime, default=utcnow)
+
+
 class AudioLanguageFlag(Base):
     """
     One row per file whose kept audio track has a DEFINED but non-preferred
