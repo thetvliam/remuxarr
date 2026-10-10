@@ -4,6 +4,9 @@ Library Scanner
 scan_library()      — walk one or more directories, detect new/changed files
 queue_single_file() — probe + enqueue a single path (called by webhook handler)
 
+Files the exclude settings match (app/core/exclude.py) are passed over by
+both, and remove_excluded_files() drops any record already held for one.
+
 Delta scan logic
 ----------------
 For each media file found on disk:
@@ -24,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
 from app.core.decision import analyze_file
+from app.core.exclude import ExcludeRules
 from app.core.probe import (
     ProbeError,
     extract_format_info,
@@ -50,7 +54,8 @@ class ScanStats:
     manual_review: int = 0
     skipped:       int = 0
     errors:        int = 0
-    removed:       int = 0   # files removed from DB because they no longer exist on disk
+    removed:       int = 0   # records removed: file gone from disk, or now excluded
+    excluded:      int = 0   # files the exclude settings passed over this scan
     cancelled:     bool = False   # True if the scan was stopped early by the user
 
 
@@ -138,6 +143,7 @@ def scan_library(
     app_cfg  = get_app_settings(db)
     dry_run  = app_cfg.get("dry_run_mode", False)
     scan_label = "full" if force_probe else "delta"
+    rules    = ExcludeRules.from_settings(app_cfg, paths)
 
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))
 
@@ -148,7 +154,10 @@ def scan_library(
         if not os.path.isdir(scan_path):
             continue
         for _root, _dirs, files in _walk_media_dirs(scan_path):
-            total_files += sum(1 for f in files if is_media_file(f))
+            total_files += sum(
+                1 for f in files
+                if is_media_file(f) and not rules.excludes(os.path.join(_root, f))
+            )
 
     scanned   = 0
     cancelled = False
@@ -170,6 +179,12 @@ def scan_library(
                     continue
 
                 full_path = os.path.join(root, filename)
+                why = rules.reason(full_path)
+                if why:
+                    stats.excluded += 1
+                    logger.debug("Excluded (%s): %s", why, full_path)
+                    continue
+
                 stats.total += 1
                 scanned += 1
 
@@ -208,13 +223,20 @@ def scan_library(
     if not cancelled and app_cfg.get("auto_cleanup_on_scan", True):
         stats.removed = cleanup_deleted_files(db, [p for p in paths if os.path.isdir(p)])
 
+    # Not gated on auto_cleanup_on_scan. That setting is there for a share
+    # that is not mounted, where a missing file proves nothing; an excluded
+    # file is one the user asked Remuxarr to leave alone, wherever it is.
+    if not cancelled:
+        stats.removed += remove_excluded_files(
+            db, [p for p in paths if os.path.isdir(p)], rules)
+
     logger.info(
         "Scan %s — total=%d new=%d changed=%d unchanged=%d "
-        "queued=%d review=%d skipped=%d errors=%d removed=%d",
+        "queued=%d review=%d skipped=%d errors=%d removed=%d excluded=%d",
         "cancelled by user" if cancelled else "done",
         stats.total, stats.new, stats.changed, stats.unchanged,
         stats.queued, stats.manual_review, stats.skipped, stats.errors,
-        stats.removed,
+        stats.removed, stats.excluded,
     )
     return stats
 
@@ -229,8 +251,15 @@ def queue_single_file(
     Probe and (re-)queue a single file immediately.
     Used by the webhook handler after debounce expires.
     Returns the new QueueItem or None if the file was skipped.
+
+    A file the exclude settings match is not probed or queued. A record
+    already held for it is left to the next scan's remove_excluded_files.
     """
     app_cfg = get_app_settings(db)
+    why = ExcludeRules.from_settings(app_cfg).reason(path)
+    if why:
+        logger.info("Not queuing %s: excluded (%s)", path, why)
+        return None
     dry_run = app_cfg.get("dry_run_mode", False)
     stats   = ScanStats()
 
@@ -565,6 +594,55 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
                 and os.path.exists(flag.extracted_path)):
             continue
         db.delete(flag)
+
+
+def remove_excluded_files(db: Session, scan_paths: list[str], rules: ExcludeRules) -> int:
+    """
+    Remove the records of files the exclude settings now match.
+
+    Done the way cleanup_deleted_files removes a file that has left the
+    disk: through _delete_media_file_and_related, so a waiting job and any
+    review go with the record and a revert point is detached rather than
+    deleted. A file whose job is running is left until a later scan, for
+    the same reason cleanup leaves one. The files themselves are not
+    touched. Scoped to scan_paths, as cleanup is.
+
+    Returns the number of records removed.
+    """
+    if not scan_paths:
+        return 0
+    prefixes = tuple(p if p.endswith(os.sep) else p + os.sep for p in scan_paths)
+
+    removed = 0
+    for media in db.query(MediaFile).all():
+        if not media.path.startswith(prefixes) or not rules.excludes(media.path):
+            continue
+        # Read afresh before acting, as cleanup_deleted_files does and for
+        # its reason: a job may have renamed the file and updated this row
+        # since this session first read it.
+        try:
+            db.refresh(media)
+        except InvalidRequestError:
+            continue
+        if not rules.excludes(media.path):
+            continue
+        processing = (
+            db.query(QueueItem)
+            .filter(QueueItem.file_id == media.id, QueueItem.status == "processing")
+            .first()
+        )
+        if processing:
+            logger.debug("Exclude: skipping %s — job %d is still processing",
+                         media.path, processing.id)
+            continue
+        logger.info("Exclude: removing %s from the database", media.path)
+        _delete_media_file_and_related(db, media)
+        removed += 1
+
+    if removed:
+        db.commit()
+        logger.info("Exclude: removed %d excluded file(s) from the database", removed)
+    return removed
 
 
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:

@@ -20,7 +20,7 @@ file_queued          { file_path, queue_item_id, reason }
 scan_started         { }
 scan_progress        { scanned, total }
 scan_completed       { queued, manual_review, errors, total, removed,
-                       cancelled }
+                       cancelled, excluded }
 cleanup_completed    { removed }
 revert_complete      { point_id, success, error, restored_path }
                        — restored_path is absent on the exception path

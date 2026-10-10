@@ -332,6 +332,8 @@ KNOWN_KEYS = {
     "prefer_mp4_container",
     "dry_run_mode",
     "scan_paths",
+    "skip_extras",
+    "exclude_patterns",
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
     "image_subtitle_handling",
@@ -398,6 +400,35 @@ SETTINGS_SCHEMA = [
         "type":        "string_list",
         "placeholder": "/media/tv",
         "description": "Absolute paths to scan for media files.",
+    },
+    {
+        "key":         "skip_extras",
+        "group":       "Library",
+        "label":       "Skip Trailers and Extras",
+        "type":        "boolean",
+        "description": "Leave alone trailers, featurettes and other extras "
+                       "named the way Plex or Jellyfin expect (a Trailers or "
+                       "Featurettes folder inside a movie or show folder, or "
+                       "a name ending in -trailer, -featurette, -sample and "
+                       "so on), and the copies Plex's Optimize writes to a "
+                       "Plex Versions folder. Ones already in Remuxarr are "
+                       "removed from it at the next scan; the files "
+                       "themselves are not touched.",
+    },
+    {
+        "key":         "exclude_patterns",
+        "group":       "Library",
+        "label":       "Exclude Patterns",
+        "type":        "string_list",
+        "placeholder": "Anime or Movies/4K",
+        "description": "Files and folders to leave alone. Without a /, a "
+                       "pattern matches a file or folder name anywhere in "
+                       "your libraries (Anime, *-sample.mkv). With a /, it "
+                       "is a path from the library path (Movies/4K) and "
+                       "covers everything inside it. * and ? are wildcards, "
+                       "and case is ignored. Files already in Remuxarr that "
+                       "a pattern matches are removed from it at the next "
+                       "scan; the files themselves are not touched.",
     },
     {
         "key":         "prefer_mp4_container",
