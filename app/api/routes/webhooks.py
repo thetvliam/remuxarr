@@ -37,6 +37,28 @@ Radarr : Download, Rename  (Test returns 200 immediately)
 A Rename also moves each renamed file's record from its old name to its
 new one before anything is queued — see _move_renamed and
 scanner.move_renamed_file.
+
+Surviving a stop
+----------------
+The timer lives in memory, and the webhook has already been answered
+"accepted" when it starts. A stop or a crash before it fired used to lose
+the file: Sonarr or Radarr had nothing to resend, and the file waited for a
+scan, if one was scheduled at all, which has no IDs to give it. So each translated path is also written to webhook_intake before
+the webhook is answered, and the row is deleted once the queue attempt has
+run (_queue_sync), whatever its outcome. A row still there at the next
+start is replayed through the same debounce with the IDs it was stored
+with (replay_webhook_intake, called from main.lifespan).
+
+Each timer carries the id of the row it was armed with and deletes only
+that row. A second event for the same file replaces the row before it
+cancels the first timer, so a first attempt already running in a thread
+when the second event arrives cannot delete the newer row. A cancelled
+timer deletes nothing: on a debounce reset the newer row has replaced its
+own, and on a stop the row is what the next start needs.
+
+If the row cannot be written, the timer is armed anyway, which is how
+every webhook behaved before this existed. The webhook is not failed for
+it.
 """
 import asyncio
 import logging
@@ -47,6 +69,7 @@ from app.api.ws_manager import ws_manager
 from app.config import settings
 from app.core.scanner import move_renamed_file, queue_single_file
 from app.core.pathmap import translate_path
+from app.database.models import WebhookIntake
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -185,20 +208,103 @@ async def _debounce_all(
         path = await loop.run_in_executor(
             None, _resolve_translated_path_sync, raw_path, series_id, radarr_movie_id,
         )
-        async with _lock:
-            if path in _pending:
-                _pending[path].cancel()
-                logger.debug("Debounce reset: %s", path)
-            task = asyncio.create_task(
-                _delayed_queue(path, series_id, radarr_movie_id)
-            )
-            _pending[path] = task
+        # Written before the timer is armed and before the webhook is
+        # answered, so "accepted" means it is on disk. See the module
+        # docstring, "Surviving a stop".
+        intake_id = await loop.run_in_executor(
+            None, _remember_sync, path, series_id, radarr_movie_id,
+        )
+        await _arm(path, series_id, radarr_movie_id, intake_id)
+
+
+async def _arm(
+    path: str,
+    series_id:       int | None,
+    radarr_movie_id: int | None,
+    intake_id:       int | None,
+) -> None:
+    """Start the debounce timer for an already-translated path."""
+    async with _lock:
+        if path in _pending:
+            _pending[path].cancel()
+            logger.debug("Debounce reset: %s", path)
+        task = asyncio.create_task(
+            _delayed_queue(path, series_id, radarr_movie_id, intake_id)
+        )
+        _pending[path] = task
+
+
+async def replay_webhook_intake() -> None:
+    """
+    Re-arm every webhook the last run accepted but never queued.
+
+    Called from main.lifespan on start. Each row goes back through the
+    normal debounce with the IDs it was stored with, so an event for the
+    same file arriving just after the start still collapses into it. A
+    file that was queued just before the stop is handled as a second
+    webhook for it would be: a job still waiting only has its IDs
+    refreshed (scanner._process_file).
+    """
+    loop = asyncio.get_running_loop()
+    rows = await loop.run_in_executor(None, _intake_rows_sync)
+    for intake_id, path, series_id, radarr_movie_id in rows:
+        logger.info("Replaying a webhook received before the last stop: %s", path)
+        await _arm(path, series_id, radarr_movie_id, intake_id)
+
+
+def _remember_sync(
+    path: str,
+    series_id:       int | None,
+    radarr_movie_id: int | None,
+) -> int | None:
+    """Record the path, replacing any earlier row for it. Returns the row id."""
+    db = SessionLocal()
+    try:
+        db.query(WebhookIntake).filter(WebhookIntake.path == path).delete()
+        row = WebhookIntake(path=path, sonarr_series_id=series_id,
+                            radarr_movie_id=radarr_movie_id)
+        db.add(row)
+        db.commit()
+        return row.id
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Could not record the webhook for %s. It will still be queued, "
+            "but not if Remuxarr stops before then.", path, exc_info=True,
+        )
+        return None
+    finally:
+        db.close()
+
+
+def _forget_sync(intake_id: int) -> None:
+    """Delete one intake row by id; a newer row for the same path stays."""
+    db = SessionLocal()
+    try:
+        db.query(WebhookIntake).filter(WebhookIntake.id == intake_id).delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("Could not clear the webhook record %d", intake_id,
+                       exc_info=True)
+    finally:
+        db.close()
+
+
+def _intake_rows_sync() -> list[tuple]:
+    db = SessionLocal()
+    try:
+        return [(row.id, row.path, row.sonarr_series_id, row.radarr_movie_id)
+                for row in db.query(WebhookIntake).order_by(WebhookIntake.id)]
+    finally:
+        db.close()
 
 
 async def _delayed_queue(
     path: str,
     series_id:      int | None = None,
     radarr_movie_id: int | None = None,
+    intake_id:      int | None = None,
 ) -> None:
     """
     Wait debounce_seconds, then probe-and-queue the file.
@@ -211,7 +317,7 @@ async def _delayed_queue(
 
         loop = asyncio.get_running_loop()
         qi   = await loop.run_in_executor(
-            None, _queue_sync, path, series_id, radarr_movie_id
+            None, _queue_sync, path, series_id, radarr_movie_id, intake_id
         )
 
         if qi:
@@ -225,7 +331,9 @@ async def _delayed_queue(
             logger.info("File skipped (no changes needed): %s", path)
 
     except asyncio.CancelledError:
-        pass   # debounce was reset — do nothing
+        # A debounce reset or a stop. The intake row is left alone either
+        # way: a reset has already replaced it, and a stop needs it.
+        pass
     finally:
         async with _lock:
             # Only remove the entry if it's still THIS task. cancel() is
@@ -248,10 +356,16 @@ def _queue_sync(
     path: str,
     series_id:      int | None = None,
     radarr_movie_id: int | None = None,
+    intake_id:      int | None = None,
 ):
     """
     Synchronous wrapper for thread-pool execution.
     `path` is already translated by the time this runs — see _debounce_all.
+
+    The intake row is deleted here, in the thread, once the attempt has
+    run, whatever came of it. A failure is logged and not retried, as it
+    was before the row existed; keeping it would retry the same failure at
+    every start.
     """
     db = SessionLocal()
     try:
@@ -265,6 +379,8 @@ def _queue_sync(
         return None
     finally:
         db.close()
+        if intake_id is not None:
+            _forget_sync(intake_id)
 
 
 # ── Payload parsers ────────────────────────────────────────────────────────────

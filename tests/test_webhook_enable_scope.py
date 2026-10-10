@@ -53,8 +53,13 @@ def queued(monkeypatch):
     monkeypatch.setattr(app_settings, "WEBHOOK_DEBOUNCE_SECONDS", 0.01)
     monkeypatch.setattr(
         webhooks, "_queue_sync",
-        lambda path, series_id=None, radarr_movie_id=None: calls.append(path),
+        lambda path, series_id=None, radarr_movie_id=None, intake_id=None:
+            calls.append(path),
     )
+    # The intake record is written on arrival through the module's own
+    # SessionLocal. Left real, it reaches the shared database; whether it is
+    # written at all is test_webhook_intake.py's question, not this one.
+    monkeypatch.setattr(webhooks, "_remember_sync", lambda *_args: None)
     # Path translation reads settings from the database; the prefixes are
     # empty in every configuration this test cares about, so short-circuit it
     # and keep the test to the one question it is asking.

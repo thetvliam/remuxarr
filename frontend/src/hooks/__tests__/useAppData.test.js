@@ -998,3 +998,36 @@ describe("useAppData — the Review badge count", () => {
     expect(result.current.reviewBadgeCount).toBe(2);
   });
 });
+
+
+/* ── scan_completed toast ────────────────────────────────────────────────── */
+
+/**
+ * The scan summary is the one place a user sees the exclude settings at
+ * work: a file they excluded is not probed, queued or listed anywhere, so
+ * without the count there is no sign the rule matched anything, or that it
+ * matched too much. Shown only when there is something to count, like
+ * "removed" beside it.
+ */
+describe("useAppData — scan_completed toast", () => {
+  const summary = { event: "scan_completed", queued: 1, manual_review: 0,
+    errors: 0, total: 1, removed: 0, cancelled: false };
+
+  it("counts the files the exclude settings passed over", () => {
+    const { result } = renderHook(() => useAppData());
+
+    act(() => { ws.onMessage({ ...summary, excluded: 3 }); });
+
+    expect(result.current.toasts.at(-1).msg).toBe(
+      "Scan complete — 1 queued, 0 review, 0 errors, 3 excluded");
+  });
+
+  it("says nothing about exclusions when there were none", () => {
+    const { result } = renderHook(() => useAppData());
+
+    act(() => { ws.onMessage({ ...summary, excluded: 0 }); });
+
+    expect(result.current.toasts.at(-1).msg).toBe(
+      "Scan complete — 1 queued, 0 review, 0 errors");
+  });
+});

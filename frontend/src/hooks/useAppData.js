@@ -643,7 +643,8 @@ export function useAppData() {
             toast(
               (msg.cancelled ? "Scan stopped — " : "Scan complete — ") +
               `${msg.queued} queued, ${msg.manual_review} review, ${msg.errors} errors` +
-              (msg.removed ? `, ${msg.removed} removed` : ""),
+              (msg.removed ? `, ${msg.removed} removed` : "") +
+              (msg.excluded ? `, ${msg.excluded} excluded` : ""),
                   "notice",
             );
             fetchAll();

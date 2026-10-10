@@ -44,6 +44,11 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "dry_run_mode": True,
     # Directories to scan (populated via UI or env)
     "scan_paths": [],
+    # Files to leave alone (app/core/exclude.py). skip_extras is on by
+    # default, and an upgrading install gets it on too, since _seed_defaults
+    # adds a missing key with its default.
+    "skip_extras":      True,
+    "exclude_patterns": [],
     # How many "und" audio tracks trigger a manual-review flag
     "und_audio_threshold": 2,
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to

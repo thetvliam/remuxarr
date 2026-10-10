@@ -146,6 +146,8 @@ async def lifespan(app: FastAPI):
     init_db()
     _cleanup_orphaned_temp_files()
     await start_worker()
+    # Webhooks accepted before the last stop but never queued.
+    await webhooks.replay_webhook_intake()
     from app.api.ws_manager import ws_manager
     _spawn(run_scheduler(ws_manager), name="remuxarr-scheduler")
     _spawn(run_plex_backlog_drain(), name="remuxarr-plex-backlog-drain")

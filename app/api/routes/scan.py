@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.ws_manager import ws_manager, broadcast_threadsafe
+from app.core.exclude import ExcludeRules
 from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files, find_orphaned_media_files, remove_orphaned_media_files
 from app.core.worker import pause_worker
 from app.database.session import SessionLocal, get_app_settings, get_db
@@ -165,6 +166,15 @@ def _scan_file_sync(path: str):
         db.close()
 
 
+def _excluded_sync(path: str) -> str | None:
+    """Why the exclude settings pass over path, or None. See app/core/exclude.py."""
+    db = SessionLocal()
+    try:
+        return ExcludeRules.from_settings(get_app_settings(db)).reason(path)
+    finally:
+        db.close()
+
+
 @router.post("/file")
 async def scan_file(body: FileScanRequest):
     """
@@ -180,6 +190,9 @@ async def scan_file(body: FileScanRequest):
         raise HTTPException(400, f"File not found: {body.path}")
 
     loop = asyncio.get_running_loop()
+    why = await loop.run_in_executor(None, _excluded_sync, body.path)
+    if why:
+        return {"queued": False, "reason": f"Excluded by your exclude settings ({why})"}
     qi = await loop.run_in_executor(None, _scan_file_sync, body.path)
     if qi:
         await ws_manager.broadcast_json({
@@ -423,6 +436,7 @@ def _run_scan(
             "total":         stats.total,
             "removed":       stats.removed,
             "cancelled":     stats.cancelled,
+            "excluded":      stats.excluded,
         })
     except Exception:
         logger.exception("Scan failed")

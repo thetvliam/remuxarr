@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1759 tests across 78 test files, plus 594 frontend tests under
+1834 tests across 81 test files, plus 596 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -22,7 +22,8 @@ see each docstring.
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
-`test_settings_schema.py`, `test_backup_restore.py`. Real SQLite, real
+`test_settings_schema.py`, `test_backup_restore.py`,
+`test_exclude_rules.py`, `test_exclude_scan.py`. Real SQLite, real
 temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
@@ -47,6 +48,12 @@ their own session rather than carry a request-scoped one across a thread
 boundary. Three copies of one rule, and the incident behind it is that the
 fix was applied to one and missed in another four routes down — so each copy
 has its own mutant and its own test.
+`test_exclude_rules.py` runs the exclude settings against a real folder tree,
+since whether a folder named Extras or Shorts is an extras folder depends on
+what is around it: the sitcom Extras and a flat folder of short films are the
+two libraries the folder rule is shaped around. `test_exclude_scan.py` follows
+a match through a scan, a webhook and the single-file endpoint, including the
+records of files a new rule excludes, which go at the next completed scan.
 
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
@@ -82,7 +89,8 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
-`test_rename_tracking.py`, `test_arr_client.py`, `test_arr_notifications.py`,
+`test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,
+`test_arr_notifications.py`,
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
 `test_email_notify.py`, `test_post_job_notify.py`.
 `test_arr_quality_restore.py` covers putting a file's quality back after a

@@ -115,6 +115,7 @@ This application was generated entirely using Claude. I acted as the architect, 
 ## Features
 
 - **Automatic library scanning** - full probe on first sight, fast delta (size/mtime) scans afterward.
+- **Leaves extras alone** - trailers, featurettes and other extras named the way Plex or Jellyfin expect, and Plex's optimised versions, are skipped by default, and your own exclude patterns keep Remuxarr away from any other folder or file.
 - **Sonarr / Radarr webhook integration** - reacts to imports and upgrades directly, with automatic path translation between how each *arr sees files and how Remuxarr does.
 - **Plex integration** - refreshes affected library sections after every job. A separate, opt-in backlog can additionally verify Plex's own metadata and force an explicit re-analyze on the rare files Plex's own maintenance misses - most installs won't need this turned on; see Settings → Integrations → Plex Analyze Backlog for why.
 - **AC3 Forge** - AAC 5.1 → AC3 for older receivers, on files you pick, with an undo. Separate from the main pipeline and never automatic; see Screenshots above.
@@ -252,7 +253,7 @@ The bundled `docker-compose.yml` builds the image locally rather than pulling it
 
 Everything from here happens in the web UI, not in any config file:
 
-1. Go to **Settings → Library & Processing → Library** and set your scan paths - this is empty on a fresh install, deliberately, so nothing happens until you point it at your actual library. Use the container-side paths (e.g. `/media/movies`, `/media/tv`), not your host paths.
+1. Go to **Settings → Library & Processing → Library** and set your scan paths - this is empty on a fresh install, deliberately, so nothing happens until you point it at your actual library. Use the container-side paths (e.g. `/media/movies`, `/media/tv`), not your host paths. Trailers and other extras are skipped by default; anything else Remuxarr should leave alone goes in **Exclude Patterns** on the same page.
 2. If you keep audio/subtitles in a language other than English, set that in **Settings → Library & Processing → Audio / Subtitles** - both default to English.
 3. Trigger a scan. **Dry run is on by default** - this first scan shows you exactly what would happen to every file, without touching anything.
 4. Review the **Dry Run** tab. Once the planned actions look right, turn dry run off in **Settings → Worker** - real processing begins from here.

@@ -70,6 +70,10 @@ def test_scan_file_runs_blocking_work_off_the_event_loop(tmp_path, monkeypatch):
     # _scan_file_sync calls queue_single_file as a module global; patch it there.
     monkeypatch.setattr(scan, "queue_single_file", fake_queue_single_file)
     monkeypatch.setattr(scan.ws_manager, "broadcast_json", fake_broadcast)
+    # The exclude check reads settings through the module's SessionLocal.
+    # Left real, it reaches the shared database; whether it excludes is
+    # test_exclude_scan.py's question.
+    monkeypatch.setattr(scan, "_excluded_sync", lambda path: None)
 
     async def run():
         result = await scan.scan_file(SimpleNamespace(path=str(real_file)))
@@ -97,6 +101,7 @@ def test_scan_file_reports_not_queued_when_nothing_to_do(tmp_path, monkeypatch):
     seen = {}
 
     monkeypatch.setattr(scan, "queue_single_file", lambda db, path: None)
+    monkeypatch.setattr(scan, "_excluded_sync", lambda path: None)
 
     async def fake_broadcast(payload):
         seen["broadcast"] = True

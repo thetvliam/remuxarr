@@ -60,10 +60,14 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Added
+
+- Exclude Patterns, in Settings → Library & Processing → Library: files and folders Remuxarr should leave alone. A pattern without a / matches a file or folder name anywhere in your libraries (Anime, *-sample.mkv); one with a / is a path from the library path (Movies/4K) and covers everything in it. * and ? are wildcards and case is ignored.
+
+## Changed
+
+- Trailers, featurettes and other extras named the way Plex or Jellyfin expect, and the copies Plex's Optimize writes to a Plex Versions folder, are now skipped. This is a new setting beside Exclude Patterns, Skip Trailers and Extras, which is on unless you turn it off. Any already in Remuxarr are removed from it at the next scan, along with their waiting jobs and reviews; the files themselves are not touched. A scan that excludes any files now says how many in its summary.
+
 ## Fixed
 
-- The Job Timeout setting now also applies to files whose only work is extracting subtitles to SRT. A hung extraction there used to hold its worker slot until you pressed Abort or restarted the container; it now fails at the timeout like any other FFmpeg run.
-- Sonarr and Radarr are now told about a processed file in two cases that used to miss them: when a library scan had already queued the file before the import webhook arrived, and when a file that needed nothing on import was processed later (after a settings change, for example). Before, those jobs finished without asking the service to rescan, so if Remuxarr changed the file's container (.mkv to .mp4, say), Sonarr or Radarr was left holding the old file name.
-- If Sonarr or Radarr upgrades, renames or deletes a file while Remuxarr is processing it, the job now stops without writing anything, shows as cancelled (not failed, and not counted towards failure emails), and whatever is at that path is checked again. Before, the job reported success after overwriting the upgrade (or deleting it, during an MKV-to-MP4 conversion), writing a deleted file back, or leaving a renamed file under both names. A file that disappears while still waiting in the queue is now cancelled the same way instead of failing with "File not found on disk"; if its folder has disappeared too, it still fails, since that can mean a share or array is not mounted.
-- When Sonarr or Radarr renames a file, Remuxarr now moves the file's record to the new name instead of starting a new one. Its review answers, history and revert point stay with it, and a job waiting on it runs instead of failing with "File not found on disk". This needs the Rename trigger on the webhook; renames made any other way behave as before.
-- Stopping or updating the container while a file is being processed no longer turns that job into a failure ("Job did not complete cleanly") that counted towards failure emails. The job goes back in the queue and runs again when the container starts. If the job had already replaced the file, it is recorded as the success it was. A crash or a forced kill is handled as before: the job is marked as interrupted.
+- A file Sonarr or Radarr sends in the ten seconds (by default) before Remuxarr stops or restarts is no longer lost. Webhooks are now recorded as they arrive, and any not yet queued when the container stops are queued when it starts again, with their Sonarr or Radarr ID. Before, such a file waited for a library scan, if you have them scheduled, and was then processed without the ID, so Sonarr or Radarr was not told when it finished.
