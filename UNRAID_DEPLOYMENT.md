@@ -93,9 +93,16 @@ in the web UI, not in Unraid itself.
 5. Review the **Dry Run** tab. Once the planned actions look right, turn
    dry run off in **Settings → Worker** — from here on, real processing
    begins.
-6. Everything else — Sonarr/Radarr webhooks, Plex integration, email
-   notifications — is off until you provide real connection details in
-   Settings. Nothing is assumed enabled.
+6. Plex, email notifications and the Sonarr/Radarr rescan are off until
+   you provide real connection details in Settings. Nothing is assumed
+   enabled.
+7. To have Sonarr and Radarr send each import to Remuxarr as it happens,
+   add a **Webhook** in each, under **Settings → Connect**. The URLs are
+   `http://<your-unraid-ip>:9191/api/webhooks/sonarr` and
+   `http://<your-unraid-ip>:9191/api/webhooks/radarr` (with the port you
+   set above), and the triggers to tick are **On File Import**, **On File
+   Upgrade** and **On Rename**. The README's *Connecting Sonarr and Radarr*
+   section covers path prefixes and the rest.
 
 ## Updating
 

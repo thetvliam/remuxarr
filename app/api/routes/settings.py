@@ -837,7 +837,11 @@ SETTINGS_SCHEMA = [
                        "so Sonarr re-discovers the file at its new path or "
                        "extension. Incoming webhooks are accepted whatever "
                        "this is set to — to stop Remuxarr acting on them, "
-                       "remove the webhook in Sonarr itself.",
+                       "remove the webhook in Sonarr itself. To send imports "
+                       "here, add a Webhook in Sonarr → Settings → Connect "
+                       "with the URL http://<this server>:<port>"
+                       "/api/webhooks/sonarr and On File Import, On File "
+                       "Upgrade and On Rename ticked.",
     },
     {
         "key":         "sonarr_url",
@@ -887,7 +891,11 @@ SETTINGS_SCHEMA = [
                        "so Radarr re-discovers the file at its new path or "
                        "extension. Incoming webhooks are accepted whatever "
                        "this is set to — to stop Remuxarr acting on them, "
-                       "remove the webhook in Radarr itself.",
+                       "remove the webhook in Radarr itself. To send imports "
+                       "here, add a Webhook in Radarr → Settings → Connect "
+                       "with the URL http://<this server>:<port>"
+                       "/api/webhooks/radarr and On File Import, On File "
+                       "Upgrade and On Rename ticked.",
     },
     {
         "key":         "radarr_url",

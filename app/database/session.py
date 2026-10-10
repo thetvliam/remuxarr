@@ -180,11 +180,11 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "scheduled_scan_enabled": False,  # run library scans automatically
     "scheduled_scan_times":   [],     # list of "HH:MM" times in 24-hour format
     # ── Sonarr integration ─────────────────────────────────────────────────
-    # When enabled, Remuxarr accepts On Import / On Upgrade webhooks from
-    # Sonarr and — after a job completes — calls Sonarr's RescanSeries so
-    # Sonarr picks up the processed file. RenameFiles is NOT called (it was
-    # in an earlier version — see sonarr.py's own module docstring for why
-    # it was removed).
+    # When enabled, Remuxarr calls Sonarr's RescanSeries after a job
+    # completes, so Sonarr picks up the processed file. Incoming webhooks are
+    # accepted whatever this is set to (test_webhook_enable_scope.py records
+    # why). RenameFiles is NOT called (it was in an earlier version — see
+    # sonarr.py's own module docstring for why it was removed).
     "sonarr_enabled": False,
     "sonarr_url":     "",   # e.g. http://sonarr:8989
     "sonarr_api_key": "",   # Settings → General → API Key
