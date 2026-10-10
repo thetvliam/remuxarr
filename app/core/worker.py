@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ScanStats, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ScanStats, _delete_media_file_and_related, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -839,6 +839,14 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     # ── Dry run ────────────────────────────────────────────────────────────
     if job_dict["is_dry_run"]:
+        # A preview of a job that would be refused is reported the way the
+        # real run would end, so the collision shows up before it is real.
+        taken = _output_name_taken(
+            file_dict["path"], determine_output_path(file_dict["path"], decision))
+        if taken:
+            logger.warning("[DRY RUN] Job %d: %s", job_id, taken)
+            await loop.run_in_executor(None, _finish_job, job_id, False, None, None, taken)
+            return
         logger.info("[DRY RUN] Would process: %s", file_dict["path"])
         for action in extract_actions:
             logger.info("[DRY RUN]   would extract subtitle → %s", action.external_path)
@@ -848,6 +856,17 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     input_path  = file_dict["path"]
     output_path = determine_output_path(input_path, decision)
+
+    # ── The output name is free ────────────────────────────────────────────
+    # Before anything is captured, run or written. The guard below catches
+    # a file that APPEARS at the output name during the job; one that was
+    # there from the start would pass it and be overwritten. See
+    # _output_name_taken.
+    taken = _output_name_taken(input_path, output_path)
+    if taken:
+        logger.error("Job %d: %s", job_id, taken)
+        await loop.run_in_executor(None, _finish_job, job_id, False, None, None, taken)
+        return
 
     # ── What the job started from ──────────────────────────────────────────
     # The source, and the name a container change will write to, as they
@@ -1618,6 +1637,36 @@ def _update_progress(job_id: int, percent: float, current_action: str) -> None:
         db.close()
 
 
+def _output_name_taken(input_path: str, output_path: str) -> str | None:
+    """
+    Why a job must not run because its output name already holds a file,
+    or None.
+
+    A container change writes to a new name: Movie.mkv becomes Movie.mp4.
+    Nothing checked that name was free, so a Movie.mp4 already beside the
+    MKV, a different file, was overwritten by the conversion, and the MKV
+    then deleted. The revert point holds only the converted file's tracks,
+    so nothing could bring the overwritten one back.
+
+    The job is refused as a failure, which counts towards failure emails:
+    only the user can say which of the two files to keep. Same-file names
+    are not a collision: on a case-insensitive share Movie.MP4 and
+    Movie.mp4 are one file, and converting it in place is what should
+    happen. os.path.exists answers the share's way, so a Movie.MP4 that is
+    a different file from Movie.mkv is caught there too.
+    """
+    if output_path == input_path or not os.path.exists(output_path):
+        return None
+    try:
+        if os.path.samefile(input_path, output_path):
+            return None
+    except OSError:
+        pass
+    return (f"{os.path.basename(output_path)} already exists beside "
+            f"{os.path.basename(input_path)}, and converting would overwrite "
+            f"it. Move or rename one of them, then retry.")
+
+
 def _files_the_job_will_create(extract_actions) -> list[str]:
     """
     The subtitle files this job is about to CREATE, as opposed to
@@ -1806,10 +1855,19 @@ def _finish_job(
                     if output_path and output_path != media.path:
                         # A stale MediaFile row from a previous processing
                         # cycle (dismiss → re-copy original → re-scan) may
-                        # already own the target path.  The file it pointed
-                        # to no longer exists on disk, so delete it — along
-                        # with its Track rows (cascade) — before updating
-                        # the current row to avoid a UNIQUE constraint error.
+                        # already own the target path. Its file was not on
+                        # disk: the job refuses to start when the output
+                        # name holds a file (_output_name_taken), and stops
+                        # before the swap if one appears there. Removed
+                        # before updating the current row, to avoid a UNIQUE
+                        # constraint error, the way a scan removes a
+                        # deleted file's record: its jobs, flags and backlog
+                        # entries go with it and a revert point is detached.
+                        # A bare delete failed outright on a record holding
+                        # a language review flag (its file_id cannot be
+                        # NULL), after the conversion had already replaced
+                        # the file, and unlinked a revert point without
+                        # marking it detached.
                         stale = (
                             db.query(MediaFile)
                             .filter(
@@ -1824,7 +1882,7 @@ def _finish_job(
                                 "(left from a previous dismiss/re-scan cycle)",
                                 output_path,
                             )
-                            db.delete(stale)
+                            _delete_media_file_and_related(db, stale)
                             db.flush()   # ensure deletion lands before the UPDATE
 
                         media.path      = output_path

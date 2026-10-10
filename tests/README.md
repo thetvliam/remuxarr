@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1834 tests across 81 test files, plus 596 frontend tests under
+1841 tests across 82 test files, plus 596 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -73,9 +73,10 @@ acts on it.
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
-`test_source_changed_mid_job.py`. Some run a real subprocess against real
-temp files; a few need real ffmpeg/ffprobe and skip when the binaries are
-absent (CI installs them, so they always run there).
+`test_source_changed_mid_job.py`, `test_output_name_taken.py`. Some run a
+real subprocess against real temp files; a few need real ffmpeg/ffprobe and
+skip when the binaries are absent (CI installs them, so they always run
+there).
 `test_attachment_preservation.py` pins the `-map` arguments against the bug
 that let every remux, including a pure language re-tag, silently destroy a
 file's fonts and cover art while reporting success.
