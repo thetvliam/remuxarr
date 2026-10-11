@@ -60,6 +60,16 @@ reading the setting; the schema entry moved away from Exclude Patterns;
 that path-pattern guard removed; and (against the frontend suite) the
 excluded-files list left under Exclude Patterns. All nine are killed, each
 by the test written for it.
+
+The list's include_as field (ExcludeRules.entry_for), which the Include
+button adds to Always Include, came last. Two tests here compared whole
+items, so they could not run against code that adds a field; for the
+baseline both were deselected by node id, against which the entry written
+as an absolute path survived as a harness check, and both then gained the
+field. Four run against the whole suite once the tests existed: the entry
+measured from the shallowest library path, written as the absolute path,
+written without its leading "/", and the field left out. All four are
+killed, each by the test written for it.
 """
 import asyncio
 import json
@@ -268,10 +278,12 @@ def test_each_excluded_file_is_listed_with_its_own_reason(lib):
     assert answer == {"total": 2, "items": [
         {"path": str(lib.paths.featurette),
          "filename": "Avatar (2009)-featurette.mkv",
-         "reason": "named as a trailer or extra"},
+         "reason": "named as a trailer or extra",
+         "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
         {"path": str(lib.paths.trailer),
          "filename": "Teaser.mkv",
-         "reason": "inside an extras folder (Trailers)"},
+         "reason": "inside an extras folder (Trailers)",
+         "include_as": "/Avatar (2009)/Trailers/Teaser.mkv"},
     ]}
 
 
@@ -299,7 +311,8 @@ def test_the_list_follows_both_settings(lib):
     assert answer["items"] == [
         {"path": str(lib.paths.featurette),
          "filename": "Avatar (2009)-featurette.mkv",
-         "reason": "exclude pattern '*-featurette.mkv'"},
+         "reason": "exclude pattern '*-featurette.mkv'",
+         "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
     ]
 
 
@@ -378,7 +391,55 @@ def test_the_list_is_served_where_the_settings_page_will_ask(lib):
     assert response.json()["total"] == 2
 
 
+def test_every_listed_entry_brings_its_own_file_back(lib):
+    """
+    Each item's include_as is what the list's Include button puts in Always
+    Include, so read back by the rules it has to match the file it names.
+    Two libraries, one of them inside the other, and a file at a library's
+    top level: an entry measured from the wrong library path, or written as
+    the absolute path, would leave its file on the list.
+    """
+    docs = lib.root.parent / "documentaries"
+    docs.mkdir()
+    (docs / "Planet (2020)-trailer.mkv").write_bytes(b"\0" * 64)
+    inner = lib.paths.movie.parent
+    lib.settings(scan_paths=[str(lib.root), str(inner), str(docs)])
+
+    items = _listed(lib)["items"]
+    # In path order, so the documentaries library comes first. The other two
+    # are measured from the inner library path, the deeper of the two.
+    assert [item["include_as"] for item in items] == [
+        "/Planet (2020)-trailer.mkv",
+        "/Avatar (2009)-featurette.mkv",
+        "/Trailers/Teaser.mkv",
+    ]
+
+    lib.settings(include_patterns=[item["include_as"] for item in items])
+
+    assert _listed(lib) == {"total": 0, "items": []}
+
+
+def test_an_entry_for_a_file_at_a_librarys_top_level_covers_only_that_file(lib):
+    """Starting with "/" makes it a path from the library path. A bare name
+    would be a name pattern, matching the same name in any folder."""
+    top = lib.root / "Teaser-trailer.mkv"
+    top.write_bytes(b"\0" * 64)
+    deeper = lib.paths.movie.parent / "Teaser-trailer.mkv"
+    deeper.write_bytes(b"\0" * 64)
+    entry = next(item["include_as"] for item in _listed(lib)["items"]
+                 if item["path"] == str(top))
+
+    lib.settings(include_patterns=[entry])
+
+    assert entry == "/Teaser-trailer.mkv"
+    listed = _paths(_listed(lib))
+    assert str(top) not in listed
+    assert str(deeper) in listed
+
+
 # ── Always Include ───────────────────────────────────────────────────────────
+#
+
 #
 # The rule itself is in test_exclude_rules.py. These follow an included file
 # through each way in, with the setting read from the database as it is in

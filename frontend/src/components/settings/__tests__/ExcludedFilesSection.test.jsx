@@ -29,6 +29,14 @@
  * now asserts Exclude Patterns, Always Include, the list, then the next
  * field. The list left under Exclude Patterns is killed by it; that mutant is
  * recorded with the rest of Always Include's in test_exclude_scan.py.
+ *
+ * The Include button came after that. Every row given the first row's entry
+ * was run against the unchanged 604-test suite as a harness check, and
+ * survived. Six run against the whole suite once the tests existed: that
+ * one; a row never shown as added; every row shown as added; the page not
+ * passing the callback; the page not passing its staged list; and the
+ * callback replacing the Always Include list instead of adding to it. All
+ * six are killed, each by the test written for it.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -42,10 +50,12 @@ const TWO = {
   items: [
     { path: "/media/movies/Avatar (2009)/Avatar (2009)-featurette.mkv",
       filename: "Avatar (2009)-featurette.mkv",
-      reason: "named as a trailer or extra" },
+      reason: "named as a trailer or extra",
+      include_as: "/Avatar (2009)/Avatar (2009)-featurette.mkv" },
     { path: "/media/tv/Show/Season 01/Show - S01E01 - 3D.mkv",
       filename: "Show - S01E01 - 3D.mkv",
-      reason: "exclude pattern '* - 3D.mkv'" },
+      reason: "exclude pattern '* - 3D.mkv'",
+      include_as: "/Show/Season 01/Show - S01E01 - 3D.mkv" },
   ],
 };
 
@@ -68,10 +78,10 @@ function serve(...answers) {
   return fetchMock;
 }
 
-function renderSection(toast = vi.fn()) {
+function renderSection(toast = vi.fn(), props = {}) {
   render(
     <ThemeProvider>
-      <ExcludedFilesSection api="" toast={toast} />
+      <ExcludedFilesSection api="" toast={toast} {...props} />
     </ThemeProvider>,
   );
   return toast;
@@ -168,6 +178,32 @@ describe("ExcludedFilesSection", () => {
   });
 });
 
+describe("ExcludedFilesSection — Include", () => {
+  it("hands over each row's own entry", async () => {
+    serve(ok(TWO));
+    const onInclude = vi.fn();
+    renderSection(vi.fn(), { onInclude });
+    show();
+
+    fireEvent.click(await screen.findByRole("button", { name: `Include ${TWO.items[1].filename}` }));
+    fireEvent.click(screen.getByRole("button", { name: `Include ${TWO.items[0].filename}` }));
+
+    expect(onInclude.mock.calls).toEqual([[TWO.items[1].include_as], [TWO.items[0].include_as]]);
+  });
+
+  it("shows a row already in Always Include as added, with no button", async () => {
+    serve(ok(TWO));
+    renderSection(vi.fn(), { included: [TWO.items[0].include_as], onInclude: vi.fn() });
+    show();
+
+    const rows = await screen.findAllByRole("listitem");
+    expect(within(rows[0]).getByText("ADDED")).toBeTruthy();
+    expect(within(rows[0]).queryByRole("button")).toBeNull();
+    expect(within(rows[1]).queryByText("ADDED")).toBeNull();
+    expect(within(rows[1]).getByRole("button", { name: `Include ${TWO.items[1].filename}` })).toBeTruthy();
+  });
+});
+
 describe("SettingsPage — the excluded-files list", () => {
   /* Real group and key names, in the real schema's order: the page matches
    * both by string. A field after Always Include shows where in the group the
@@ -179,7 +215,7 @@ describe("SettingsPage — the excluded-files list", () => {
     { key: "prefer_mp4_container", label: "Prefer MP4 Container", type: "boolean", group: "Library" },
   ];
   const VALUES = { scan_paths: ["/media/movies"], exclude_patterns: [],
-                   include_patterns: [], prefer_mp4_container: false };
+                   include_patterns: ["/Kept/Kept.mkv"], prefer_mp4_container: false };
 
   function mountPage(excludedAnswer) {
     const fetchMock = vi.fn(async (url) => {
@@ -224,5 +260,38 @@ describe("SettingsPage — the excluded-files list", () => {
     await settled();
 
     expect(toast).toHaveBeenCalledWith("No scan paths configured.", "error");
+  });
+
+  it("Include adds the entry to Always Include as an unsaved edit", async () => {
+    const { fetchMock } = mountPage(ok(TWO));
+    show(await screen.findByRole("button", { name: /show excluded files/i }));
+    const entry = TWO.items[1].include_as;
+
+    fireEvent.click(await screen.findByRole("button", { name: `Include ${TWO.items[1].filename}` }));
+
+    // Both in the box: the one already there and the one just added.
+    expect(screen.getByRole("button", { name: "Remove /Kept/Kept.mkv" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `Remove ${entry}` })).toBeTruthy();
+    expect(screen.getByText(/1 unsaved change$/i)).toBeTruthy();
+    // The row now reads as added, from the page's staged list.
+    const row = screen.getByText(TWO.items[1].filename).closest("li");
+    expect(within(row).getByText("ADDED")).toBeTruthy();
+    // Staged, not written.
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it("saving sends the added entry with the ones already there", async () => {
+    const { fetchMock } = mountPage(ok(TWO));
+    show(await screen.findByRole("button", { name: /show excluded files/i }));
+    fireEvent.click(await screen.findByRole("button", { name: `Include ${TWO.items[0].filename}` }));
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(true));
+    const [, init] = fetchMock.mock.calls.find(([, i]) => i?.method === "PUT");
+    expect(JSON.parse(init.body)).toEqual({
+      include_patterns: ["/Kept/Kept.mkv", TWO.items[0].include_as],
+    });
   });
 });

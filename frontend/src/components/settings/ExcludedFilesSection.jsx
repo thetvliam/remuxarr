@@ -15,9 +15,15 @@ import { useTheme } from "../../theme";
  *
  * The server reads the saved settings, not what is staged on this page, so
  * an edited pattern shows here only once it is saved. The text says so.
+ *
+ * Each row's Include button hands the server's include_as entry to
+ * onInclude, which stages it in the Always Include box like any other edit:
+ * nothing is written until SAVE CHANGES. `included` is that box's staged
+ * list, so a row already in it shows as added rather than offering the
+ * button again, which is also what stops a second click adding it twice.
  ═══════════════════════════════════════════════════════════════════════════ */
 
-export const ExcludedFilesSection = ({ api, toast }) => {
+export const ExcludedFilesSection = ({ api, toast, included = [], onInclude }) => {
   const { palette, type, space, radius } = useTheme();
   const [loading, setLoading] = useState(false);
   const [items,   setItems]   = useState(null);   // null until a check succeeds
@@ -61,7 +67,8 @@ export const ExcludedFilesSection = ({ api, toast }) => {
     The files your saved exclude settings leave alone, and what matched
     each one. Worked out when you press the button, from the settings as
     they are saved, so it can differ from the count your last scan
-    reported if you have changed them since.
+    reported if you have changed them since. Include adds a file to Always
+    Include above, which takes effect when you save.
     </div>
     <button
     onClick={check}
@@ -101,23 +108,57 @@ export const ExcludedFilesSection = ({ api, toast }) => {
         maxHeight: 280, overflowY: "auto",
         border: `1px solid ${palette.border}`, borderRadius: radius.sm,
       }}>
-      {items.map(item => (
-        <li key={item.path} style={{
-          padding: `${space.sm}px ${space.lg}px`,
-          borderBottom: `1px solid ${palette.border}`,
-          minWidth: 0,
-        }}>
-        <div style={{ color: palette.text, fontSize: type.size.md, ...ellipsis }}>
-        {item.filename}
-        </div>
-        <div style={{ color: palette.amber, fontSize: type.size.sm }}>
-        {item.reason}
-        </div>
-        <div title={item.path} style={{ color: palette.muted, fontSize: type.size.sm, ...ellipsis }}>
-        {item.path}
-        </div>
-        </li>
-      ))}
+      {items.map(item => {
+        const added = included.includes(item.include_as);
+        return (
+          <li key={item.path} style={{
+            display: "flex", alignItems: "center", gap: space.md,
+            padding: `${space.sm}px ${space.lg}px`,
+            borderBottom: `1px solid ${palette.border}`,
+          }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: palette.text, fontSize: type.size.md, ...ellipsis }}>
+          {item.filename}
+          </div>
+          <div style={{ color: palette.amber, fontSize: type.size.sm }}>
+          {item.reason}
+          </div>
+          <div title={item.path} style={{ color: palette.muted, fontSize: type.size.sm, ...ellipsis }}>
+          {item.path}
+          </div>
+          </div>
+          {added ? (
+            <span style={{
+              flexShrink: 0, color: palette.dim,
+              fontSize: type.size.xs, letterSpacing: type.tracking.normal,
+            }}>
+            ADDED
+            </span>
+          ) : (
+            <button
+            onClick={() => onInclude?.(item.include_as)}
+            aria-label={`Include ${item.filename}`}
+            title={`Add ${item.include_as} to Always Include`}
+            style={{
+              flexShrink: 0,
+              padding: `${space.hair}px ${space.md}px`,
+              background: "transparent",
+              border: `1px solid ${palette.blue}`,
+              borderRadius: radius.sm,
+              color: palette.blue,
+              fontSize: type.size.xs,
+              fontFamily: type.family,
+              fontWeight: type.weight.bold,
+              letterSpacing: type.tracking.wide,
+              cursor: "pointer",
+            }}
+            >
+            INCLUDE
+            </button>
+          )}
+          </li>
+        );
+      })}
       </ul>
       </div>
     )}

@@ -130,6 +130,20 @@ class ExcludeRules:
     def excludes(self, path: str) -> bool:
         return self.reason(path) is not None
 
+    def entry_for(self, path: str) -> str | None:
+        """
+        The Always Include entry naming exactly this file, or None for a
+        path under no library path.
+
+        A path from the deepest library path holding it, which is the one
+        reason() measures from, so the entry matches when it is read back.
+        It always starts with "/": without one, a file at a library's top
+        level would get a bare name, which is a name pattern and matches
+        that name in every folder of every library.
+        """
+        rel = _relative(os.path.normpath(path), self.roots)
+        return None if rel is None else "/" + rel.replace(os.sep, "/")
+
 
 def _relative(path: str, roots) -> str | None:
     # Longest first, so a path under two library paths is placed under the

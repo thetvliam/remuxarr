@@ -790,7 +790,11 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
               warning={fieldWarning(field.key, values)}
               />
               {field.key === "include_patterns" && (
-                <ExcludedFilesSection api={api} toast={toast} />
+                <ExcludedFilesSection api={api} toast={toast}
+                included={values.include_patterns || []}
+                onInclude={entry => setValues(prev => ({
+                  ...prev, include_patterns: [...(prev.include_patterns || []), entry],
+                }))} />
               )}
               </Fragment>
             );

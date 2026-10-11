@@ -316,11 +316,16 @@ def list_excluded(db: Session = Depends(get_db)):
             "No scan paths configured, so there are no libraries to exclude files from. Add a library path first.",
         )
 
-    excluded = find_excluded_files(scan_paths, ExcludeRules.from_settings(app_cfg))
+    rules    = ExcludeRules.from_settings(app_cfg)
+    excluded = find_excluded_files(scan_paths, rules)
     return {
         "total": len(excluded),
         "items": [
-            {"path": path, "filename": os.path.basename(path), "reason": reason}
+            # include_as is what the list's Include button adds to Always
+            # Include. Worked out here, by the rules that will read it back,
+            # rather than by the page from the path and the library paths.
+            {"path": path, "filename": os.path.basename(path), "reason": reason,
+             "include_as": rules.entry_for(path)}
             for path, reason in excluded
         ],
     }
