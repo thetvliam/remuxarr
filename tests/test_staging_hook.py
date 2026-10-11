@@ -56,10 +56,15 @@ two adapters not passing it through. All four are killed here, and the
 adapter two also by test_source_changed_mid_job.py, which runs whole jobs.
 13 applied, 13 killed.
 
-The ".part" checks in the before_staging tests above look for "a.mkv.part",
-a name staged_part_path does not produce (it names the copy after the temp
-file), so they cannot fail. The before_swap tests compute the name with
-staged_part_path. The older checks are left for their own change.
+The ".part" checks in the before_staging tests used to look for
+"a.mkv.part", a name staged_part_path does not produce (it names the copy
+after the temp file), so they could not fail. They now compute the name
+with staged_part_path, as the before_swap tests always did. One mutation
+was confirmed to survive the whole 1842-test suite while they were
+vacuous: the hook moved after the copy, with a decline also deleting the
+staged copies so nothing was left behind. Every job would then copy the
+whole output beside the original before asking the hook whether to. It is
+killed here, by the check that nothing was staged when the hook ran.
 """
 import asyncio
 import os
@@ -102,12 +107,11 @@ def test_hook_sees_originals_intact_and_outputs_finished(tmp_path):
     async def hook():
         seen["original"] = final.read_bytes()
         seen["output"] = temp.read_bytes()
-        seen["part_exists"] = (tmp_path / "a.mkv.part").exists()
+        seen["part_exists"] = os.path.exists(staged_part_path(output))
         return None
 
-    res = _run(_writer_cmd([(str(temp), "NEW")]),
-               [StagedOutput(temp_path=str(temp), final_path=str(final))],
-               before_staging=hook)
+    output = StagedOutput(temp_path=str(temp), final_path=str(final))
+    res = _run(_writer_cmd([(str(temp), "NEW")]), [output], before_staging=hook)
 
     assert res.success is True
     assert seen["original"] == b"ORIGINAL", "the original was already overwritten"
@@ -205,12 +209,12 @@ def test_declining_leaves_no_temp_or_part_files(tmp_path):
     async def hook():
         return "declined"
 
-    _run(_writer_cmd([(str(temp), "NEW")]),
-         [StagedOutput(temp_path=str(temp), final_path=str(final))],
-         before_staging=hook)
+    output = StagedOutput(temp_path=str(temp), final_path=str(final))
+    _run(_writer_cmd([(str(temp), "NEW")]), [output], before_staging=hook)
 
     assert not temp.exists(), "temp left behind after a declined run"
-    assert not (tmp_path / "a.mkv.part").exists()
+    assert not os.path.exists(staged_part_path(output)), \
+        "a declined run staged a copy"
 
 
 def test_declining_aborts_every_output_not_just_the_first(tmp_path):
@@ -247,14 +251,14 @@ def test_a_raising_hook_propagates_and_leaves_originals_untouched(tmp_path):
     async def hook():
         raise RuntimeError("database went away")
 
+    output = StagedOutput(temp_path=str(temp), final_path=str(final))
     with pytest.raises(RuntimeError):
-        _run(_writer_cmd([(str(temp), "NEW")]),
-             [StagedOutput(temp_path=str(temp), final_path=str(final))],
-             before_staging=hook)
+        _run(_writer_cmd([(str(temp), "NEW")]), [output], before_staging=hook)
 
     assert final.read_bytes() == b"ORIGINAL"
     assert not temp.exists()
-    assert not (tmp_path / "a.mkv.part").exists()
+    assert not os.path.exists(staged_part_path(output)), \
+        "a run whose hook raised staged a copy"
 
 
 # ── Absent ───────────────────────────────────────────────────────────────────
