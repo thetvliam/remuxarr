@@ -258,7 +258,21 @@ Everything from here happens in the web UI, not in any config file:
 3. Trigger a scan. **Dry run is on by default** - this first scan shows you exactly what would happen to every file, without touching anything.
 4. Review the **Dry Run** tab. Once the planned actions look right, turn dry run off in **Settings → Worker** - real processing begins from here.
 5. **Auto-start is on by default**, meaning the queue processes itself once dry run is off. If you'd rather review the queue manually before anything runs, turn this off in **Settings → Worker**.
-6. Sonarr, Radarr, Plex, and email integrations are all off until you provide real connection details - nothing is assumed enabled.
+6. Plex, email and the Sonarr/Radarr rescan are all off until you provide real connection details - nothing is assumed enabled. To have Sonarr and Radarr send each import straight to Remuxarr, see Connecting Sonarr and Radarr below.
+
+## Connecting Sonarr and Radarr
+
+Remuxarr can process a file as soon as Sonarr or Radarr imports it, rather than at the next scan. In Sonarr, go to **Settings → Connect**, add a **Webhook**, and set:
+
+- **URL** - `http://<address>:9191/api/webhooks/sonarr`. Use the host port you mapped if it is not 9191, and an address Sonarr can reach: your server's IP, or the container name if both containers are on the same custom Docker network. Not `localhost`, which inside Sonarr's container is Sonarr itself.
+- **Method** - POST, the default. Username and password stay empty.
+- **Triggers** - **On File Import**, **On File Upgrade** and **On Rename**. Remuxarr ignores the rest, so they can stay off. **On Rename** is what keeps a renamed file's record, history and revert point with it. **On Import Complete** does no harm if you have it on: it repeats files On File Import has already sent.
+
+Radarr is the same, with `http://<address>:9191/api/webhooks/radarr` as the URL. The **Test** button should report success.
+
+**If Sonarr or Radarr sees your files at different paths** from Remuxarr - Sonarr reports `/data/TV/...` where Remuxarr sees `/media/tv/...`, say - set the two path prefixes under **Settings → Integrations → Sonarr** (or Radarr): `/data/TV` as the remote prefix and `/media/tv` as the local one.
+
+**Enable Sonarr Integration** (with Sonarr's URL and API key) is separate: after each job, Remuxarr asks Sonarr to rescan the series, so Sonarr picks up a file whose name or extension changed. Webhooks are accepted whether it is on or not. Radarr's works the same way.
 
 ## Reverting a processed file (beta)
 
@@ -305,8 +319,8 @@ them in would produce a file that plays and is quietly wrong. Those entries stay
 listed with the reason shown, so you can discard them, but they will not offer
 to revert.
 
-**If Sonarr or Radarr renames a file** and its Remuxarr webhook includes the
-Rename trigger, the entry stays with the file: the webhook says which old name
+**If Sonarr or Radarr renames a file** and its Remuxarr webhook has **On
+Rename** ticked (see Connecting Sonarr and Radarr), the entry stays with the file: the webhook says which old name
 became which new one, so the file keeps its record, and its revert point,
 history and review answers with it.
 

@@ -61,6 +61,8 @@ raised TypeError in every test here; that mechanical fix was part of the
 baseline the three mutations ran against.
 """
 import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -217,8 +219,25 @@ def test_each_subtitle_is_extracted_from_its_own_stream(rig):
     ]
 
 
-def test_each_extraction_reports_its_place_in_the_run(rig):
-    """Counting from zero would show "0/2" as the first of two."""
+def test_each_extraction_reports_its_place_in_the_run(rig, monkeypatch):
+    """
+    Counting from zero would show "0/2" as the first of two.
+
+    The stored labels are also checked for order, so the first write is
+    held back: a label written without waiting for it would then land
+    after the second. They used to be written that way, and this passed on
+    Python 3.12 only because 3.12 happened to run the two writes in order;
+    on 3.13 they landed the other way round almost every time.
+    """
+    first = threading.Event()
+
+    def slow_first(*args):
+        if not first.is_set():
+            first.set()
+            time.sleep(0.1)
+        rig.progress_calls.append(args)
+
+    monkeypatch.setattr(worker, "_update_progress", slow_first)
     rig.actions = [extraction(2, "/a.srt"), extraction(5, "/b.srt")]
 
     run(rig)

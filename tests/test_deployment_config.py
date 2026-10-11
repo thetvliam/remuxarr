@@ -398,6 +398,40 @@ def test_the_readme_records_the_known_limitations():
     assert "attachment" in readme.lower()
 
 
+def test_the_webhook_urls_are_given_where_a_user_sets_them_up():
+    """
+    Every webhook route, by its real path, in the README, the Unraid guide
+    and the Settings page.
+
+    For a long time none of the three gave the URL at all, so connecting
+    Sonarr or Radarr meant reading the source. The paths are read from the
+    router rather than written out here: renaming a route then fails this
+    until every place a user is told the URL agrees with it, instead of
+    leaving the instructions pointing at an endpoint that answers 404.
+
+    Verified by mutation, 2 applied, 2 killed, both of which survived the
+    whole 1841-test suite before this existed: the Sonarr route renamed,
+    and the Radarr URL removed from the README. The rename survived because
+    every webhook test calls the handler function directly; nothing else
+    goes through the URL Sonarr is given.
+    """
+    from app.api.routes import webhooks
+    from app.api.routes.settings import SETTINGS_SCHEMA
+
+    urls = sorted(route.path for route in webhooks.router.routes
+                  if "POST" in getattr(route, "methods", ()))
+    assert urls, "no webhook routes found"
+
+    places = {
+        "README.md": _read("README.md"),
+        "UNRAID_DEPLOYMENT.md": _read("UNRAID_DEPLOYMENT.md"),
+        "the Settings page": " ".join(f.get("description", "") for f in SETTINGS_SCHEMA),
+    }
+    missing = [f"{url} in {where}" for url in urls
+               for where, text in places.items() if url not in text]
+    assert not missing, "webhook URL not given: " + "; ".join(missing)
+
+
 def test_the_documented_test_counts_are_current():
     """
     tests/README.md is the only place either count is written down, and

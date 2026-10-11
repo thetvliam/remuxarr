@@ -60,14 +60,7 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Added
-
-- Exclude Patterns, in Settings → Library & Processing → Library: files and folders Remuxarr should leave alone. A pattern without a / matches a file or folder name anywhere in your libraries (Anime, *-sample.mkv); one with a / is a path from the library path (Movies/4K) and covers everything in it. * and ? are wildcards and case is ignored.
-
-## Changed
-
-- Trailers, featurettes and other extras named the way Plex or Jellyfin expect, and the copies Plex's Optimize writes to a Plex Versions folder, are now skipped. This is a new setting beside Exclude Patterns, Skip Trailers and Extras, which is on unless you turn it off. Any already in Remuxarr are removed from it at the next scan, along with their waiting jobs and reviews; the files themselves are not touched. A scan that excludes any files now says how many in its summary.
-
 ## Fixed
 
-- A file Sonarr or Radarr sends in the ten seconds (by default) before Remuxarr stops or restarts is no longer lost. Webhooks are now recorded as they arrive, and any not yet queued when the container stops are queued when it starts again, with their Sonarr or Radarr ID. Before, such a file waited for a library scan, if you have them scheduled, and was then processed without the ID, so Sonarr or Radarr was not told when it finished.
+- Converting a file to another container (MKV to MP4, say) no longer overwrites a file that already has the new name. If Movie.mp4 is already beside Movie.mkv, the job now fails before doing anything, with a message asking you to move or rename one of them; before, the conversion overwrote Movie.mp4 and then deleted Movie.mkv, and the overwritten file could not be reverted.
+- A conversion to a name Remuxarr still held an old record for (one whose file had since gone) no longer ends as "Finalisation failed" when that record had a language review flag. The conversion had already replaced the file by then.

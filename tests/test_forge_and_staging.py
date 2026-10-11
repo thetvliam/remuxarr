@@ -300,8 +300,15 @@ def test_cancellation_shield_lets_the_copy_settle():
         staging = asyncio.ensure_future(
             asyncio.get_running_loop().run_in_executor(None, slow, [], parts)
         )
+        # The cancel has to land while body is waiting on the shield. Without
+        # this it can land before body has run at all: Python 3.13 resumes
+        # this coroutine before giving a just-created task its first step,
+        # so the test cancelled a task that never started, and 3.12 only
+        # passed because it happened to run the task first.
+        running = asyncio.Event()
 
         async def body():
+            running.set()
             try:
                 await asyncio.shield(staging)
             except asyncio.CancelledError:
@@ -314,6 +321,7 @@ def test_cancellation_shield_lets_the_copy_settle():
                 raise
 
         task = asyncio.create_task(body())
+        await running.wait()
         await asyncio.get_running_loop().run_in_executor(None, started.wait)
         task.cancel()
 
@@ -365,11 +373,15 @@ def test_a_successful_run_swaps_every_output_into_place(tmp_path):
 def test_a_successful_run_leaves_no_part_or_temp_files(tmp_path):
     temp  = tmp_path / "a.tmp"
     final = tmp_path / "a.mkv"
+    output = StagedOutput(temp_path=str(temp), final_path=str(final))
 
-    _run(_writer_cmd([(str(temp), "NEW")]),
-         [StagedOutput(temp_path=str(temp), final_path=str(final))])
+    _run(_writer_cmd([(str(temp), "NEW")]), [output])
 
-    assert not (tmp_path / "a.mkv.part").exists()
+    # The staged copy is named after the temp file (staged_part_path), not
+    # after the final: this used to look for "a.mkv.part", which is never
+    # created, so it could not fail.
+    assert not os.path.exists(staged_part_path(output)), \
+        "staged copy left behind after a successful swap"
     assert not temp.exists(), "temp file left behind after a successful swap"
 
 
