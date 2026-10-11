@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
@@ -7,6 +7,7 @@ import { AppearanceSection } from "./AppearanceSection";
 import { BackupRestoreSection } from "./BackupRestoreSection";
 import { FullBackupSection } from "./FullBackupSection";
 import { MaintenanceSection } from "./MaintenanceSection";
+import { ExcludedFilesSection } from "./ExcludedFilesSection";
 import { RecycleBinSection } from "./RecycleBinSection";
 import { BuildInfoSection } from "./BuildInfoSection";
 import { LogViewer } from "./LogViewer";
@@ -775,9 +776,11 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             // remounts on every tab change and refetches, but useAppData sits
             // above the page switch and never does.
             const live = liveToggles[field.key];
+            // The excluded-files list sits under the patterns that decide it,
+            // rather than at the end of the group, below unrelated MP4 settings.
             return (
+              <Fragment key={field.key}>
               <FieldRow
-              key={field.key}
               field={field}
               value={live ? live.value : values[field.key]}
               onChange={live ? live.onToggle : (v => set(field.key, v))}
@@ -785,6 +788,10 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
               immediate={!!live}
               warning={fieldWarning(field.key, values)}
               />
+              {field.key === "exclude_patterns" && (
+                <ExcludedFilesSection api={api} toast={toast} />
+              )}
+              </Fragment>
             );
           })}
           {["Sonarr", "Radarr", "Plex", "Email"].includes(groupName) && (

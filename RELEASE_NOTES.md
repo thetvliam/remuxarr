@@ -60,7 +60,6 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Fixed
+## Added
 
-- Converting a file to another container (MKV to MP4, say) no longer overwrites a file that already has the new name. If Movie.mp4 is already beside Movie.mkv, the job now fails before doing anything, with a message asking you to move or rename one of them; before, the conversion overwrote Movie.mp4 and then deleted Movie.mkv, and the overwritten file could not be reverted.
-- A conversion to a name Remuxarr still held an old record for (one whose file had since gone) no longer ends as "Finalisation failed" when that record had a language review flag. The conversion had already replaced the file by then.
+- Settings → Library & Processing → Library has a new Excluded Files list, under Exclude Patterns. Press Show Excluded Files to see each file your saved exclude settings leave alone, and what matched it: the trailers and extras rule, or which of your patterns. Until now a scan only said how many files it had excluded.
