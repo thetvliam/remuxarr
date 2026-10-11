@@ -26,6 +26,20 @@ cleanup; the removal taking a record whose job is running; the removal on
 a cancelled scan; queue_single_file ignoring the rules; the single-file
 endpoint not checking them; scan_completed without the count; and the
 toast without it. All eighteen are killed.
+
+The list of excluded files (GET /api/scan/excluded, over
+scanner.find_excluded_files) came later, as new code that nothing called,
+so every mutant of it survived by construction. Two were run against the
+unchanged 1842-test suite only to show the harness reached it, and both
+survived: the walk stopping after the first library, and the list left
+unsorted. Eleven were run against the whole suite once the tests below
+existed: each file given the first file's reason; the extras switch forced
+on; the patterns ignored; the first library only; files nothing excludes
+listed too; the 400 for no libraries removed; a plain os.walk in place of
+the scan's own walk, which enters hidden folders; the list unsorted; a
+file under two overlapping libraries listed twice; the folder given as
+the filename; and the route served at another path. All eleven are
+killed, each by the test written for it.
 """
 import asyncio
 import json
@@ -33,6 +47,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -209,6 +224,138 @@ def test_the_single_file_endpoint_says_it_is_excluded(lib):
     assert answer["queued"] is False
     assert answer["reason"].startswith("Excluded by your exclude settings")
     assert lib.records() == []
+
+
+# ── Listing them ─────────────────────────────────────────────────────────────
+#
+# A scan only counts excluded files and nothing about them is stored, so
+# GET /api/scan/excluded walks the libraries again to say which they are.
+# The fixture's two excluded files are excluded for different reasons, so
+# a reason that belongs to one file shown against both is visible.
+
+def _listed(lib):
+    with lib.Session() as db:
+        return scan_routes.list_excluded(db=db)
+
+
+def _paths(answer):
+    return [item["path"] for item in answer["items"]]
+
+
+def test_each_excluded_file_is_listed_with_its_own_reason(lib):
+    answer = _listed(lib)
+
+    assert answer == {"total": 2, "items": [
+        {"path": str(lib.paths.featurette),
+         "filename": "Avatar (2009)-featurette.mkv",
+         "reason": "named as a trailer or extra"},
+        {"path": str(lib.paths.trailer),
+         "filename": "Teaser.mkv",
+         "reason": "inside an extras folder (Trailers)"},
+    ]}
+
+
+def test_the_list_is_the_files_a_scan_passes_over(lib):
+    """Including one a pattern matches, so both kinds of rule are compared."""
+    three_d = lib.paths.movie.parent / "Avatar (2009) - 3D.mkv"
+    three_d.write_bytes(b"\0" * 64)
+    lib.settings(exclude_patterns=["* - 3D.mkv"])
+
+    listed = _paths(_listed(lib))
+    stats = lib.scan()
+
+    on_disk = {str(p) for p in (*vars(lib.paths).values(), three_d)}
+    assert set(listed) == on_disk - set(lib.probed)
+    assert len(listed) == stats.excluded == 3
+
+
+def test_the_list_follows_both_settings(lib):
+    """With the extras switch off, only the pattern's match is listed, under
+    the pattern's name."""
+    lib.settings(skip_extras=False, exclude_patterns=["*-featurette.mkv"])
+
+    answer = _listed(lib)
+
+    assert answer["items"] == [
+        {"path": str(lib.paths.featurette),
+         "filename": "Avatar (2009)-featurette.mkv",
+         "reason": "exclude pattern '*-featurette.mkv'"},
+    ]
+
+
+def test_every_library_is_listed_in_path_order(lib):
+    """The second library is named first in the settings' list but sorts
+    first by path, so walk order and path order disagree."""
+    docs = lib.root.parent / "documentaries"
+    film = docs / "Planet (2020)"
+    (film / "Trailers").mkdir(parents=True)
+    (film / "Planet (2020).mkv").write_bytes(b"\0" * 64)
+    (film / "Trailers" / "Teaser.mkv").write_bytes(b"\0" * 64)
+    lib.settings(scan_paths=[str(lib.root), str(docs)])
+
+    assert _paths(_listed(lib)) == [
+        str(film / "Trailers" / "Teaser.mkv"),
+        str(lib.paths.featurette),
+        str(lib.paths.trailer),
+    ]
+
+
+def test_a_file_under_two_overlapping_libraries_is_listed_once(lib):
+    lib.settings(scan_paths=[str(lib.root), str(lib.paths.movie.parent)])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette),
+                                    str(lib.paths.trailer)]
+
+
+def test_a_hidden_folder_is_not_walked_here_either(lib):
+    """A scan never enters a folder whose name starts with a dot, so a file
+    in one is not excluded by anything: it is never reached at all."""
+    hidden = lib.paths.movie.parent / ".grab" / "Avatar (2009)-trailer.mkv"
+    hidden.parent.mkdir()
+    hidden.write_bytes(b"\0" * 64)
+
+    listed = _paths(_listed(lib))
+    lib.scan()
+
+    assert str(hidden) not in listed
+    assert str(hidden) not in lib.probed
+
+
+def test_no_library_paths_is_refused(lib):
+    """As GET /orphaned does: with no libraries there is nothing to list."""
+    lib.settings(scan_paths=[])
+
+    with pytest.raises(HTTPException) as refused:
+        _listed(lib)
+
+    assert refused.value.status_code == 400
+
+
+def test_the_list_is_served_where_the_settings_page_will_ask(lib):
+    """
+    Through the scan router, so its prefix and this route's path are what
+    is tested. A bare FastAPI app rather than app.main: importing app.main
+    here, under the fixture's patched SessionLocal, would bind that factory
+    into the modules app.main imports first (see test_clear_database.py).
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    def db():
+        session = lib.Session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app = FastAPI()
+    app.include_router(scan_routes.router)
+    app.dependency_overrides[scan_routes.get_db] = db
+
+    response = TestClient(app).get("/api/scan/excluded")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
 
 
 # ── Defaults ─────────────────────────────────────────────────────────────────

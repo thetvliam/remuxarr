@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1842 tests across 82 test files, plus 596 frontend tests under
+1850 tests across 82 test files, plus 596 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -53,7 +53,8 @@ since whether a folder named Extras or Shorts is an extras folder depends on
 what is around it: the sitcom Extras and a flat folder of short films are the
 two libraries the folder rule is shaped around. `test_exclude_scan.py` follows
 a match through a scan, a webhook and the single-file endpoint, including the
-records of files a new rule excludes, which go at the next completed scan.
+records of files a new rule excludes, which go at the next completed scan,
+and the endpoint that lists excluded files, which a scan only counts.
 
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,

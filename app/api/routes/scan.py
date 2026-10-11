@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.api.ws_manager import ws_manager, broadcast_threadsafe
 from app.core.exclude import ExcludeRules
-from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files, find_orphaned_media_files, remove_orphaned_media_files
+from app.core.scanner import scan_library, queue_single_file, cleanup_deleted_files, find_excluded_files, find_orphaned_media_files, remove_orphaned_media_files
 from app.core.worker import pause_worker
 from app.database.session import SessionLocal, get_app_settings, get_db
 
@@ -292,6 +292,36 @@ def list_orphaned(db: Session = Depends(get_db)):
                 "on_disk":  os.path.exists(m.path),
             }
             for m in orphaned
+        ],
+    }
+
+
+@router.get("/excluded")
+def list_excluded(db: Session = Depends(get_db)):
+    """
+    List every file in the libraries that the exclude settings pass over,
+    and why (see scanner.find_excluded_files).
+
+    A scan's summary gives only a count, and nothing about an excluded file
+    is stored, so this is the one way to see which files those are. It
+    walks the libraries without probing anything, the same cost as the pass
+    a scan makes to count its files. A plain def, so FastAPI runs that walk
+    on its thread pool rather than on the event loop.
+    """
+    app_cfg    = get_app_settings(db)
+    scan_paths = app_cfg.get("scan_paths", [])
+    if not scan_paths:
+        raise HTTPException(
+            400,
+            "No scan paths configured, so there are no libraries to exclude files from. Add a library path first.",
+        )
+
+    excluded = find_excluded_files(scan_paths, ExcludeRules.from_settings(app_cfg))
+    return {
+        "total": len(excluded),
+        "items": [
+            {"path": path, "filename": os.path.basename(path), "reason": reason}
+            for path, reason in excluded
         ],
     }
 

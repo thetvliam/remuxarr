@@ -6,6 +6,7 @@ queue_single_file() — probe + enqueue a single path (called by webhook handler
 
 Files the exclude settings match (app/core/exclude.py) are passed over by
 both, and remove_excluded_files() drops any record already held for one.
+find_excluded_files() lists them, since a scan only counts them.
 
 Delta scan logic
 ----------------
@@ -643,6 +644,35 @@ def remove_excluded_files(db: Session, scan_paths: list[str], rules: ExcludeRule
         db.commit()
         logger.info("Exclude: removed %d excluded file(s) from the database", removed)
     return removed
+
+
+def find_excluded_files(scan_paths: list[str], rules: ExcludeRules) -> list[tuple[str, str]]:
+    """
+    Every media file under scan_paths that the exclude settings pass over,
+    with the reason, sorted by path.
+
+    A scan only counts these: nothing about an excluded file is stored, so
+    this walks the libraries again rather than reading a record. That makes
+    it an answer about the settings as they are now, which is what someone
+    editing a pattern needs, and it can differ from the count the last scan
+    reported if the settings have changed since.
+
+    The walk and the test are the ones scan_library makes, so a file is
+    listed here exactly when a scan would pass over it. One difference: a
+    file reached through two library paths that overlap is listed once,
+    where a scan meets it under each.
+    """
+    found: dict[str, str] = {}
+    for scan_path in scan_paths:
+        for root, _dirs, files in _walk_media_dirs(scan_path):
+            for filename in files:
+                if not is_media_file(filename):
+                    continue
+                full_path = os.path.join(root, filename)
+                why = rules.reason(full_path)
+                if why:
+                    found[full_path] = why
+    return sorted(found.items())
 
 
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
