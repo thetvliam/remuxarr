@@ -1165,7 +1165,10 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 label = f"Extracting subtitle to SRT ({i}/{len(extract_actions)})"
                 logger.info("%s — stream %d → %s",
                             label, action.stream_index, action.external_path)
-                loop.run_in_executor(None, _update_progress, job_id, 0.0, label)
+                # Awaited, unlike on_progress's writes: one per extraction,
+                # and two in flight at once can land in either order, which
+                # left the stored label on "(1/2)" while the second ran.
+                await loop.run_in_executor(None, _update_progress, job_id, 0.0, label)
                 await ws_manager.broadcast_json({
                     "event": "job_progress", "job_id": job_id,
                     "progress": 0.0, "current_action": label, "speed": "",
