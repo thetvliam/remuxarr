@@ -40,6 +40,26 @@ the scan's own walk, which enters hidden folders; the list unsorted; a
 file under two overlapping libraries listed twice; the folder given as
 the filename; and the route served at another path. All eleven are
 killed, each by the test written for it.
+
+Always Include (include_patterns) came after that, with its rule tests in
+test_exclude_rules.py and its flow tests here. Against the unchanged
+1850-test suite: the include list ignored and its extension handling
+removed, run only to show the harness reached new code, both survived; the
+setting's default, its accepted-key entry and its schema entry each
+removed, all three already killed by test_settings_schema.py, so not
+claimed here. Moving the pattern loop into exclude._matches touched code
+earlier mutants aimed at: the folder-contents mutant from the record above
+was re-aimed there and is still killed by the existing tests, and a new one,
+a path pattern applied to a file under no library path, survived them,
+because their pattern never lined up with the start of the file's absolute
+path. An absolute-path case was added to that test. Nine run against the
+whole suite once the tests existed: the include list ignored; it beating
+only the extras rule; only patterns; the extension handling removed; any
+dotted ending accepted in place of a media extension; from_settings not
+reading the setting; the schema entry moved away from Exclude Patterns;
+that path-pattern guard removed; and (against the frontend suite) the
+excluded-files list left under Exclude Patterns. All nine are killed, each
+by the test written for it.
 """
 import asyncio
 import json
@@ -358,6 +378,46 @@ def test_the_list_is_served_where_the_settings_page_will_ask(lib):
     assert response.json()["total"] == 2
 
 
+# ── Always Include ───────────────────────────────────────────────────────────
+#
+# The rule itself is in test_exclude_rules.py. These follow an included file
+# through each way in, with the setting read from the database as it is in
+# production, so the setting reaching the rules is tested too.
+
+def test_a_scan_probes_and_queues_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    stats = lib.scan()
+
+    assert str(lib.paths.trailer) in lib.probed
+    assert lib.records() == ["Avatar (2009).mkv", "Teaser.mkv"]
+    assert stats.excluded == 1
+
+
+def test_an_included_files_record_survives_the_next_scan(lib, held):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    lib.scan()
+
+    assert lib.records() == ["Avatar (2009).mkv", "Teaser.mkv"]
+
+
+def test_a_webhook_queues_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    with lib.Session() as db:
+        item = scanner.queue_single_file(db, str(lib.paths.trailer))
+
+    assert item is not None
+    assert lib.records() == ["Teaser.mkv"]
+
+
+def test_the_list_leaves_out_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette)]
+
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 def test_an_upgrading_install_gets_the_switch_on(lib):
@@ -367,3 +427,14 @@ def test_an_upgrading_install_gets_the_switch_on(lib):
         session_module._seed_defaults(db)
         assert json.loads(db.get(AppSetting, "skip_extras").value) is True
         assert json.loads(db.get(AppSetting, "exclude_patterns").value) == []
+        assert json.loads(db.get(AppSetting, "include_patterns").value) == []
+
+
+def test_always_include_sits_directly_under_exclude_patterns():
+    """The settings page renders the schema in order, and the excluded-files
+    list after Always Include, so this order puts the two settings that
+    decide the list directly above it."""
+    from app.api.routes.settings import SETTINGS_SCHEMA
+
+    keys = [field["key"] for field in SETTINGS_SCHEMA]
+    assert keys[keys.index("exclude_patterns") + 1] == "include_patterns"

@@ -62,4 +62,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Added
 
-- Settings → Library & Processing → Library has a new Excluded Files list, under Exclude Patterns. Press Show Excluded Files to see each file your saved exclude settings leave alone, and what matched it: the trailers and extras rule, or which of your patterns. Until now a scan only said how many files it had excluded.
+- Two additions under Exclude Patterns, in Settings → Library & Processing → Library. Always Include brings back files and folders that Skip Trailers and Extras or an exclude pattern would leave alone; it is written the same way as Exclude Patterns, and an entry naming a file still covers it after Remuxarr changes its container. Below it, Show Excluded Files lists each file your saved settings leave alone and what matched it: the trailers and extras rule, or which of your patterns. Until now a scan only said how many files it had excluded.

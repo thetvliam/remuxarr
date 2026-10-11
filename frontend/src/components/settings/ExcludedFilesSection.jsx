@@ -3,7 +3,8 @@ import { useTheme } from "../../theme";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * EXCLUDED FILES
- * Rendered by SettingsPage directly under the Exclude Patterns field.
+ * Rendered by SettingsPage directly under the Always Include field, which
+ * follows Exclude Patterns: the two settings that decide this list.
  *
  * A scan's toast says how many files the exclude settings passed over and
  * nothing more, and Remuxarr keeps no record of them, so this asks

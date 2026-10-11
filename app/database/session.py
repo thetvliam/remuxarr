@@ -49,6 +49,8 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # adds a missing key with its default.
     "skip_extras":      True,
     "exclude_patterns": [],
+    # Overrides both of the above for the files it matches (Always Include).
+    "include_patterns": [],
     # How many "und" audio tracks trigger a manual-review flag
     "und_audio_threshold": 2,
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to

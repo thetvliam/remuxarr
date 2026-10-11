@@ -776,8 +776,9 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
             // remounts on every tab change and refetches, but useAppData sits
             // above the page switch and never does.
             const live = liveToggles[field.key];
-            // The excluded-files list sits under the patterns that decide it,
-            // rather than at the end of the group, below unrelated MP4 settings.
+            // The excluded-files list sits under the two settings that decide
+            // it, Exclude Patterns and then Always Include, rather than at the
+            // end of the group, below unrelated MP4 settings.
             return (
               <Fragment key={field.key}>
               <FieldRow
@@ -788,7 +789,7 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
               immediate={!!live}
               warning={fieldWarning(field.key, values)}
               />
-              {field.key === "exclude_patterns" && (
+              {field.key === "include_patterns" && (
                 <ExcludedFilesSection api={api} toast={toast} />
               )}
               </Fragment>

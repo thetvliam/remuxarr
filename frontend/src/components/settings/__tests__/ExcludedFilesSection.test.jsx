@@ -23,6 +23,12 @@
  * one; a refusal shown as an empty list; the path shown as the filename; the
  * count off by one; and the old list kept while a new check runs. All nine
  * are killed, each by the test written for it.
+ *
+ * When Always Include was added the list moved below it, so the page tests'
+ * fixture gained that field, as the real schema has, and the placement test
+ * now asserts Exclude Patterns, Always Include, the list, then the next
+ * field. The list left under Exclude Patterns is killed by it; that mutant is
+ * recorded with the rest of Always Include's in test_exclude_scan.py.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -163,14 +169,17 @@ describe("ExcludedFilesSection", () => {
 });
 
 describe("SettingsPage — the excluded-files list", () => {
-  /* Real group and key names: the page matches both by string. A field after
-   * Exclude Patterns shows where in the group the list lands. */
+  /* Real group and key names, in the real schema's order: the page matches
+   * both by string. A field after Always Include shows where in the group the
+   * list lands. */
   const SCHEMA = [
     { key: "scan_paths", label: "Media Library Paths", type: "string_list", group: "Library" },
     { key: "exclude_patterns", label: "Exclude Patterns", type: "string_list", group: "Library" },
+    { key: "include_patterns", label: "Always Include", type: "string_list", group: "Library" },
     { key: "prefer_mp4_container", label: "Prefer MP4 Container", type: "boolean", group: "Library" },
   ];
-  const VALUES = { scan_paths: ["/media/movies"], exclude_patterns: [], prefer_mp4_container: false };
+  const VALUES = { scan_paths: ["/media/movies"], exclude_patterns: [],
+                   include_patterns: [], prefer_mp4_container: false };
 
   function mountPage(excludedAnswer) {
     const fetchMock = vi.fn(async (url) => {
@@ -191,14 +200,17 @@ describe("SettingsPage — the excluded-files list", () => {
     return { fetchMock, toast };
   }
 
-  it("sits under Exclude Patterns and asks the page's server", async () => {
+  it("sits under Always Include, below Exclude Patterns, and asks the page's server", async () => {
     const { fetchMock } = mountPage(ok(TWO));
     const button = await screen.findByRole("button", { name: /show excluded files/i });
 
+    const before = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
     const patterns = screen.getByText("Exclude Patterns");
+    const include = screen.getByText("Always Include");
     const mp4 = screen.getByText("Prefer MP4 Container");
-    expect(patterns.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(button.compareDocumentPosition(mp4) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(before(patterns, include)).toBe(true);
+    expect(before(include, button)).toBe(true);
+    expect(before(button, mp4)).toBe(true);
 
     show(button);
 
