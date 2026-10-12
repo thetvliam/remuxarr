@@ -166,3 +166,21 @@ describe("DangerZone", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("DangerZone — on a narrow phone", () => {
+  /* The button never shrinks or wraps its label, so on a phone it squeezed
+   * the description beside it to 132px at 320px wide, measured in Chrome.
+   * The row now wraps and the description keeps a 220px basis, so the button
+   * drops below it instead; measured after, the description is full width.
+   * Both rules are needed, and jsdom has no layout, so this pins them.
+   * Verified by mutation: removing the wrap, and putting the description
+   * back to flex: 1, both survived the suite without this and are killed
+   * by it. */
+  it("lets the button drop below its description", () => {
+    setup();
+
+    const row = button().parentElement;
+    expect(row.style.flexWrap).toBe("wrap");
+    expect(row.firstElementChild.style.flexBasis).toBe("220px");
+  });
+});

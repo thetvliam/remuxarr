@@ -524,8 +524,14 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Manual Cleanup
     </div>
 
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.xxl }}>
-    <div style={{ flex: 1 }}>
+    {/* Each card's description and button share a row that may wrap. The
+      * button never shrinks or wraps its label, so on a narrow phone it used
+      * to squeeze the description to under 100px, and push CHECK FOR ORPHANED
+      * FILES off a 320px screen. Now the description keeps at least 220px and
+      * the button drops below it when both cannot fit. Same in all three
+      * cards here, and in DangerZone. */}
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl }}>
+    <div style={{ flex: "1 1 220px" }}>
     <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
     Scan the database for files that no longer exist on disk and remove
     their entries — including tracks, queue items, history, and forge
@@ -574,8 +580,8 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Force Full Rescan
     </div>
 
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.xxl }}>
-    <div style={{ flex: 1 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl }}>
+    <div style={{ flex: "1 1 220px" }}>
     <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
     Re-probes every file with ffprobe regardless of whether its size or
     modification time has changed. Database records are updated if the
@@ -621,8 +627,8 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Orphaned Files
     </div>
 
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.xxl, marginBottom: orphanedChecked ? 14 : 0 }}>
-    <div style={{ flex: 1 }}>
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl, marginBottom: orphanedChecked ? 14 : 0 }}>
+    <div style={{ flex: "1 1 220px" }}>
     <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
     Manual Cleanup above only ever checks files inside your currently
     configured Media Library Paths, by design — it never touches

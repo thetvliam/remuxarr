@@ -64,3 +64,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 - The selected tab in History, and the selected level in the log viewer, now show their full outline when the page loads. Before, the right edge was missing until you clicked another tab and back, and that click also doubled the lines between the tabs.
 - Long entries in list settings, such as library paths, Exclude Patterns and Always Include, now wrap inside their box. Before, an entry with few spaces, like a release-style folder name, ran off the edge of the box and took the × that removes it with it.
+- On a narrow phone, the buttons in Maintenance & Logs and in Backup & Danger Zone now move below their description. Before, they squeezed the description into a thin column, and on the smallest screens CHECK FOR ORPHANED FILES and REPLACE DATABASE ran off the edge.
