@@ -50,11 +50,11 @@ const TWO = {
   items: [
     { path: "/media/movies/Avatar (2009)/Avatar (2009)-featurette.mkv",
       filename: "Avatar (2009)-featurette.mkv",
-      reason: "named as a trailer or extra",
+      reason: 'Skip Trailers and Extras: name ends in "-featurette"',
       include_as: "/Avatar (2009)/Avatar (2009)-featurette.mkv" },
     { path: "/media/tv/Show/Season 01/Show - S01E01 - 3D.mkv",
       filename: "Show - S01E01 - 3D.mkv",
-      reason: "exclude pattern '* - 3D.mkv'",
+      reason: "Exclude Patterns: '* - 3D.mkv'",
       include_as: "/Show/Season 01/Show - S01E01 - 3D.mkv" },
   ],
 };

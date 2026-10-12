@@ -254,6 +254,58 @@ def test_blank_patterns_are_ignored(lib):
     assert not lib.rules(patterns=["", "   "]).excludes(path)
 
 
+# ── Reasons ──────────────────────────────────────────────────────────────────
+#
+# A reason is what the excluded-files list shows, so it has to say which
+# setting caught the file and what in the file it caught. Each case below
+# is a different ending, in a different case, so a reason built from the
+# wrong ending, or from a lower-cased copy, does not match.
+
+@pytest.mark.parametrize("name, ending", [
+    ("POCAWE_Sample.mkv", "_Sample"),
+    ("Making Of-Featurette.mp4", "-Featurette"),
+    ("Teaser.TRAILER.mkv", ".TRAILER"),
+])
+def test_the_reason_quotes_the_ending_from_the_files_own_name(lib, name, ending):
+    path = lib.put(MOVIE, f"Avatar (2009)/{name}")
+    assert lib.rules().reason(path) == (
+        f'Skip Trailers and Extras: name ends in "{ending}"')
+
+
+def test_the_reason_for_a_file_named_only_sample_says_so(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Sample.mkv")
+    assert lib.rules().reason(path) == 'Skip Trailers and Extras: named "Sample"'
+
+
+def test_the_reason_names_the_extras_folder(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Trailers/Teaser.mkv")
+    assert lib.rules().reason(path) == (
+        "Skip Trailers and Extras: inside an extras folder (Trailers)")
+
+
+def test_the_reason_names_a_plex_versions_folder(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Plex Versions/Optimized/Avatar (2009).mp4")
+    assert lib.rules().reason(path) == (
+        "Skip Trailers and Extras: inside a Plex Versions folder")
+
+
+def test_the_reason_names_the_pattern(lib):
+    path = lib.put("Anime/Akira (1988)/Akira (1988).mkv")
+    assert lib.rules(patterns=["Anime"]).reason(path) == "Exclude Patterns: 'Anime'"
+
+
+def test_each_reason_starts_with_its_settings_label():
+    """The prefixes are the labels the settings page shows, so a reason
+    points at the control to change. A label renamed in the schema and not
+    here would point at nothing."""
+    from app.api.routes.settings import SETTINGS_SCHEMA
+    from app.core.exclude import EXTRAS_RULE, PATTERNS_RULE
+
+    labels = {f["key"]: f["label"] for f in SETTINGS_SCHEMA}
+    assert (EXTRAS_RULE, PATTERNS_RULE) == (
+        labels["skip_extras"], labels["exclude_patterns"])
+
+
 # ── Always Include ───────────────────────────────────────────────────────────
 #
 # include_patterns overrides both of the above. Each test keeps a neighbour
@@ -266,7 +318,7 @@ def test_an_include_brings_back_a_file_the_extras_rule_caught(lib):
     rules = lib.rules(includes=["Codec Test_sample.mkv"])
 
     assert not rules.excludes(kept)
-    assert rules.reason(other) == "named as a trailer or extra"
+    assert rules.reason(other) == 'Skip Trailers and Extras: name ends in "-trailer"'
 
 
 def test_an_include_overrides_an_exclude_pattern_for_a_whole_folder(lib):
@@ -276,7 +328,7 @@ def test_an_include_overrides_an_exclude_pattern_for_a_whole_folder(lib):
     rules = lib.rules(patterns=["Anime"], includes=["Anime/Akira (1988)"])
 
     assert not rules.excludes(kept)
-    assert rules.reason(other) == "exclude pattern 'Anime'"
+    assert rules.reason(other) == "Exclude Patterns: 'Anime'"
 
 
 def test_a_file_entry_still_covers_the_file_after_its_container_changes(lib):

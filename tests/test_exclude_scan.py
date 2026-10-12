@@ -70,6 +70,19 @@ field. Four run against the whole suite once the tests existed: the entry
 measured from the shallowest library path, written as the absolute path,
 written without its leading "/", and the field left out. All four are
 killed, each by the test written for it.
+
+The reasons were then made specific: each starts with the label of the
+setting responsible, and a name rule quotes the ending it matched in the
+file's own case. Four tests asserted the old wording and were updated; with
+those four deselected by node id, against the unchanged suite, the ending
+reported lower-cased, the Exclude Patterns label swapped for the other, and
+the Skip Trailers and Extras label renamed in the schema all survived. Eight
+run against the whole suite once the Reasons tests in test_exclude_rules.py
+existed: the ending lower-cased; the first ending in the list reported
+instead of the one that matched; a file named only "Sample" reported as an
+ending; each label swapped for the other; the Plex Versions reason and the
+extras-folder reason each without its label; and the schema label renamed.
+All eight are killed, each by the test written for it.
 """
 import asyncio
 import json
@@ -278,11 +291,11 @@ def test_each_excluded_file_is_listed_with_its_own_reason(lib):
     assert answer == {"total": 2, "items": [
         {"path": str(lib.paths.featurette),
          "filename": "Avatar (2009)-featurette.mkv",
-         "reason": "named as a trailer or extra",
+         "reason": 'Skip Trailers and Extras: name ends in "-featurette"',
          "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
         {"path": str(lib.paths.trailer),
          "filename": "Teaser.mkv",
-         "reason": "inside an extras folder (Trailers)",
+         "reason": "Skip Trailers and Extras: inside an extras folder (Trailers)",
          "include_as": "/Avatar (2009)/Trailers/Teaser.mkv"},
     ]}
 
@@ -311,7 +324,7 @@ def test_the_list_follows_both_settings(lib):
     assert answer["items"] == [
         {"path": str(lib.paths.featurette),
          "filename": "Avatar (2009)-featurette.mkv",
-         "reason": "exclude pattern '*-featurette.mkv'",
+         "reason": "Exclude Patterns: '*-featurette.mkv'",
          "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
     ]
 

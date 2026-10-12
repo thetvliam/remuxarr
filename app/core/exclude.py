@@ -81,6 +81,11 @@ EXTRAS_FOLDERS = {
 }
 ANYWHERE_FOLDERS = {"plex versions"}
 
+# Every reason starts with the label of the setting responsible, as the
+# settings page shows it, so the reason says which control to change.
+EXTRAS_RULE   = "Skip Trailers and Extras"
+PATTERNS_RULE = "Exclude Patterns"
+
 _SEASON_FOLDER = re.compile(r"^(season[ ._-]*\d+|specials|s\d+)$", re.IGNORECASE)
 
 
@@ -124,7 +129,7 @@ class ExcludeRules:
 
         for pattern in self.patterns:
             if _matches(pattern, parts, rel):
-                return f"exclude pattern {pattern[0]!r}"
+                return f"{PATTERNS_RULE}: {pattern[0]!r}"
         return None
 
     def excludes(self, path: str) -> bool:
@@ -190,15 +195,24 @@ def _matches(pattern, parts: list[str], rel: str | None) -> bool:
 
 
 def _extras_reason(path: str, parts: list[str]) -> str | None:
-    stem = os.path.splitext(parts[-1])[0].lower()
-    if stem in EXTRAS_NAMES or stem.endswith(EXTRAS_SUFFIXES):
-        return "named as a trailer or extra"
+    # The ending is quoted from the file's own name, in its own case, so
+    # "POCAWE_Sample.mkv" reads as ending in "_Sample": the reason has to
+    # say what to rename, and a lower-cased copy would not match the name
+    # the user is looking at. At most one ending can match, since none of
+    # them ends with another.
+    name = os.path.splitext(parts[-1])[0]
+    stem = name.lower()
+    if stem in EXTRAS_NAMES:
+        return f'{EXTRAS_RULE}: named "{name}"'
+    ending = next((e for e in EXTRAS_SUFFIXES if stem.endswith(e)), None)
+    if ending:
+        return f'{EXTRAS_RULE}: name ends in "{name[-len(ending):]}"'
     folders = [p.lower() for p in parts[:-1]]
     if ANYWHERE_FOLDERS.intersection(folders):
-        return "inside a Plex Versions folder"
+        return f"{EXTRAS_RULE}: inside a Plex Versions folder"
     if folders and folders[-1] in EXTRAS_FOLDERS and _is_extras_folder(
             os.path.dirname(path)):
-        return f"inside an extras folder ({parts[-2]})"
+        return f"{EXTRAS_RULE}: inside an extras folder ({parts[-2]})"
     return None
 
 
