@@ -83,6 +83,17 @@ instead of the one that matched; a file named only "Sample" reported as an
 ending; each label swapped for the other; the Plex Versions reason and the
 extras-folder reason each without its label; and the schema label renamed.
 All eight are killed, each by the test written for it.
+
+When the walk's visited-folder set was shared across library paths (see
+test_scan_library.py), the list's own de-duplication by path could no
+longer change anything, since no folder is walked twice, and was removed;
+the mutant that dropped it is retired with it. The overlapping-libraries
+test above now pins the shared walk: each library path given its own set in
+the list was already killed by it and by the include_as round trip, and so
+was removing the skip of an already-walked library path. The plain os.walk
+mutant from the list's first record, re-aimed at the changed line, is still
+killed. A symlinked library was added, where the two routes give the same
+file different paths.
 """
 import asyncio
 import json
@@ -348,6 +359,18 @@ def test_every_library_is_listed_in_path_order(lib):
 
 def test_a_file_under_two_overlapping_libraries_is_listed_once(lib):
     lib.settings(scan_paths=[str(lib.root), str(lib.paths.movie.parent)])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette),
+                                    str(lib.paths.trailer)]
+
+
+def test_a_folder_a_symlink_brings_in_from_another_library_is_listed_once(lib):
+    """The overlapping-libraries case above, reached through a symlink, where
+    the two routes give the same file two different paths."""
+    other = lib.root.parent / "elsewhere"
+    other.mkdir()
+    os.symlink(lib.paths.movie.parent, other / "Avatar (2009)")
+    lib.settings(scan_paths=[str(lib.root), str(other)])
 
     assert _paths(_listed(lib)) == [str(lib.paths.featurette),
                                     str(lib.paths.trailer)]
