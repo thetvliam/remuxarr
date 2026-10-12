@@ -11,6 +11,7 @@ import { ThemeEditorPage } from "./components/theme/ThemeEditorPage";
 import { ActivePanel } from "./components/dashboard/ActivePanel";
 import { QueuePanel } from "./components/dashboard/QueuePanel";
 import { HistoryPanel } from "./components/dashboard/HistoryPanel";
+import { TabBar } from "./components/atoms/TabBar";
 import { DetailModal } from "./components/DetailModal";
 import { ReleaseNotesModal } from "./components/ReleaseNotesModal";
 
@@ -133,7 +134,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
  *  ROOT APP
  ═══════════════════════════════════════════════════════════════════════════ */
 export default function App() {
-  const { palette, type, space, size } = useTheme();
+  const { palette, type } = useTheme();
   const data = useAppData();
   const { isMobile } = data;
   const [queueTab, setQueueTab] = useState("queue"); // mobile only
@@ -284,35 +285,12 @@ export default function App() {
               }}>
               {/* Mobile tab bar */}
               {isMobile && (
-                <div style={{
-                  display: "flex",
-                  flexShrink: 0,
-                  borderBottom: `1px solid ${palette.border}`,
-                  background: palette.card,
-                }}>
-                {[["queue", "QUEUE"], ["history", "HISTORY"]].map(([k, l]) => (
-                  <button
-                  key={k}
-                  onClick={() => setQueueTab(k)}
-                  style={{
-                    flex: 1,
-                    padding: `${space.md}px 0`,
-                    background: "transparent",
-                    border: "none",
-                    borderBottom: queueTab === k
-                    ? `${size.accentThin}px solid ${palette.amber}` : `${size.accentThin}px solid transparent`,
-                    color: queueTab === k ? palette.amber : palette.dim,
-                    fontSize: type.size.xs,
-                    fontFamily: type.family,
-                    letterSpacing: type.tracking.widest,
-                    fontWeight: type.weight.bold,
-                    cursor: "pointer",
-                  }}
-                  >
-                  {l}
-                  </button>
-                ))}
-                </div>
+                <TabBar
+                label="Dashboard panels"
+                value={queueTab}
+                onChange={setQueueTab}
+                tabs={[{ value: "queue", label: "QUEUE" }, { value: "history", label: "HISTORY" }]}
+                />
               )}
 
               {/* Panel area */}

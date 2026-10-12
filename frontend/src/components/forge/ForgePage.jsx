@@ -3,6 +3,7 @@ import { useTheme } from "../../theme";
 import { ForgeActivePanel } from "./ForgeActivePanel";
 import { CandidatesPanel } from "./CandidatesPanel";
 import { ForgeProcessedPanel } from "./ForgeProcessedPanel";
+import { TabBar } from "../atoms/TabBar";
 
 // ── Root ForgePage ─────────────────────────────────────────────────────────
 
@@ -13,7 +14,7 @@ export const ForgePage = ({
   workerPaused = false,
   isMobile = false,
 }) => {
-  const { palette, type, space, size } = useTheme();
+  const { palette } = useTheme();
   const [forgeTab, setForgeTab] = useState("candidates"); // mobile only
 
   return (
@@ -29,35 +30,12 @@ export const ForgePage = ({
     }}>
     {/* Mobile tab bar */}
     {isMobile && (
-      <div style={{
-        display: "flex",
-        flexShrink: 0,
-        borderBottom: `1px solid ${palette.border}`,
-        background: palette.card,
-      }}>
-      {[["candidates", "CANDIDATES"], ["processed", "PROCESSED"]].map(([k, l]) => (
-        <button
-        key={k}
-        onClick={() => setForgeTab(k)}
-        style={{
-          flex: 1,
-          padding: `${space.md}px 0`,
-          background: "transparent",
-          border: "none",
-          borderBottom: forgeTab === k
-          ? `${size.accentThin}px solid ${palette.amber}` : `${size.accentThin}px solid transparent`,
-          color: forgeTab === k ? palette.amber : palette.dim,
-          fontSize: type.size.xs,
-          fontFamily: type.family,
-          letterSpacing: type.tracking.widest,
-          fontWeight: type.weight.bold,
-          cursor: "pointer",
-        }}
-        >
-        {l}
-        </button>
-      ))}
-      </div>
+      <TabBar
+      label="Forge panels"
+      value={forgeTab}
+      onChange={setForgeTab}
+      tabs={[{ value: "candidates", label: "CANDIDATES" }, { value: "processed", label: "PROCESSED" }]}
+      />
     )}
 
     {/* Panel area */}
