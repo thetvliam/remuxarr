@@ -93,6 +93,18 @@ tests at the end: a job that renamed the file while the scan walked, and
 one that finished during the cleanup. A second mutant, dropping an
 up-front re-read of every row, was equivalent once the per-row re-read
 existed, so the up-front one was removed rather than kept untested.
+
+Two more came when the walk's visited-folder set was shared across library
+paths, so that a folder two of them reach is walked once: /media and
+/media/tv both configured, or a symlink from one library into another.
+Measured before the change, a full scan of the first probed every file under
+tv twice and counted its second probe as a change, and the second recorded
+and queued one file under two paths. Each library path given its own set in
+the walk, and in the pre-count, survived the whole 1870-test suite; both are
+killed by the tests at the end of the walk section. A third, removing the
+skip of a library path an earlier one already walked, was already killed by
+the excluded-files list's tests in test_exclude_scan.py, which walk the same
+way, and is killed here too, by the file directly in the inner path.
 """
 import os
 
@@ -359,6 +371,62 @@ def test_progress_is_reported_against_the_real_total(db, tmp_path,
     scan_library(db, [lib], progress_callback=lambda s, t: seen.append((s, t)))
 
     assert seen == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.parametrize("inner_first", [False, True], ids=["outer-first", "inner-first"])
+def test_a_library_path_inside_another_is_walked_once(db, tmp_path, monkeypatch,
+                                                      inner_first):
+    """
+    Closes: the walk and the pre-count each given a visited set per library
+    path, and the skip of a library path an earlier one already walked.
+
+    /media and /media/tv both configured. With a set per path, every file
+    under tv was probed twice, counted twice in the summary and the progress
+    total, and its second probe counted as a change. Both orders, since
+    whichever path comes first is the one that walks the shared folders.
+    Top.mkv sits directly in the inner path's own folder, which is the one
+    file the top-level skip protects: the subfolders below it are pruned by
+    the walk anyway.
+    """
+    calls = _record_processed(monkeypatch)
+    outer = tmp_path / "media"
+    inner = outer / "tv"
+    (inner / "Show").mkdir(parents=True)
+    expected = [outer / "Film.mkv", inner / "Top.mkv", inner / "Show" / "Ep.mkv"]
+    for path in expected:
+        path.write_text("not really a video")
+    (inner / "Show" / "Ep-trailer.mkv").write_text("not really a video")
+    paths = [str(inner), str(outer)] if inner_first else [str(outer), str(inner)]
+    progress: list[tuple[int, int]] = []
+
+    stats = scan_library(db, paths,
+                         progress_callback=lambda s, t: progress.append((s, t)))
+
+    assert sorted(c["path"] for c in calls) == sorted(str(p) for p in expected)
+    assert progress[-1] == (3, 3)
+    assert (stats.total, stats.excluded) == (3, 1)
+
+
+def test_a_folder_a_symlink_brings_into_another_library_is_walked_once(
+        db, tmp_path, monkeypatch):
+    """
+    Closes: the walk given a visited set per library path, for the case
+    where that recorded and queued one file twice.
+
+    A symlink in one library to a show folder in another. Each path string
+    was new to the database, so the same file got two records and two jobs.
+    """
+    calls = _record_processed(monkeypatch)
+    a = tmp_path / "a"
+    (a / "Show").mkdir(parents=True)
+    (a / "Show" / "Ep.mkv").write_text("not really a video")
+    b = tmp_path / "b"
+    b.mkdir()
+    os.symlink(a / "Show", b / "Show")
+
+    scan_library(db, [str(a), str(b)])
+
+    assert [c["path"] for c in calls] == [str(a / "Show" / "Ep.mkv")]
 
 
 # ── Per file ──────────────────────────────────────────────────────────────────

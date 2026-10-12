@@ -6,6 +6,7 @@ queue_single_file() — probe + enqueue a single path (called by webhook handler
 
 Files the exclude settings match (app/core/exclude.py) are passed over by
 both, and remove_excluded_files() drops any record already held for one.
+find_excluded_files() lists them, since a scan only counts them.
 
 Delta scan logic
 ----------------
@@ -61,7 +62,7 @@ class ScanStats:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def _walk_media_dirs(scan_path: str):
+def _walk_media_dirs(scan_path: str, seen: set | None = None):
     """
     os.walk with followlinks=True, plus a cycle guard.
 
@@ -78,15 +79,28 @@ def _walk_media_dirs(scan_path: str):
     cycle at all: two symlinks resolving to the same directory made every file
     beneath it counted twice in the progress total and processed twice.
 
+    `seen` carries that set from one library path to the next. Pass one set
+    for every path in a walk and a folder is walked once however many paths
+    reach it: a library path inside another, or a symlink from one library
+    into another. With a set per path, a scan probed and counted those files
+    twice, and a file reached through two paths was recorded and queued under
+    both. Omitted, the guard covers the one path only.
+
     Hidden-directory pruning lives here too, so both walk sites share one
     definition instead of repeating the filter.
     """
-    seen: set[tuple[int, int]] = set()
+    if seen is None:
+        seen = set()
     try:
         st = os.stat(scan_path)
-        seen.add((st.st_dev, st.st_ino))
     except OSError:
         return
+    if (st.st_dev, st.st_ino) in seen:
+        logger.warning(
+            "Skipping library path %s: this scan has already walked it, as "
+            "part of another library path or through a symlink.", scan_path)
+        return
+    seen.add((st.st_dev, st.st_ino))
 
     for root, dirs, files in os.walk(scan_path, followlinks=True):
         keep = []
@@ -100,10 +114,12 @@ def _walk_media_dirs(scan_path: str):
                 continue                      # broken symlink, or vanished mid-scan
             key = (st.st_dev, st.st_ino)
             if key in seen:
+                # A symlink back to an ancestor would make this walk never
+                # finish; a folder another library path has already covered
+                # would be scanned twice. Both arrive here.
                 logger.warning(
-                    "Skipping already-visited directory %s — a symlink loops back "
-                    "to it. Following it would make this scan never finish.",
-                    child,
+                    "Skipping %s: this scan has already walked it, through a "
+                    "symlink or another library path.", child,
                 )
                 continue
             seen.add(key)
@@ -150,10 +166,11 @@ def scan_library(
     # Pre-count total media files across all paths so the progress callback
     # can report X/Y.  This is a fast directory listing pass (no I/O per file).
     total_files = 0
+    counted: set[tuple[int, int]] = set()
     for scan_path in paths:
         if not os.path.isdir(scan_path):
             continue
-        for _root, _dirs, files in _walk_media_dirs(scan_path):
+        for _root, _dirs, files in _walk_media_dirs(scan_path, counted):
             total_files += sum(
                 1 for f in files
                 if is_media_file(f) and not rules.excludes(os.path.join(_root, f))
@@ -161,6 +178,7 @@ def scan_library(
 
     scanned   = 0
     cancelled = False
+    walked: set[tuple[int, int]] = set()
     for scan_path in paths:
         if cancelled:
             break
@@ -168,7 +186,7 @@ def scan_library(
             logger.warning("Scan path not found or not a directory: %s", scan_path)
             continue
 
-        for root, _dirs, files in _walk_media_dirs(scan_path):
+        for root, _dirs, files in _walk_media_dirs(scan_path, walked):
             if cancelled:
                 break
 
@@ -643,6 +661,35 @@ def remove_excluded_files(db: Session, scan_paths: list[str], rules: ExcludeRule
         db.commit()
         logger.info("Exclude: removed %d excluded file(s) from the database", removed)
     return removed
+
+
+def find_excluded_files(scan_paths: list[str], rules: ExcludeRules) -> list[tuple[str, str]]:
+    """
+    Every media file under scan_paths that the exclude settings pass over,
+    with the reason, sorted by path.
+
+    A scan only counts these: nothing about an excluded file is stored, so
+    this walks the libraries again rather than reading a record. That makes
+    it an answer about the settings as they are now, which is what someone
+    editing a pattern needs, and it can differ from the count the last scan
+    reported if the settings have changed since.
+
+    The walk and the test are the ones scan_library makes, so a file is
+    listed here exactly when a scan would pass over it, and once, however
+    many library paths reach it.
+    """
+    found: list[tuple[str, str]] = []
+    walked: set[tuple[int, int]] = set()
+    for scan_path in scan_paths:
+        for root, _dirs, files in _walk_media_dirs(scan_path, walked):
+            for filename in files:
+                if not is_media_file(filename):
+                    continue
+                full_path = os.path.join(root, filename)
+                why = rules.reason(full_path)
+                if why:
+                    found.append((full_path, why))
+    return sorted(found)
 
 
 def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:

@@ -60,7 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Added
+
+- Two additions under Exclude Patterns, in Settings → Library & Processing → Library. Always Include brings back files and folders that Skip Trailers and Extras or an exclude pattern would leave alone; it is written the same way as Exclude Patterns, and an entry naming a file still covers it after Remuxarr changes its container. Below it, Show Excluded Files lists each file your saved settings leave alone and why, naming the setting that caught it and what it matched, such as a name ending in _sample, with an Include button on each that puts it in Always Include, taking effect when you save. Until now a scan only said how many files it had excluded.
+
 ## Fixed
 
-- Converting a file to another container (MKV to MP4, say) no longer overwrites a file that already has the new name. If Movie.mp4 is already beside Movie.mkv, the job now fails before doing anything, with a message asking you to move or rename one of them; before, the conversion overwrote Movie.mp4 and then deleted Movie.mkv, and the overwritten file could not be reverted.
-- A conversion to a name Remuxarr still held an old record for (one whose file had since gone) no longer ends as "Finalisation failed" when that record had a language review flag. The conversion had already replaced the file by then.
+- A scan now walks each folder once when one library path is inside another (/media and /media/tv), or when a symlink leads from one library into another. Before, files there were probed twice and counted twice in the scan summary, and a file reached through a symlink was recorded and queued twice, once under each path. This stops new duplicates; a file already recorded twice that way keeps both records.

@@ -26,6 +26,74 @@ cleanup; the removal taking a record whose job is running; the removal on
 a cancelled scan; queue_single_file ignoring the rules; the single-file
 endpoint not checking them; scan_completed without the count; and the
 toast without it. All eighteen are killed.
+
+The list of excluded files (GET /api/scan/excluded, over
+scanner.find_excluded_files) came later, as new code that nothing called,
+so every mutant of it survived by construction. Two were run against the
+unchanged 1842-test suite only to show the harness reached it, and both
+survived: the walk stopping after the first library, and the list left
+unsorted. Eleven were run against the whole suite once the tests below
+existed: each file given the first file's reason; the extras switch forced
+on; the patterns ignored; the first library only; files nothing excludes
+listed too; the 400 for no libraries removed; a plain os.walk in place of
+the scan's own walk, which enters hidden folders; the list unsorted; a
+file under two overlapping libraries listed twice; the folder given as
+the filename; and the route served at another path. All eleven are
+killed, each by the test written for it.
+
+Always Include (include_patterns) came after that, with its rule tests in
+test_exclude_rules.py and its flow tests here. Against the unchanged
+1850-test suite: the include list ignored and its extension handling
+removed, run only to show the harness reached new code, both survived; the
+setting's default, its accepted-key entry and its schema entry each
+removed, all three already killed by test_settings_schema.py, so not
+claimed here. Moving the pattern loop into exclude._matches touched code
+earlier mutants aimed at: the folder-contents mutant from the record above
+was re-aimed there and is still killed by the existing tests, and a new one,
+a path pattern applied to a file under no library path, survived them,
+because their pattern never lined up with the start of the file's absolute
+path. An absolute-path case was added to that test. Nine run against the
+whole suite once the tests existed: the include list ignored; it beating
+only the extras rule; only patterns; the extension handling removed; any
+dotted ending accepted in place of a media extension; from_settings not
+reading the setting; the schema entry moved away from Exclude Patterns;
+that path-pattern guard removed; and (against the frontend suite) the
+excluded-files list left under Exclude Patterns. All nine are killed, each
+by the test written for it.
+
+The list's include_as field (ExcludeRules.entry_for), which the Include
+button adds to Always Include, came last. Two tests here compared whole
+items, so they could not run against code that adds a field; for the
+baseline both were deselected by node id, against which the entry written
+as an absolute path survived as a harness check, and both then gained the
+field. Four run against the whole suite once the tests existed: the entry
+measured from the shallowest library path, written as the absolute path,
+written without its leading "/", and the field left out. All four are
+killed, each by the test written for it.
+
+The reasons were then made specific: each starts with the label of the
+setting responsible, and a name rule quotes the ending it matched in the
+file's own case. Four tests asserted the old wording and were updated; with
+those four deselected by node id, against the unchanged suite, the ending
+reported lower-cased, the Exclude Patterns label swapped for the other, and
+the Skip Trailers and Extras label renamed in the schema all survived. Eight
+run against the whole suite once the Reasons tests in test_exclude_rules.py
+existed: the ending lower-cased; the first ending in the list reported
+instead of the one that matched; a file named only "Sample" reported as an
+ending; each label swapped for the other; the Plex Versions reason and the
+extras-folder reason each without its label; and the schema label renamed.
+All eight are killed, each by the test written for it.
+
+When the walk's visited-folder set was shared across library paths (see
+test_scan_library.py), the list's own de-duplication by path could no
+longer change anything, since no folder is walked twice, and was removed;
+the mutant that dropped it is retired with it. The overlapping-libraries
+test above now pins the shared walk: each library path given its own set in
+the list was already killed by it and by the include_as round trip, and so
+was removing the skip of an already-walked library path. The plain os.walk
+mutant from the list's first record, re-aimed at the changed line, is still
+killed. A symlinked library was added, where the two routes give the same
+file different paths.
 """
 import asyncio
 import json
@@ -33,6 +101,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -211,6 +280,241 @@ def test_the_single_file_endpoint_says_it_is_excluded(lib):
     assert lib.records() == []
 
 
+# ── Listing them ─────────────────────────────────────────────────────────────
+#
+# A scan only counts excluded files and nothing about them is stored, so
+# GET /api/scan/excluded walks the libraries again to say which they are.
+# The fixture's two excluded files are excluded for different reasons, so
+# a reason that belongs to one file shown against both is visible.
+
+def _listed(lib):
+    with lib.Session() as db:
+        return scan_routes.list_excluded(db=db)
+
+
+def _paths(answer):
+    return [item["path"] for item in answer["items"]]
+
+
+def test_each_excluded_file_is_listed_with_its_own_reason(lib):
+    answer = _listed(lib)
+
+    assert answer == {"total": 2, "items": [
+        {"path": str(lib.paths.featurette),
+         "filename": "Avatar (2009)-featurette.mkv",
+         "reason": 'Skip Trailers and Extras: name ends in "-featurette"',
+         "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
+        {"path": str(lib.paths.trailer),
+         "filename": "Teaser.mkv",
+         "reason": "Skip Trailers and Extras: inside an extras folder (Trailers)",
+         "include_as": "/Avatar (2009)/Trailers/Teaser.mkv"},
+    ]}
+
+
+def test_the_list_is_the_files_a_scan_passes_over(lib):
+    """Including one a pattern matches, so both kinds of rule are compared."""
+    three_d = lib.paths.movie.parent / "Avatar (2009) - 3D.mkv"
+    three_d.write_bytes(b"\0" * 64)
+    lib.settings(exclude_patterns=["* - 3D.mkv"])
+
+    listed = _paths(_listed(lib))
+    stats = lib.scan()
+
+    on_disk = {str(p) for p in (*vars(lib.paths).values(), three_d)}
+    assert set(listed) == on_disk - set(lib.probed)
+    assert len(listed) == stats.excluded == 3
+
+
+def test_the_list_follows_both_settings(lib):
+    """With the extras switch off, only the pattern's match is listed, under
+    the pattern's name."""
+    lib.settings(skip_extras=False, exclude_patterns=["*-featurette.mkv"])
+
+    answer = _listed(lib)
+
+    assert answer["items"] == [
+        {"path": str(lib.paths.featurette),
+         "filename": "Avatar (2009)-featurette.mkv",
+         "reason": "Exclude Patterns: '*-featurette.mkv'",
+         "include_as": "/Avatar (2009)/Avatar (2009)-featurette.mkv"},
+    ]
+
+
+def test_every_library_is_listed_in_path_order(lib):
+    """The second library is named first in the settings' list but sorts
+    first by path, so walk order and path order disagree."""
+    docs = lib.root.parent / "documentaries"
+    film = docs / "Planet (2020)"
+    (film / "Trailers").mkdir(parents=True)
+    (film / "Planet (2020).mkv").write_bytes(b"\0" * 64)
+    (film / "Trailers" / "Teaser.mkv").write_bytes(b"\0" * 64)
+    lib.settings(scan_paths=[str(lib.root), str(docs)])
+
+    assert _paths(_listed(lib)) == [
+        str(film / "Trailers" / "Teaser.mkv"),
+        str(lib.paths.featurette),
+        str(lib.paths.trailer),
+    ]
+
+
+def test_a_file_under_two_overlapping_libraries_is_listed_once(lib):
+    lib.settings(scan_paths=[str(lib.root), str(lib.paths.movie.parent)])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette),
+                                    str(lib.paths.trailer)]
+
+
+def test_a_folder_a_symlink_brings_in_from_another_library_is_listed_once(lib):
+    """The overlapping-libraries case above, reached through a symlink, where
+    the two routes give the same file two different paths."""
+    other = lib.root.parent / "elsewhere"
+    other.mkdir()
+    os.symlink(lib.paths.movie.parent, other / "Avatar (2009)")
+    lib.settings(scan_paths=[str(lib.root), str(other)])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette),
+                                    str(lib.paths.trailer)]
+
+
+def test_a_hidden_folder_is_not_walked_here_either(lib):
+    """A scan never enters a folder whose name starts with a dot, so a file
+    in one is not excluded by anything: it is never reached at all."""
+    hidden = lib.paths.movie.parent / ".grab" / "Avatar (2009)-trailer.mkv"
+    hidden.parent.mkdir()
+    hidden.write_bytes(b"\0" * 64)
+
+    listed = _paths(_listed(lib))
+    lib.scan()
+
+    assert str(hidden) not in listed
+    assert str(hidden) not in lib.probed
+
+
+def test_no_library_paths_is_refused(lib):
+    """As GET /orphaned does: with no libraries there is nothing to list."""
+    lib.settings(scan_paths=[])
+
+    with pytest.raises(HTTPException) as refused:
+        _listed(lib)
+
+    assert refused.value.status_code == 400
+
+
+def test_the_list_is_served_where_the_settings_page_will_ask(lib):
+    """
+    Through the scan router, so its prefix and this route's path are what
+    is tested. A bare FastAPI app rather than app.main: importing app.main
+    here, under the fixture's patched SessionLocal, would bind that factory
+    into the modules app.main imports first (see test_clear_database.py).
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    def db():
+        session = lib.Session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app = FastAPI()
+    app.include_router(scan_routes.router)
+    app.dependency_overrides[scan_routes.get_db] = db
+
+    response = TestClient(app).get("/api/scan/excluded")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+
+
+def test_every_listed_entry_brings_its_own_file_back(lib):
+    """
+    Each item's include_as is what the list's Include button puts in Always
+    Include, so read back by the rules it has to match the file it names.
+    Two libraries, one of them inside the other, and a file at a library's
+    top level: an entry measured from the wrong library path, or written as
+    the absolute path, would leave its file on the list.
+    """
+    docs = lib.root.parent / "documentaries"
+    docs.mkdir()
+    (docs / "Planet (2020)-trailer.mkv").write_bytes(b"\0" * 64)
+    inner = lib.paths.movie.parent
+    lib.settings(scan_paths=[str(lib.root), str(inner), str(docs)])
+
+    items = _listed(lib)["items"]
+    # In path order, so the documentaries library comes first. The other two
+    # are measured from the inner library path, the deeper of the two.
+    assert [item["include_as"] for item in items] == [
+        "/Planet (2020)-trailer.mkv",
+        "/Avatar (2009)-featurette.mkv",
+        "/Trailers/Teaser.mkv",
+    ]
+
+    lib.settings(include_patterns=[item["include_as"] for item in items])
+
+    assert _listed(lib) == {"total": 0, "items": []}
+
+
+def test_an_entry_for_a_file_at_a_librarys_top_level_covers_only_that_file(lib):
+    """Starting with "/" makes it a path from the library path. A bare name
+    would be a name pattern, matching the same name in any folder."""
+    top = lib.root / "Teaser-trailer.mkv"
+    top.write_bytes(b"\0" * 64)
+    deeper = lib.paths.movie.parent / "Teaser-trailer.mkv"
+    deeper.write_bytes(b"\0" * 64)
+    entry = next(item["include_as"] for item in _listed(lib)["items"]
+                 if item["path"] == str(top))
+
+    lib.settings(include_patterns=[entry])
+
+    assert entry == "/Teaser-trailer.mkv"
+    listed = _paths(_listed(lib))
+    assert str(top) not in listed
+    assert str(deeper) in listed
+
+
+# ── Always Include ───────────────────────────────────────────────────────────
+#
+
+#
+# The rule itself is in test_exclude_rules.py. These follow an included file
+# through each way in, with the setting read from the database as it is in
+# production, so the setting reaching the rules is tested too.
+
+def test_a_scan_probes_and_queues_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    stats = lib.scan()
+
+    assert str(lib.paths.trailer) in lib.probed
+    assert lib.records() == ["Avatar (2009).mkv", "Teaser.mkv"]
+    assert stats.excluded == 1
+
+
+def test_an_included_files_record_survives_the_next_scan(lib, held):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    lib.scan()
+
+    assert lib.records() == ["Avatar (2009).mkv", "Teaser.mkv"]
+
+
+def test_a_webhook_queues_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    with lib.Session() as db:
+        item = scanner.queue_single_file(db, str(lib.paths.trailer))
+
+    assert item is not None
+    assert lib.records() == ["Teaser.mkv"]
+
+
+def test_the_list_leaves_out_an_included_file(lib):
+    lib.settings(include_patterns=["Teaser.mkv"])
+
+    assert _paths(_listed(lib)) == [str(lib.paths.featurette)]
+
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 def test_an_upgrading_install_gets_the_switch_on(lib):
@@ -220,3 +524,14 @@ def test_an_upgrading_install_gets_the_switch_on(lib):
         session_module._seed_defaults(db)
         assert json.loads(db.get(AppSetting, "skip_extras").value) is True
         assert json.loads(db.get(AppSetting, "exclude_patterns").value) == []
+        assert json.loads(db.get(AppSetting, "include_patterns").value) == []
+
+
+def test_always_include_sits_directly_under_exclude_patterns():
+    """The settings page renders the schema in order, and the excluded-files
+    list after Always Include, so this order puts the two settings that
+    decide the list directly above it."""
+    from app.api.routes.settings import SETTINGS_SCHEMA
+
+    keys = [field["key"] for field in SETTINGS_SCHEMA]
+    assert keys[keys.index("exclude_patterns") + 1] == "include_patterns"

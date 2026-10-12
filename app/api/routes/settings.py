@@ -334,6 +334,7 @@ KNOWN_KEYS = {
     "scan_paths",
     "skip_extras",
     "exclude_patterns",
+    "include_patterns",
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
     "image_subtitle_handling",
@@ -429,6 +430,20 @@ SETTINGS_SCHEMA = [
                        "and case is ignored. Files already in Remuxarr that "
                        "a pattern matches are removed from it at the next "
                        "scan; the files themselves are not touched.",
+    },
+    {
+        "key":         "include_patterns",
+        "group":       "Library",
+        "label":       "Always Include",
+        "type":        "string_list",
+        "placeholder": "Testing or Film-sample.mkv",
+        "description": "Files and folders to process even when Skip Trailers "
+                       "and Extras or an exclude pattern would leave them "
+                       "alone. Written the same way as Exclude Patterns. An "
+                       "entry naming a file also covers it after Remuxarr "
+                       "changes its container, so Film-sample.mkv still "
+                       "covers Film-sample.mp4. Files this brings back are "
+                       "picked up at the next scan.",
     },
     {
         "key":         "prefer_mp4_container",

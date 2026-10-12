@@ -8,8 +8,9 @@ movie itself: queued, converted, or sent to language review.
 
 skip_extras (on by default) covers what Plex and Jellyfin document as
 extras, plus Plex's optimised versions. exclude_patterns is the user's own
-list. These run the rules against a real folder tree, since whether a
-folder counts as an extras folder depends on what is around it on disk.
+list, and include_patterns (Always Include) overrides both. These run the
+rules against a real folder tree, since whether a folder counts as an
+extras folder depends on what is around it on disk.
 
 The conventions are written out here rather than imported from the module.
 A name dropped from the module's lists then fails a test, where reading the
@@ -42,9 +43,10 @@ def lib(tmp_path):
             path.write_bytes(b"\0")
         return str(root / relpaths[-1])
 
-    def rules(skip_extras=True, patterns=(), roots=None):
+    def rules(skip_extras=True, patterns=(), roots=None, includes=()):
         return ExcludeRules(skip_extras, list(patterns),
-                            [str(root)] if roots is None else roots)
+                            [str(root)] if roots is None else roots,
+                            includes=list(includes))
 
     return SimpleNamespace(root=root, put=put, rules=rules)
 
@@ -241,8 +243,114 @@ def test_a_path_under_no_library_path_is_tested_by_name_only(lib):
     path = lib.put("TV/Anime/Show/Show - S01E01.mkv")
     assert lib.rules(patterns=["Anime"], roots=[]).excludes(path)
     assert not lib.rules(patterns=["TV/Anime"], roots=[]).excludes(path)
+    # Written as an absolute path, a path pattern lines up with the start of
+    # the file's own path. That is the case the rule exists for: with no
+    # library path to measure from, a path pattern does not apply at all.
+    assert not lib.rules(patterns=[str(lib.root / "TV")], roots=[]).excludes(path)
 
 
 def test_blank_patterns_are_ignored(lib):
     path = lib.put(MOVIE)
     assert not lib.rules(patterns=["", "   "]).excludes(path)
+
+
+# ── Reasons ──────────────────────────────────────────────────────────────────
+#
+# A reason is what the excluded-files list shows, so it has to say which
+# setting caught the file and what in the file it caught. Each case below
+# is a different ending, in a different case, so a reason built from the
+# wrong ending, or from a lower-cased copy, does not match.
+
+@pytest.mark.parametrize("name, ending", [
+    ("POCAWE_Sample.mkv", "_Sample"),
+    ("Making Of-Featurette.mp4", "-Featurette"),
+    ("Teaser.TRAILER.mkv", ".TRAILER"),
+])
+def test_the_reason_quotes_the_ending_from_the_files_own_name(lib, name, ending):
+    path = lib.put(MOVIE, f"Avatar (2009)/{name}")
+    assert lib.rules().reason(path) == (
+        f'Skip Trailers and Extras: name ends in "{ending}"')
+
+
+def test_the_reason_for_a_file_named_only_sample_says_so(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Sample.mkv")
+    assert lib.rules().reason(path) == 'Skip Trailers and Extras: named "Sample"'
+
+
+def test_the_reason_names_the_extras_folder(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Trailers/Teaser.mkv")
+    assert lib.rules().reason(path) == (
+        "Skip Trailers and Extras: inside an extras folder (Trailers)")
+
+
+def test_the_reason_names_a_plex_versions_folder(lib):
+    path = lib.put(MOVIE, "Avatar (2009)/Plex Versions/Optimized/Avatar (2009).mp4")
+    assert lib.rules().reason(path) == (
+        "Skip Trailers and Extras: inside a Plex Versions folder")
+
+
+def test_the_reason_names_the_pattern(lib):
+    path = lib.put("Anime/Akira (1988)/Akira (1988).mkv")
+    assert lib.rules(patterns=["Anime"]).reason(path) == "Exclude Patterns: 'Anime'"
+
+
+def test_each_reason_starts_with_its_settings_label():
+    """The prefixes are the labels the settings page shows, so a reason
+    points at the control to change. A label renamed in the schema and not
+    here would point at nothing."""
+    from app.api.routes.settings import SETTINGS_SCHEMA
+    from app.core.exclude import EXTRAS_RULE, PATTERNS_RULE
+
+    labels = {f["key"]: f["label"] for f in SETTINGS_SCHEMA}
+    assert (EXTRAS_RULE, PATTERNS_RULE) == (
+        labels["skip_extras"], labels["exclude_patterns"])
+
+
+# ── Always Include ───────────────────────────────────────────────────────────
+#
+# include_patterns overrides both of the above. Each test keeps a neighbour
+# that is still excluded, so an entry that covered too much would show.
+
+def test_an_include_brings_back_a_file_the_extras_rule_caught(lib):
+    kept = lib.put(MOVIE, "Avatar (2009)/Codec Test_sample.mkv")
+    other = lib.put("Avatar (2009)/Teaser-trailer.mkv")
+
+    rules = lib.rules(includes=["Codec Test_sample.mkv"])
+
+    assert not rules.excludes(kept)
+    assert rules.reason(other) == 'Skip Trailers and Extras: name ends in "-trailer"'
+
+
+def test_an_include_overrides_an_exclude_pattern_for_a_whole_folder(lib):
+    kept = lib.put("Anime/Akira (1988)/Akira (1988).mkv")
+    other = lib.put("Anime/Paprika (2006)/Paprika (2006).mkv")
+
+    rules = lib.rules(patterns=["Anime"], includes=["Anime/Akira (1988)"])
+
+    assert not rules.excludes(kept)
+    assert rules.reason(other) == "Exclude Patterns: 'Anime'"
+
+
+def test_a_file_entry_still_covers_the_file_after_its_container_changes(lib):
+    """Written as the .mkv it was, matched against the .mp4 a conversion
+    leaves. Otherwise the converted file is excluded again at the next scan
+    and its record removed."""
+    converted = lib.put(MOVIE, "Avatar (2009)/Codec Test_sample.mp4")
+
+    rules = lib.rules(includes=["Avatar (2009)/Codec Test_sample.mkv"])
+
+    assert not rules.excludes(converted)
+
+
+@pytest.mark.parametrize("name", ["Teaser.trailer.mkv", "Teaser 2.mkv"])
+def test_a_file_entry_covers_no_other_name(lib, name):
+    """Only the extension is open. Teaser.trailer.mkv is a different file
+    that an open ending after the first dot would take in."""
+    lib.put(MOVIE, "Avatar (2009)/Teaser.mkv")
+    other = lib.put(f"Avatar (2009)/{name}")
+
+    rules = lib.rules(patterns=["Avatar (2009)"],
+                      includes=["Avatar (2009)/Teaser.mkv"])
+
+    assert not rules.excludes(str(lib.root / "Avatar (2009)/Teaser.mkv"))
+    assert rules.excludes(other)
