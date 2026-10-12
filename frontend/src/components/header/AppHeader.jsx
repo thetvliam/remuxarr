@@ -195,7 +195,9 @@ export const AppHeader = ({
           height: size.headerHeight,
           padding: `0 ${space.xl}px`,
           background: "transparent",
-          border: "none",
+          borderTop: "none",
+          borderRight: "none",
+          borderLeft: "none",
           borderBottom: page === n.k
           ? `${size.accentThin}px solid ${n.alertable && reviewCount > 0 ? palette.yellow : palette.amber}`
           : `${size.accentThin}px solid transparent`,
@@ -442,8 +444,10 @@ export const AppHeader = ({
                 onClick={closeDrawer}
                 style={{
                   position: "fixed",
-                  inset: 0,
                   top: size.headerHeight,
+                  right: 0,
+                  bottom: 0,
+                  left: 0,
                   zIndex: LAYER.drawerScrim,
                   background: "transparent",
                 }}
@@ -480,7 +484,8 @@ export const AppHeader = ({
                       textAlign: "left",
                       padding: `${space.lg}px ${space.xxl}px`,
                       background: active ? (alert ? alpha(palette.yellow, ALPHA.trace) : alpha(palette.amber, ALPHA.trace)) : "transparent",
-                          border: "none",
+                          borderTop: "none",
+                          borderRight: "none",
                           borderLeft: `${size.accentWidth}px solid ${active ? (alert ? palette.yellow : palette.amber) : "transparent"}`,
                           borderBottom: `1px solid ${palette.border}`,
                           color: active ? (alert ? palette.yellow : palette.amber) : palette.dim,

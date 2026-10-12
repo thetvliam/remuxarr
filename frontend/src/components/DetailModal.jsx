@@ -109,8 +109,10 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
     onClick={e => e.stopPropagation()}
     style={{
       background: palette.card,
-      border: `1px solid ${palette.border}`,
       borderTop: `${size.accentThin}px solid ${topColor}`,
+      borderRight: `1px solid ${palette.border}`,
+      borderBottom: `1px solid ${palette.border}`,
+      borderLeft: `1px solid ${palette.border}`,
       // Desktop: centred card with max dimensions.
       // Mobile: full-screen — use 100dvh so the browser address bar
       // doesn't cause overflow (dvh accounts for the visible viewport

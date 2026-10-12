@@ -672,9 +672,11 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
         gap: space.md,
         padding: `${space.xs}px ${space.lg}px`,
         background: palette.card,
-        border: `1px solid ${palette.border}`,
-        borderRadius: `${radius.sm}px ${radius.sm}px 0 0`,
+        borderTop: `1px solid ${palette.border}`,
+        borderRight: `1px solid ${palette.border}`,
         borderBottom: "none",
+        borderLeft: `1px solid ${palette.border}`,
+        borderRadius: `${radius.sm}px ${radius.sm}px 0 0`,
       }}>
       <input type="checkbox" checked={allOrphanedSelected} onChange={toggleAllOrphaned} />
       <span style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.normal }}>
