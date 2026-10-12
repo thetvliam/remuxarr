@@ -4,6 +4,7 @@ import { fmtRel, fmtCount, formatBytesSaved } from "../../utils";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
 import { PanelHeader } from "../layout/PanelHeader";
+import { SegmentedControl } from "../atoms/SegmentedControl";
 import { useHistoryData } from "../../hooks/useHistoryData";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -208,53 +209,29 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
   // ── Tab header ────────────────────────────────────────────────────────────
   const tabs = (
     <div style={{ display: "flex", alignItems: "center" }}>
-    {[
+    <SegmentedControl
+    label="History"
+    value={tab}
+    onChange={switchTab}
+    options={[
       ["success", palette.green],
       ["skipped", palette.muted],
       ["failed",  palette.red],
       ["dry_run", palette.violet],
     ].map(([key, color]) => {
-      const n       = counts[key] || 0;
-      const label   = key === "dry_run" ? "DRY RUN" : key.toUpperCase();
-      const tooltip = n >= 1000 ? n.toLocaleString() + " items" : undefined;
-      return (
-        <button
-        key={key}
-        onClick={() => switchTab(key)}
-        title={tooltip}
-        style={{
-          padding: `${space.hair}px ${space.md}px`,
-          background: tab === key ? alpha(color, ALPHA.low) : "transparent",
-              // No borderRadius here, deliberately. These four buttons are a
-              // single segmented control: each drops its right border so the
-              // neighbouring one's left border serves both. Rounding a segment
-              // would round the edges it shares, leaving gaps down the middle of
-              // the strip on any theme with a real radius. Only the outer two
-              // corners of the group should curve, which needs a clipping
-              // wrapper around just the segments — the flex container here also
-              // holds the divider and the RETRY ALL button, so it cannot take
-              // that role without clipping those too.
-              border: `1px solid ${tab === key ? color : palette.border}`,
-              borderRight: "none",
-              color: tab === key ? color : palette.dim,
-              fontSize: type.size.xs,
-              fontFamily: type.family,
-              letterSpacing: type.tracking.wide,
-              cursor: "pointer",
-        }}
-        >
-        {label}
-        {n > 0 && (
-          <span style={{ marginLeft: space.xs, color }}>{fmtCount(n)}</span>
-        )}
-        </button>
-      );
+      const n = counts[key] || 0;
+      return {
+        value: key,
+        label: key === "dry_run" ? "DRY RUN" : key.toUpperCase(),
+        color,
+        badge: n > 0 ? fmtCount(n) : null,
+        title: n >= 1000 ? n.toLocaleString() + " items" : undefined,
+      };
     })}
-    {/* Vertical rule between the tab strip and RETRY ALL. alignSelf is
-      * required: the flex parent sets alignItems:"center", which overrides
-      * the default stretch, so with only a width this element had zero
-      * height and never painted at all. */}
-      <div style={{ width: 1, alignSelf: "stretch", background: palette.border }} />
+    />
+    {/* No divider after the strip: it closes its own right edge now (see
+      * SegmentedControl), and the old 1px rule here would sit flush against
+      * that edge as a second line. The buttons below keep their own gap. */}
 
       {/* Gated on failed_only rather than failed: over a tab holding only
         * cancelled rows, the button would do nothing. */}

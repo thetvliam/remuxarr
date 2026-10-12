@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtClock } from "../../utils";
+import { SegmentedControl } from "../atoms/SegmentedControl";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * LOG VIEWER
@@ -138,46 +139,17 @@ export const LogViewer = ({ api, toast }) => {
         marginBottom: space.sm,
         flexWrap: "wrap",
       }}>
-      {/* Level filter */}
-      <div style={{ display: "flex" }}>
-      {LEVELS.map((l, i) => {
-        const active = levelFilter === l;
-        /* The same map the log rows below use, rather than a second copy
-         * of it. The inline ternary this replaces listed INFO, WARNING
-         * and ERROR and sent everything else to red — so it agreed with
-         * theme.levelColor only by coincidence, and adding DEBUG or
-         * CRITICAL to LEVELS would have coloured the new filter red
-         * while its rows rendered correctly. "ALL" is not a level, so it
-         * falls through to muted. */
-        const color = levelColor[l] || palette.muted;
-        return (
-          <button
-          key={l}
-          onClick={() => setLevelFilter(l)}
-          style={{
-            padding: `${space.xxs}px ${space.md}px`,
-            background: active ? `${alpha(color, ALPHA.medium)}` : "transparent",
-                // No borderRadius: these are a segmented control. Every
-                // button but the last drops its right border so its
-                // neighbour's left border serves both, and rounding a
-                // segment would round the edges it shares, breaking the
-                // strip into pieces on any theme with a real radius.
-                // Only the group's two outer corners should curve, which
-                // needs a clipping wrapper rather than per-segment corners.
-                border: `1px solid ${active ? color : palette.border}`,
-                borderRight: i < LEVELS.length - 1 ? "none" : undefined,
-                color: active ? color : palette.dim,
-                fontSize: type.size.xs,
-                fontFamily: type.family,
-                letterSpacing: type.tracking.normal,
-                cursor: "pointer",
-          }}
-          >
-          {l}
-          </button>
-        );
-      })}
-      </div>
+      {/* Level filter. The colours are the same map the log rows below use,
+        * rather than a second copy of it: an inline ternary that listed INFO,
+        * WARNING and ERROR and sent everything else to red once agreed with
+        * levelColor only by coincidence. "ALL" is not a level, so it falls
+        * through to the control's default, muted. */}
+      <SegmentedControl
+      label="Log level"
+      value={levelFilter}
+      onChange={setLevelFilter}
+      options={LEVELS.map(l => ({ value: l, label: l, color: levelColor[l] }))}
+      />
 
       {/* Auto-scroll toggle */}
       <button

@@ -355,3 +355,49 @@ describe("HistoryPanel — Retry All", () => {
     expect(screen.getByText("HISTORY").nextSibling).toHaveTextContent(/^2$/);
   });
 });
+
+
+/** Each side of an element's own border as styled: [style, width, colour]. */
+const edges = (el) => ["Top", "Right", "Bottom", "Left"].map(side => [
+  el.style[`border${side}Style`], el.style[`border${side}Width`], el.style[`border${side}Color`],
+]);
+
+describe("HistoryPanel — the selected tab's outline", () => {
+  /* The tabs were styled with the border shorthand plus borderRight: "none".
+   * On first render React applied both, so the selected tab had no right
+   * edge. Switching tabs changed only the shorthand's colour, and React
+   * re-applied the shorthand alone, which reset every side: the edge came
+   * back and the strip's borders doubled. Neither was the intended look.
+   * Both tests read the inline style, which is where the bug lived. */
+  beforeEach(() => mockApi());
+
+  it("is drawn in the tab's colour on all four sides on first render", async () => {
+    renderPanel();
+    const success = screen.getByRole("button", { name: /^SUCCESS/ });
+
+    const [top, right, bottom, left] = edges(success);
+    expect(top[0]).toBe("solid");
+    expect([right, bottom, left]).toEqual([top, top, top]);
+  });
+
+  it("moves to the tab that was clicked", async () => {
+    renderPanel();
+    const pressed = () => ["SUCCESS", "SKIPPED", "FAILED", "DRY RUN"].map(label =>
+      screen.getByRole("button", { name: new RegExp(`^${label}`) }).getAttribute("aria-pressed"));
+
+    expect(pressed()).toEqual(["true", "false", "false", "false"]);
+    fireEvent.click(screen.getByRole("button", { name: /^FAILED/ }));
+    expect(pressed()).toEqual(["false", "false", "true", "false"]);
+  });
+
+  it("looks the same after switching away and back", async () => {
+    renderPanel();
+    const success = screen.getByRole("button", { name: /^SUCCESS/ });
+    const before = edges(success);
+
+    fireEvent.click(screen.getByRole("button", { name: /^SKIPPED/ }));
+    fireEvent.click(success);
+
+    expect(edges(success)).toEqual(before);
+  });
+});
