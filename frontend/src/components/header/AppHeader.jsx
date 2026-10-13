@@ -6,6 +6,14 @@ import { ApiBar } from "./ApiBar";
 /* ═══════════════════════════════════════════════════════════════════════════
  * APP HEADER
  * Desktop: single bar — logo, nav, controls, WS indicator all inline.
+ *   Compact (desktop below 1140px, see useBreakpoint's isCompact): the same
+ *     bar with the logo mark instead of the wordmark, tighter nav links,
+ *     DRY RUN and PAUSE / RESUME as their glyphs alone, AUTO / MANUAL as the
+ *     word alone, and scan progress as "✕ 123/456" without STOP and the
+ *     brackets. Each shortened control keeps its full meaning in its
+ *     accessible name and tooltip. Measured in Chrome with every label at
+ *     its longest, the full bar needs up to 1137px and this one up to 854px,
+ *     so it fits from the 860px breakpoint up.
  * Mobile:  two-row layout.
  *   Row 1 (always visible): logo, current page label, SCAN, WS indicator,
  *     ⚙ button, ☰ hamburger. SCAN is here rather than in the drawer
@@ -63,10 +71,11 @@ const NAV_ITEMS = [
  * number stays the same. Crop on export.
  *
  * 28 rather than something closer to headerHeight because the lockup is near
- * 5:1: every pixel of height costs five of width, and the desktop layout
- * starts at 640px where the bar also holds four nav links, SCAN and the
- * indicators. 28 leaves 9px of clearance top and bottom on a 46px bar and 12
- * on the 52px theme, so it cannot touch the edges on either.
+ * 5:1: every pixel of height costs five of width, and the bar also holds
+ * four nav links, SCAN and the indicators. Below 1140px there is not room
+ * for the lockup at all, and the compact bar shows the mark instead. 28
+ * leaves 9px of clearance top and bottom on a 46px bar and 12 on the 52px
+ * theme, so it cannot touch the edges on either.
  */
 const LOGO_SRC = {
   mark: () => "/logo.svg",
@@ -123,6 +132,7 @@ export const AppHeader = ({
   scanning, scanProgress, onTriggerScan, onCancelScan,
   wsConnected,
   isMobile,
+  isCompact = false,
 }) => {
   const { palette, type, space, radius, size, surface } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -163,6 +173,12 @@ export const AppHeader = ({
   const scanLabel = scanning
   ? (scanProgress ? `✕ STOP (${scanProgress.scanned}/${scanProgress.total})` : "✕ STOP SCAN")
   : "↻ SCAN";
+  // The compact bar's progress drops STOP and the brackets; the button's
+  // name and tooltip still say what it does.
+  const compactScan = scanning && scanProgress;
+  const scanText = compactScan && isCompact
+  ? `✕ ${scanProgress.scanned}/${scanProgress.total}`
+  : scanLabel;
 
   // ── Desktop layout ────────────────────────────────────────────────────────
   if (!isMobile) {
@@ -179,7 +195,7 @@ export const AppHeader = ({
       }}>
       {/* Logo — icon + wordmark lockup */}
       <div style={{ display: "flex", alignItems: "center", marginRight: space.huge }}>
-      <Logo variant="full" />
+      <Logo variant={isCompact ? "mark" : "full"} />
       </div>
 
       {/* Nav links */}
@@ -193,7 +209,7 @@ export const AppHeader = ({
         aria-current={page === n.k ? "page" : undefined}
         style={{
           height: size.headerHeight,
-          padding: `0 ${space.xl}px`,
+          padding: `0 ${isCompact ? space.md : space.xl}px`,
           background: "transparent",
           borderTop: "none",
           borderRight: "none",
@@ -244,7 +260,12 @@ export const AppHeader = ({
       {/* Dry-run */}
       {/* State is conveyed by colour and a ◆/◇ glyph only; aria-pressed is
         * what carries it to anyone not seeing either. */}
-        <button onClick={onToggleDryRun} aria-pressed={dryRun} style={{
+        <button
+        onClick={onToggleDryRun}
+        aria-pressed={dryRun}
+        aria-label={isCompact ? "Dry run" : undefined}
+        title={isCompact ? `Dry run ${dryRun ? "on" : "off"}` : undefined}
+        style={{
           padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
           background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
             border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
@@ -252,7 +273,7 @@ export const AppHeader = ({
             color: dryRun ? palette.yellow : palette.dim,
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
         }}>
-        {dryRun ? "◆ DRY RUN" : "◇ DRY RUN"}
+        {(dryRun ? "◆" : "◇") + (isCompact ? "" : " DRY RUN")}
         </button>
 
         {/* Auto-start */}
@@ -271,13 +292,19 @@ export const AppHeader = ({
             fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
           }}
           >
-          {autoStart ? "⚡ AUTO" : "⏸ MANUAL"}
+          {/* Compact drops the glyph and keeps the word: MANUAL's glyph is
+            * the same ⏸ as PAUSE beside it, so glyphs alone would show two
+            * identical buttons in the usual state of manual start, running. */}
+          {isCompact
+            ? (autoStart ? "AUTO" : "MANUAL")
+            : (autoStart ? "⚡ AUTO" : "⏸ MANUAL")}
           </button>
 
           {/* Pause / Resume */}
           <button
           onClick={onTogglePause}
           aria-pressed={workerPaused}
+          aria-label={isCompact ? (workerPaused ? "Resume" : "Pause") : undefined}
           title={workerPaused ? "Resume processing" : "Pause processing — finish the current job then stop"}
           style={{
             padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
@@ -289,12 +316,17 @@ export const AppHeader = ({
             animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
           }}
           >
-          {workerPaused ? "▶ RESUME" : "⏸ PAUSE"}
+          {isCompact
+            ? (workerPaused ? "▶" : "⏸")
+            : (workerPaused ? "▶ RESUME" : "⏸ PAUSE")}
           </button>
 
           {/* Scan */}
           <button
           onClick={scanning ? onCancelScan : onTriggerScan}
+          aria-label={compactScan && isCompact
+            ? `Stop scan (${scanProgress.scanned} of ${scanProgress.total} scanned)` : undefined}
+          title={compactScan && isCompact ? scanLabel : undefined}
           style={{
             padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
             background: "transparent",
@@ -306,7 +338,7 @@ export const AppHeader = ({
             animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
           }}
           >
-          {scanLabel}
+          {scanText}
           </button>
 
           {/* WS status */}

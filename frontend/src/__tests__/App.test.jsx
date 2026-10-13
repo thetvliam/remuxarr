@@ -99,3 +99,55 @@ describe("App — the dashboard's Queue and History switch on a phone", () => {
     expect(historyShown()).toBeNull();
   });
 });
+
+/* The header's compact form, through App. useBreakpoint decides it and the
+ * header renders it, and both are tested on their own; what neither would
+ * notice is useAppData or App failing to pass it along, which leaves the
+ * full header squeezed between 860 and 1140px exactly as before. Unlike the
+ * phone tests above, these do depend on where the boundaries sit, so
+ * matchMedia here answers each max-width query against a viewport width.
+ *
+ * Verified by mutation: useAppData not returning isCompact, and App not
+ * passing it to the header, both survived the suite without this block and
+ * are killed by it. */
+describe("App — the header at each width", () => {
+  const viewport = (width) => {
+    vi.stubGlobal("matchMedia", (q) => {
+      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
+      return {
+        matches: max ? width <= Number(max[1]) : q === "(hover: hover)",
+        media: q,
+        addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {},
+      };
+    });
+  };
+  const headerLogo = () => document.querySelector("header img").getAttribute("src");
+
+  it("is the phone header below 860px", async () => {
+    viewport(859);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(screen.getByRole("button", { name: "Open menu" })).toBeTruthy();
+  });
+
+  it("is the compact header from 860px to 1139px", async () => {
+    viewport(1000);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(screen.queryByRole("button", { name: "Open menu" })).toBeNull();
+    expect(headerLogo()).toBe("/logo.svg");
+    expect(screen.getByRole("button", { name: "Dry run" })).toBeTruthy();
+  });
+
+  it("is the full header from 1140px", async () => {
+    viewport(1140);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(headerLogo()).toMatch(/^\/logo-name-/);
+    expect(screen.getByRole("button", { name: /^[◆◇] DRY RUN$/ })).toBeTruthy();
+  });
+});

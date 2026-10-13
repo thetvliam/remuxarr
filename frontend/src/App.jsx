@@ -136,7 +136,7 @@ const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
 export default function App() {
   const { palette, type } = useTheme();
   const data = useAppData();
-  const { isMobile } = data;
+  const { isMobile, isCompact } = data;
   const [queueTab, setQueueTab] = useState("queue"); // mobile only
   const {
     api, setApi, page, setPage,
@@ -255,6 +255,7 @@ export default function App() {
         scanning={scanning} scanProgress={scanProgress} onTriggerScan={triggerScan} onCancelScan={cancelScan}
         wsConnected={wsConnected}
         isMobile={isMobile}
+        isCompact={isCompact}
         />
 
         {/* ╔══════════════════════════════════════════════╗
