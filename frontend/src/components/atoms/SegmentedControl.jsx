@@ -24,14 +24,22 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *
  * aria-pressed marks the selected segment, the convention Btn and the header
  * already use, so the selection is not conveyed by colour alone.
+ *
+ * `fill` stretches the strip across its container in equal segments, for a
+ * strip given a row of its own (History's tabs, under the panel title). Each
+ * label stays on one line, and a badge drops beneath its label when the
+ * segment is too narrow for both. Without it a squeezed segment broke its
+ * label instead ("DRY / RUN"), and at its narrowest the strip ran out of the
+ * panel. Without `fill` the strip is as it was, which is what the log
+ * viewer's level filter uses.
  ═══════════════════════════════════════════════════════════════════════════ */
 
-export const SegmentedControl = ({ options, value, onChange, label }) => {
+export const SegmentedControl = ({ options, value, onChange, label, fill = false }) => {
   const { palette, type, space, radius } = useTheme();
   const last = options.length - 1;
 
   return (
-    <div role="group" aria-label={label} style={{ display: "flex" }}>
+    <div role="group" aria-label={label} style={fill ? { display: "flex", width: "100%" } : { display: "flex" }}>
     {options.map((option, i) => {
       const on    = option.value === value;
       const color = option.color || palette.muted;
@@ -46,6 +54,7 @@ export const SegmentedControl = ({ options, value, onChange, label }) => {
         style={{
           position: "relative",
           zIndex: on ? 1 : 0,
+          flex: fill ? "1 1 0" : undefined,
           marginLeft: i === 0 ? 0 : -1,
           padding: `${space.hair}px ${space.md}px`,
           background: on ? alpha(color, ALPHA.low) : "transparent",
@@ -64,9 +73,11 @@ export const SegmentedControl = ({ options, value, onChange, label }) => {
           cursor: "pointer",
         }}
         >
-        {option.label}
+        {fill ? <span style={{ whiteSpace: "nowrap" }}>{option.label}</span> : option.label}
         {option.badge != null && (
-          <span style={{ marginLeft: space.xs, color }}>{option.badge}</span>
+          <span style={fill
+            ? { marginLeft: space.xs, color, display: "inline-block", whiteSpace: "nowrap" }
+            : { marginLeft: space.xs, color }}>{option.badge}</span>
         )}
         </button>
       );

@@ -209,10 +209,19 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
   }, [hasMore, loading, loadMore]); // re-setup after each load so we catch "still in view"
 
   // ── Tab header ────────────────────────────────────────────────────────────
+  /* The tabs take a row of their own under the title, across the panel, and
+   * the tab's action (RETRY ALL, CLEAR ALL) sits on the title row. They all
+   * shared one row before, which needs 517px to 679px depending on the theme
+   * and the counts, measured in Chrome. On a phone the panel is the screen's
+   * width and on a desktop half the window's, so below that the tabs were
+   * squeezed until their labels broke, and DRY RUN and the action ran past
+   * the panel's edge, out of reach. Always two rows, rather than one when it
+   * fits, so the header does not jump when the action appears or a count
+   * grows during processing. */
   const tabs = (
-    <div style={{ display: "flex", alignItems: "center" }}>
     <SegmentedControl
     label="History"
+    fill
     value={tab}
     onChange={switchTab}
     options={[
@@ -231,54 +240,54 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
       };
     })}
     />
-    {/* No divider after the strip: it closes its own right edge now (see
-      * SegmentedControl), and the old 1px rule here would sit flush against
-      * that edge as a second line. The buttons below keep their own gap. */}
+  );
 
-      {/* Gated on failed_only rather than failed: over a tab holding only
-        * cancelled rows, the button would do nothing. */}
-      {tab === "failed" && counts.failed_only > 0 && !debouncedSearch && (
-        <button
-        onClick={onRetryAll}
-        title="Re-probe and re-queue every failed item. Cancelled items are left alone."
-        style={{
-          marginLeft: space.sm,
-          padding: `${space.hair}px ${space.md}px`,
-          background: "transparent",
-          border: `1px solid ${palette.amber}`,
-          borderRadius: radius.sm,
-          color: palette.amber,
-          fontSize: type.size.xs,
-          fontFamily: type.family,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
-        }}
-        >
-        ↺ RETRY ALL
-        </button>
-      )}
+  /* Gated on failed_only rather than failed: over a tab holding only
+   * cancelled rows, the button would do nothing. */
+  const actions = (
+    <>
+    {tab === "failed" && counts.failed_only > 0 && !debouncedSearch && (
+      <button
+      onClick={onRetryAll}
+      title="Re-probe and re-queue every failed item. Cancelled items are left alone."
+      style={{
+        padding: `${space.hair}px ${space.md}px`,
+        background: "transparent",
+        border: `1px solid ${palette.amber}`,
+        borderRadius: radius.sm,
+        color: palette.amber,
+        fontSize: type.size.xs,
+        fontFamily: type.family,
+        letterSpacing: type.tracking.wide,
+        whiteSpace: "nowrap",
+        cursor: "pointer",
+      }}
+      >
+      ↺ RETRY ALL
+      </button>
+    )}
 
-      {tab === "dry_run" && counts.dry_run > 0 && !debouncedSearch && (
-        <button
-        onClick={onClearDryRun}
-        title="Discard every dry-run preview — none of these files will be processed"
-        style={{
-          marginLeft: space.sm,
-          padding: `${space.hair}px ${space.md}px`,
-          background: "transparent",
-          border: `1px solid ${palette.violet}`,
-          borderRadius: radius.sm,
-          color: palette.violet,
-          fontSize: type.size.xs,
-          fontFamily: type.family,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
-        }}
-        >
-        × CLEAR ALL
-        </button>
-      )}
-      </div>
+    {tab === "dry_run" && counts.dry_run > 0 && !debouncedSearch && (
+      <button
+      onClick={onClearDryRun}
+      title="Discard every dry-run preview — none of these files will be processed"
+      style={{
+        padding: `${space.hair}px ${space.md}px`,
+        background: "transparent",
+        border: `1px solid ${palette.violet}`,
+        borderRadius: radius.sm,
+        color: palette.violet,
+        fontSize: type.size.xs,
+        fontFamily: type.family,
+        letterSpacing: type.tracking.wide,
+        whiteSpace: "nowrap",
+        cursor: "pointer",
+      }}
+      >
+      × CLEAR ALL
+      </button>
+    )}
+    </>
   );
 
   // ── Panel count badge — unfiltered total, or search result count ──────────
@@ -288,7 +297,7 @@ export const HistoryPanel = ({ api, historyRefreshKey, onSelect, onRetryAll, onC
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-    <PanelHeader label="HISTORY" count={headerCount} right={tabs} />
+    <PanelHeader label="HISTORY" count={headerCount} right={actions} below={tabs} />
 
     {/* Search — always visible so the user can search immediately */}
     <div style={{

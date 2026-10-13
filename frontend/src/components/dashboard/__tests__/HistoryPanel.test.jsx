@@ -401,3 +401,61 @@ describe("HistoryPanel — the selected tab's outline", () => {
     expect(edges(success)).toEqual(before);
   });
 });
+
+
+describe("HistoryPanel — the header on a narrow screen", () => {
+  /* HISTORY, the count, the four tabs and RETRY ALL or CLEAR ALL shared one
+   * row, which needs 517px to 679px depending on the theme and the counts,
+   * measured in Chrome. The panel is the screen's width on a phone and half
+   * the window on a desktop, so below that the tabs broke their labels, and
+   * DRY RUN and the action ran past the panel's edge, out of reach. The tabs
+   * now have a row of their own, filled edge to edge, and the action sits on
+   * the title row. Measured after, in every theme from 320px to 1280px with
+   * five-digit counts, nothing breaks or runs out. Always two rows, so the
+   * header does not reflow when the action comes and goes.
+   *
+   * Verified by mutation: the tabs back on the title row, the tabs not
+   * filling theirs, the action moved down beside the tabs, and either
+   * action's label free to break, all survived the suite without this block
+   * and are killed by it. */
+  beforeEach(() => mockApi());
+
+  const titleRow = () => screen.getByText("HISTORY").parentElement;
+  const tabs = () => screen.getByRole("group", { name: "History" });
+
+  /** Load counts that offer both actions, then open the given tab. */
+  async function openTab(label) {
+    renderPanel();
+    await waitFor(() => expect(summary).toHaveLength(1));
+    answer(0, { success: 3, failed: 2, failed_only: 2, skipped: 1, dry_run: 4 });
+    await waitFor(() => expect(badge("DRY RUN")).toContain("4"));
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
+  }
+
+  it("gives the tabs a row of their own, which they fill", async () => {
+    await openTab("SUCCESS");
+
+    const row = tabs().parentElement;
+    expect(row.parentElement).toBe(titleRow());
+    expect(row.style.flexBasis).toBe("100%");
+    expect(tabs().style.width).toBe("100%");
+  });
+
+  it("keeps RETRY ALL on the title row, whole", async () => {
+    await openTab("FAILED");
+
+    const retry = await screen.findByRole("button", { name: /RETRY ALL/ });
+    expect(tabs().parentElement.contains(retry)).toBe(false);
+    expect(retry.parentElement.parentElement).toBe(titleRow());
+    expect(retry.style.whiteSpace).toBe("nowrap");
+  });
+
+  it("keeps CLEAR ALL on the title row, whole", async () => {
+    await openTab("DRY RUN");
+
+    const clear = await screen.findByRole("button", { name: /CLEAR ALL/ });
+    expect(tabs().parentElement.contains(clear)).toBe(false);
+    expect(clear.parentElement.parentElement).toBe(titleRow());
+    expect(clear.style.whiteSpace).toBe("nowrap");
+  });
+});

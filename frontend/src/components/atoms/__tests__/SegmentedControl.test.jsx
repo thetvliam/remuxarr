@@ -109,3 +109,54 @@ describe("SegmentedControl", () => {
     expect(button("BRAVO").title).toBe("12 items");
   });
 });
+
+describe("SegmentedControl — fill", () => {
+  /* For a strip given a row of its own, History's tabs. Without it a
+   * squeezed segment broke its label across lines ("DRY / RUN"), and at its
+   * narrowest the strip ran out of the panel. Measured in Chrome after, in
+   * every theme from 320px with five-digit counts, no label breaks and
+   * nothing runs out: the segments share the row equally, each label holds
+   * together, and a badge drops beneath its label when they cannot sit side
+   * by side. jsdom has no layout, so these pin the rules that does it.
+   *
+   * Without fill the strip is unchanged, which the log viewer relies on:
+   * pinned too, so the option cannot quietly become the default.
+   *
+   * Verified by mutation: the strip not stretched, the segments not shared
+   * out, the label free to break, and the badge free to break, all survived
+   * the suite without this block and are killed by it. */
+  const renderStrip = (fill) => render(
+    <ThemeProvider>
+      <SegmentedControl label="Things" options={OPTIONS} value="a" onChange={() => {}} fill={fill} />
+    </ThemeProvider>,
+  );
+  const strip = () => screen.getByRole("group", { name: "Things" });
+  const segments = () => ["ALPHA", "BRAVO", "CHARLIE"].map(button);
+
+  it("stretches the strip across its row in equal segments", () => {
+    renderStrip(true);
+
+    expect(strip().style.width).toBe("100%");
+    expect(segments().map(b => [b.style.flexGrow, b.style.flexShrink, b.style.flexBasis]))
+      .toEqual(Array(3).fill(["1", "1", "0px"]));
+  });
+
+  it("keeps each label on one line, and lets the badge drop beneath it whole", () => {
+    renderStrip(true);
+
+    const [label, badge] = button("BRAVO").querySelectorAll("span");
+    expect(label.textContent).toBe("BRAVO");
+    expect(label.style.whiteSpace).toBe("nowrap");
+    expect(badge.textContent).toBe("12");
+    expect([badge.style.display, badge.style.whiteSpace]).toEqual(["inline-block", "nowrap"]);
+  });
+
+  it("leaves the strip as it was without it", () => {
+    renderStrip(false);
+
+    expect(strip().style.width).toBe("");
+    expect(segments().map(b => b.style.flexBasis)).toEqual(["", "", ""]);
+    expect(button("ALPHA").querySelector("span")).toBeNull();
+    expect(button("BRAVO").querySelector("span").style.whiteSpace).toBe("");
+  });
+});
