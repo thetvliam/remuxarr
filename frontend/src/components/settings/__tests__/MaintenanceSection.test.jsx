@@ -235,6 +235,9 @@ describe("MaintenanceSection — orphaned removal", () => {
      * its own work on the timers this replaces and deadlocks with them. */
     mockApi();
     setup();
+    // Let the settings reads on mount land first: under the fake timers
+    // below they would arrive after the test, outside act().
+    await act(async () => {});
 
     const btn = () => screen.getByRole("button", { name: /FORCE FULL RESCAN|CLICK AGAIN TO CONFIRM/i });
 

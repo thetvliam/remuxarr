@@ -18,7 +18,7 @@
  * The filter itself is pinned alongside, because the bold rule and the filter
  * now read from the same table and a change to it moves both.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogViewer } from "../LogViewer";
@@ -52,8 +52,11 @@ const renderViewer = (records = RECORDS) => {
 const weightOf = (level) =>
   screen.getByText(level, { selector: "span" }).style.fontWeight;
 
+/** fireEvent rather than the button's own click(): fireEvent runs inside
+ *  act(), so the filter's state update is applied before the next line. A
+ *  bare click() updated outside act(), which src/test/setup.js fails. */
 const clickFilter = (label) =>
-  screen.getByRole("button", { name: label }).click();
+  fireEvent.click(screen.getByRole("button", { name: label }));
 
 beforeEach(() => { vi.restoreAllMocks(); });
 afterEach(() => { vi.restoreAllMocks(); });

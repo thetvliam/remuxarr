@@ -368,11 +368,20 @@ describe("HistoryPanel — the selected tab's outline", () => {
    * edge. Switching tabs changed only the shorthand's colour, and React
    * re-applied the shorthand alone, which reset every side: the edge came
    * back and the strip's borders doubled. Neither was the intended look.
-   * Both tests read the inline style, which is where the bug lived. */
+   * Both tests read the inline style, which is where the bug lived.
+   *
+   * Each waits for the list its tab loads before it ends; the load otherwise
+   * lands after the test, outside act(), which src/test/setup.js fails. */
   beforeEach(() => mockApi());
 
-  it("is drawn in the tab's colour on all four sides on first render", async () => {
+  /** Render, and wait for the Success tab's (empty) list to arrive. */
+  async function renderLoaded() {
     renderPanel();
+    await screen.findByText("No success items");
+  }
+
+  it("is drawn in the tab's colour on all four sides on first render", async () => {
+    await renderLoaded();
     const success = screen.getByRole("button", { name: /^SUCCESS/ });
 
     const [top, right, bottom, left] = edges(success);
@@ -381,22 +390,25 @@ describe("HistoryPanel — the selected tab's outline", () => {
   });
 
   it("moves to the tab that was clicked", async () => {
-    renderPanel();
+    await renderLoaded();
     const pressed = () => ["SUCCESS", "SKIPPED", "FAILED", "DRY RUN"].map(label =>
       screen.getByRole("button", { name: new RegExp(`^${label}`) }).getAttribute("aria-pressed"));
 
     expect(pressed()).toEqual(["true", "false", "false", "false"]);
     fireEvent.click(screen.getByRole("button", { name: /^FAILED/ }));
     expect(pressed()).toEqual(["false", "false", "true", "false"]);
+    await screen.findByText("No failed items");
   });
 
   it("looks the same after switching away and back", async () => {
-    renderPanel();
+    await renderLoaded();
     const success = screen.getByRole("button", { name: /^SUCCESS/ });
     const before = edges(success);
 
     fireEvent.click(screen.getByRole("button", { name: /^SKIPPED/ }));
+    await screen.findByText(/^No skipped files/);
     fireEvent.click(success);
+    await screen.findByText("No success items");
 
     expect(edges(success)).toEqual(before);
   });
