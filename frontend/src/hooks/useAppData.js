@@ -715,7 +715,7 @@ export function useAppData() {
 
       const wsUrl       = api.replace(/^http/, "ws") + "/ws";
       const wsConnected = useWebSocket(wsUrl, onWsMsg, fetchAll);
-      const { isMobile } = useBreakpoint();
+      const { isMobile, isCompact } = useBreakpoint();
 
       const pendingQueue = queue.filter(i => i.status !== "processing");
 
@@ -747,6 +747,6 @@ export function useAppData() {
         revertRefreshKey,
         forgeActive, forgeProcessed, forgeRefreshKey, setForgeRefreshKey,
           toast, fetchAll, fetchForge, refreshAllPanels,
-          pendingQueue, wsConnected, isMobile,
+          pendingQueue, wsConnected, isMobile, isCompact,
       };
 }

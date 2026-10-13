@@ -54,7 +54,9 @@ export const Toasts = ({ items, isMobile = false }) => {
       style={{
         padding: `${space.sm}px ${space.xl}px`,
         background: palette.card,
-        border: `1px solid ${colorFor(t.tone)}`,
+        borderTop: `1px solid ${colorFor(t.tone)}`,
+                     borderRight: `1px solid ${colorFor(t.tone)}`,
+                     borderBottom: `1px solid ${colorFor(t.tone)}`,
                      borderLeft: `${size.toastAccent}px solid ${colorFor(t.tone)}`,
                      borderRadius: radius.sm,
                      color: palette.text,

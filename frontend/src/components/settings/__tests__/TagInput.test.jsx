@@ -149,3 +149,19 @@ describe("TagInput", () => {
     expect(onChange).toHaveBeenCalledWith(["eng", "fre"]);
   });
 });
+
+describe("TagInput — long entries", () => {
+  /* An entry with no spaces, like a release-style folder name, ran out of
+   * the 220px box and took its × with it: in Chrome, 404px past the edge at
+   * every width. Letting the text break anywhere was the whole fix, measured
+   * before and after in the built app. jsdom has no layout, so this pins the
+   * rule that measurement showed to be needed, on the element that holds the
+   * entry's text. */
+  it("lets an entry's text break anywhere, so it wraps inside the box", () => {
+    const long = "Movies.Collection.2024.Remastered.Edition.UHD.BluRay.2160p.TrueHD.Atmos-GROUP";
+    setup({ values: [long], normalize: false });
+
+    expect(screen.getByText(long).style.overflowWrap).toBe("anywhere");
+    expect(screen.getByLabelText(`Remove ${long}`)).toBeTruthy();
+  });
+});

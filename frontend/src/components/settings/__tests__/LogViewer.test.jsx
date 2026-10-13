@@ -197,3 +197,48 @@ describe("LogViewer — polling", () => {
     expect(screen.queryByText("first line")).not.toBeInTheDocument();
   });
 });
+
+
+/** Each side of an element's own border as styled: [style, width, colour]. */
+const edges = (el) => ["Top", "Right", "Bottom", "Left"].map(side => [
+  el.style[`border${side}Style`], el.style[`border${side}Width`], el.style[`border${side}Color`],
+]);
+
+describe("LogViewer — the selected level's outline", () => {
+  /* The same defect as History's tabs, built the same way: the border
+   * shorthand plus borderRight: "none", which React applies in order on the
+   * first render and only partly on later ones. INFO is selected by default
+   * and is not the last button, so it is the case that showed. */
+  it("is drawn on all four sides on first render", async () => {
+    renderViewer();
+    await screen.findByText("info line");
+    const info = screen.getByRole("button", { name: "INFO" });
+
+    const [top, right, bottom, left] = edges(info);
+    expect(top[0]).toBe("solid");
+    expect([right, bottom, left]).toEqual([top, top, top]);
+  });
+
+  it("moves to the level that was clicked", async () => {
+    renderViewer();
+    await screen.findByText("info line");
+    const pressed = () => ["ALL", "INFO", "WARNING", "ERROR"].map(label =>
+      screen.getByRole("button", { name: label }).getAttribute("aria-pressed"));
+
+    expect(pressed()).toEqual(["false", "true", "false", "false"]);
+    act(() => clickFilter("ERROR"));
+    expect(pressed()).toEqual(["false", "false", "false", "true"]);
+  });
+
+  it("looks the same after switching away and back", async () => {
+    renderViewer();
+    await screen.findByText("info line");
+    const info = screen.getByRole("button", { name: "INFO" });
+    const before = edges(info);
+
+    act(() => clickFilter("ERROR"));
+    act(() => clickFilter("INFO"));
+
+    expect(edges(info)).toEqual(before);
+  });
+});

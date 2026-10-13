@@ -173,7 +173,11 @@ export const FullBackupSection = ({ api, toast }) => {
     }}
     />
 
-    <div style={{ display: "flex", alignItems: "center", gap: space.md }}>
+    {/* May wrap, so on a 320px phone the button drops below the box instead
+      * of running off the screen. The box needs no basis of its own: a text
+      * input's default width already stops it shrinking, and in Chrome the
+      * row wrapped at the same widths with or without one. */}
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: space.md }}>
     <input
     type="text"
     value={confirmText}

@@ -477,3 +477,35 @@ describe("MaintenanceSection — settings load", () => {
     expect(screen.getByText("09:15")).toBeInTheDocument();
   });
 });
+
+describe("MaintenanceSection — on a narrow phone", () => {
+  /* Each card's description and button share a row. The button never shrinks
+   * or wraps its label, so on a phone it squeezed the description: measured
+   * in Chrome, 81px to 172px wide at 320 to 390px, and at 320px CHECK FOR
+   * ORPHANED FILES ran off the screen. Letting the row wrap, with the
+   * description keeping a 220px basis, moves the button below it instead;
+   * measured after, every description is 254px or wider and every button is
+   * on screen, and at 1280px and 900px the page is pixel-identical to before.
+   *
+   * Both halves are needed. Without the wrap the row cannot break; without
+   * the basis the description counts as zero wide when the row decides
+   * whether to break, so it never does. jsdom has no layout, so these pin
+   * the two rules on each row, found from its button.
+   *
+   * Verified by mutation: removing the wrap from each row in turn, and
+   * putting each description back to flex: 1, all six survived the suite
+   * without this block and are killed by it. */
+  it.each([
+    "RUN CLEANUP NOW",
+    "FORCE FULL RESCAN",
+    "CHECK FOR ORPHANED FILES",
+  ])("lets the %s button drop below its description", async (name) => {
+    mockApi();
+    setup();
+    await act(async () => {});  // let the settings reads on mount land
+
+    const row = screen.getByRole("button", { name }).parentElement;
+    expect(row.style.flexWrap).toBe("wrap");
+    expect(row.firstElementChild.style.flexBasis).toBe("220px");
+  });
+});

@@ -1,0 +1,237 @@
+/**
+ * App — the first test of the component itself.
+ *
+ * WHY THIS FILE EXISTS
+ * --------------------
+ * Everything App does is wiring: it reads useAppData and useActions and
+ * hands their state and callbacks to the pages and panels. The components on
+ * either side are tested, and a mutant that broke the hand-over between them
+ * survived, because nothing rendered App. Adding the first App-level test was
+ * recorded as a decision to raise rather than take, and was agreed when the
+ * phone layout's Queue and History switch moved onto the shared TabBar.
+ *
+ * It starts with that switch: on a phone the dashboard shows the Queue or the
+ * History panel, never both, and the tab bar decides which. Each panel is
+ * identified by text only it renders: the empty queue's message (its filter
+ * box appears only once there is something to filter), and History's
+ * search box.
+ *
+ * The harness, and why each part is there:
+ *   • useWebSocket is replaced, as useAppData's own tests replace it, so no
+ *     socket is opened.
+ *   • matchMedia answers any max-width query as matching, which is what a
+ *     phone answers. Matching on the kind of query rather than its number
+ *     keeps this test independent of where the breakpoint sits.
+ *   • fetch answers every load with an empty result of the shape that
+ *     endpoint returns.
+ *
+ * Run against today's code before the switch moved onto TabBar, the panel
+ * assertions passed and only the aria-pressed ones failed, since marking the
+ * selected tab is new: the move kept the behaviour. Verified by mutation:
+ * App handing TabBar a fixed "queue" in place of its state, and App not
+ * passing its setter, both survived the suite without this file and are
+ * killed by the swap test here.
+ */
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import App from "../App";
+import { ThemeProvider } from "../theme";
+
+vi.mock("../hooks/useWebSocket", () => ({ useWebSocket: () => true }));
+
+function emptyAnswer(url) {
+  const u = String(url);
+  if (u.includes("/api/history/summary")) {
+    return { success: 0, failed: 0, failed_only: 0, skipped: 0, dry_run: 0, bytes_saved: 0 };
+  }
+  if (u.includes("/api/history") || u.includes("/api/forge/candidates")) {
+    return { items: [], total: 0 };
+  }
+  if (u.includes("/api/queue") || u.includes("/api/forge")) return [];
+  return {};
+}
+
+beforeEach(() => {
+  vi.stubGlobal("matchMedia", (q) => ({
+    matches: q.includes("max-width"),
+    media: q,
+    addEventListener() {}, removeEventListener() {},
+    addListener() {}, removeListener() {},
+  }));
+  vi.stubGlobal("fetch", vi.fn(async (url) => ({
+    ok: true, status: 200, json: async () => emptyAnswer(url),
+  })));
+  localStorage.clear();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  localStorage.clear();
+});
+
+const queueShown   = () => screen.queryByText("Queue is empty");
+const historyShown = () => screen.queryByPlaceholderText("Search all history by filename…");
+const tab = (name) => screen.getByRole("button", { name, exact: true });
+
+describe("App — the dashboard's Queue and History switch on a phone", () => {
+  it("shows the Queue panel first, and only it", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+
+    expect(await screen.findByText("Queue is empty")).toBeTruthy();
+    expect(historyShown()).toBeNull();
+    expect([tab("QUEUE"), tab("HISTORY")].map(b => b.getAttribute("aria-pressed")))
+      .toEqual(["true", "false"]);
+  });
+
+  it("swaps to the History panel when its tab is chosen, and back", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    fireEvent.click(tab("HISTORY"));
+    expect(historyShown()).toBeTruthy();
+    expect(queueShown()).toBeNull();
+    expect([tab("QUEUE"), tab("HISTORY")].map(b => b.getAttribute("aria-pressed")))
+      .toEqual(["false", "true"]);
+
+    fireEvent.click(tab("QUEUE"));
+    expect(queueShown()).toBeTruthy();
+    expect(historyShown()).toBeNull();
+  });
+});
+
+/* The header's compact form, through App. useBreakpoint decides it and the
+ * header renders it, and both are tested on their own; what neither would
+ * notice is useAppData or App failing to pass it along, which leaves the
+ * full header squeezed between 860 and 1140px exactly as before. Unlike the
+ * phone tests above, these do depend on where the boundaries sit, so
+ * matchMedia here answers each max-width query against a viewport width.
+ *
+ * Verified by mutation: useAppData not returning isCompact, and App not
+ * passing it to the header, both survived the suite without this block and
+ * are killed by it. */
+describe("App — the header at each width", () => {
+  const viewport = (width) => {
+    vi.stubGlobal("matchMedia", (q) => {
+      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
+      return {
+        matches: max ? width <= Number(max[1]) : q === "(hover: hover)",
+        media: q,
+        addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {},
+      };
+    });
+  };
+  const headerLogo = () => document.querySelector("header img").getAttribute("src");
+
+  it("is the phone header below 860px", async () => {
+    viewport(859);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(screen.getByRole("button", { name: "Open menu" })).toBeTruthy();
+  });
+
+  it("is the compact header from 860px to 1139px", async () => {
+    viewport(1000);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(screen.queryByRole("button", { name: "Open menu" })).toBeNull();
+    expect(headerLogo()).toBe("/logo.svg");
+    expect(screen.getByRole("button", { name: "Dry run" })).toBeTruthy();
+  });
+
+  it("is the full header from 1140px", async () => {
+    viewport(1140);
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(headerLogo()).toMatch(/^\/logo-name-/);
+    expect(screen.getByRole("button", { name: /^[◆◇] DRY RUN$/ })).toBeTruthy();
+  });
+});
+
+/* Clear Database and the orphaned-file removal delete rows the dashboard is
+ * still showing, and neither endpoint broadcasts. App hands SettingsPage
+ * refreshAllPanels as onRecordsRemoved for exactly this, in two places: the
+ * Settings page, and the live Settings preview in the theme editor (#themes).
+ * Without it the queue is loaded only at start-up and on socket events, so
+ * returning to the dashboard showed rows the wipe had deleted. The hand-over
+ * inside Settings is pinned in MaintenanceSection.test.jsx; nothing checked
+ * that App makes it, and dropping the prop at either site passed every test.
+ *
+ * Each test queues ep1.mkv, clears the database from one site, goes back to
+ * the dashboard and expects the queue empty. The queue endpoint answers with
+ * the item until the clear request arrives and with nothing after, as the
+ * server would, so the item disappears only if the queue is fetched again.
+ *
+ * Verified by mutation: the prop dropped at the Settings page, and dropped
+ * at the theme editor, each survived the suite without this block and is
+ * killed by its own test here and by no other. */
+describe("App — records removed in Settings reach the dashboard", () => {
+  let cleared;
+  let queueLoads;
+
+  beforeEach(() => {
+    cleared = false;
+    queueLoads = 0;
+    // A desktop window, so the header's page links are in reach.
+    vi.stubGlobal("matchMedia", (q) => {
+      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
+      return {
+        matches: max ? 1280 <= Number(max[1]) : q === "(hover: hover)",
+        media: q,
+        addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {},
+      };
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (u.includes("/api/settings/clear-database")) { cleared = true; return reply({}); }
+      if (u.includes("/api/settings/schema")) return reply([]);
+      if (/\/api\/queue\/$/.test(u)) {
+        queueLoads += 1;
+        return reply(cleared ? [] : [{ id: 1, status: "pending", file: { filename: "ep1.mkv" } }]);
+      }
+      return reply(emptyAnswer(url));
+    }));
+    localStorage.setItem("remuxarr.settingsCategory", "backup");
+  });
+
+  afterEach(() => { window.location.hash = ""; });
+
+  /** Clear Database, confirmed, then back to the dashboard. */
+  async function clearThenReturn() {
+    fireEvent.click(await screen.findByRole("button", { name: "CLEAR DATABASE" }));
+    fireEvent.click(screen.getByRole("button", { name: /CLICK AGAIN TO CONFIRM/ }));
+    await waitFor(() => expect(cleared).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "DASHBOARD", exact: true }));
+  }
+
+  it("empties the queue after Clear Database on the Settings page", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    expect(await screen.findByText("ep1.mkv")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "SETTINGS", exact: true }));
+    await clearThenReturn();
+
+    expect(await screen.findByText("Queue is empty")).toBeTruthy();
+    expect(screen.queryByText("ep1.mkv")).toBeNull();
+  });
+
+  it("empties the queue after Clear Database in the theme editor's preview", async () => {
+    window.location.hash = "#themes";
+    render(<ThemeProvider><App /></ThemeProvider>);
+    // The dashboard is not on screen here, so wait for the start-up load to
+    // have answered with the item: after that, only a refresh can remove it.
+    await waitFor(() => expect(queueLoads).toBe(1));
+    await act(async () => {});
+
+    await clearThenReturn();
+
+    expect(await screen.findByText("Queue is empty")).toBeTruthy();
+    expect(screen.queryByText("ep1.mkv")).toBeNull();
+  });
+});

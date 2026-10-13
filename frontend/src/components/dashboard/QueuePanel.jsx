@@ -86,8 +86,10 @@ const QueueRow = ({ item, onSelect, onDismiss, onPrioritize, hasHover }) => {
             textAlign: "left",
             padding: `${space.md}px ${space.xl}px`,
             background: hover ? surface.rowHoverBg : "transparent",
-            border: "none",
+            borderTop: "none",
+            borderRight: "none",
             borderBottom: `1px solid ${palette.border}`,
+            borderLeft: "none",
             cursor: "pointer",
             fontFamily: type.family,
         }}

@@ -65,13 +65,16 @@ export const DangerZone = ({ api, toast, onCleared }) => {
         DANGER ZONE
         </div>
 
+        {/* May wrap: the description keeps at least 220px and the button
+          * drops below it on a narrow phone, as in MaintenanceSection. */}
         <div style={{
             display: "flex",
+            flexWrap: "wrap",
             alignItems: "flex-start",
             gap: space.huge,
             padding: `${space.xl}px 0`,
         }}>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: "1 1 220px" }}>
         <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
         Clear Database
         </div>

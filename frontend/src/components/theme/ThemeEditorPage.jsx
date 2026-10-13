@@ -390,7 +390,8 @@ const Group = ({ label, count, open, onToggle, children }) => {
     style={{
       width: "100%", display: "flex", justifyContent: "space-between",
       alignItems: "center", padding: `${space.xs}px 0`,
-      background: "transparent", border: "none",
+      background: "transparent",
+      borderTop: "none", borderRight: "none", borderLeft: "none",
       borderBottom: `1px solid ${palette.border}`,
       color: open ? palette.amber : palette.muted,
       fontSize: type.size.xs, fontFamily: type.family,

@@ -60,7 +60,14 @@ export const TagInput = ({ values, onChange, normalize = true, placeholder = "",
                           fontSize: type.size.md,
             }}
             >
-            {v}
+            {/* Allowed to break anywhere. Paths and release-style names
+              * ("Movie.2023.2160p.UHD.BluRay...") have few or no break
+              * points, so a long entry ran out of this 220px box, taking its
+              * × with it. Measured in Chrome before and after: an entry with
+              * no spaces ran 404px past the box at every width; with this,
+              * none does. Wrapping the text is enough on its own, since the
+              * chip's minimum width then counts these breaks. */}
+            <span style={{ overflowWrap: "anywhere" }}>{v}</span>
             <button
             // TimeTagInput's × is labelled; these were not. Same control,
             // same glyph, so it should read the same way.

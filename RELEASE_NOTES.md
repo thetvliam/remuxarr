@@ -60,10 +60,14 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Added
+## Changed
 
-- Two additions under Exclude Patterns, in Settings → Library & Processing → Library. Always Include brings back files and folders that Skip Trailers and Extras or an exclude pattern would leave alone; it is written the same way as Exclude Patterns, and an entry naming a file still covers it after Remuxarr changes its container. Below it, Show Excluded Files lists each file your saved settings leave alone and why, naming the setting that caught it and what it matched, such as a name ending in _sample, with an Include button on each that puts it in Always Include, taking effect when you save. Until now a scan only said how many files it had excluded.
+- Windows narrower than 860px now get the phone layout, which used to start at 640px. Between 860px and 1140px the header is more compact: the logo shows without its name, DRY RUN and PAUSE / RESUME show as their symbols, AUTO / MANUAL drops its symbol, and scan progress shows as "✕ 123/456". Hover over a control to see its full name.
 
 ## Fixed
 
-- A scan now walks each folder once when one library path is inside another (/media and /media/tv), or when a symlink leads from one library into another. Before, files there were probed twice and counted twice in the scan summary, and a file reached through a symlink was recorded and queued twice, once under each path. This stops new duplicates; a file already recorded twice that way keeps both records.
+- The selected tab in History, and the selected level in the log viewer, now show their full outline when the page loads. Before, the right edge was missing until you clicked another tab and back, and that click also doubled the lines between the tabs.
+- Long entries in list settings, such as library paths, Exclude Patterns and Always Include, now wrap inside their box. Before, an entry with few spaces, like a release-style folder name, ran off the edge of the box and took the × that removes it with it.
+- On a narrow phone, the buttons in Maintenance & Logs and in Backup & Danger Zone now move below their description. Before, they squeezed the description into a thin column, and on the smallest screens CHECK FOR ORPHANED FILES and REPLACE DATABASE ran off the edge.
+- In narrower windows, the header no longer squeezes its buttons until their labels wrap onto two lines, or pushes PAUSE, SCAN and LIVE off the screen.
+- The History panel's tabs now have a row of their own, under HISTORY and its count, with RETRY ALL or CLEAR ALL beside the title. Before, on a phone or in a narrower window, the tabs squeezed until their labels broke onto two lines, and DRY RUN and RETRY ALL or CLEAR ALL ran past the edge of the panel, out of reach.

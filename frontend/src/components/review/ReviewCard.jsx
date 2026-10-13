@@ -105,9 +105,11 @@ export const ReviewCard = ({
         <div style={{
             padding: space.xl,
             background: palette.card,
-            border: `1px solid ${surface.reviewBorder}`,
-            borderRadius: radius.sm,
+            borderTop: `1px solid ${surface.reviewBorder}`,
+            borderRight: `1px solid ${surface.reviewBorder}`,
+            borderBottom: `1px solid ${surface.reviewBorder}`,
             borderLeft: `${size.accentWidth}px solid ${skipped ? palette.dim : palette.yellow}`,
+            borderRadius: radius.sm,
             marginBottom: space.md,
             opacity: skipped ? 0.6 : 1,
         }}>
