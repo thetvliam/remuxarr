@@ -21,6 +21,13 @@
  * These tests therefore assert the placeholder the page already knows how to
  * render. Asserting "did not crash" would pass on a page that rendered
  * nothing at all, which is the other way this can go wrong.
+ *
+ * A successful response of the wrong shape got through the same way, past
+ * the status check: a schema that was not a list blanked the app exactly as
+ * above, and values that were not an object rendered every field at a
+ * default. Both now go down the load-error path too. Verified by mutation:
+ * removing either shape check survived the suite without the two tests
+ * below that cover them, and each is killed by its own.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,17 +51,18 @@ const VALUES = { und_audio_threshold: 2 };
  * The error body is FastAPI's real shape. A body that would not parse is a
  * different and already-handled path — see the network-failure test below.
  */
-function mockApi({ schemaOk = true, valuesOk = true, status = 500 } = {}) {
+function mockApi({ schemaOk = true, valuesOk = true, status = 500,
+                   schema = SCHEMA, values = VALUES } = {}) {
   vi.stubGlobal("fetch", vi.fn(async (url) => {
     const u = String(url);
     if (u.includes("/api/settings/schema")) {
       return schemaOk
-        ? { ok: true, status: 200, json: async () => SCHEMA }
+        ? { ok: true, status: 200, json: async () => schema }
         : { ok: false, status, json: async () => ({ detail: "Internal Server Error" }) };
     }
     if (u.match(/\/api\/settings\/?$/)) {
       return valuesOk
-        ? { ok: true, status: 200, json: async () => VALUES }
+        ? { ok: true, status: 200, json: async () => values }
         : { ok: false, status, json: async () => ({ detail: "Internal Server Error" }) };
     }
     // Status pollers used by the page's sub-sections.
@@ -100,6 +108,27 @@ describe("SettingsPage — failed initial load", () => {
      * an error body. Every control shows a default it was never given, and
      * saving writes those defaults back. */
     mockApi({ valuesOk: false });
+    renderPage();
+
+    expect(await screen.findByText(LOAD_ERROR)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Undefined audio threshold")).not.toBeInTheDocument();
+  });
+
+  it("shows the load-error placeholder when the schema arrives but is not a list", async () => {
+    /* A 200 of the wrong shape. The status check lets it through, and the
+     * page stored it as it came: schema.map then threw during render and,
+     * with no error boundary, blanked the whole app. A working server
+     * always sends a list; this is for one that does not. */
+    mockApi({ schema: {} });
+    renderPage();
+
+    expect(await screen.findByText(LOAD_ERROR)).toBeInTheDocument();
+  });
+
+  it("shows the load-error placeholder when the values arrive but are not an object", async () => {
+    /* The quieter half: the schema is fine, so every field rendered, each at
+     * a default it was never given, and saving would write those back. */
+    mockApi({ values: [] });
     renderPage();
 
     expect(await screen.findByText(LOAD_ERROR)).toBeInTheDocument();

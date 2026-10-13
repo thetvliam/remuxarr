@@ -612,6 +612,20 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
           readJson("/api/settings/"),
         ])
         .then(([s, v]) => {
+          /* A successful response of the wrong shape is a failed load too.
+           * The status check above catches an HTTP error, but a 200 whose
+           * body is not what the page reads was stored as it came: a schema
+           * that is not a list reached schema.map and blanked the whole app,
+           * as an error body once did, and values that are not an object
+           * rendered every field at a default it was never given. Thrown
+           * here, either goes to the catch below, which reports it once and
+           * shows the placeholder. */
+          if (!Array.isArray(s)) {
+            throw new Error("Unexpected response from /api/settings/schema: expected a list");
+          }
+          if (!v || typeof v !== "object" || Array.isArray(v)) {
+            throw new Error("Unexpected response from /api/settings/: expected an object");
+          }
           setSchema(s);
           setValues(prev => {
             if (!keepEditsSince) return v;
