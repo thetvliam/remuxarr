@@ -32,7 +32,7 @@
  * passing its setter, both survived the suite without this file and are
  * killed by the swap test here.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
@@ -149,5 +149,89 @@ describe("App — the header at each width", () => {
 
     expect(headerLogo()).toMatch(/^\/logo-name-/);
     expect(screen.getByRole("button", { name: /^[◆◇] DRY RUN$/ })).toBeTruthy();
+  });
+});
+
+/* Clear Database and the orphaned-file removal delete rows the dashboard is
+ * still showing, and neither endpoint broadcasts. App hands SettingsPage
+ * refreshAllPanels as onRecordsRemoved for exactly this, in two places: the
+ * Settings page, and the live Settings preview in the theme editor (#themes).
+ * Without it the queue is loaded only at start-up and on socket events, so
+ * returning to the dashboard showed rows the wipe had deleted. The hand-over
+ * inside Settings is pinned in MaintenanceSection.test.jsx; nothing checked
+ * that App makes it, and dropping the prop at either site passed every test.
+ *
+ * Each test queues ep1.mkv, clears the database from one site, goes back to
+ * the dashboard and expects the queue empty. The queue endpoint answers with
+ * the item until the clear request arrives and with nothing after, as the
+ * server would, so the item disappears only if the queue is fetched again.
+ *
+ * Verified by mutation: the prop dropped at the Settings page, and dropped
+ * at the theme editor, each survived the suite without this block and is
+ * killed by its own test here and by no other. */
+describe("App — records removed in Settings reach the dashboard", () => {
+  let cleared;
+  let queueLoads;
+
+  beforeEach(() => {
+    cleared = false;
+    queueLoads = 0;
+    // A desktop window, so the header's page links are in reach.
+    vi.stubGlobal("matchMedia", (q) => {
+      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
+      return {
+        matches: max ? 1280 <= Number(max[1]) : q === "(hover: hover)",
+        media: q,
+        addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {},
+      };
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url) => {
+      const u = String(url);
+      const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (u.includes("/api/settings/clear-database")) { cleared = true; return reply({}); }
+      if (u.includes("/api/settings/schema")) return reply([]);
+      if (/\/api\/queue\/$/.test(u)) {
+        queueLoads += 1;
+        return reply(cleared ? [] : [{ id: 1, status: "pending", file: { filename: "ep1.mkv" } }]);
+      }
+      return reply(emptyAnswer(url));
+    }));
+    localStorage.setItem("remuxarr.settingsCategory", "backup");
+  });
+
+  afterEach(() => { window.location.hash = ""; });
+
+  /** Clear Database, confirmed, then back to the dashboard. */
+  async function clearThenReturn() {
+    fireEvent.click(await screen.findByRole("button", { name: "CLEAR DATABASE" }));
+    fireEvent.click(screen.getByRole("button", { name: /CLICK AGAIN TO CONFIRM/ }));
+    await waitFor(() => expect(cleared).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "DASHBOARD", exact: true }));
+  }
+
+  it("empties the queue after Clear Database on the Settings page", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    expect(await screen.findByText("ep1.mkv")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "SETTINGS", exact: true }));
+    await clearThenReturn();
+
+    expect(await screen.findByText("Queue is empty")).toBeTruthy();
+    expect(screen.queryByText("ep1.mkv")).toBeNull();
+  });
+
+  it("empties the queue after Clear Database in the theme editor's preview", async () => {
+    window.location.hash = "#themes";
+    render(<ThemeProvider><App /></ThemeProvider>);
+    // The dashboard is not on screen here, so wait for the start-up load to
+    // have answered with the item: after that, only a refresh can remove it.
+    await waitFor(() => expect(queueLoads).toBe(1));
+    await act(async () => {});
+
+    await clearThenReturn();
+
+    expect(await screen.findByText("Queue is empty")).toBeTruthy();
+    expect(screen.queryByText("ep1.mkv")).toBeNull();
   });
 });
