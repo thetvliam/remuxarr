@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
@@ -214,20 +214,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
   const [orphanedItems,    setOrphanedItems]    = useState([]);
   const [orphanedSelected, setOrphanedSelected] = useState(new Set());
   const [orphanedRemoving, setOrphanedRemoving] = useState(false);
-  const [orphanedRemoveArmed, setOrphanedRemoveArmed] = useState(false);
-  useEffect(() => {
-    if (!orphanedRemoveArmed) return;
-    const t = setTimeout(() => setOrphanedRemoveArmed(false), CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [orphanedRemoveArmed]);
-
-  // Two-click confirmation for Force Full Rescan — auto-disarms after CONFIRM_MS
-  const [forceScanArmed, setForceScanArmed] = useState(false);
-  useEffect(() => {
-    if (!forceScanArmed) return;
-    const t = setTimeout(() => setForceScanArmed(false), CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [forceScanArmed]);
+  // Removal and Force Full Rescan each take two clicks, disarming
+  // themselves after CONFIRM_MS: see useArmedConfirm.
+  const { armed: orphanedRemoveArmed, arm: armOrphanedRemove, disarm: disarmOrphanedRemove } = useArmedConfirm();
+  const { armed: forceScanArmed, arm: armForceScan, disarm: disarmForceScan } = useArmedConfirm();
 
   // Load current values on mount
   useEffect(() => {
@@ -340,10 +330,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
 
   const runForceFullScan = async () => {
     if (!forceScanArmed) {
-      setForceScanArmed(true);
+      armForceScan();
       return;
     }
-    setForceScanArmed(false);
+    disarmForceScan();
     try {
       const r = await fetch(`${api}/api/scan/trigger`, {
         method:  "POST",
@@ -406,10 +396,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
   const removeSelectedOrphaned = async () => {
     if (orphanedSelected.size === 0) return;
     if (!orphanedRemoveArmed) {
-      setOrphanedRemoveArmed(true);
+      armOrphanedRemove();
       return;
     }
-    setOrphanedRemoveArmed(false);
+    disarmOrphanedRemove();
     setOrphanedRemoving(true);
     try {
       const r = await fetch(`${api}/api/scan/orphaned/remove`, {

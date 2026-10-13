@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
@@ -20,22 +20,13 @@ import { CONFIRM_MS } from "../../constants";
  * addressed a dead id. ─────────────────────────────────────────────────────*/
 export const DangerZone = ({ api, toast, onCleared }) => {
     const { palette, type, space, radius } = useTheme();
-    const [confirming, setConfirming] = useState(false);
+    // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
+    const { armed: confirming, arm, disarm } = useArmedConfirm();
     const [clearing,   setClearing]   = useState(false);
-
-    // Auto-cancel the confirmation state after 4 seconds of inactivity.
-    // The cleanup (clearTimeout) is CRITICAL: prevents multiple stacked
-    // timeouts from queuing up and resetting `confirming` unexpectedly if
-    // the user clicks rapidly. Do not remove or restructure this effect.
-    useEffect(() => {
-        if (!confirming) return;
-        const t = setTimeout(() => setConfirming(false), CONFIRM_MS);
-        return () => clearTimeout(t);
-    }, [confirming]);
 
     const handleClick = async () => {
         if (!confirming) {
-            setConfirming(true);
+            arm();
             return;
         }
 
@@ -55,7 +46,7 @@ export const DangerZone = ({ api, toast, onCleared }) => {
             toast?.("Failed to clear database", "error");
         } finally {
             setClearing(false);
-            setConfirming(false);
+            disarm();
         }
     };
 

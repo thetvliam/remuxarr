@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { IMPORT_CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -13,7 +14,6 @@ import { IMPORT_CONFIRM_MS } from "../../constants";
 export const BackupRestoreSection = ({ api, toast, onImported }) => {
   const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
-  const [confirming, setConfirming] = useState(false);
   const [importing,  setImporting]  = useState(false);
   const fileInputRef = useRef(null);
   const pendingFileRef = useRef(null);
@@ -32,15 +32,13 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
    * to read a filename and decide whether to overwrite every setting they
    * have, which is not a four-second decision. See constants.js for why that
    * is the only action given a longer window. */
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => {
-      setConfirming(false);
+  const { armed: confirming, arm, disarm } = useArmedConfirm({
+    ms: IMPORT_CONFIRM_MS,
+    onLapse: () => {
       pendingFileRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
-    }, IMPORT_CONFIRM_MS);
-      return () => clearTimeout(t);
-  }, [confirming]);
+    },
+  });
 
   const handleExport = () => {
     const a = document.createElement("a");
@@ -55,7 +53,7 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
     const file = e.target.files?.[0];
     if (!file) return;
     pendingFileRef.current = file;
-    setConfirming(true);
+    arm();
   };
 
   const handleImportConfirmed = async () => {
@@ -93,7 +91,7 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
       toast?.("Import failed", "error");
     } finally {
       setImporting(false);
-      setConfirming(false);
+      disarm();
       pendingFileRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
     }

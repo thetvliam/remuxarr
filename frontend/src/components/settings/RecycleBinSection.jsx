@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtRel, basename } from "../../utils";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { Btn } from "../atoms/Btn";
 import { EmptyState } from "../atoms/EmptyState";
 
@@ -554,18 +554,11 @@ const Note = ({ tone, children }) => {
     );
 };
 
-/* Two clicks with a 4s timeout, matching DangerZone. The cleanup on the
- * effect is what stops rapid clicks stacking timeouts that then reset the
- * confirmation at an unexpected moment. */
+/* Two clicks, disarming itself after CONFIRM_MS, as DangerZone does: see
+ * useArmedConfirm. */
 const ConfirmBtn = ({ label, confirmLabel, color, disabled, onConfirm }) => {
   const { palette } = useTheme();
-  const [confirming, setConfirming] = useState(false);
-
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => setConfirming(false), CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [confirming]);
+  const { armed: confirming, arm, disarm } = useArmedConfirm();
 
   return (
     <Btn
@@ -573,8 +566,8 @@ const ConfirmBtn = ({ label, confirmLabel, color, disabled, onConfirm }) => {
     color={confirming ? palette.red : color}
     disabled={disabled}
     onClick={() => {
-      if (!confirming) { setConfirming(true); return; }
-      setConfirming(false);
+      if (!confirming) { arm(); return; }
+      disarm();
       onConfirm();
     }}
     />
