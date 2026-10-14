@@ -27,6 +27,35 @@
  * useWebSocket is mocked out — this file is about the hook's own state
  * transitions, not its transport.
  *
+ * Routing now lives in useRouting, which useAppData calls and passes
+ * through unchanged. Its tests stay here and drive it through useAppData's
+ * return, which is how App reaches it, so they cover the hand-over too.
+ *
+ * ROUTING — 14 mutants applied, 11 killed, 3 survive. Each was run against
+ * the whole suite in useAppData.js before the move and in useRouting.js
+ * after it, and the same tests killed it both times:
+ *
+ *   • setPage's same-page early return removed       → killed
+ *   • "themes" dropped from VALID_PAGES              → killed (and App.test)
+ *   • a stateless popstate forced to "dashboard"     → killed (and App.test)
+ *   • a refused Back not pushing the entry back      → killed
+ *   • the leaveGuarded exemption never cleared       → killed
+ *   • leaveGuarded not setting the exemption         → killed
+ *   • unregistering leaving the guard in place       → killed
+ *   • setModal(null) stepping back with nothing open → killed
+ *   • the Forge-on-entry effect disabled             → killed
+ *   • useAppData's return dropping leaveGuarded      → killed
+ *   • useAppData's return dropping setModal          → killed
+ *   • a second setModal on an open modal pushing again → SURVIVES
+ *   • the closedByUserRef suppression removed          → SURVIVES
+ *   • the initial replaceState removed                 → SURVIVES
+ *
+ * The survivors are open gaps, not established equivalents. Nothing here
+ * opens a modal twice through the real hook (useActions' tests hand it a
+ * mock setModal); every close mocks history.back(), so the popstate the
+ * suppression exists for never fires; and nothing reads the entry the hook
+ * replaces on mount, neither its state nor its URL.
+ *
  * REVIEW BADGE COUNT — 3 mutants applied, 2 killed by assertion, 1 by crash:
  *
  *   • reviewBadgeCount drops languageReviewCount  → killed (2 tests)

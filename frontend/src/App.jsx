@@ -174,7 +174,7 @@ export default function App() {
    *  • Nav tab click → requestPage declines to route and opens the confirm
    *    modal instead.
    *  • Back, browser or Android → the guard registered below refuses it, and
-   *    useAppData restores the entry it had already left.
+   *    useRouting restores the entry it had already left.
    *
    *  Switching CATEGORIES inside Settings doesn't route (edits are kept in
    *  state), so it isn't guarded. Refresh and tab close are a document unload,

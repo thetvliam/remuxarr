@@ -9,7 +9,7 @@ import { themeToInputs, inputsToTheme, themeToSource } from "../../themeSource";
  * nothing in the UI links to it.
  *
  * That is "not discoverable", which is weaker than "not reachable": the page
- * id is in useAppData's VALID_PAGES, so anyone who types the fragment gets
+ * id is in useRouting's VALID_PAGES, so anyone who types the fragment gets
  * here. This was chosen knowingly over a build-time exclusion. What makes it
  * defensible is that the editor has no backend at all — saving is a download
  * the developer pastes into theme.jsx by hand, so there is no endpoint to
