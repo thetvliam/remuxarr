@@ -27,7 +27,9 @@
  *
  * Verified by mutation: the compact form keeping the wordmark, the nav
  * padding, each control's full text, and each accessible name, all survived
- * the suite without this file and are killed by it.
+ * the suite without this file and are killed by it. When the controls moved
+ * to HeaderControls.jsx those mutants were re-aimed at the new code, and the
+ * same tests killed each.
  */
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";

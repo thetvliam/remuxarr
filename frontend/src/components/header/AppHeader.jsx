@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { LED } from "../atoms/LED";
 import { ApiBar } from "./ApiBar";
+import { HeaderToggle, ScanButton, headerToggles } from "./HeaderControls";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * APP HEADER
@@ -23,6 +24,9 @@ import { ApiBar } from "./ApiBar";
  *     rows.
  * The drawer closes when any nav link or control is tapped, or when the
  * user taps the backdrop overlay below it.
+ *
+ * DRY RUN, AUTO / MANUAL, PAUSE / RESUME and SCAN are defined once in
+ * HeaderControls.jsx and drawn here in each layout's form.
  ═══════════════════════════════════════════════════════════════════════════ */
 
 const NAV_ITEMS = [
@@ -134,7 +138,7 @@ export const AppHeader = ({
   isMobile,
   isCompact = false,
 }) => {
-  const { palette, type, space, radius, size, surface } = useTheme();
+  const { palette, type, space, size, surface } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerRef = useRef(null);
 
@@ -170,15 +174,12 @@ export const AppHeader = ({
   const navLabel = (n) =>
   n.alertable && reviewCount > 0 ? `${n.l} (${reviewCount})` : n.l;
 
-  const scanLabel = scanning
-  ? (scanProgress ? `✕ STOP (${scanProgress.scanned}/${scanProgress.total})` : "✕ STOP SCAN")
-  : "↻ SCAN";
-  // The compact bar's progress drops STOP and the brackets; the button's
-  // name and tooltip still say what it does.
-  const compactScan = scanning && scanProgress;
-  const scanText = compactScan && isCompact
-  ? `✕ ${scanProgress.scanned}/${scanProgress.total}`
-  : scanLabel;
+  const toggles = headerToggles({
+    palette,
+    dryRun, onToggleDryRun,
+    autoStart, onToggleAutoStart,
+    workerPaused, onTogglePause,
+  });
 
   // ── Desktop layout ────────────────────────────────────────────────────────
   if (!isMobile) {
@@ -257,89 +258,15 @@ export const AppHeader = ({
       }}
       >⚙</button>
 
-      {/* Dry-run */}
-      {/* State is conveyed by colour and a ◆/◇ glyph only; aria-pressed is
-        * what carries it to anyone not seeing either. */}
-        <button
-        onClick={onToggleDryRun}
-        aria-pressed={dryRun}
-        aria-label={isCompact ? "Dry run" : undefined}
-        title={isCompact ? `Dry run ${dryRun ? "on" : "off"}` : undefined}
-        style={{
-          padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
-          background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
-            border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
-            borderRadius: radius.sm,
-            color: dryRun ? palette.yellow : palette.dim,
-            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
-        }}>
-        {(dryRun ? "◆" : "◇") + (isCompact ? "" : " DRY RUN")}
-        </button>
+      {toggles.map(t => (
+        <HeaderToggle key={t.key} toggle={t} form="bar" compact={isCompact} onClick={t.onToggle} />
+      ))}
 
-        {/* Auto-start */}
-        <button
-        onClick={onToggleAutoStart}
-        aria-pressed={autoStart}
-        title={autoStart
-          ? "Auto-start enabled — files process immediately after a scan"
-          : "Auto-start disabled — files queue but won't process until you click Resume"}
-          style={{
-            padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
-            background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
-            border: `1px solid ${autoStart ? palette.border : palette.blue}`,
-            borderRadius: radius.sm,
-            color: autoStart ? palette.dim : palette.blue,
-            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
-          }}
-          >
-          {/* Compact drops the glyph and keeps the word: MANUAL's glyph is
-            * the same ⏸ as PAUSE beside it, so glyphs alone would show two
-            * identical buttons in the usual state of manual start, running. */}
-          {isCompact
-            ? (autoStart ? "AUTO" : "MANUAL")
-            : (autoStart ? "⚡ AUTO" : "⏸ MANUAL")}
-          </button>
-
-          {/* Pause / Resume */}
-          <button
-          onClick={onTogglePause}
-          aria-pressed={workerPaused}
-          aria-label={isCompact ? (workerPaused ? "Resume" : "Pause") : undefined}
-          title={workerPaused ? "Resume processing" : "Pause processing — finish the current job then stop"}
-          style={{
-            padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm,
-            background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
-            border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
-            borderRadius: radius.sm,
-            color: workerPaused ? palette.yellow : palette.dim,
-            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide, cursor: "pointer",
-            animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
-          }}
-          >
-          {isCompact
-            ? (workerPaused ? "▶" : "⏸")
-            : (workerPaused ? "▶ RESUME" : "⏸ PAUSE")}
-          </button>
-
-          {/* Scan */}
-          <button
-          onClick={scanning ? onCancelScan : onTriggerScan}
-          aria-label={compactScan && isCompact
-            ? `Stop scan (${scanProgress.scanned} of ${scanProgress.total} scanned)` : undefined}
-          title={compactScan && isCompact ? scanLabel : undefined}
-          style={{
-            padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
-            background: "transparent",
-            border: `1px solid ${scanning ? palette.red : palette.border}`,
-            borderRadius: radius.sm,
-            color: scanning ? palette.red : palette.dim,
-            fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
-            cursor: "pointer",
-            animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
-          }}
-          >
-          {scanText}
-          </button>
+      <ScanButton
+      form="bar" compact={isCompact}
+      scanning={scanning} scanProgress={scanProgress}
+      onTriggerScan={onTriggerScan} onCancelScan={onCancelScan}
+      />
 
           {/* WS status */}
           <div style={{ display: "flex", alignItems: "center", gap: space.xs }}>
@@ -388,26 +315,11 @@ export const AppHeader = ({
         Doubles as the scan-in-progress indicator: while a scan runs it
         shows live counts and becomes the cancel button, so mobile users
         can see and stop a scan without opening anything. */}
-        <button
-        onClick={scanning ? onCancelScan : onTriggerScan}
-        title={scanning ? "Cancel the running scan" : "Scan library now"}
-        style={{
-          flexShrink: 0,
-          padding: `${space.xxs}px ${space.sm}px`,
-          background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
-          border: `1px solid ${scanning ? palette.red : palette.border}`,
-          borderRadius: radius.sm,
-          color: scanning ? palette.red : palette.dim,
-          fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.normal, cursor: "pointer",
-          whiteSpace: "nowrap",
-          animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
-        }}
-        >
-        {scanning
-          ? (scanProgress ? `✕ ${scanProgress.scanned}/${scanProgress.total}` : "✕ STOP")
-          : "⟳ SCAN"}
-          </button>
+        <ScanButton
+        form="phone"
+        scanning={scanning} scanProgress={scanProgress}
+        onTriggerScan={onTriggerScan} onCancelScan={onCancelScan}
+        />
 
           {/* WS status — compact */}
           {/* Colour-only on mobile, where the desktop LIVE/OFFLINE text has no
@@ -535,54 +447,12 @@ export const AppHeader = ({
 
                 {/* Action controls */}
                 <div style={{ padding: `${space.md}px ${space.xl}px`, display: "flex", flexDirection: "column", gap: space.sm }}>
-                {/* Dry run */}
-                <button
-                onClick={() => { onToggleDryRun(); closeDrawer(); }}
-                style={{
-                  padding: `${space.md}px ${space.xl}px`, textAlign: "left",
-                  background: dryRun ? alpha(palette.yellow, ALPHA.mild) : "transparent",
-                              border: `1px solid ${dryRun ? palette.yellow : palette.border}`,
-                              borderRadius: radius.sm,
-                              color: dryRun ? palette.yellow : palette.dim,
-                              fontSize: type.size.sm, fontFamily: type.family,
-                              letterSpacing: type.tracking.wide, cursor: "pointer",
-                }}
-                >
-                {dryRun ? "◆ DRY RUN  — tap to disable" : "◇ DRY RUN  — tap to enable"}
-                </button>
-
-                {/* Auto-start */}
-                <button
-                onClick={() => { onToggleAutoStart(); closeDrawer(); }}
-                style={{
-                  padding: `${space.md}px ${space.xl}px`, textAlign: "left",
-                  background: autoStart ? "transparent" : alpha(palette.blue, ALPHA.low),
-                              border: `1px solid ${autoStart ? palette.border : palette.blue}`,
-                              borderRadius: radius.sm,
-                              color: autoStart ? palette.dim : palette.blue,
-                              fontSize: type.size.sm, fontFamily: type.family,
-                              letterSpacing: type.tracking.wide, cursor: "pointer",
-                }}
-                >
-                {autoStart ? "⚡ AUTO-START  — tap to disable" : "⏸ MANUAL  — tap to enable auto-start"}
-                </button>
-
-                {/* Pause / Resume */}
-                <button
-                onClick={() => { onTogglePause(); closeDrawer(); }}
-                style={{
-                  padding: `${space.md}px ${space.xl}px`, textAlign: "left",
-                  background: workerPaused ? alpha(palette.yellow, ALPHA.mild) : "transparent",
-                              border: `1px solid ${workerPaused ? palette.yellow : palette.border}`,
-                              borderRadius: radius.sm,
-                              color: workerPaused ? palette.yellow : palette.dim,
-                              fontSize: type.size.sm, fontFamily: type.family,
-                              letterSpacing: type.tracking.wide, cursor: "pointer",
-                              animation: workerPaused ? "ledPulse 2s ease-in-out infinite" : "none",
-                }}
-                >
-                {workerPaused ? "▶ RESUME  — tap to resume processing" : "⏸ PAUSE  — tap to pause after current job"}
-                </button>
+                {toggles.map(t => (
+                  <HeaderToggle
+                  key={t.key} toggle={t} form="row"
+                  onClick={() => { t.onToggle(); closeDrawer(); }}
+                  />
+                ))}
 
                 {/* No Scan row here — scanning moved to the always-visible header row,
                   so duplicating it in the drawer would just be two controls for the

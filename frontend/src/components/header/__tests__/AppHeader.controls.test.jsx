@@ -26,6 +26,9 @@
  *   • each drawer row showing the other state's words (three)
  *   • the phone SCAN's start and stop swapped, its progress ignored, its
  *     idle glyph made the desktop's ↻, and its two titles swapped
+ * When the controls moved to HeaderControls.jsx all seventeen were re-aimed
+ * at the new code, each still a defect in one control on one layout, and the
+ * same tests killed each.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";

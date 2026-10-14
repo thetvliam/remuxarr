@@ -1,0 +1,170 @@
+import { useTheme, alpha, ALPHA } from "../../theme";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * HEADER CONTROLS
+ * DRY RUN, AUTO / MANUAL, PAUSE / RESUME and SCAN, each defined once for both
+ * of AppHeader's layouts. They used to be written out twice, in the desktop
+ * bar and again in the phone layout, so a change to how one looked in a
+ * state had to be made in two places far apart in the file, and nothing
+ * checked that it had been.
+ *
+ * Where a control is drawn is its form:
+ *   bar    the desktop header, full or compact
+ *   row    a full-width row in the phone drawer (the three toggles)
+ *   phone  the phone's always-visible top row (SCAN)
+ * A toggle's look in each state is decided once, in headerToggles, and its
+ * form decides only its size, its alignment, its text, and how it reports
+ * its state: aria-pressed in the bar, words in the drawer. SCAN's two forms
+ * differ in look as well; ScanButton keeps them side by side.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The three toggles, as data. `lit` is the state drawn highlighted, which
+ * for AUTO is MANUAL: the departure from the default, not the on state.
+ * `pressed` is the toggle's own on state, which the bar reports through
+ * aria-pressed because its colour and glyph alone do not reach anyone not
+ * seeing them. The drawer rows say their state in words instead.
+ */
+export const headerToggles = ({
+  palette,
+  dryRun, onToggleDryRun,
+  autoStart, onToggleAutoStart,
+  workerPaused, onTogglePause,
+}) => [
+  {
+    key: "dryRun",
+    onToggle: onToggleDryRun,
+    pressed: dryRun,
+    lit: dryRun, tone: palette.yellow, wash: ALPHA.mild,
+    full: (dryRun ? "◆" : "◇") + " DRY RUN",
+    compact: dryRun ? "◆" : "◇",
+    compactName: "Dry run",
+    compactTitle: `Dry run ${dryRun ? "on" : "off"}`,
+    row: dryRun ? "◆ DRY RUN  — tap to disable" : "◇ DRY RUN  — tap to enable",
+  },
+  {
+    key: "autoStart",
+    onToggle: onToggleAutoStart,
+    pressed: autoStart,
+    lit: !autoStart, tone: palette.blue, wash: ALPHA.low,
+    full: autoStart ? "⚡ AUTO" : "⏸ MANUAL",
+    // Compact drops the glyph and keeps the word: MANUAL's glyph is the
+    // same ⏸ as PAUSE beside it, so glyphs alone would show two identical
+    // buttons in the usual state of manual start, running.
+    compact: autoStart ? "AUTO" : "MANUAL",
+    title: autoStart
+      ? "Auto-start enabled — files process immediately after a scan"
+      : "Auto-start disabled — files queue but won't process until you click Resume",
+    row: autoStart ? "⚡ AUTO-START  — tap to disable" : "⏸ MANUAL  — tap to enable auto-start",
+  },
+  {
+    key: "pause",
+    onToggle: onTogglePause,
+    pressed: workerPaused,
+    lit: workerPaused, tone: palette.yellow, wash: ALPHA.mild, pulse: true,
+    full: workerPaused ? "▶ RESUME" : "⏸ PAUSE",
+    compact: workerPaused ? "▶" : "⏸",
+    compactName: workerPaused ? "Resume" : "Pause",
+    title: workerPaused ? "Resume processing" : "Pause processing — finish the current job then stop",
+    row: workerPaused ? "▶ RESUME  — tap to resume processing" : "⏸ PAUSE  — tap to pause after current job",
+  },
+];
+
+/**
+ * One toggle, drawn for a form. In the bar it carries its state in
+ * aria-pressed and, when compact, its full meaning in its name and tooltip;
+ * as a drawer row it carries neither, and its text says the state instead.
+ */
+export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
+  const { palette, type, space, radius } = useTheme();
+  const bar = form === "bar";
+  return (
+    <button
+    onClick={onClick}
+    aria-pressed={bar ? t.pressed : undefined}
+    aria-label={bar && compact ? t.compactName : undefined}
+    title={bar ? (compact ? t.compactTitle ?? t.title : t.title) : undefined}
+    style={{
+      ...(bar
+        ? { padding: `${space.xxs}px ${space.md}px`, marginRight: space.sm, fontSize: type.size.xs }
+        : { padding: `${space.md}px ${space.xl}px`, textAlign: "left", fontSize: type.size.sm }),
+      background: t.lit ? alpha(t.tone, t.wash) : "transparent",
+      border: `1px solid ${t.lit ? t.tone : palette.border}`,
+      borderRadius: radius.sm,
+      color: t.lit ? t.tone : palette.dim,
+      fontFamily: type.family,
+      letterSpacing: type.tracking.wide,
+      cursor: "pointer",
+      ...(t.pulse && { animation: t.lit ? "ledPulse 2s ease-in-out infinite" : "none" }),
+    }}
+    >
+    {bar ? (compact ? t.compact : t.full) : t.row}
+    </button>
+  );
+};
+
+/**
+ * SCAN, which is also the stop button while a scan runs and shows its
+ * progress. The two forms have drifted apart and are kept exactly as they
+ * were, side by side here so the differences can be seen: the idle glyph
+ * (↻ in the bar, ⟳ on the phone), the phone tinting itself red while a scan
+ * runs where the bar does not, and its weight, spacing and titles.
+ *
+ * The bar's compact form and the phone both show progress as "✕ 123/456",
+ * without STOP and the brackets; the compact bar keeps the full meaning in
+ * the button's name and tooltip.
+ */
+export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTriggerScan, onCancelScan }) => {
+  const { palette, type, space, radius } = useTheme();
+  const short = scanProgress && `✕ ${scanProgress.scanned}/${scanProgress.total}`;
+  const pulse = scanning ? "ledPulse 1.5s ease-in-out infinite" : "none";
+  const onClick = scanning ? onCancelScan : onTriggerScan;
+
+  if (form === "phone") {
+    return (
+      <button
+      onClick={onClick}
+      title={scanning ? "Cancel the running scan" : "Scan library now"}
+      style={{
+        flexShrink: 0,
+        padding: `${space.xxs}px ${space.sm}px`,
+        background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
+        border: `1px solid ${scanning ? palette.red : palette.border}`,
+        borderRadius: radius.sm,
+        color: scanning ? palette.red : palette.dim,
+        fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
+        letterSpacing: type.tracking.normal, cursor: "pointer",
+        whiteSpace: "nowrap",
+        animation: pulse,
+      }}
+      >
+      {scanning ? (short || "✕ STOP") : "⟳ SCAN"}
+      </button>
+    );
+  }
+
+  const full = scanning
+    ? (scanProgress ? `✕ STOP (${scanProgress.scanned}/${scanProgress.total})` : "✕ STOP SCAN")
+    : "↻ SCAN";
+  const shortened = scanning && scanProgress && compact;
+  return (
+    <button
+    onClick={onClick}
+    aria-label={shortened
+      ? `Stop scan (${scanProgress.scanned} of ${scanProgress.total} scanned)` : undefined}
+    title={shortened ? full : undefined}
+    style={{
+      padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
+      background: "transparent",
+      border: `1px solid ${scanning ? palette.red : palette.border}`,
+      borderRadius: radius.sm,
+      color: scanning ? palette.red : palette.dim,
+      fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
+      cursor: "pointer",
+      animation: pulse,
+    }}
+    >
+    {shortened ? short : full}
+    </button>
+  );
+};
