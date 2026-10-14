@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { Btn } from "../atoms/Btn";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
 
@@ -121,25 +122,7 @@ export const FullBackupSection = ({ api, toast }) => {
     Include connection secrets
     </label>
     </div>
-    <button
-    onClick={handleExport}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${palette.blue}`,
-      borderRadius: radius.sm,
-      color: palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      flexShrink: 0,
-    }}
-    >
-    EXPORT
-    </button>
+    <Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />
     </div>
 
     {/* Import */}
@@ -195,26 +178,14 @@ export const FullBackupSection = ({ api, toast }) => {
       fontSize: type.size.md,
     }}
     />
-    <button
+    <Btn
+    size="md"
+    label={importing ? "IMPORTING…" : "REPLACE DATABASE"}
+    color={canImport ? palette.red : palette.muted}
+    bg={canImport ? alpha(palette.red, ALPHA.medium) : undefined}
     onClick={handleImport}
     disabled={!canImport || importing}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: canImport ? alpha(palette.red, ALPHA.medium) : "transparent",
-          border: `1px solid ${canImport ? palette.red : palette.muted}`,
-          borderRadius: radius.sm,
-          color: canImport ? palette.red : palette.muted,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: canImport && !importing ? "pointer" : "not-allowed",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-    }}
-    >
-    {importing ? "IMPORTING…" : "REPLACE DATABASE"}
-    </button>
+    />
     </div>
     </div>
     </div>

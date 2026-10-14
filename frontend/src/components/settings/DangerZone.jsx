@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { Btn } from "../atoms/Btn";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
@@ -19,7 +20,7 @@ import { useArmedConfirm } from "../../hooks/useArmedConfirm";
  * deleted — clicking one opened a detail fetch that 404'd, and dismissing one
  * addressed a dead id. ─────────────────────────────────────────────────────*/
 export const DangerZone = ({ api, toast, onCleared }) => {
-    const { palette, type, space, radius } = useTheme();
+    const { palette, type, space } = useTheme();
     // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
     const { armed: confirming, arm, disarm } = useArmedConfirm();
     const [clearing,   setClearing]   = useState(false);
@@ -78,26 +79,14 @@ export const DangerZone = ({ api, toast, onCleared }) => {
         </div>
         </div>
 
-        <button
+        <Btn
+        size="md"
+        label={clearing ? "CLEARING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "CLEAR DATABASE"}
+        color={palette.red}
+        bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
         onClick={handleClick}
         disabled={clearing}
-        style={{
-            padding: `${space.xs}px ${space.xl}px`,
-            background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
-            border: `1px solid ${palette.red}`,
-            borderRadius: radius.sm,
-            color: palette.red,
-            fontSize: type.size.sm,
-            fontFamily: type.family,
-            fontWeight: type.weight.bold,
-            letterSpacing: type.tracking.wide,
-            cursor: clearing ? "not-allowed" : "pointer",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-        }}
-        >
-        {clearing ? "CLEARING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "CLEAR DATABASE"}
-        </button>
+        />
         </div>
         </div>
     );

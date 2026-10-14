@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
@@ -536,26 +537,13 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     )}
     </div>
 
-    <button
+    <Btn
+    size="md"
+    label={cleanupRunning ? "RUNNING…" : "RUN CLEANUP NOW"}
+    color={cleanupRunning ? palette.muted : palette.blue}
     onClick={runCleanup}
     disabled={cleanupRunning}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${cleanupRunning ? palette.muted : palette.blue}`,
-      borderRadius: radius.sm,
-      color: cleanupRunning ? palette.muted : palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: cleanupRunning ? "not-allowed" : "pointer",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {cleanupRunning ? "RUNNING…" : "RUN CLEANUP NOW"}
-    </button>
+    />
     </div>
     </div>
 
@@ -584,25 +572,13 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     </div>
     </div>
 
-    <button
+    <Btn
+    size="md"
+    label={forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
+    color={palette.amber}
+    bg={forceScanArmed ? alpha(palette.amber, ALPHA.medium) : undefined}
     onClick={runForceFullScan}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
-          border: `1px solid ${palette.amber}`,
-          borderRadius: radius.sm,
-          color: palette.amber,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
-    }}
-    >
-    {forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
-    </button>
+    />
     </div>
     </div>
 
@@ -632,26 +608,13 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     </div>
     </div>
 
-    <button
+    <Btn
+    size="md"
+    label={orphanedLoading ? "CHECKING…" : "CHECK FOR ORPHANED FILES"}
+    color={orphanedLoading ? palette.muted : palette.blue}
     onClick={checkOrphaned}
     disabled={orphanedLoading}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${orphanedLoading ? palette.muted : palette.blue}`,
-      borderRadius: radius.sm,
-      color: orphanedLoading ? palette.muted : palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: orphanedLoading ? "not-allowed" : "pointer",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {orphanedLoading ? "CHECKING…" : "CHECK FOR ORPHANED FILES"}
-    </button>
+    />
     </div>
 
     {orphanedChecked && orphanedItems.length === 0 && (
@@ -732,28 +695,18 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
       </div>
 
       <div style={{ marginTop: space.md }}>
-      <button
-      onClick={removeSelectedOrphaned}
-      disabled={orphanedRemoving || orphanedSelected.size === 0}
-      style={{
-        padding: `${space.xs}px ${space.xl}px`,
-        background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
-                                                     border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
-                                                     borderRadius: radius.sm,
-                                                     color: orphanedSelected.size === 0 ? palette.muted : palette.red,
-                                                     fontSize: type.size.sm,
-                                                     fontFamily: type.family,
-                                                     fontWeight: type.weight.bold,
-                                                     letterSpacing: type.tracking.wide,
-                                                     cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
-      }}
-      >
-      {orphanedRemoving
+      <Btn
+      size="md"
+      label={orphanedRemoving
         ? "REMOVING…"
         : orphanedRemoveArmed
         ? "CLICK AGAIN TO CONFIRM"
         : `REMOVE SELECTED (${orphanedSelected.size})`}
-        </button>
+      color={orphanedSelected.size === 0 ? palette.muted : palette.red}
+      bg={orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : undefined}
+      onClick={removeSelectedOrphaned}
+      disabled={orphanedRemoving || orphanedSelected.size === 0}
+      />
         </div>
         </div>
     )}

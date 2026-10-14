@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { IMPORT_CONFIRM_MS } from "../../constants";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { Btn } from "../atoms/Btn";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -12,7 +13,7 @@ import { useArmedConfirm } from "../../hooks/useArmedConfirm";
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
 export const BackupRestoreSection = ({ api, toast, onImported }) => {
-  const { palette, type, space, radius } = useTheme();
+  const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [importing,  setImporting]  = useState(false);
   const fileInputRef = useRef(null);
@@ -129,25 +130,7 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
     )}
     </div>
 
-    <button
-    onClick={handleExport}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${palette.blue}`,
-      borderRadius: radius.sm,
-      color: palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      flexShrink: 0,
-    }}
-    >
-    EXPORT
-    </button>
+    <Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />
     </div>
 
     {/* Import */}
@@ -171,26 +154,14 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
     onChange={handleFilePicked}
     style={{ display: "none" }}
     />
-    <button
+    <Btn
+    size="md"
+    label={importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
+    color={palette.red}
+    bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
     onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
     disabled={importing}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
-          border: `1px solid ${palette.red}`,
-          borderRadius: radius.sm,
-          color: palette.red,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: importing ? "not-allowed" : "pointer",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-    }}
-    >
-    {importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
-    </button>
+    />
     </div>
     </div>
   );
