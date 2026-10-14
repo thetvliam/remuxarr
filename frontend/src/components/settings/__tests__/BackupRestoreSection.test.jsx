@@ -18,12 +18,21 @@
  * What lapsing has to clear is the subtle part, and the reason this is not
  * just "setConfirming(false)". A file input fires no change event when you
  * re-pick the file already in it. So when only `confirming` was reset, the
- * staged file stayed in the ref and the input kept its value — and after
- * letting the window lapse, pressing IMPORT… reopened the picker, choosing
- * the same file did nothing at all, and the button looked broken until the
- * user happened to pick a different one.
+ * input kept its value — and after letting the window lapse, pressing
+ * IMPORT… reopened the picker, choosing the same file did nothing at all,
+ * and the button looked broken until the user happened to pick a different
+ * one.
+ *
+ * Nothing tested that until "lets the same file be picked again once the
+ * window lapses". Verified by mutation, 2 applied: the lapse leaving the
+ * input's value survived the whole suite before that test and is killed by
+ * it. The lapse also dropped the staged file; removing that survived the
+ * test too, and could not have failed anything, because only the confirming
+ * click reads the staged file and the window re-arms only through a new
+ * pick, which replaces it. The line was removed rather than kept.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackupRestoreSection } from "../BackupRestoreSection";
@@ -101,6 +110,36 @@ describe("BackupRestoreSection — import confirmation", () => {
 
       act(() => { vi.advanceTimersByTime(200); });
       expect(importBtn()).toHaveTextContent(/^IMPORT…$/);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(calls.some(c => c.url.includes("/api/settings/import"))).toBe(false);
+  });
+
+  it("lets the same file be picked again once the window lapses", async () => {
+    /* The bug the lapse's clearing exists for, reproduced. fireEvent.change
+     * cannot show it: it fires whatever the input holds. user-event's upload
+     * gives the input a real value and, like a browser, fires no change when
+     * the file picked is the one already in it, so without the clearing the
+     * second pick does nothing and the button stays at IMPORT….
+     *
+     * Fake timers that also advance with real time, and user-event told to
+     * advance them: with plain fakes, user-event waits on timers the test
+     * has replaced and never returns (see DangerZone.test.jsx). */
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      setup();
+      const file = new File(['{"scan_paths":[]}'], "settings.json", { type: "application/json" });
+
+      await user.upload(fileInput(), file);
+      expect(importBtn()).toHaveTextContent(/CLICK AGAIN TO CONFIRM/);
+
+      act(() => { vi.advanceTimersByTime(IMPORT_CONFIRM_MS + 100); });
+      expect(importBtn()).toHaveTextContent(/^IMPORT…$/);
+
+      await user.upload(fileInput(), file);
+      expect(importBtn()).toHaveTextContent(/CLICK AGAIN TO CONFIRM/);
     } finally {
       vi.useRealTimers();
     }

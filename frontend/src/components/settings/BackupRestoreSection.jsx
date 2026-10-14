@@ -19,15 +19,19 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
   const fileInputRef = useRef(null);
   const pendingFileRef = useRef(null);
 
-  /* When the confirmation window lapses, the staged file and the input's
-   * value are cleared too.
+  /* When the confirmation window lapses, the input's value is cleared too.
    *
-   * Previously only `confirming` was reset. The file stayed in the ref and,
-   * more importantly, fileInputRef.current.value stayed set — and a file
-   * input fires no change event when you re-pick the file already in it. So
-   * after letting the window lapse, clicking IMPORT… reopened the picker,
-   * choosing the same file did nothing at all, and the button looked broken
-   * until the user happened to pick a different one.
+   * Previously only `confirming` was reset, and fileInputRef.current.value
+   * stayed set — and a file input fires no change event when you re-pick
+   * the file already in it. So after letting the window lapse, clicking
+   * IMPORT… reopened the picker, choosing the same file did nothing at all,
+   * and the button looked broken until the user happened to pick a
+   * different one.
+   *
+   * The staged file is left in its ref. Only the confirming click reads it,
+   * and the window can re-arm only through a new pick, which replaces it
+   * first, so clearing it here too changed nothing a test or a user could
+   * see, and it was removed rather than kept on trust.
    *
    * IMPORT_CONFIRM_MS rather than the shared CONFIRM_MS: this asks the user
    * to read a filename and decide whether to overwrite every setting they
@@ -36,7 +40,6 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
   const { armed: confirming, arm, disarm } = useArmedConfirm({
     ms: IMPORT_CONFIRM_MS,
     onLapse: () => {
-      pendingFileRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
   });
