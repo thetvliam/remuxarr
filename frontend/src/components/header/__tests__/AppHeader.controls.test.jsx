@@ -12,9 +12,8 @@
  *
  * These were written before DRY RUN, AUTO, PAUSE and SCAN were each defined
  * once for both layouts, so that sharing them could not quietly swap a
- * handler or give the phone the desktop's text. They pin today's behaviour,
- * including where the two layouts differ: the phone's idle SCAN is ⟳ where
- * the desktop's is ↻, and its titles are its own.
+ * handler or give the phone the desktop's text. They pin what the layouts
+ * share and where they still differ: the phone SCAN's titles are its own.
  *
  * Verified by mutation, 17 applied, 17 killed. Every one survived the whole
  * suite before this file existed, and each is killed here by the test
@@ -25,7 +24,8 @@
  *   • each drawer row calling a sibling's handler (three)
  *   • each drawer row showing the other state's words (three)
  *   • the phone SCAN's start and stop swapped, its progress ignored, its
- *     idle glyph made the desktop's ↻, and its two titles swapped
+ *     idle glyph made the desktop's ↻ (retired: see SCAN below), and its
+ *     two titles swapped
  * When the controls moved to HeaderControls.jsx all seventeen were re-aimed
  * at the new code, each still a defect in one control on one layout, and the
  * same tests killed each.
@@ -36,11 +36,20 @@
  * in both forms. Three mutants, all surviving the suite without these two
  * tests and killed by them: the rows losing aria-pressed (the old
  * behaviour), the rows reporting the highlight, and the bar reporting it.
+ *
+ * SCAN. The phone's idle arrow was ⟳ where the desktop's is ↻, and the
+ * desktop stayed untinted while scanning where the phone and the bar's
+ * other lit controls fill in; both now match. The mutant that made the
+ * phone's arrow ↻ was retired, since that is now the behaviour, and its
+ * inverse took its place. Three mutants, all killed: the phone's arrow
+ * back to ⟳ (the old behaviour, which the old test required), and the bar
+ * or the phone left untinted while scanning, both of which survived
+ * without the tint test.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { ThemeContext, themes } from "../../../theme";
+import { ALPHA, ThemeContext, alpha, themes } from "../../../theme";
 import { AppHeader } from "../AppHeader";
 
 const theme = { ...themes.terminal, themeId: "terminal", setThemeId: () => {} };
@@ -63,6 +72,14 @@ const renderHeader = (props) => {
 };
 
 const button = (name) => screen.getByRole("button", { name });
+
+/** What jsdom reads back for `value` set on `prop`, so a colour compares
+ *  whichever notation produced it. */
+const css = (prop, value) => {
+  const el = document.createElement("div");
+  el.style[prop] = value;
+  return el.style[prop];
+};
 const drawer = () => screen.queryByRole("dialog", { name: "Menu" });
 const openDrawer = () => fireEvent.click(button("Open menu"));
 
@@ -164,7 +181,7 @@ describe("AppHeader — the phone's SCAN", () => {
     const h = handlers();
     renderHeader({ isMobile: true, scanning: false, ...h });
 
-    const scan = button("⟳ SCAN");
+    const scan = button("↻ SCAN");
     expect(scan.title).toBe("Scan library now");
     fireEvent.click(scan);
     expect(calls(h)).toMatchObject({ onTriggerScan: 1, onCancelScan: 0 });
@@ -181,5 +198,20 @@ describe("AppHeader — the phone's SCAN", () => {
 
     rerender({ scanProgress: { scanned: 12, total: 34 } });
     expect(button("✕ 12/34")).toBeTruthy();
+  });
+  it("tints red while a scan runs, on the desktop as on the phone", () => {
+    /* The desktop's other lit controls (DRY RUN, MANUAL, RESUME) all fill
+     * in when lit; SCAN was the one drawn with a border alone, and only on
+     * the desktop. */
+    const tint = css("background", alpha(theme.palette.red, ALPHA.low));
+    for (const isMobile of [false, true]) {
+      const { rerender } = renderHeader({ isMobile, scanning: false, ...handlers() });
+      expect(button("↻ SCAN").style.background).toBe("transparent");
+
+      rerender({ scanning: true, scanProgress: { scanned: 12, total: 34 } });
+      const stop = isMobile ? button("✕ 12/34") : button("✕ STOP (12/34)");
+      expect(stop.style.background).toBe(tint);
+      cleanup();
+    }
   });
 });

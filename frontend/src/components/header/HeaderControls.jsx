@@ -106,10 +106,21 @@ export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
 
 /**
  * SCAN, which is also the stop button while a scan runs and shows its
- * progress. The two forms have drifted apart and are kept exactly as they
- * were, side by side here so the differences can be seen: the idle glyph
- * (↻ in the bar, ⟳ on the phone), the phone tinting itself red while a scan
- * runs where the bar does not, and its weight, spacing and titles.
+ * progress. Both forms show ↻ when idle, and turn red and tinted while a
+ * scan runs, as the bar's other lit controls do. The phone used to show ⟳,
+ * and the bar used to stay untinted; nothing recorded either as a choice.
+ * Neither bundled font has ↻ or ⟳, so each device draws the arrow from its
+ * own fonts, and ↻ comes from the main Arrows block, which more fonts cover
+ * than the supplementary block ⟳ is in.
+ *
+ * The two forms still differ in weight and letter spacing (the phone's is
+ * bold and tighter) and in their titles. Not for fit: measured in Chromium
+ * during a 12345/12345 scan, the phone's top row fits at 320px in every
+ * theme with either look, the button within 2px either way. The bar's is
+ * left as it is because its widths are what the 1140px and 860px
+ * breakpoints were measured against; the phone's has simply not been
+ * changed. A tooltip never shows on touch, so the phone's titles matter
+ * little either way.
  *
  * The bar's compact form and the phone both show progress as "✕ 123/456",
  * without STOP and the brackets; the compact bar keeps the full meaning in
@@ -119,6 +130,7 @@ export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTr
   const { palette, type, space, radius } = useTheme();
   const short = scanProgress && `✕ ${scanProgress.scanned}/${scanProgress.total}`;
   const pulse = scanning ? "ledPulse 1.5s ease-in-out infinite" : "none";
+  const tint = scanning ? alpha(palette.red, ALPHA.low) : "transparent";
   const onClick = scanning ? onCancelScan : onTriggerScan;
 
   if (form === "phone") {
@@ -129,7 +141,7 @@ export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTr
       style={{
         flexShrink: 0,
         padding: `${space.xxs}px ${space.sm}px`,
-        background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
+        background: tint,
         border: `1px solid ${scanning ? palette.red : palette.border}`,
         borderRadius: radius.sm,
         color: scanning ? palette.red : palette.dim,
@@ -139,7 +151,7 @@ export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTr
         animation: pulse,
       }}
       >
-      {scanning ? (short || "✕ STOP") : "⟳ SCAN"}
+      {scanning ? (short || "✕ STOP") : "↻ SCAN"}
       </button>
     );
   }
@@ -156,7 +168,7 @@ export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTr
     title={shortened ? full : undefined}
     style={{
       padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
-      background: "transparent",
+      background: tint,
       border: `1px solid ${scanning ? palette.red : palette.border}`,
       borderRadius: radius.sm,
       color: scanning ? palette.red : palette.dim,
