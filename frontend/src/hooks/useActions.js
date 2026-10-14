@@ -11,7 +11,7 @@ export function useActions({
   workerPaused, setWorkerPaused,
   autoStart, setAutoStart,
   setScanning,
-  setModal,
+  setModal, enrichModal,
   toast,
   fetchAll,
   fetchForge,
@@ -169,7 +169,9 @@ export function useActions({
     // undefined left it on "Loading…" forever with no error shown.
     // Falling back to the row data keeps the modal useful.
     .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-    .then(full => setModal(full))
+    // enrichModal, not setModal: the response can land after the user has
+    // closed this modal or opened another row, and must not undo either.
+    .then(full => enrichModal(full))
     .catch(() => {}); // keep the basic modal if the detail fetch fails
   };
 

@@ -56,7 +56,8 @@ export function useRouting() {
   const pageRef         = useRef(_pageFromHash());
   // modalRef mirrors the `modal` state value synchronously so setModal can
   // detect whether a modal is already open (avoids pushing duplicate history
-  // entries when openDetail enriches the modal data with a second setModal).
+  // entries when an open modal's contents are replaced), and enrichModal can
+  // tell which item is on screen.
   const modalRef        = useRef(null);
   // closedByUserRef is a one-shot flag: set true when setModal(null) triggers
   // history.back() programmatically so the resulting popstate event knows the
@@ -235,8 +236,10 @@ export function useRouting() {
   /* ── Routing: wrapped setModal ───────────────────────────────────────────
    *    Handles three cases:
    *    • Opening a new modal  → push a history entry (modal: true)
-   *    • Enriching an open modal (openDetail's second fetch) → no push
-   *    • Closing the modal    → history.back() removes the modal history entry  */
+   *    • Replacing an open modal's contents → no push
+   *    • Closing the modal    → history.back() removes the modal history entry
+   *    A record that arrives over the network goes through enrichModal below
+   *    instead, which first checks the modal is still showing that item.  */
   const setModal = useCallback((item) => {
     if (item === null) {
       // Only act if a modal is currently open.
@@ -254,8 +257,8 @@ export function useRouting() {
     setModalState(item);
 
     // First open only: push a history entry so the back button can close it.
-    // When openDetail calls setModal a second time to enrich with full data,
-    // wasOpen is true so we skip the push — no duplicate history entry.
+    // Replacing the contents of a modal already open skips the push: one
+    // modal, one entry, one Back to close it.
     if (!wasOpen) {
       window.history.pushState(
         { page: pageRef.current, modal: true },
@@ -265,5 +268,19 @@ export function useRouting() {
     }
   }, []);
 
-  return { page, setPage, registerNavGuard, leaveGuarded, modal, setModal };
+  /* ── Routing: enrichModal ────────────────────────────────────────────────
+   *    Replace the open modal's contents with a fuller record of the same
+   *    item, adding no history entry: openDetail's second step, once the
+   *    full record arrives. Ignored unless the modal still shows that item,
+   *    because by the time the response lands the user may have closed it or
+   *    opened another row. Applying it regardless reopened a closed modal,
+   *    with a second history entry, and could put the earlier row's file in
+   *    front of the one just opened. */
+  const enrichModal = useCallback((item) => {
+    if (modalRef.current?.id !== item?.id) return;
+    modalRef.current = item;
+    setModalState(item);
+  }, []);
+
+  return { page, setPage, registerNavGuard, leaveGuarded, modal, setModal, enrichModal };
 }

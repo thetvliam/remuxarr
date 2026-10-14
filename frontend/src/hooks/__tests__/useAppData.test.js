@@ -85,6 +85,7 @@ vi.mock("../useWebSocket", () => ({
 }));
 
 const { useAppData, TOAST_MS, REVERT_FAILURE_TOAST_MS } = await import("../useAppData");
+const { useActions } = await import("../useActions");
 
 /* ── Harness ────────────────────────────────────────────────────────────── */
 
@@ -222,8 +223,9 @@ describe("useAppData — setModal", () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
   it("enriching an open modal adds no second history entry", async () => {
-    // openDetail shows the row at once and replaces it with the full record
-    // when that arrives: one modal, so one Back must close it.
+    // Replacing an open modal's contents is not a second modal, so it adds
+    // no entry and one Back still closes it. (openDetail's late record goes
+    // through enrichModal instead; see "a detail's late load" below.)
     const push = vi.spyOn(window.history, "pushState");
     const { result } = await mount();
     act(() => { result.current.setModal({ id: 1 }); });
@@ -562,6 +564,79 @@ describe("useAppData — navigation guard", () => {
     await back("review");
 
     expect(result.current.page).toBe("review");
+  });
+});
+
+
+/* ── A detail's late load ───────────────────────────────────────────────── */
+
+/**
+ * Opening a detail shows the row at once and replaces it with the full
+ * record when that arrives over the network. By then the user may have
+ * closed the modal or opened another row. Applying the record regardless
+ * reopened a closed modal, with a second history entry, and could put the
+ * earlier row's file in front of the one just opened.
+ *
+ * Driven through useActions' openDetail with the real routing underneath,
+ * which is the pairing App uses. Each detail request is held until the test
+ * answers it, so the order of arrival is the test's to choose. The two
+ * failures were reproduced here against the old code before the fix.
+ *
+ * Verified by mutation, 5 applied, 5 killed, all surviving the suite
+ * without these tests: openDetail applying the record with setModal (the
+ * old behaviour), enrichModal checking only that a modal is open, enrichModal
+ * never applying, useAppData not passing it on, and enrichModal pushing a
+ * history entry of its own.
+ */
+describe("useAppData — a detail's late load", () => {
+  let answer;
+
+  /** Mount useAppData and useActions together, holding detail requests. */
+  async function mountWithActions() {
+    answer = {};
+    vi.stubGlobal("fetch", vi.fn((url) => {
+      const id = /\/api\/queue\/(\d+)$/.exec(String(url))?.[1];
+      if (id) return new Promise(res => { answer[id] = (body) => res({ ok: true, json: async () => body }); });
+      return Promise.resolve({ ok: true, json: async () => ({ value: false, items: [], total: 0 }) });
+    }));
+    vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const rendered = renderHook(() => { const d = useAppData(); return { d, a: useActions(d) }; });
+    await act(async () => { await Promise.resolve(); });
+    return rendered;
+  }
+  const row = (id, name) => ({ id, file: { filename: name } });
+  const full = (id, name) => ({ id, file: { filename: name }, planned_actions: [] });
+
+  it("fills in the open modal, adding no history entry of its own", async () => {
+    const { result } = await mountWithActions();
+    const push = vi.spyOn(window.history, "pushState");
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toEqual(full(7, "seven.mkv"));
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen a modal closed before it arrived", async () => {
+    const { result } = await mountWithActions();
+    const push = vi.spyOn(window.history, "pushState");
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    act(() => { result.current.d.setModal(null); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toBeNull();
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace the row opened since with the earlier one", async () => {
+    const { result } = await mountWithActions();
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    act(() => { result.current.d.setModal(null); });
+    act(() => { result.current.a.openDetail(row(8, "eight.mkv"), "/api/queue"); });
+    await act(async () => { answer["8"](full(8, "eight.mkv")); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toEqual(full(8, "eight.mkv"));
   });
 });
 

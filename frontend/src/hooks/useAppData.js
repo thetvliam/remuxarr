@@ -24,7 +24,7 @@ export const REVERT_FAILURE_TOAST_MS = 15000;
 export function useAppData() {
   // Called first, so the routing effects run ahead of this hook's own, the
   // order they had when they were written inline here.
-  const { page, setPage, registerNavGuard, leaveGuarded, modal, setModal } = useRouting();
+  const { page, setPage, registerNavGuard, leaveGuarded, modal, setModal, enrichModal } = useRouting();
 
   const [api,        setApi]        = useState(DEFAULT_API);
   const [activeJobs, setActiveJobs] = useState([]);
@@ -496,7 +496,7 @@ export function useAppData() {
         api, setApi, page, setPage,
         registerNavGuard, leaveGuarded,
         activeJobs, queue, languageReviewCount, reviewBadgeCount,
-        modal, setModal,
+        modal, setModal, enrichModal,
         toasts,
         dryRun, setDryRun,
         scanning, setScanning, scanProgress,
