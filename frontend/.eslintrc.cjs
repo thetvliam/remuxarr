@@ -32,9 +32,18 @@ module.exports = {
     "react-hooks/rules-of-hooks": "error",
     // A missing dependency is a value frozen at the time the callback was
     // last built. It compiles, renders, and passes any snapshot test, then
-    // silently serves stale data. Error rather than warn: warnings in a
-    // project with no CI lint step are indistinguishable from silence.
+    // silently serves stale data. Error rather than warn: CI runs lint, and
+    // only an error fails it; a warning scrolls past in a green run.
     "react-hooks/exhaustive-deps": "error",
+    // A name used without being imported or declared. react/jsx-no-undef
+    // already catches a component missing its import, but not anything else:
+    // a hook, a theme helper, a constant. Those fail only when the line runs,
+    // and a line no test reaches fails only for a user. It was off because
+    // nothing here extends eslint:recommended, and until it was turned on,
+    // removing alpha from App.jsx's imports (its only use is in the
+    // unsaved-changes dialog) or useRef from useWebSocket (which every test
+    // mocks) passed both lint and the whole suite.
+    "no-undef": "error",
     // An unused import or variable is usually the residue of a refactor that
     // did not finish. ApiBar carried alpha and ALPHA for weeks after the last
     // use of either, and it took a human reading the file to notice.
@@ -54,5 +63,12 @@ module.exports = {
     // > and } stay forbidden because they can silently change what parses.
     "react/no-unescaped-entities": ["error", { forbid: [">", "}"] }],
   },
+  // Tests run under Node (vitest, with jsdom on top), and use its globals:
+  // `global.fetch = …` to stub the network, `process.env.TZ` to pin a time
+  // zone. The application runs in a browser, which has neither, so only the
+  // test files get Node's globals.
+  overrides: [
+    { files: ["src/**/__tests__/**"], env: { node: true } },
+  ],
   ignorePatterns: ["dist", "node_modules"],
 };
