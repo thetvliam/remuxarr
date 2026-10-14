@@ -31,9 +31,9 @@
  * through unchanged. Its tests stay here and drive it through useAppData's
  * return, which is how App reaches it, so they cover the hand-over too.
  *
- * ROUTING — 14 mutants applied, 11 killed, 3 survive. Each was run against
+ * ROUTING — 14 mutants applied, 14 killed. Each was run against
  * the whole suite in useAppData.js before the move and in useRouting.js
- * after it, and the same tests killed it both times:
+ * after it, with the same result both times:
  *
  *   • setPage's same-page early return removed       → killed
  *   • "themes" dropped from VALID_PAGES              → killed (and App.test)
@@ -46,15 +46,14 @@
  *   • the Forge-on-entry effect disabled             → killed
  *   • useAppData's return dropping leaveGuarded      → killed
  *   • useAppData's return dropping setModal          → killed
- *   • a second setModal on an open modal pushing again → SURVIVES
- *   • the closedByUserRef suppression removed          → SURVIVES
- *   • the initial replaceState removed                 → SURVIVES
+ *   • a second setModal on an open modal pushing again → killed
+ *   • the closedByUserRef suppression removed          → killed
+ *   • the initial replaceState removed                 → killed
  *
- * The survivors are open gaps, not established equivalents. Nothing here
- * opens a modal twice through the real hook (useActions' tests hand it a
- * mock setModal); every close mocks history.back(), so the popstate the
- * suppression exists for never fires; and nothing reads the entry the hook
- * replaces on mount, neither its state nor its URL.
+ * The last three survived the move and the whole suite until three tests
+ * were written for them: "enriching an open modal adds no second history
+ * entry", "a Back it issued itself does not close a modal opened before it
+ * arrived" and "rewrites the address on load to the page it shows".
  *
  * REVIEW BADGE COUNT — 3 mutants applied, 2 killed by assertion, 1 by crash:
  *
@@ -152,6 +151,19 @@ describe("useAppData — initial page from hash", () => {
     const { result } = await mount();
     expect(result.current.page).toBe("dashboard");
   });
+  it("rewrites the address on load to the page it shows", async () => {
+    /* A stale or mistyped fragment is corrected in the address bar, and the
+     * first entry carries the app's own state, so the URL names the page
+     * on screen. What the comment once gave as the reason, that Back to
+     * this entry could not restore the page without the state, stopped
+     * being true when a stateless Back began reading the URL: see
+     * "a stateless popstate honours the URL" below. */
+    setHash("#nonsense");
+    await mount();
+
+    expect(window.location.hash).toBe("#dashboard");
+    expect(window.history.state).toEqual({ page: "dashboard", modal: false });
+  });
 });
 
 /* ── Routing: setPage ───────────────────────────────────────────────────── */
@@ -208,6 +220,43 @@ describe("useAppData — setModal", () => {
 
     expect(result.current.modal).toBeNull();
     expect(back).toHaveBeenCalledTimes(1);
+  });
+  it("enriching an open modal adds no second history entry", async () => {
+    // openDetail shows the row at once and replaces it with the full record
+    // when that arrives: one modal, so one Back must close it.
+    const push = vi.spyOn(window.history, "pushState");
+    const { result } = await mount();
+    act(() => { result.current.setModal({ id: 1 }); });
+    push.mockClear();
+
+    act(() => { result.current.setModal({ id: 1, planned_actions: [] }); });
+
+    expect(push).not.toHaveBeenCalled();
+    expect(result.current.modal).toEqual({ id: 1, planned_actions: [] });
+  });
+
+  it("a Back it issued itself does not close a modal opened before it arrived", async () => {
+    /* Closing calls history.back(), and the browser delivers the popstate
+     * later. If a modal opens in between, that popstate lands on the
+     * closed modal's entry, which is a modal entry, and handled as an
+     * ordinary forward-into-a-modal it would close the new one. The
+     * one-shot closedByUserRef is what makes the hook ignore it.
+     *
+     * history.back() is stubbed, as elsewhere in this file, and the
+     * popstate the browser would deliver is dispatched by hand. */
+    vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const { result } = await mount();
+    act(() => { result.current.setModal({ id: 1 }); });
+    act(() => { result.current.setModal(null); });
+    act(() => { result.current.setModal({ id: 2 }); });
+
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent("popstate", {
+        state: { page: "dashboard", modal: true },
+      }));
+    });
+
+    expect(result.current.modal).toEqual({ id: 2 });
   });
 });
 

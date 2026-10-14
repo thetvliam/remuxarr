@@ -79,9 +79,15 @@ export function useRouting() {
   const [modal,      setModalState] = useState(null);
 
   /* ── Routing: initial replaceState ───────────────────────────────────────
-   *    Replace the browser's very first history entry with a state object so
-   *    that pressing Back to the initial entry gives event.state = { page, modal }
-   *    rather than null (which would prevent us from restoring the correct page). */
+   *    Rewrite the browser's first history entry to the page being shown, with
+   *    the app's own state object. A stale or mistyped fragment, or none at
+   *    all, is corrected in the address bar (#nonsense becomes #dashboard), so
+   *    the URL names what is on screen.
+   *
+   *    It was also once needed for Back: a null event.state sent the handler
+   *    to "dashboard" whatever the URL said. The handler now reads a stateless
+   *    entry's page from its URL (see the popstate handler below), so that
+   *    reason no longer holds. */
   useEffect(() => {
     const initial = _pageFromHash();
     pageRef.current = initial;
