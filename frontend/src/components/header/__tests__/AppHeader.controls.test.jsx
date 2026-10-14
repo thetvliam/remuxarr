@@ -29,6 +29,13 @@
  * When the controls moved to HeaderControls.jsx all seventeen were re-aimed
  * at the new code, each still a defect in one control on one layout, and the
  * same tests killed each.
+ *
+ * aria-pressed. The drawer rows had none, so a screen reader did not
+ * announce them as toggles; they now report it as the bar does. AUTO is
+ * pressed while auto-start is on, not while it is highlighted (MANUAL),
+ * in both forms. Three mutants, all surviving the suite without these two
+ * tests and killed by them: the rows losing aria-pressed (the old
+ * behaviour), the rows reporting the highlight, and the bar reporting it.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -59,7 +66,7 @@ const button = (name) => screen.getByRole("button", { name });
 const drawer = () => screen.queryByRole("dialog", { name: "Menu" });
 const openDrawer = () => fireEvent.click(button("Open menu"));
 
-describe("AppHeader — what the desktop controls call", () => {
+describe("AppHeader — the desktop controls", () => {
   it("sends each toggle to its own handler", () => {
     const h = handlers();
     renderHeader({ isMobile: false, dryRun: false, autoStart: true, workerPaused: false, ...h });
@@ -70,6 +77,16 @@ describe("AppHeader — what the desktop controls call", () => {
     expect(calls(h)).toMatchObject({ onToggleDryRun: 1, onToggleAutoStart: 1, onTogglePause: 0 });
     fireEvent.click(button("⏸ PAUSE"));
     expect(calls(h)).toMatchObject({ onToggleDryRun: 1, onToggleAutoStart: 1, onTogglePause: 1 });
+  });
+
+  it("marks each toggle pressed or not, AUTO by auto-start rather than its highlight", () => {
+    const { rerender } = renderHeader({ isMobile: false, dryRun: false, autoStart: true, workerPaused: false, ...handlers() });
+    expect(["◇ DRY RUN", "⚡ AUTO", "⏸ PAUSE"].map(n => button(n).getAttribute("aria-pressed")))
+      .toEqual(["false", "true", "false"]);
+
+    rerender({ dryRun: true, autoStart: false, workerPaused: true });
+    expect(["◆ DRY RUN", "⏸ MANUAL", "▶ RESUME"].map(n => button(n).getAttribute("aria-pressed")))
+      .toEqual(["true", "false", "true"]);
   });
 
   it("starts a scan when idle, and stops one that is running", () => {
@@ -105,6 +122,20 @@ describe("AppHeader — the phone drawer", () => {
     expect(row("DRY RUN").textContent).toBe("◆ DRY RUN  — tap to disable");
     expect(row("MANUAL").textContent).toBe("⏸ MANUAL  — tap to enable auto-start");
     expect(row("RESUME").textContent).toBe("▶ RESUME  — tap to resume processing");
+  });
+
+  it("marks each row pressed or not, as the bar does", () => {
+    /* AUTO is pressed while auto-start is on, although what it highlights
+     * is MANUAL: aria-pressed reports the toggle's own state, not its
+     * highlight, the same as the bar. */
+    const { rerender } = renderHeader({ isMobile: true, dryRun: false, autoStart: true, workerPaused: false, ...handlers() });
+    openDrawer();
+    expect(["DRY RUN", "AUTO-START", "PAUSE"].map(w => row(w).getAttribute("aria-pressed")))
+      .toEqual(["false", "true", "false"]);
+
+    rerender({ dryRun: true, autoStart: false, workerPaused: true });
+    expect(["DRY RUN", "MANUAL", "RESUME"].map(w => row(w).getAttribute("aria-pressed")))
+      .toEqual(["true", "false", "true"]);
   });
 
   it("sends each row to its own handler, and closes the drawer", () => {

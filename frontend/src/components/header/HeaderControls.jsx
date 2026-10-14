@@ -13,17 +13,18 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *   row    a full-width row in the phone drawer (the three toggles)
  *   phone  the phone's always-visible top row (SCAN)
  * A toggle's look in each state is decided once, in headerToggles, and its
- * form decides only its size, its alignment, its text, and how it reports
- * its state: aria-pressed in the bar, words in the drawer. SCAN's two forms
+ * form decides only its size, its alignment and its text. SCAN's two forms
  * differ in look as well; ScanButton keeps them side by side.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
  * The three toggles, as data. `lit` is the state drawn highlighted, which
  * for AUTO is MANUAL: the departure from the default, not the on state.
- * `pressed` is the toggle's own on state, which the bar reports through
- * aria-pressed because its colour and glyph alone do not reach anyone not
- * seeing them. The drawer rows say their state in words instead.
+ * `pressed` is the toggle's own on state, which both forms report through
+ * aria-pressed because colour and glyph alone do not reach anyone not
+ * seeing them. The drawer rows say their state in words as well; they had
+ * only the words until the controls were defined here, and a screen reader
+ * did not announce them as toggles at all.
  */
 export const headerToggles = ({
   palette,
@@ -71,9 +72,9 @@ export const headerToggles = ({
 ];
 
 /**
- * One toggle, drawn for a form. In the bar it carries its state in
- * aria-pressed and, when compact, its full meaning in its name and tooltip;
- * as a drawer row it carries neither, and its text says the state instead.
+ * One toggle, drawn for a form. Both forms carry its state in aria-pressed.
+ * In the compact bar it also carries its full meaning in its name and
+ * tooltip; a drawer row needs neither, because its text spells it out.
  */
 export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
   const { palette, type, space, radius } = useTheme();
@@ -81,7 +82,7 @@ export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
   return (
     <button
     onClick={onClick}
-    aria-pressed={bar ? t.pressed : undefined}
+    aria-pressed={t.pressed}
     aria-label={bar && compact ? t.compactName : undefined}
     title={bar ? (compact ? t.compactTitle ?? t.title : t.title) : undefined}
     style={{
