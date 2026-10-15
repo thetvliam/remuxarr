@@ -4,6 +4,7 @@ import { IMPORT_CONFIRM_MS } from "../../constants";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { Btn } from "../atoms/Btn";
 import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -106,17 +107,16 @@ export const BackupRestoreSection = ({ api, toast, onImported, first = false }) 
     <div>
     <SectionHeader label="Backup & Restore" first={first} />
 
-    {/* Export */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Export Settings
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.sm }}>
-    Downloads your current configuration as a JSON file — useful for
-    backing up before a change, or moving to a new system.
-    </div>
-    <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
+    <ActionRow
+    divider
+    title="Export Settings"
+    description={<>
+      Downloads your current configuration as a JSON file — useful for
+      backing up before a change, or moving to a new system.
+    </>}
+    action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
+    >
+    <label style={{ display: "flex", alignItems: "center", gap: space.sm, marginTop: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
     <input
     type="checkbox"
     checked={includeSecrets}
@@ -130,41 +130,34 @@ export const BackupRestoreSection = ({ api, toast, onImported, first = false }) 
       you would any file containing API keys.
       </div>
     )}
-    </div>
+    </ActionRow>
 
-    <Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />
-    </div>
-
-    {/* Import */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Import Settings
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    Applies settings from a previously exported file. Only keys
-    actually present in the file are changed — anything not in it
-    (e.g. secrets that were excluded at export time) is left exactly
-    as it is now.
-    </div>
-    </div>
-
-    <input
-    ref={fileInputRef}
-    type="file"
-    accept="application/json"
-    onChange={handleFilePicked}
-    style={{ display: "none" }}
+    <ActionRow
+    title="Import Settings"
+    description={<>
+      Applies settings from a previously exported file. Only keys
+      actually present in the file are changed — anything not in it
+      (e.g. secrets that were excluded at export time) is left exactly
+      as it is now.
+    </>}
+    action={<>
+      <input
+      ref={fileInputRef}
+      type="file"
+      accept="application/json"
+      onChange={handleFilePicked}
+      style={{ display: "none" }}
+      />
+      <Btn
+      size="md"
+      label={importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
+      color={palette.red}
+      bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
+      onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
+      disabled={importing}
+      />
+    </>}
     />
-    <Btn
-    size="md"
-    label={importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
-    color={palette.red}
-    bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
-    onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
-    disabled={importing}
-    />
-    </div>
     </div>
   );
 };

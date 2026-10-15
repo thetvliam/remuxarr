@@ -20,7 +20,7 @@
  * otherwise. The rest of the file covers the arming and the request itself,
  * since a removal fired on one click is not recoverable from the UI.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,7 @@ import { MaintenanceSection } from "../MaintenanceSection";
 import { SettingsPage } from "../SettingsPage";
 import { ThemeProvider } from "../../../theme";
 import { CONFIRM_MS } from "../../../constants";
+import { stubViewport } from "../../../test/viewport";
 
 const ORPHAN = {
   id: 7, filename: "movie.mkv", path: "/old/movie.mkv", on_disk: false,
@@ -481,34 +482,29 @@ describe("MaintenanceSection — settings load", () => {
   });
 });
 
-describe("MaintenanceSection — on a narrow phone", () => {
-  /* Each card's description and button share a row. The button never shrinks
-   * or wraps its label, so on a phone it squeezed the description: measured
-   * in Chrome, 81px to 172px wide at 320 to 390px, and at 320px CHECK FOR
-   * ORPHANED FILES ran off the screen. Letting the row wrap, with the
-   * description keeping a 220px basis, moves the button below it instead;
-   * measured after, every description is 254px or wider and every button is
-   * on screen, and at 1280px and 900px the page is pixel-identical to before.
-   *
-   * Both halves are needed. Without the wrap the row cannot break; without
-   * the basis the description counts as zero wide when the row decides
-   * whether to break, so it never does. jsdom has no layout, so these pin
-   * the two rules on each row, found from its button.
-   *
-   * Verified by mutation: removing the wrap from each row in turn, and
-   * putting each description back to flex: 1, all six survived the suite
-   * without this block and are killed by it. */
+describe("MaintenanceSection — on a phone and on a desktop", () => {
+  /* Every row here is an ActionRow, the two switches and the three cards'
+   * buttons alike: on a phone the control goes below its description, on a
+   * desktop beside it. The cards' rows used to wrap only when the button no
+   * longer fitted beside a 220px description, and this pinned that wrap; the
+   * switch rows never wrapped at all. jsdom has no layout, so these pin the
+   * direction each row asks for, found from its control. */
   it.each([
-    "RUN CLEANUP NOW",
-    "FORCE FULL RESCAN",
-    "CHECK FOR ORPHANED FILES",
-  ])("lets the %s button drop below its description", async (name) => {
-    mockApi();
-    setup();
-    await act(async () => {});  // let the settings reads on mount land
+    ["switch", "Enable Scheduled Scans"],
+    ["switch", "Auto-cleanup on Scan"],
+    ["button", "RUN CLEANUP NOW"],
+    ["button", "FORCE FULL RESCAN"],
+    ["button", "CHECK FOR ORPHANED FILES"],
+  ])("puts the %s %s below its description on a phone, beside it on a desktop", async (role, name) => {
+    for (const [width, direction] of [[390, "column"], [1280, "row"]]) {
+      stubViewport(width);
+      mockApi();
+      setup();
+      await act(async () => {});  // let the settings reads on mount land
 
-    const row = screen.getByRole("button", { name }).parentElement;
-    expect(row.style.flexWrap).toBe("wrap");
-    expect(row.firstElementChild.style.flexBasis).toBe("220px");
+      expect([width, screen.getByRole(role, { name }).parentElement.style.flexDirection])
+        .toEqual([width, direction]);
+      cleanup();
+    }
   });
 });

@@ -25,6 +25,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DangerZone } from "../DangerZone";
 import { ThemeProvider } from "../../../theme";
 import { CONFIRM_MS } from "../../../constants";
+import { stubViewport } from "../../../test/viewport";
 
 const setup = (props = {}) => {
   const onCleared = vi.fn();
@@ -167,20 +168,18 @@ describe("DangerZone", () => {
   });
 });
 
-describe("DangerZone — on a narrow phone", () => {
-  /* The button never shrinks or wraps its label, so on a phone it squeezed
-   * the description beside it to 132px at 320px wide, measured in Chrome.
-   * The row now wraps and the description keeps a 220px basis, so the button
-   * drops below it instead; measured after, the description is full width.
-   * Both rules are needed, and jsdom has no layout, so this pins them.
-   * Verified by mutation: removing the wrap, and putting the description
-   * back to flex: 1, both survived the suite without this and are killed
-   * by it. */
-  it("lets the button drop below its description", () => {
+describe("DangerZone — on a phone and on a desktop", () => {
+  /* The row is an ActionRow: on a phone its button goes below the
+   * description, on a desktop beside it. It used to wrap only when the
+   * button no longer fitted beside a 220px description, and this pinned that
+   * wrap; the rule went with the hand-written row. jsdom has no layout, so
+   * this pins the direction the row asks for at each width. Verified by
+   * mutation: the row put back to its hand-written wrapping markup survived
+   * the suite without this and is killed by it. */
+  it.each([[390, "column"], [1280, "row"]])("at %ipx lays its row out as a %s", (width, direction) => {
+    stubViewport(width);
     setup();
 
-    const row = button().parentElement;
-    expect(row.style.flexWrap).toBe("wrap");
-    expect(row.firstElementChild.style.flexBasis).toBe("220px");
+    expect(button().parentElement.style.flexDirection).toBe(direction);
   });
 });

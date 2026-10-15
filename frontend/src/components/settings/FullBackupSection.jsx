@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
 const HEADING = "Full Database Backup & Restore";
@@ -110,12 +111,11 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
     correspond to a real file.
     </div>
 
-    {/* Export */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Export Full Backup
-    </div>
+    <ActionRow
+    divider
+    title="Export Full Backup"
+    action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
+    >
     <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
     <input
     type="checkbox"
@@ -124,9 +124,7 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
     />
     Include connection secrets
     </label>
-    </div>
-    <Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />
-    </div>
+    </ActionRow>
 
     {/* Import */}
     <div style={{ padding: `${space.xl}px 0` }}>

@@ -38,6 +38,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackupRestoreSection } from "../BackupRestoreSection";
 import { ThemeProvider } from "../../../theme";
 import { IMPORT_CONFIRM_MS } from "../../../constants";
+import { stubViewport } from "../../../test/viewport";
 
 const API = "http://backend";
 
@@ -171,5 +172,22 @@ describe("BackupRestoreSection — import confirmation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("BackupRestoreSection — on a phone and on a desktop", () => {
+  /* Both rows are ActionRows. They used to keep EXPORT and IMPORT… beside
+   * their text at every width, which at 320px squeezed the descriptions to
+   * as little as 152px (measured in Chromium, soft theme). On a phone the
+   * button now goes below the text, on a desktop beside it; jsdom has no
+   * layout, so this pins the direction each row asks for. Verified by
+   * mutation: the export row put back to its hand-written markup survived
+   * the suite without this and is killed by it. */
+  it.each([[390, "column"], [1280, "row"]])("at %ipx lays out both rows as a %s", (width, direction) => {
+    stubViewport(width);
+    setup();
+
+    expect(screen.getByRole("button", { name: "EXPORT" }).parentElement.style.flexDirection).toBe(direction);
+    expect(importBtn().parentElement.style.flexDirection).toBe(direction);
   });
 });
