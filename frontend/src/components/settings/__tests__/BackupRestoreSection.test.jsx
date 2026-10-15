@@ -191,3 +191,28 @@ describe("BackupRestoreSection — on a phone and on a desktop", () => {
     expect(importBtn().parentElement.style.flexDirection).toBe(direction);
   });
 });
+
+describe("BackupRestoreSection — the secrets option", () => {
+  /* "Include connection secrets" is the page's shared OnOffSwitch now, where
+   * it was a checkbox. On by default, and switched off the download leaves
+   * the secrets out; nothing tested either. The download is a link the
+   * section clicks, so the test reads the link it would have followed.
+   * Verified by mutation: the switch no longer changing the option survived
+   * the suite before this and is killed by it. */
+  it("exports with secrets by default, and without them once switched off", () => {
+    const hrefs = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function () { hrefs.push(this.getAttribute("href")); });
+    setup();
+    const exportBtn = screen.getByRole("button", { name: "EXPORT" });
+
+    fireEvent.click(exportBtn);
+    fireEvent.click(screen.getByRole("switch", { name: /Include connection secrets/ }));
+    fireEvent.click(exportBtn);
+
+    expect(hrefs).toEqual([
+      `${API}/api/settings/export?include_secrets=true`,
+      `${API}/api/settings/export?include_secrets=false`,
+    ]);
+  });
+});

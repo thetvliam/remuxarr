@@ -5,6 +5,7 @@ import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { Btn } from "../atoms/Btn";
 import { SectionHeader } from "./SectionHeader";
 import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -117,11 +118,7 @@ export const BackupRestoreSection = ({ api, toast, onImported, first = false }) 
     action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
     >
     <label style={{ display: "flex", alignItems: "center", gap: space.sm, marginTop: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
-    <input
-    type="checkbox"
-    checked={includeSecrets}
-    onChange={e => setIncludeSecrets(e.target.checked)}
-    />
+    <OnOffSwitch on={includeSecrets} onChange={setIncludeSecrets} label="Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)" />
     Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)
     </label>
     {includeSecrets && (

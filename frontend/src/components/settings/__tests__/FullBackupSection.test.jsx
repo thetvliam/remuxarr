@@ -18,8 +18,8 @@
  * The export row is an ActionRow, with its button below the text on a phone
  * and beside it on a desktop, as the other action rows on the page.
  */
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import { FullBackupSection } from "../FullBackupSection";
 import { ThemeProvider } from "../../../theme";
@@ -50,5 +50,32 @@ describe("FullBackupSection — the export row", () => {
     );
 
     expect(screen.getByRole("button", { name: "EXPORT" }).parentElement.style.flexDirection).toBe(direction);
+  });
+});
+
+describe("FullBackupSection — the secrets option", () => {
+  /* As in BackupRestoreSection: the shared OnOffSwitch, where it was a
+   * checkbox. On by default, and switched off the backup leaves the secrets
+   * out. Verified by mutation: the switch no longer changing the option
+   * survived the suite before this and is killed by it. */
+  it("exports with secrets by default, and without them once switched off", () => {
+    const hrefs = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function () { hrefs.push(this.getAttribute("href")); });
+    render(
+      <ThemeProvider>
+        <FullBackupSection api="" toast={() => {}} />
+      </ThemeProvider>,
+    );
+    const exportBtn = screen.getByRole("button", { name: "EXPORT" });
+
+    fireEvent.click(exportBtn);
+    fireEvent.click(screen.getByRole("switch", { name: "Include connection secrets" }));
+    fireEvent.click(exportBtn);
+
+    expect(hrefs).toEqual([
+      "/api/backup/export?include_secrets=true",
+      "/api/backup/export?include_secrets=false",
+    ]);
   });
 });

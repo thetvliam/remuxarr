@@ -508,3 +508,30 @@ describe("MaintenanceSection — on a phone and on a desktop", () => {
     }
   });
 });
+
+describe("MaintenanceSection — its switches", () => {
+  /* Both switches save the moment they are flipped, through PUT
+   * /api/settings/{key}; there is no Save button for them. They are the
+   * page's shared OnOffSwitch now, where they were sliding switches of their
+   * own, and nothing tested that flipping one saved anything. The mock loads
+   * scheduled scans off and auto-cleanup on, so each has to send the
+   * opposite of what it loaded. Verified by mutation: Enable Scheduled Scans
+   * no longer wired to saving survived the suite before these and is
+   * killed by them. */
+  it.each([
+    ["Enable Scheduled Scans", "scheduled_scan_enabled", true],
+    ["Auto-cleanup on Scan", "auto_cleanup_on_scan", false],
+  ])("saves %s as the opposite of what it loaded when clicked", async (name, key, sent) => {
+    mockApi();
+    setup();
+    await act(async () => {});  // let the settings reads on mount land
+    const sw = screen.getByRole("switch", { name });
+
+    await act(async () => { fireEvent.click(sw); });
+
+    const puts = fetch.mock.calls.filter(([, opts]) => opts?.method === "PUT");
+    expect(puts.map(([url, opts]) => [String(url), JSON.parse(opts.body)]))
+      .toEqual([[`/api/settings/${key}`, { value: sent }]]);
+    expect(sw).toHaveAttribute("aria-checked", String(sent));
+  });
+});

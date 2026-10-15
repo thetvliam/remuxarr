@@ -3,6 +3,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { SectionHeader } from "./SectionHeader";
 import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -29,52 +30,16 @@ import { Btn } from "../atoms/Btn";
  ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
-const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
-  const { palette, space, radius } = useTheme();
-  return (
-    <ActionRow
-    divider
-    title={label}
-    description={description}
-    action={
-      <button
-      // role + aria-checked is what conveys on/off here. The switch is drawn
-      // entirely with a positioned knob, so without them it announced as an
-      // unlabelled button with no state at all — the label sits in a sibling
-      // div, so aria-label carries it across.
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => !disabled && onChange(!checked)}
-      disabled={disabled}
-      style={{
-        flexShrink: 0,
-        marginTop: space.hair,
-        width: 40,
-        height: 22,
-        borderRadius: radius.pill,
-        border: `1px solid ${checked ? palette.amber : palette.border}`,
-        background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
-        cursor: disabled ? "not-allowed" : "pointer",
-        position: "relative",
-        transition: "border-color 0.15s, background 0.15s",
-      }}
-      >
-      <span style={{
-        position: "absolute",
-        top: 2,
-        left: checked ? 20 : 2,
-        width: 16,
-        height: 16,
-        borderRadius: radius.full,
-        background: checked ? palette.amber : palette.dim,
-        transition: "left 0.15s, background 0.15s",
-      }} />
-      </button>
-    }
-    />
-  );
-};
+/* The page's one on/off control, as every setting uses. This was an amber
+ * sliding knob of its own, the only one on the page. */
+const ToggleRow = ({ label, description, checked, onChange }) => (
+  <ActionRow
+  divider
+  title={label}
+  description={description}
+  action={<OnOffSwitch on={checked} onChange={onChange} label={label} />}
+  />
+);
 
 /* ── Tag input for HH:MM times ──────────────────────────────────────────── */
 const TimeTagInput = ({ value = [], onChange }) => {

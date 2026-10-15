@@ -3,6 +3,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
 import { SectionHeader } from "./SectionHeader";
 import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
 const HEADING = "Full Database Backup & Restore";
@@ -117,11 +118,7 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
     action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
     >
     <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
-    <input
-    type="checkbox"
-    checked={includeSecrets}
-    onChange={e => setIncludeSecrets(e.target.checked)}
-    />
+    <OnOffSwitch on={includeSecrets} onChange={setIncludeSecrets} label="Include connection secrets" />
     Include connection secrets
     </label>
     </ActionRow>
