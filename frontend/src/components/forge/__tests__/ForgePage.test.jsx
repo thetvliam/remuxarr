@@ -36,13 +36,20 @@ const renderPage = (isMobile) => render(
   </ThemeProvider>,
 );
 
+/** Render, and wait for the candidates list to arrive. Without the wait the
+ *  load lands after the test, outside act(), which src/test/setup.js fails. */
+const renderLoaded = async (isMobile) => {
+  renderPage(isMobile);
+  await screen.findByText(/^No files with AAC 5\.1 audio found/);
+};
+
 const candidatesShown = () => screen.queryByPlaceholderText("Search all candidates by filename…");
 const processedShown  = () => screen.queryByText(/^No files processed yet/);
 const tab = (name) => screen.getByRole("button", { name, exact: true });
 
 describe("ForgePage — the switch on a phone", () => {
-  it("shows Candidates first, and only it", () => {
-    renderPage(true);
+  it("shows Candidates first, and only it", async () => {
+    await renderLoaded(true);
 
     expect(candidatesShown()).toBeTruthy();
     expect(processedShown()).toBeNull();
@@ -50,8 +57,8 @@ describe("ForgePage — the switch on a phone", () => {
       .toEqual(["true", "false"]);
   });
 
-  it("swaps to Processed when its tab is chosen, and back", () => {
-    renderPage(true);
+  it("swaps to Processed when its tab is chosen, and back", async () => {
+    await renderLoaded(true);
 
     fireEvent.click(tab("PROCESSED"));
     expect(processedShown()).toBeTruthy();
@@ -62,12 +69,14 @@ describe("ForgePage — the switch on a phone", () => {
     fireEvent.click(tab("CANDIDATES"));
     expect(candidatesShown()).toBeTruthy();
     expect(processedShown()).toBeNull();
+    // Coming back mounts the panel again, which loads its list again.
+    await screen.findByText(/^No files with AAC 5\.1 audio found/);
   });
 });
 
 describe("ForgePage — on a wider screen", () => {
-  it("shows both panels and no tab bar", () => {
-    renderPage(false);
+  it("shows both panels and no tab bar", async () => {
+    await renderLoaded(false);
 
     expect(candidatesShown()).toBeTruthy();
     expect(processedShown()).toBeTruthy();

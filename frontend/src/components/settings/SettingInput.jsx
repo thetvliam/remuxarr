@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useTheme, alpha, ALPHA } from "../../theme";
+import { useTheme } from "../../theme";
 import { TagInput } from "./TagInput";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 
 /* Kept separate so its draft state exists only for the control that needs it.
  *
@@ -92,31 +93,7 @@ const IntegerInput = ({ field, value, onChange }) => {
 export const SettingInput = ({ field, value, onChange }) => {
   const { palette, type, space, radius } = useTheme();
   if (field.type === "boolean") {
-    const on = !!value;
-    return (
-      <button
-      // A switch, not a button: role plus aria-checked is what conveys
-      // on/off. It was announced as an unlabelled button whose only state
-      // cue was the ■/□ glyph in its text.
-      role="switch"
-      aria-checked={on}
-      aria-label={field.label || field.key}
-      onClick={() => onChange(!on)}
-      style={{
-        padding: `${space.xs}px ${space.xl}px`,
-        background: on ? alpha(palette.green, ALPHA.low) : "transparent",
-            border: `1px solid ${on ? palette.green : palette.border}`,
-            borderRadius: radius.sm,
-            color: on ? palette.green : palette.dim,
-            fontSize: type.size.sm,
-            fontFamily: type.family,
-            letterSpacing: type.tracking.wide,
-            cursor: "pointer",
-      }}
-      >
-      {on ? "■ ON" : "□ OFF"}
-      </button>
-    );
+    return <OnOffSwitch on={!!value} onChange={onChange} label={field.label || field.key} />;
   }
 
   if (field.type === "integer") {

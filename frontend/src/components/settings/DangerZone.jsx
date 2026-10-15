@@ -1,6 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
@@ -18,24 +21,15 @@ import { CONFIRM_MS } from "../../constants";
  * unmounted, so without it the queue kept listing rows the wipe had already
  * deleted — clicking one opened a detail fetch that 404'd, and dismissing one
  * addressed a dead id. ─────────────────────────────────────────────────────*/
-export const DangerZone = ({ api, toast, onCleared }) => {
-    const { palette, type, space, radius } = useTheme();
-    const [confirming, setConfirming] = useState(false);
+export const DangerZone = ({ api, toast, onCleared, first = false }) => {
+    const { palette } = useTheme();
+    // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
+    const { armed: confirming, arm, disarm } = useArmedConfirm();
     const [clearing,   setClearing]   = useState(false);
-
-    // Auto-cancel the confirmation state after 4 seconds of inactivity.
-    // The cleanup (clearTimeout) is CRITICAL: prevents multiple stacked
-    // timeouts from queuing up and resetting `confirming` unexpectedly if
-    // the user clicks rapidly. Do not remove or restructure this effect.
-    useEffect(() => {
-        if (!confirming) return;
-        const t = setTimeout(() => setConfirming(false), CONFIRM_MS);
-        return () => clearTimeout(t);
-    }, [confirming]);
 
     const handleClick = async () => {
         if (!confirming) {
-            setConfirming(true);
+            arm();
             return;
         }
 
@@ -55,59 +49,34 @@ export const DangerZone = ({ api, toast, onCleared }) => {
             toast?.("Failed to clear database", "error");
         } finally {
             setClearing(false);
-            setConfirming(false);
+            disarm();
         }
     };
 
     return (
-        <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-        <div style={{ color: palette.red, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-        DANGER ZONE
-        </div>
+        <div>
+        <SectionHeader label="Danger Zone" first={first} tone={palette.red} />
 
-        {/* May wrap: the description keeps at least 220px and the button
-          * drops below it on a narrow phone, as in MaintenanceSection. */}
-        <div style={{
-            display: "flex",
-            flexWrap: "wrap",
-            alignItems: "flex-start",
-            gap: space.huge,
-            padding: `${space.xl}px 0`,
-        }}>
-        <div style={{ flex: "1 1 220px" }}>
-        <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-        Clear Database
-        </div>
-        <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-        Wipes all scanned files, tracks, queue items, history and forge jobs,
-        and empties the recycle bin: every stored revert point is deleted and
-        can&apos;t be restored. Your settings — media library paths, language preferences, dry-run mode,
-        etc. — are preserved. The next scan will treat every file as new,
-        exactly like the first run.
-        </div>
-        </div>
-
-        <button
-        onClick={handleClick}
-        disabled={clearing}
-        style={{
-            padding: `${space.xs}px ${space.xl}px`,
-            background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
-            border: `1px solid ${palette.red}`,
-            borderRadius: radius.sm,
-            color: palette.red,
-            fontSize: type.size.sm,
-            fontFamily: type.family,
-            fontWeight: type.weight.bold,
-            letterSpacing: type.tracking.wide,
-            cursor: clearing ? "not-allowed" : "pointer",
-            whiteSpace: "nowrap",
-            flexShrink: 0,
-        }}
-        >
-        {clearing ? "CLEARING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "CLEAR DATABASE"}
-        </button>
-        </div>
+        <ActionRow
+        title="Clear Database"
+        description={<>
+          Wipes all scanned files, tracks, queue items, history and forge jobs,
+          and empties the recycle bin: every stored revert point is deleted and
+          can&apos;t be restored. Your settings — media library paths, language preferences, dry-run mode,
+          etc. — are preserved. The next scan will treat every file as new,
+          exactly like the first run.
+        </>}
+        action={
+          <Btn
+          size="md"
+          label={clearing ? "CLEARING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "CLEAR DATABASE"}
+          color={palette.red}
+          bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
+          onClick={handleClick}
+          disabled={clearing}
+          />
+        }
+        />
         </div>
     );
 };

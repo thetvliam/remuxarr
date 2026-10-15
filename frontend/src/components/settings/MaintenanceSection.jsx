@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
+import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
@@ -26,61 +30,16 @@ import { CONFIRM_MS } from "../../constants";
  ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Small reusable toggle row ──────────────────────────────────────────── */
-const ToggleRow = ({ label, description, checked, onChange, disabled = false }) => {
-  const { palette, type, space, radius } = useTheme();
-  return (
-    <div style={{
-      display: "flex",
-      alignItems: "flex-start",
-      gap: space.xxl,
-      padding: `${space.xl}px 0`,
-      borderBottom: `1px solid ${palette.border}`,
-    }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xxs }}>
-    {label}
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    {description}
-    </div>
-    </div>
-    <button
-    // role + aria-checked is what conveys on/off here. The switch is drawn
-    // entirely with a positioned knob, so without them it announced as an
-    // unlabelled button with no state at all — the label sits in a sibling
-    // div, so aria-label carries it across.
-    role="switch"
-    aria-checked={checked}
-    aria-label={label}
-    onClick={() => !disabled && onChange(!checked)}
-    disabled={disabled}
-    style={{
-      flexShrink: 0,
-      marginTop: space.hair,
-      width: 40,
-      height: 22,
-      borderRadius: radius.pill,
-      border: `1px solid ${checked ? palette.amber : palette.border}`,
-      background: checked ? alpha(palette.amber, ALPHA.firm) : "transparent",
-          cursor: disabled ? "not-allowed" : "pointer",
-          position: "relative",
-          transition: "border-color 0.15s, background 0.15s",
-    }}
-    >
-    <span style={{
-      position: "absolute",
-      top: 2,
-      left: checked ? 20 : 2,
-      width: 16,
-      height: 16,
-      borderRadius: radius.full,
-      background: checked ? palette.amber : palette.dim,
-      transition: "left 0.15s, background 0.15s",
-    }} />
-    </button>
-    </div>
-  );
-};
+/* The page's one on/off control, as every setting uses. This was an amber
+ * sliding knob of its own, the only one on the page. */
+const ToggleRow = ({ label, description, checked, onChange }) => (
+  <ActionRow
+  divider
+  title={label}
+  description={description}
+  action={<OnOffSwitch on={checked} onChange={onChange} label={label} />}
+  />
+);
 
 /* ── Tag input for HH:MM times ──────────────────────────────────────────── */
 const TimeTagInput = ({ value = [], onChange }) => {
@@ -197,7 +156,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 };
 
 /* ── Main component ─────────────────────────────────────────────────────── */
-export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved }) => {
+export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved, first = false }) => {
   const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
@@ -214,20 +173,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
   const [orphanedItems,    setOrphanedItems]    = useState([]);
   const [orphanedSelected, setOrphanedSelected] = useState(new Set());
   const [orphanedRemoving, setOrphanedRemoving] = useState(false);
-  const [orphanedRemoveArmed, setOrphanedRemoveArmed] = useState(false);
-  useEffect(() => {
-    if (!orphanedRemoveArmed) return;
-    const t = setTimeout(() => setOrphanedRemoveArmed(false), CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [orphanedRemoveArmed]);
-
-  // Two-click confirmation for Force Full Rescan — auto-disarms after CONFIRM_MS
-  const [forceScanArmed, setForceScanArmed] = useState(false);
-  useEffect(() => {
-    if (!forceScanArmed) return;
-    const t = setTimeout(() => setForceScanArmed(false), CONFIRM_MS);
-    return () => clearTimeout(t);
-  }, [forceScanArmed]);
+  // Removal and Force Full Rescan each take two clicks, disarming
+  // themselves after CONFIRM_MS: see useArmedConfirm.
+  const { armed: orphanedRemoveArmed, arm: armOrphanedRemove, disarm: disarmOrphanedRemove } = useArmedConfirm();
+  const { armed: forceScanArmed, arm: armForceScan, disarm: disarmForceScan } = useArmedConfirm();
 
   // Load current values on mount
   useEffect(() => {
@@ -340,10 +289,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
 
   const runForceFullScan = async () => {
     if (!forceScanArmed) {
-      setForceScanArmed(true);
+      armForceScan();
       return;
     }
-    setForceScanArmed(false);
+    disarmForceScan();
     try {
       const r = await fetch(`${api}/api/scan/trigger`, {
         method:  "POST",
@@ -406,10 +355,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
   const removeSelectedOrphaned = async () => {
     if (orphanedSelected.size === 0) return;
     if (!orphanedRemoveArmed) {
-      setOrphanedRemoveArmed(true);
+      armOrphanedRemove();
       return;
     }
-    setOrphanedRemoveArmed(false);
+    disarmOrphanedRemove();
     setOrphanedRemoving(true);
     try {
       const r = await fetch(`${api}/api/scan/orphaned/remove`, {
@@ -454,24 +403,15 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     }
   };
 
-  const sectionLabel = (text) => (
-    <div style={{
-      color: palette.amber,
-      fontSize: type.size.xs,
-      letterSpacing: type.tracking.max,
-      fontWeight: type.weight.bold,
-      marginBottom: space.xxs,
-    }}>
-    {text}
-    </div>
-  );
-
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    {sectionLabel("MAINTENANCE")}
+    <div>
+    <SectionHeader label="Maintenance" first={first} />
 
     {/* ── Card 1: Scheduled Scans ─────────────────────────────────────── */}
+    {/* The top margin is the gap under the heading's rule, the same as a
+      * schema group's first row has. */}
     <div style={{
+      marginTop: space.lg,
       padding: space.xl,
       border: `1px solid ${palette.border}`,
       borderRadius: radius.sm,
@@ -524,19 +464,25 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Manual Cleanup
     </div>
 
-    {/* Each card's description and button share a row that may wrap. The
-      * button never shrinks or wraps its label, so on a narrow phone it used
-      * to squeeze the description to under 100px, and push CHECK FOR ORPHANED
-      * FILES off a 320px screen. Now the description keeps at least 220px and
-      * the button drops below it when both cannot fit. Same in all three
-      * cards here, and in DangerZone. */}
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl }}>
-    <div style={{ flex: "1 1 220px" }}>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    Scan the database for files that no longer exist on disk and remove
-    their entries — including tracks, queue items, history, and forge
-    records. Scoped to configured scan paths only.
-    </div>
+    {/* Each card's description and button share an ActionRow, flush
+      * because the card's padding spaces it; the card's title stays above. */}
+    <ActionRow
+    flush
+    description={<>
+      Scan the database for files that no longer exist on disk and remove
+      their entries — including tracks, queue items, history, and forge
+      records. Scoped to configured scan paths only.
+    </>}
+    action={
+      <Btn
+      size="md"
+      label={cleanupRunning ? "RUNNING…" : "RUN CLEANUP NOW"}
+      color={cleanupRunning ? palette.muted : palette.blue}
+      onClick={runCleanup}
+      disabled={cleanupRunning}
+      />
+    }
+    >
     {cleanupResult !== null && (
       <div style={{ color: palette.blue, fontSize: type.size.md, marginTop: space.sm }}>
       {cleanupResult === 0
@@ -544,29 +490,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
         : `Removed ${cleanupResult} stale ${cleanupResult === 1 ? "entry" : "entries"}.`}
         </div>
     )}
-    </div>
-
-    <button
-    onClick={runCleanup}
-    disabled={cleanupRunning}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${cleanupRunning ? palette.muted : palette.blue}`,
-      borderRadius: radius.sm,
-      color: cleanupRunning ? palette.muted : palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: cleanupRunning ? "not-allowed" : "pointer",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {cleanupRunning ? "RUNNING…" : "RUN CLEANUP NOW"}
-    </button>
-    </div>
+    </ActionRow>
     </div>
 
     {/* ── Card 3: Force Full Rescan ────────────────────────────────────── */}
@@ -580,40 +504,28 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Force Full Rescan
     </div>
 
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl }}>
-    <div style={{ flex: "1 1 220px" }}>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    Re-probes every file with ffprobe regardless of whether its size or
-    modification time has changed. Database records are updated if the
-    probe results differ from what is stored. Each file is then
-    re-evaluated against the current settings — useful after changing
-    audio, subtitle, or language preferences and wanting to apply them
-    to files that were previously scanned and marked as unchanged.
-    Files that need processing will be queued normally. Slower than a
-    routine scan; not recommended for everyday use.
-    </div>
-    </div>
-
-    <button
-    onClick={runForceFullScan}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: forceScanArmed ? alpha(palette.amber, ALPHA.medium) : "transparent",
-          border: `1px solid ${palette.amber}`,
-          borderRadius: radius.sm,
-          color: palette.amber,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
-    }}
-    >
-    {forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
-    </button>
-    </div>
+    <ActionRow
+    flush
+    description={<>
+      Re-probes every file with ffprobe regardless of whether its size or
+      modification time has changed. Database records are updated if the
+      probe results differ from what is stored. Each file is then
+      re-evaluated against the current settings — useful after changing
+      audio, subtitle, or language preferences and wanting to apply them
+      to files that were previously scanned and marked as unchanged.
+      Files that need processing will be queued normally. Slower than a
+      routine scan; not recommended for everyday use.
+    </>}
+    action={
+      <Btn
+      size="md"
+      label={forceScanArmed ? "CLICK AGAIN TO CONFIRM" : "FORCE FULL RESCAN"}
+      color={palette.amber}
+      bg={forceScanArmed ? alpha(palette.amber, ALPHA.medium) : undefined}
+      onClick={runForceFullScan}
+      />
+    }
+    />
     </div>
 
     {/* ── Card 4: Orphaned Files ──────────────────────────────────────── */}
@@ -627,51 +539,37 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     Orphaned Files
     </div>
 
-    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: space.xxl, marginBottom: orphanedChecked ? 14 : 0 }}>
-    <div style={{ flex: "1 1 220px" }}>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    Manual Cleanup above only ever checks files inside your currently
-    configured Media Library Paths, by design — it never touches
-    anything outside them. If a path is ever removed from that list
-    after files under it were scanned, those database entries become
-    permanently invisible to Manual Cleanup, even if the files are
-    long gone. This checks for exactly that — entries sitting outside
-    every currently configured path — so they're visible instead of
-    silently accumulating. Only removes the database entry; never
-    touches anything on disk.
-    </div>
-    </div>
-
-    <button
-    onClick={checkOrphaned}
-    disabled={orphanedLoading}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${orphanedLoading ? palette.muted : palette.blue}`,
-      borderRadius: radius.sm,
-      color: orphanedLoading ? palette.muted : palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: orphanedLoading ? "not-allowed" : "pointer",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {orphanedLoading ? "CHECKING…" : "CHECK FOR ORPHANED FILES"}
-    </button>
-    </div>
-
+    <ActionRow
+    flush
+    description={<>
+      Manual Cleanup above only ever checks files inside your currently
+      configured Media Library Paths, by design — it never touches
+      anything outside them. If a path is ever removed from that list
+      after files under it were scanned, those database entries become
+      permanently invisible to Manual Cleanup, even if the files are
+      long gone. This checks for exactly that — entries sitting outside
+      every currently configured path — so they're visible instead of
+      silently accumulating. Only removes the database entry; never
+      touches anything on disk.
+    </>}
+    action={
+      <Btn
+      size="md"
+      label={orphanedLoading ? "CHECKING…" : "CHECK FOR ORPHANED FILES"}
+      color={orphanedLoading ? palette.muted : palette.blue}
+      onClick={checkOrphaned}
+      disabled={orphanedLoading}
+      />
+    }
+    />
     {orphanedChecked && orphanedItems.length === 0 && (
-      <div style={{ color: palette.blue, fontSize: type.size.md }}>
+      <div style={{ color: palette.blue, fontSize: type.size.md, marginTop: 14 }}>
       No orphaned entries found ✓
       </div>
     )}
 
     {orphanedChecked && orphanedItems.length > 0 && (
-      <div>
+      <div style={{ marginTop: 14 }}>
       <div style={{
         display: "flex",
         alignItems: "center",
@@ -742,28 +640,18 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
       </div>
 
       <div style={{ marginTop: space.md }}>
-      <button
-      onClick={removeSelectedOrphaned}
-      disabled={orphanedRemoving || orphanedSelected.size === 0}
-      style={{
-        padding: `${space.xs}px ${space.xl}px`,
-        background: orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : "transparent",
-                                                     border: `1px solid ${orphanedSelected.size === 0 ? palette.muted : palette.red}`,
-                                                     borderRadius: radius.sm,
-                                                     color: orphanedSelected.size === 0 ? palette.muted : palette.red,
-                                                     fontSize: type.size.sm,
-                                                     fontFamily: type.family,
-                                                     fontWeight: type.weight.bold,
-                                                     letterSpacing: type.tracking.wide,
-                                                     cursor: orphanedSelected.size === 0 ? "not-allowed" : "pointer",
-      }}
-      >
-      {orphanedRemoving
+      <Btn
+      size="md"
+      label={orphanedRemoving
         ? "REMOVING…"
         : orphanedRemoveArmed
         ? "CLICK AGAIN TO CONFIRM"
         : `REMOVE SELECTED (${orphanedSelected.size})`}
-        </button>
+      color={orphanedSelected.size === 0 ? palette.muted : palette.red}
+      bg={orphanedRemoveArmed ? alpha(palette.red, ALPHA.medium) : undefined}
+      onClick={removeSelectedOrphaned}
+      disabled={orphanedRemoving || orphanedSelected.size === 0}
+      />
         </div>
         </div>
     )}

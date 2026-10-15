@@ -1,7 +1,12 @@
 import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
+import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
+const HEADING = "Full Database Backup & Restore";
 
 /* ── Full Database Backup & Restore ───────────────────────────────────────
  * Distinct from Backup & Restore above — this is the entire database
@@ -10,7 +15,7 @@ const CONFIRM_PHRASE = "REPLACE DATABASE";
  * typed confirmation phrase rather than the two-click pattern used
  * elsewhere — the stakes here are meaningfully higher than anything
  * else in this file. ──────────────────────────────────────────────────── */
-export const FullBackupSection = ({ api, toast }) => {
+export const FullBackupSection = ({ api, toast, first = false }) => {
   const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [pendingFile,    setPendingFile]    = useState(null);
@@ -61,11 +66,14 @@ export const FullBackupSection = ({ api, toast }) => {
   };
 
   // Persistent, not a toast — this must not be missable or auto-dismiss
-  // before the user actually restarts.
+  // before the user actually restarts. Under the section's own heading,
+  // which used to go with the rest of the section.
   if (restartNeeded) {
     return (
-      <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+      <div>
+      <SectionHeader label={HEADING} first={first} />
       <div style={{
+        marginTop: space.lg,
         padding: space.xxl,
         border: `1px solid ${palette.yellow}`,
         borderRadius: radius.sm,
@@ -93,11 +101,9 @@ export const FullBackupSection = ({ api, toast }) => {
   const canImport = !!pendingFile && confirmText === CONFIRM_PHRASE;
 
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-    FULL DATABASE BACKUP &amp; RESTORE
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.xxl }}>
+    <div>
+    <SectionHeader label={HEADING} first={first} />
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginTop: space.lg, marginBottom: space.xxl }}>
     The entire database — every scanned file, track, queue item, history
     entry, and Forge job — not just settings. A restore on a different
     system assumes the same container-side media paths as the system it
@@ -106,41 +112,16 @@ export const FullBackupSection = ({ api, toast }) => {
     correspond to a real file.
     </div>
 
-    {/* Export */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Export Full Backup
-    </div>
+    <ActionRow
+    divider
+    title="Export Full Backup"
+    action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
+    >
     <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
-    <input
-    type="checkbox"
-    checked={includeSecrets}
-    onChange={e => setIncludeSecrets(e.target.checked)}
-    />
+    <OnOffSwitch on={includeSecrets} onChange={setIncludeSecrets} label="Include connection secrets" />
     Include connection secrets
     </label>
-    </div>
-    <button
-    onClick={handleExport}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${palette.blue}`,
-      borderRadius: radius.sm,
-      color: palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      flexShrink: 0,
-    }}
-    >
-    EXPORT
-    </button>
-    </div>
+    </ActionRow>
 
     {/* Import */}
     <div style={{ padding: `${space.xl}px 0` }}>
@@ -154,24 +135,27 @@ export const FullBackupSection = ({ api, toast }) => {
     container restart to actually take effect.
     </div>
 
+    {/* The file input is hidden behind the page's own button, as the
+      * settings import's is. It was the browser's grey "Choose File" and
+      * "No file chosen", the one native file control in the app. The name
+      * beside the button is the file this section has staged, which is the
+      * one REPLACE DATABASE sends, rather than whatever the input holds. */}
     <input
     ref={fileInputRef}
     type="file"
     accept=".zip"
     onChange={handleFilePicked}
-    style={{
-      display: "block",
-      marginBottom: space.md,
-      color: palette.muted,
-      fontSize: type.size.md,
-      // The browser draws the "Choose file" button and the filename
-      // beside it, and neither inherits from an ancestor — without
-      // this they render in the OS default face next to themed text.
-      // The only visible file input in the app; the one in
-      // BackupRestoreSection is display:none behind a styled button.
-      fontFamily: type.family,
-    }}
+    style={{ display: "none" }}
     />
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: space.md, marginBottom: space.md }}>
+    <Btn size="md" label="CHOOSE FILE…" color={palette.blue} onClick={() => fileInputRef.current?.click()} />
+    <span style={{
+      minWidth: 0, overflowWrap: "anywhere",
+      color: pendingFile ? palette.text : palette.muted, fontSize: type.size.md,
+    }}>
+    {pendingFile ? pendingFile.name : "No file chosen"}
+    </span>
+    </div>
 
     {/* May wrap, so on a 320px phone the button drops below the box instead
       * of running off the screen. The box needs no basis of its own: a text
@@ -195,26 +179,14 @@ export const FullBackupSection = ({ api, toast }) => {
       fontSize: type.size.md,
     }}
     />
-    <button
+    <Btn
+    size="md"
+    label={importing ? "IMPORTING…" : "REPLACE DATABASE"}
+    color={canImport ? palette.red : palette.muted}
+    bg={canImport ? alpha(palette.red, ALPHA.medium) : undefined}
     onClick={handleImport}
     disabled={!canImport || importing}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: canImport ? alpha(palette.red, ALPHA.medium) : "transparent",
-          border: `1px solid ${canImport ? palette.red : palette.muted}`,
-          borderRadius: radius.sm,
-          color: canImport ? palette.red : palette.muted,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: canImport && !importing ? "pointer" : "not-allowed",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-    }}
-    >
-    {importing ? "IMPORTING…" : "REPLACE DATABASE"}
-    </button>
+    />
     </div>
     </div>
     </div>

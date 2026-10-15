@@ -18,17 +18,27 @@
  * What lapsing has to clear is the subtle part, and the reason this is not
  * just "setConfirming(false)". A file input fires no change event when you
  * re-pick the file already in it. So when only `confirming` was reset, the
- * staged file stayed in the ref and the input kept its value — and after
- * letting the window lapse, pressing IMPORT… reopened the picker, choosing
- * the same file did nothing at all, and the button looked broken until the
- * user happened to pick a different one.
+ * input kept its value — and after letting the window lapse, pressing
+ * IMPORT… reopened the picker, choosing the same file did nothing at all,
+ * and the button looked broken until the user happened to pick a different
+ * one.
+ *
+ * Nothing tested that until "lets the same file be picked again once the
+ * window lapses". Verified by mutation, 2 applied: the lapse leaving the
+ * input's value survived the whole suite before that test and is killed by
+ * it. The lapse also dropped the staged file; removing that survived the
+ * test too, and could not have failed anything, because only the confirming
+ * click reads the staged file and the window re-arms only through a new
+ * pick, which replaces it. The line was removed rather than kept.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackupRestoreSection } from "../BackupRestoreSection";
 import { ThemeProvider } from "../../../theme";
 import { IMPORT_CONFIRM_MS } from "../../../constants";
+import { stubViewport } from "../../../test/viewport";
 
 const API = "http://backend";
 
@@ -107,6 +117,36 @@ describe("BackupRestoreSection — import confirmation", () => {
     expect(calls.some(c => c.url.includes("/api/settings/import"))).toBe(false);
   });
 
+  it("lets the same file be picked again once the window lapses", async () => {
+    /* The bug the lapse's clearing exists for, reproduced. fireEvent.change
+     * cannot show it: it fires whatever the input holds. user-event's upload
+     * gives the input a real value and, like a browser, fires no change when
+     * the file picked is the one already in it, so without the clearing the
+     * second pick does nothing and the button stays at IMPORT….
+     *
+     * Fake timers that also advance with real time, and user-event told to
+     * advance them: with plain fakes, user-event waits on timers the test
+     * has replaced and never returns (see DangerZone.test.jsx). */
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
+      setup();
+      const file = new File(['{"scan_paths":[]}'], "settings.json", { type: "application/json" });
+
+      await user.upload(fileInput(), file);
+      expect(importBtn()).toHaveTextContent(/CLICK AGAIN TO CONFIRM/);
+
+      act(() => { vi.advanceTimersByTime(IMPORT_CONFIRM_MS + 100); });
+      expect(importBtn()).toHaveTextContent(/^IMPORT…$/);
+
+      await user.upload(fileInput(), file);
+      expect(importBtn()).toHaveTextContent(/CLICK AGAIN TO CONFIRM/);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(calls.some(c => c.url.includes("/api/settings/import"))).toBe(false);
+  });
+
   it("a timer from an earlier confirmation cannot disarm a fresh one", async () => {
     /* What the cleanup on the effect is for, and the failure DangerZone's
      * comment calls critical. Confirming an import leaves that window's
@@ -132,5 +172,47 @@ describe("BackupRestoreSection — import confirmation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("BackupRestoreSection — on a phone and on a desktop", () => {
+  /* Both rows are ActionRows. They used to keep EXPORT and IMPORT… beside
+   * their text at every width, which at 320px squeezed the descriptions to
+   * as little as 152px (measured in Chromium, soft theme). On a phone the
+   * button now goes below the text, on a desktop beside it; jsdom has no
+   * layout, so this pins the direction each row asks for. Verified by
+   * mutation: the export row put back to its hand-written markup survived
+   * the suite without this and is killed by it. */
+  it.each([[390, "column"], [1280, "row"]])("at %ipx lays out both rows as a %s", (width, direction) => {
+    stubViewport(width);
+    setup();
+
+    expect(screen.getByRole("button", { name: "EXPORT" }).parentElement.style.flexDirection).toBe(direction);
+    expect(importBtn().parentElement.style.flexDirection).toBe(direction);
+  });
+});
+
+describe("BackupRestoreSection — the secrets option", () => {
+  /* "Include connection secrets" is the page's shared OnOffSwitch now, where
+   * it was a checkbox. On by default, and switched off the download leaves
+   * the secrets out; nothing tested either. The download is a link the
+   * section clicks, so the test reads the link it would have followed.
+   * Verified by mutation: the switch no longer changing the option survived
+   * the suite before this and is killed by it. */
+  it("exports with secrets by default, and without them once switched off", () => {
+    const hrefs = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function () { hrefs.push(this.getAttribute("href")); });
+    setup();
+    const exportBtn = screen.getByRole("button", { name: "EXPORT" });
+
+    fireEvent.click(exportBtn);
+    fireEvent.click(screen.getByRole("switch", { name: /Include connection secrets/ }));
+    fireEvent.click(exportBtn);
+
+    expect(hrefs).toEqual([
+      `${API}/api/settings/export?include_secrets=true`,
+      `${API}/api/settings/export?include_secrets=false`,
+    ]);
   });
 });

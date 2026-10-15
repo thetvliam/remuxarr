@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTheme } from "../../theme";
+import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * EXCLUDED FILES
@@ -70,26 +71,13 @@ export const ExcludedFilesSection = ({ api, toast, included = [], onInclude }) =
     reported if you have changed them since. Include adds a file to Always
     Include above, which takes effect when you save.
     </div>
-    <button
+    <Btn
+    size="md"
+    label={loading ? "CHECKING…" : "SHOW EXCLUDED FILES"}
+    color={loading ? palette.muted : palette.blue}
     onClick={check}
     disabled={loading}
-    style={{
-      flexShrink: 0,
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${loading ? palette.muted : palette.blue}`,
-      borderRadius: radius.sm,
-      color: loading ? palette.muted : palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: loading ? "not-allowed" : "pointer",
-      whiteSpace: "nowrap",
-    }}
-    >
-    {loading ? "CHECKING…" : "SHOW EXCLUDED FILES"}
-    </button>
+    />
     </div>
 
     {items && items.length === 0 && (

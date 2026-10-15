@@ -19,9 +19,13 @@
  * The harness, and why each part is there:
  *   • useWebSocket is replaced, as useAppData's own tests replace it, so no
  *     socket is opened.
- *   • matchMedia answers any max-width query as matching, which is what a
- *     phone answers. Matching on the kind of query rather than its number
- *     keeps this test independent of where the breakpoint sits.
+ *   • matchMedia answers as a 390px window, through stubViewport
+ *     (src/test/viewport.js). These tests once answered any max-width query
+ *     as matching, to stay independent of where the breakpoint sits; they
+ *     now use the one helper every viewport test shares, at a phone's width
+ *     well clear of the boundary. The helper says the pointer can hover,
+ *     which a phone's cannot, and nothing here depends on it: hover only
+ *     reveals the queue rows' own buttons, and the queue is empty.
  *   • fetch answers every load with an empty result of the shape that
  *     endpoint returns.
  *
@@ -37,6 +41,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import { ThemeProvider } from "../theme";
+import { stubViewport } from "../test/viewport";
 
 vi.mock("../hooks/useWebSocket", () => ({ useWebSocket: () => true }));
 
@@ -53,12 +58,7 @@ function emptyAnswer(url) {
 }
 
 beforeEach(() => {
-  vi.stubGlobal("matchMedia", (q) => ({
-    matches: q.includes("max-width"),
-    media: q,
-    addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {},
-  }));
+  stubViewport(390);
   vi.stubGlobal("fetch", vi.fn(async (url) => ({
     ok: true, status: 200, json: async () => emptyAnswer(url),
   })));
@@ -104,28 +104,16 @@ describe("App — the dashboard's Queue and History switch on a phone", () => {
  * header renders it, and both are tested on their own; what neither would
  * notice is useAppData or App failing to pass it along, which leaves the
  * full header squeezed between 860 and 1140px exactly as before. Unlike the
- * phone tests above, these do depend on where the boundaries sit, so
- * matchMedia here answers each max-width query against a viewport width.
+ * phone tests above, these depend on where the boundaries sit.
  *
  * Verified by mutation: useAppData not returning isCompact, and App not
  * passing it to the header, both survived the suite without this block and
  * are killed by it. */
 describe("App — the header at each width", () => {
-  const viewport = (width) => {
-    vi.stubGlobal("matchMedia", (q) => {
-      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
-      return {
-        matches: max ? width <= Number(max[1]) : q === "(hover: hover)",
-        media: q,
-        addEventListener() {}, removeEventListener() {},
-        addListener() {}, removeListener() {},
-      };
-    });
-  };
   const headerLogo = () => document.querySelector("header img").getAttribute("src");
 
   it("is the phone header below 860px", async () => {
-    viewport(859);
+    stubViewport(859);
     render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText("Queue is empty");
 
@@ -133,7 +121,7 @@ describe("App — the header at each width", () => {
   });
 
   it("is the compact header from 860px to 1139px", async () => {
-    viewport(1000);
+    stubViewport(1000);
     render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText("Queue is empty");
 
@@ -143,7 +131,7 @@ describe("App — the header at each width", () => {
   });
 
   it("is the full header from 1140px", async () => {
-    viewport(1140);
+    stubViewport(1140);
     render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText("Queue is empty");
 
@@ -177,15 +165,7 @@ describe("App — records removed in Settings reach the dashboard", () => {
     cleared = false;
     queueLoads = 0;
     // A desktop window, so the header's page links are in reach.
-    vi.stubGlobal("matchMedia", (q) => {
-      const max = /\(max-width:\s*(\d+)px\)/.exec(q);
-      return {
-        matches: max ? 1280 <= Number(max[1]) : q === "(hover: hover)",
-        media: q,
-        addEventListener() {}, removeEventListener() {},
-        addListener() {}, removeListener() {},
-      };
-    });
+    stubViewport(1280);
     vi.stubGlobal("fetch", vi.fn(async (url) => {
       const u = String(url);
       const reply = (body) => ({ ok: true, status: 200, json: async () => body });

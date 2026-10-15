@@ -27,6 +27,34 @@
  * useWebSocket is mocked out — this file is about the hook's own state
  * transitions, not its transport.
  *
+ * Routing now lives in useRouting, which useAppData calls and passes
+ * through unchanged. Its tests stay here and drive it through useAppData's
+ * return, which is how App reaches it, so they cover the hand-over too.
+ *
+ * ROUTING — 14 mutants applied, 14 killed. Each was run against
+ * the whole suite in useAppData.js before the move and in useRouting.js
+ * after it, with the same result both times:
+ *
+ *   • setPage's same-page early return removed       → killed
+ *   • "themes" dropped from VALID_PAGES              → killed (and App.test)
+ *   • a stateless popstate forced to "dashboard"     → killed (and App.test)
+ *   • a refused Back not pushing the entry back      → killed
+ *   • the leaveGuarded exemption never cleared       → killed
+ *   • leaveGuarded not setting the exemption         → killed
+ *   • unregistering leaving the guard in place       → killed
+ *   • setModal(null) stepping back with nothing open → killed
+ *   • the Forge-on-entry effect disabled             → killed
+ *   • useAppData's return dropping leaveGuarded      → killed
+ *   • useAppData's return dropping setModal          → killed
+ *   • a second setModal on an open modal pushing again → killed
+ *   • the closedByUserRef suppression removed          → killed
+ *   • the initial replaceState removed                 → killed
+ *
+ * The last three survived the move and the whole suite until three tests
+ * were written for them: "enriching an open modal adds no second history
+ * entry", "a Back it issued itself does not close a modal opened before it
+ * arrived" and "rewrites the address on load to the page it shows".
+ *
  * REVIEW BADGE COUNT — 3 mutants applied, 2 killed by assertion, 1 by crash:
  *
  *   • reviewBadgeCount drops languageReviewCount  → killed (2 tests)
@@ -57,6 +85,7 @@ vi.mock("../useWebSocket", () => ({
 }));
 
 const { useAppData, TOAST_MS, REVERT_FAILURE_TOAST_MS } = await import("../useAppData");
+const { useActions } = await import("../useActions");
 
 /* ── Harness ────────────────────────────────────────────────────────────── */
 
@@ -123,6 +152,19 @@ describe("useAppData — initial page from hash", () => {
     const { result } = await mount();
     expect(result.current.page).toBe("dashboard");
   });
+  it("rewrites the address on load to the page it shows", async () => {
+    /* A stale or mistyped fragment is corrected in the address bar, and the
+     * first entry carries the app's own state, so the URL names the page
+     * on screen. What the comment once gave as the reason, that Back to
+     * this entry could not restore the page without the state, stopped
+     * being true when a stateless Back began reading the URL: see
+     * "a stateless popstate honours the URL" below. */
+    setHash("#nonsense");
+    await mount();
+
+    expect(window.location.hash).toBe("#dashboard");
+    expect(window.history.state).toEqual({ page: "dashboard", modal: false });
+  });
 });
 
 /* ── Routing: setPage ───────────────────────────────────────────────────── */
@@ -179,6 +221,44 @@ describe("useAppData — setModal", () => {
 
     expect(result.current.modal).toBeNull();
     expect(back).toHaveBeenCalledTimes(1);
+  });
+  it("enriching an open modal adds no second history entry", async () => {
+    // Replacing an open modal's contents is not a second modal, so it adds
+    // no entry and one Back still closes it. (openDetail's late record goes
+    // through enrichModal instead; see "a detail's late load" below.)
+    const push = vi.spyOn(window.history, "pushState");
+    const { result } = await mount();
+    act(() => { result.current.setModal({ id: 1 }); });
+    push.mockClear();
+
+    act(() => { result.current.setModal({ id: 1, planned_actions: [] }); });
+
+    expect(push).not.toHaveBeenCalled();
+    expect(result.current.modal).toEqual({ id: 1, planned_actions: [] });
+  });
+
+  it("a Back it issued itself does not close a modal opened before it arrived", async () => {
+    /* Closing calls history.back(), and the browser delivers the popstate
+     * later. If a modal opens in between, that popstate lands on the
+     * closed modal's entry, which is a modal entry, and handled as an
+     * ordinary forward-into-a-modal it would close the new one. The
+     * one-shot closedByUserRef is what makes the hook ignore it.
+     *
+     * history.back() is stubbed, as elsewhere in this file, and the
+     * popstate the browser would deliver is dispatched by hand. */
+    vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const { result } = await mount();
+    act(() => { result.current.setModal({ id: 1 }); });
+    act(() => { result.current.setModal(null); });
+    act(() => { result.current.setModal({ id: 2 }); });
+
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent("popstate", {
+        state: { page: "dashboard", modal: true },
+      }));
+    });
+
+    expect(result.current.modal).toEqual({ id: 2 });
   });
 });
 
@@ -488,6 +568,79 @@ describe("useAppData — navigation guard", () => {
 });
 
 
+/* ── A detail's late load ───────────────────────────────────────────────── */
+
+/**
+ * Opening a detail shows the row at once and replaces it with the full
+ * record when that arrives over the network. By then the user may have
+ * closed the modal or opened another row. Applying the record regardless
+ * reopened a closed modal, with a second history entry, and could put the
+ * earlier row's file in front of the one just opened.
+ *
+ * Driven through useActions' openDetail with the real routing underneath,
+ * which is the pairing App uses. Each detail request is held until the test
+ * answers it, so the order of arrival is the test's to choose. The two
+ * failures were reproduced here against the old code before the fix.
+ *
+ * Verified by mutation, 5 applied, 5 killed, all surviving the suite
+ * without these tests: openDetail applying the record with setModal (the
+ * old behaviour), enrichModal checking only that a modal is open, enrichModal
+ * never applying, useAppData not passing it on, and enrichModal pushing a
+ * history entry of its own.
+ */
+describe("useAppData — a detail's late load", () => {
+  let answer;
+
+  /** Mount useAppData and useActions together, holding detail requests. */
+  async function mountWithActions() {
+    answer = {};
+    vi.stubGlobal("fetch", vi.fn((url) => {
+      const id = /\/api\/queue\/(\d+)$/.exec(String(url))?.[1];
+      if (id) return new Promise(res => { answer[id] = (body) => res({ ok: true, json: async () => body }); });
+      return Promise.resolve({ ok: true, json: async () => ({ value: false, items: [], total: 0 }) });
+    }));
+    vi.spyOn(window.history, "back").mockImplementation(() => {});
+    const rendered = renderHook(() => { const d = useAppData(); return { d, a: useActions(d) }; });
+    await act(async () => { await Promise.resolve(); });
+    return rendered;
+  }
+  const row = (id, name) => ({ id, file: { filename: name } });
+  const full = (id, name) => ({ id, file: { filename: name }, planned_actions: [] });
+
+  it("fills in the open modal, adding no history entry of its own", async () => {
+    const { result } = await mountWithActions();
+    const push = vi.spyOn(window.history, "pushState");
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toEqual(full(7, "seven.mkv"));
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen a modal closed before it arrived", async () => {
+    const { result } = await mountWithActions();
+    const push = vi.spyOn(window.history, "pushState");
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    act(() => { result.current.d.setModal(null); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toBeNull();
+    expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace the row opened since with the earlier one", async () => {
+    const { result } = await mountWithActions();
+    act(() => { result.current.a.openDetail(row(7, "seven.mkv"), "/api/queue"); });
+    act(() => { result.current.d.setModal(null); });
+    act(() => { result.current.a.openDetail(row(8, "eight.mkv"), "/api/queue"); });
+    await act(async () => { answer["8"](full(8, "eight.mkv")); });
+    await act(async () => { answer["7"](full(7, "seven.mkv")); });
+
+    expect(result.current.d.modal).toEqual(full(8, "eight.mkv"));
+  });
+});
+
+
 /* ── refreshAllPanels ────────────────────────────────────────────────────── */
 
 /**
@@ -522,7 +675,7 @@ describe("useAppData — refreshAfterReviewResolved", () => {
     const { result } = await mount();
     const before = result.current.reviewRefreshKey;
 
-    act(() => { result.current.refreshAfterReviewResolved(); });
+    await act(async () => { result.current.refreshAfterReviewResolved(); });
 
     expect(result.current.reviewRefreshKey).toBe(before + 1);
   });
@@ -533,7 +686,7 @@ describe("useAppData — refreshAfterReviewResolved", () => {
     const { result } = await mount();
     const before = result.current.historyRefreshKey;
 
-    act(() => { result.current.refreshAfterReviewResolved(); });
+    await act(async () => { result.current.refreshAfterReviewResolved(); });
 
     expect(result.current.historyRefreshKey.key).toBe(before.key + 1);
     expect(result.current.historyRefreshKey.status).toBeNull();
@@ -547,7 +700,7 @@ describe("useAppData — refreshAfterReviewResolved", () => {
     const forge = result.current.forgeRefreshKey;
     const revert = result.current.revertRefreshKey;
 
-    act(() => { result.current.refreshAfterReviewResolved(); });
+    await act(async () => { result.current.refreshAfterReviewResolved(); });
 
     expect(result.current.forgeRefreshKey).toBe(forge);
     expect(result.current.revertRefreshKey).toBe(revert);
@@ -559,7 +712,7 @@ describe("useAppData — refreshAllPanels", () => {
     const { result } = await mount();
     const before = result.current.historyRefreshKey;
 
-    act(() => { result.current.refreshAllPanels(); });
+    await act(async () => { result.current.refreshAllPanels(); });
 
     expect(result.current.historyRefreshKey.key).toBe(before.key + 1);
     // null, not a specific status: a wipe touches every tab, so none of them
@@ -571,7 +724,7 @@ describe("useAppData — refreshAllPanels", () => {
     const { result } = await mount();
     const before = result.current.reviewRefreshKey;
 
-    act(() => { result.current.refreshAllPanels(); });
+    await act(async () => { result.current.refreshAllPanels(); });
 
     expect(result.current.reviewRefreshKey).toBe(before + 1);
   });
@@ -580,7 +733,7 @@ describe("useAppData — refreshAllPanels", () => {
     const { result } = await mount();
     const before = result.current.revertRefreshKey;
 
-    act(() => { result.current.refreshAllPanels(); });
+    await act(async () => { result.current.refreshAllPanels(); });
 
     expect(result.current.revertRefreshKey).toBe(before + 1);
   });
@@ -591,7 +744,7 @@ describe("useAppData — refreshAllPanels", () => {
     const { result } = await mount();
     const before = result.current.forgeRefreshKey;
 
-    act(() => { result.current.refreshAllPanels(); });
+    await act(async () => { result.current.refreshAllPanels(); });
 
     expect(result.current.forgeRefreshKey).toBe(before + 1);
   });
@@ -752,7 +905,7 @@ describe("useAppData — fetchForge", () => {
  * been drawn and only half applied.
  */
 describe("useAppData — forge_job_completed", () => {
-  const complete = (msg) => act(() => {
+  const complete = (msg) => act(async () => {
     ws.onMessage({ event: "forge_job_completed", ...msg });
   });
 
@@ -760,7 +913,7 @@ describe("useAppData — forge_job_completed", () => {
     const { result } = await mount();
     const before = result.current.forgeRefreshKey;
 
-    complete({ status: "success", filename: "Movie.mkv" });
+    await complete({ status: "success", filename: "Movie.mkv" });
 
     expect(result.current.forgeRefreshKey).toBe(before + 1);
   });
@@ -771,7 +924,7 @@ describe("useAppData — forge_job_completed", () => {
     const { result } = await mount();
     const before = result.current.forgeRefreshKey;
 
-    complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
+    await complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
 
     expect(result.current.forgeRefreshKey).toBe(before + 1);
   });
@@ -779,7 +932,7 @@ describe("useAppData — forge_job_completed", () => {
   it("still reports an error that is not a string", async () => {
     const { result } = await mount();
 
-    complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
+    await complete({ status: "failed", filename: "Movie.mkv", error: { code: 500 } });
 
     expect(result.current.toasts).toHaveLength(1);
     expect(result.current.toasts[0].tone).toBe("error");
@@ -789,7 +942,7 @@ describe("useAppData — forge_job_completed", () => {
     const { result } = await mount();
     const before = result.current.forgeRefreshKey;
 
-    complete({ filename: "Movie.mkv" });
+    await complete({ filename: "Movie.mkv" });
 
     expect(result.current.forgeRefreshKey).toBe(before + 1);
   });
@@ -797,8 +950,8 @@ describe("useAppData — forge_job_completed", () => {
   it("tones a successful job differently from an undone one", async () => {
     const { result } = await mount();
 
-    complete({ status: "success", filename: "A.mkv" });
-    complete({ status: "undone", filename: "B.mkv" });
+    await complete({ status: "success", filename: "A.mkv" });
+    await complete({ status: "undone", filename: "B.mkv" });
 
     expect(result.current.toasts.map(t => t.tone)).toEqual(["success", "info"]);
   });
@@ -820,11 +973,11 @@ describe("useAppData — revert_complete", () => {
    * refreshed, so all of them looked broken rather than one running and
    * the others declined.
    */
-  it("bumps the revert refresh key so the panel reloads", () => {
-    const { result } = renderHook(() => useAppData());
+  it("bumps the revert refresh key so the panel reloads", async () => {
+    const { result } = await mount();
     const before = result.current.revertRefreshKey;
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: true,
         restored_path: "/media/tv/Show/S01E01.mkv" });
     });
@@ -832,10 +985,10 @@ describe("useAppData — revert_complete", () => {
     expect(result.current.revertRefreshKey).not.toBe(before);
   });
 
-  it("reports the outcome, since the panel may not be on screen", () => {
-    const { result } = renderHook(() => useAppData());
+  it("reports the outcome, since the panel may not be on screen", async () => {
+    const { result } = await mount();
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: true,
         restored_path: "/media/tv/Show/S01E01.mkv" });
     });
@@ -844,12 +997,12 @@ describe("useAppData — revert_complete", () => {
     expect(result.current.toasts.at(-1).tone).toBe("success");
   });
 
-  it("carries the reason when a revert fails", () => {
+  it("carries the reason when a revert fails", async () => {
     // "This file has changed size since it was processed" is actionable;
     // a bare failure on a file sitting right there is not.
-    const { result } = renderHook(() => useAppData());
+    const { result } = await mount();
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: false,
         error: "Show.mkv has changed size since it was processed" });
     });
@@ -859,25 +1012,25 @@ describe("useAppData — revert_complete", () => {
     expect(last.msg).toContain("changed size");
   });
 
-  it("shows the whole reason, not the first sixty characters of it", () => {
+  it("shows the whole reason, not the first sixty characters of it", async () => {
     /* The reason is recorded nowhere else: the entry just goes back to
      * offering Revert. It used to be cut to 60 characters, which rarely
      * reached the part that said what to do. */
-    const { result } = renderHook(() => useAppData());
+    const { result } = await mount();
     const reason = 'Another file already exists as "Show - S01E01 - Pilot.mkv", ' +
       "and reverting would overwrite it. Move or rename that file, then revert.";
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: false, error: reason });
     });
 
     expect(result.current.toasts.at(-1).msg).toBe(`Revert failed: ${reason}`);
   });
 
-  it("leaves a failed revert's reason up long enough to read", () => {
-    const { result } = renderHook(() => useAppData());
+  it("leaves a failed revert's reason up long enough to read", async () => {
+    const { result } = await mount();
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: false,
         error: "Revert timed out after 120 minute(s) — process killed" });
     });
@@ -889,10 +1042,10 @@ describe("useAppData — revert_complete", () => {
     expect(result.current.toasts).toHaveLength(0);
   });
 
-  it("lets a successful revert's toast go at the usual time", () => {
-    const { result } = renderHook(() => useAppData());
+  it("lets a successful revert's toast go at the usual time", async () => {
+    const { result } = await mount();
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "revert_complete", success: true,
         restored_path: "/media/tv/Show/S01E01.mkv" });
     });
@@ -901,7 +1054,7 @@ describe("useAppData — revert_complete", () => {
     expect(result.current.toasts).toHaveLength(0);
   });
 
-  it("refreshes the panel when a job completes, not only when one reverts", () => {
+  it("refreshes the panel when a job completes, not only when one reverts", async () => {
     /**
      * Reported: the recycle bin updated when entries were removed but not
      * when they were added. A completed job is the only thing that creates
@@ -909,10 +1062,10 @@ describe("useAppData — revert_complete", () => {
      * its own endpoint and its own key. So the panel only ever shrank, and
      * new entries appeared out of nowhere on the next manual reload.
      */
-    const { result } = renderHook(() => useAppData());
+    const { result } = await mount();
     const before = result.current.revertRefreshKey;
 
-    act(() => {
+    await act(async () => {
       ws.onMessage({ event: "job_completed", status: "success",
         filename: "S01E01.mkv" });
     });
@@ -920,14 +1073,14 @@ describe("useAppData — revert_complete", () => {
     expect(result.current.revertRefreshKey).not.toBe(before);
   });
 
-  it("does not throw on a message with nothing but a type", () => {
+  it("does not throw on a message with nothing but a type", async () => {
     // useWebSocket invokes this callback inside a bare catch, so anything
     // that throws here is swallowed and takes the refresh with it — the
     // exact failure job_completed was already fixed for.
-    const { result } = renderHook(() => useAppData());
+    const { result } = await mount();
     const before = result.current.revertRefreshKey;
 
-    act(() => { ws.onMessage({ event: "revert_complete" }); });
+    await act(async () => { ws.onMessage({ event: "revert_complete" }); });
 
     expect(result.current.revertRefreshKey).not.toBe(before);
   });
@@ -1013,19 +1166,19 @@ describe("useAppData — scan_completed toast", () => {
   const summary = { event: "scan_completed", queued: 1, manual_review: 0,
     errors: 0, total: 1, removed: 0, cancelled: false };
 
-  it("counts the files the exclude settings passed over", () => {
-    const { result } = renderHook(() => useAppData());
+  it("counts the files the exclude settings passed over", async () => {
+    const { result } = await mount();
 
-    act(() => { ws.onMessage({ ...summary, excluded: 3 }); });
+    await act(async () => { ws.onMessage({ ...summary, excluded: 3 }); });
 
     expect(result.current.toasts.at(-1).msg).toBe(
       "Scan complete — 1 queued, 0 review, 0 errors, 3 excluded");
   });
 
-  it("says nothing about exclusions when there were none", () => {
-    const { result } = renderHook(() => useAppData());
+  it("says nothing about exclusions when there were none", async () => {
+    const { result } = await mount();
 
-    act(() => { ws.onMessage({ ...summary, excluded: 0 }); });
+    await act(async () => { ws.onMessage({ ...summary, excluded: 0 }); });
 
     expect(result.current.toasts.at(-1).msg).toBe(
       "Scan complete — 1 queued, 0 review, 0 errors");

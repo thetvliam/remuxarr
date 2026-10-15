@@ -1,6 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { IMPORT_CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
+import { ActionRow } from "./ActionRow";
+import { OnOffSwitch } from "../atoms/OnOffSwitch";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -10,37 +15,37 @@ import { IMPORT_CONFIRM_MS } from "../../constants";
  * reason given at CONFIRM_MS below. Merge semantics, not replace: keys absent from the imported
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
-export const BackupRestoreSection = ({ api, toast, onImported }) => {
-  const { palette, type, space, radius } = useTheme();
+export const BackupRestoreSection = ({ api, toast, onImported, first = false }) => {
+  const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
-  const [confirming, setConfirming] = useState(false);
   const [importing,  setImporting]  = useState(false);
   const fileInputRef = useRef(null);
   const pendingFileRef = useRef(null);
 
-  /* When the confirmation window lapses, the staged file and the input's
-   * value are cleared too.
+  /* When the confirmation window lapses, the input's value is cleared too.
    *
-   * Previously only `confirming` was reset. The file stayed in the ref and,
-   * more importantly, fileInputRef.current.value stayed set — and a file
-   * input fires no change event when you re-pick the file already in it. So
-   * after letting the window lapse, clicking IMPORT… reopened the picker,
-   * choosing the same file did nothing at all, and the button looked broken
-   * until the user happened to pick a different one.
+   * Previously only `confirming` was reset, and fileInputRef.current.value
+   * stayed set — and a file input fires no change event when you re-pick
+   * the file already in it. So after letting the window lapse, clicking
+   * IMPORT… reopened the picker, choosing the same file did nothing at all,
+   * and the button looked broken until the user happened to pick a
+   * different one.
+   *
+   * The staged file is left in its ref. Only the confirming click reads it,
+   * and the window can re-arm only through a new pick, which replaces it
+   * first, so clearing it here too changed nothing a test or a user could
+   * see, and it was removed rather than kept on trust.
    *
    * IMPORT_CONFIRM_MS rather than the shared CONFIRM_MS: this asks the user
    * to read a filename and decide whether to overwrite every setting they
    * have, which is not a four-second decision. See constants.js for why that
    * is the only action given a longer window. */
-  useEffect(() => {
-    if (!confirming) return;
-    const t = setTimeout(() => {
-      setConfirming(false);
-      pendingFileRef.current = null;
+  const { armed: confirming, arm, disarm } = useArmedConfirm({
+    ms: IMPORT_CONFIRM_MS,
+    onLapse: () => {
       if (fileInputRef.current) fileInputRef.current.value = "";
-    }, IMPORT_CONFIRM_MS);
-      return () => clearTimeout(t);
-  }, [confirming]);
+    },
+  });
 
   const handleExport = () => {
     const a = document.createElement("a");
@@ -55,7 +60,7 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
     const file = e.target.files?.[0];
     if (!file) return;
     pendingFileRef.current = file;
-    setConfirming(true);
+    arm();
   };
 
   const handleImportConfirmed = async () => {
@@ -93,34 +98,27 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
       toast?.("Import failed", "error");
     } finally {
       setImporting(false);
-      setConfirming(false);
+      disarm();
       pendingFileRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-    BACKUP &amp; RESTORE
-    </div>
+    <div>
+    <SectionHeader label="Backup & Restore" first={first} />
 
-    {/* Export */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Export Settings
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.sm }}>
-    Downloads your current configuration as a JSON file — useful for
-    backing up before a change, or moving to a new system.
-    </div>
-    <label style={{ display: "flex", alignItems: "center", gap: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
-    <input
-    type="checkbox"
-    checked={includeSecrets}
-    onChange={e => setIncludeSecrets(e.target.checked)}
-    />
+    <ActionRow
+    divider
+    title="Export Settings"
+    description={<>
+      Downloads your current configuration as a JSON file — useful for
+      backing up before a change, or moving to a new system.
+    </>}
+    action={<Btn size="md" label="EXPORT" color={palette.blue} onClick={handleExport} />}
+    >
+    <label style={{ display: "flex", alignItems: "center", gap: space.sm, marginTop: space.sm, color: palette.muted, fontSize: type.size.md, cursor: "pointer" }}>
+    <OnOffSwitch on={includeSecrets} onChange={setIncludeSecrets} label="Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)" />
     Include connection secrets (Sonarr/Radarr API keys, Plex token, email password)
     </label>
     {includeSecrets && (
@@ -129,71 +127,34 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
       you would any file containing API keys.
       </div>
     )}
-    </div>
+    </ActionRow>
 
-    <button
-    onClick={handleExport}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: "transparent",
-      border: `1px solid ${palette.blue}`,
-      borderRadius: radius.sm,
-      color: palette.blue,
-      fontSize: type.size.sm,
-      fontFamily: type.family,
-      fontWeight: type.weight.bold,
-      letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      flexShrink: 0,
-    }}
-    >
-    EXPORT
-    </button>
-    </div>
-
-    {/* Import */}
-    <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0` }}>
-    <div style={{ flex: 1 }}>
-    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xs }}>
-    Import Settings
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed }}>
-    Applies settings from a previously exported file. Only keys
-    actually present in the file are changed — anything not in it
-    (e.g. secrets that were excluded at export time) is left exactly
-    as it is now.
-    </div>
-    </div>
-
-    <input
-    ref={fileInputRef}
-    type="file"
-    accept="application/json"
-    onChange={handleFilePicked}
-    style={{ display: "none" }}
+    <ActionRow
+    title="Import Settings"
+    description={<>
+      Applies settings from a previously exported file. Only keys
+      actually present in the file are changed — anything not in it
+      (e.g. secrets that were excluded at export time) is left exactly
+      as it is now.
+    </>}
+    action={<>
+      <input
+      ref={fileInputRef}
+      type="file"
+      accept="application/json"
+      onChange={handleFilePicked}
+      style={{ display: "none" }}
+      />
+      <Btn
+      size="md"
+      label={importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
+      color={palette.red}
+      bg={confirming ? alpha(palette.red, ALPHA.medium) : undefined}
+      onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
+      disabled={importing}
+      />
+    </>}
     />
-    <button
-    onClick={confirming ? handleImportConfirmed : () => fileInputRef.current?.click()}
-    disabled={importing}
-    style={{
-      padding: `${space.xs}px ${space.xl}px`,
-      background: confirming ? alpha(palette.red, ALPHA.medium) : "transparent",
-          border: `1px solid ${palette.red}`,
-          borderRadius: radius.sm,
-          color: palette.red,
-          fontSize: type.size.sm,
-          fontFamily: type.family,
-          fontWeight: type.weight.bold,
-          letterSpacing: type.tracking.wide,
-          cursor: importing ? "not-allowed" : "pointer",
-          whiteSpace: "nowrap",
-          flexShrink: 0,
-    }}
-    >
-    {importing ? "IMPORTING…" : confirming ? "CLICK AGAIN TO CONFIRM" : "IMPORT…"}
-    </button>
-    </div>
     </div>
   );
 };

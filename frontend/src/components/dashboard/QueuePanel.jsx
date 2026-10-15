@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 import { fmtTime } from "../../utils";
-import { CONFIRM_MS } from "../../constants";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { LED } from "../atoms/LED";
 import { EmptyState } from "../atoms/EmptyState";
 import { PanelHeader } from "../layout/PanelHeader";
@@ -163,7 +163,8 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     // register a media-query listener for every visible item.
     const { hasHover } = useBreakpoint();
     const [search,     setSearch]     = useState("");
-    const [clearArmed, setClearArmed] = useState(false);
+    // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
+    const { armed: clearArmed, arm: armClear, disarm: disarmClear } = useArmedConfirm();
 
     // Every item here is pending: /api/queue/ returns only pending and
     // processing rows, and useAppData's pendingQueue strips the processing
@@ -177,22 +178,11 @@ export const QueuePanel = ({ items, onSelect, onDismiss, onClear, onPrioritize }
     )
     : items;
 
-    // Auto-disarm after CONFIRM_MS if the user doesn't confirm. Keyed on the
-    // armed flag with cleanup, matching DangerZone and MaintenanceSection —
-    // a bare setTimeout in the handler stacked one timer per click and each
-    // survived unmount, so a timer from a previous mount could disarm a
-    // freshly armed button. Same pattern DangerZone's comment calls critical.
-    useEffect(() => {
-        if (!clearArmed) return;
-        const t = setTimeout(() => setClearArmed(false), CONFIRM_MS);
-        return () => clearTimeout(t);
-    }, [clearArmed]);
-
     const handleClear = () => {
         if (!clearArmed) {
-            setClearArmed(true);
+            armClear();
         } else {
-            setClearArmed(false);
+            disarmClear();
             onClear();
         }
     };

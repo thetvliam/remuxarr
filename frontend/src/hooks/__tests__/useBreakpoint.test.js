@@ -12,9 +12,9 @@
  * and nothing tested either: the old number survived every test.
  *
  * matchMedia here answers each max-width query against a chosen viewport
- * width, so these pin the widths at which the answers change rather than
- * the spelling of the queries. The pairs either side of each boundary are
- * what make an off-by-one show.
+ * width (stubViewport, src/test/viewport.js), so these pin the widths at
+ * which the answers change rather than the spelling of the queries. The
+ * pairs either side of each boundary are what make an off-by-one show.
  *
  * Verified by mutation: isMobile back at 640, and isCompact at 1000 (the
  * figure first agreed, before the header was measured properly), both
@@ -23,23 +23,11 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { stubViewport } from "../../test/viewport";
 import { useBreakpoint } from "../useBreakpoint";
 
-/** A viewport `width` pixels wide, with a pointer that can hover. */
-const viewport = (width) => {
-  vi.stubGlobal("matchMedia", (q) => {
-    const max = /\(max-width:\s*(\d+)px\)/.exec(q);
-    return {
-      matches: max ? width <= Number(max[1]) : q === "(hover: hover)",
-      media: q,
-      addEventListener() {}, removeEventListener() {},
-      addListener() {}, removeListener() {},
-    };
-  });
-};
-
 const at = (width) => {
-  viewport(width);
+  stubViewport(width);
   return renderHook(() => useBreakpoint()).result.current;
 };
 
