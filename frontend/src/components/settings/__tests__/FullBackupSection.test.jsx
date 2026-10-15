@@ -17,6 +17,14 @@
  *
  * The export row is an ActionRow, with its button below the text on a phone
  * and beside it on a desktop, as the other action rows on the page.
+ *
+ * The backup file is chosen with the page's own CHOOSE FILE… button, which
+ * opens the hidden file input, as the settings import does. It was the
+ * browser's grey "Choose File" and "No file chosen". The name beside the
+ * button is the staged file, the one REPLACE DATABASE would send.
+ * Verified by mutation: the button not opening the picker, and the chosen
+ * file's name never shown, both survived the suite before the two tests
+ * below and are each killed by its own.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -77,5 +85,36 @@ describe("FullBackupSection — the secrets option", () => {
       "/api/backup/export?include_secrets=true",
       "/api/backup/export?include_secrets=false",
     ]);
+  });
+});
+
+
+describe("FullBackupSection — choosing the backup file", () => {
+  const renderSection = () => render(
+    <ThemeProvider>
+      <FullBackupSection api="" toast={() => {}} />
+    </ThemeProvider>,
+  );
+
+  it("opens the file picker from its button", () => {
+    const opened = [];
+    vi.spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(function () { opened.push(this.type); });
+    renderSection();
+
+    fireEvent.click(screen.getByRole("button", { name: "CHOOSE FILE…" }));
+
+    expect(opened).toEqual(["file"]);
+  });
+
+  it("says no file is chosen, then names the one that is", () => {
+    renderSection();
+    expect(screen.getByText("No file chosen")).toBeInTheDocument();
+
+    const file = new File(["PK"], "remuxarr-backup.zip", { type: "application/zip" });
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [file] } });
+
+    expect(screen.getByText("remuxarr-backup.zip")).toBeInTheDocument();
+    expect(screen.queryByText("No file chosen")).not.toBeInTheDocument();
   });
 });

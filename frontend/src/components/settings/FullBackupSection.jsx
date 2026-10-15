@@ -135,24 +135,27 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
     container restart to actually take effect.
     </div>
 
+    {/* The file input is hidden behind the page's own button, as the
+      * settings import's is. It was the browser's grey "Choose File" and
+      * "No file chosen", the one native file control in the app. The name
+      * beside the button is the file this section has staged, which is the
+      * one REPLACE DATABASE sends, rather than whatever the input holds. */}
     <input
     ref={fileInputRef}
     type="file"
     accept=".zip"
     onChange={handleFilePicked}
-    style={{
-      display: "block",
-      marginBottom: space.md,
-      color: palette.muted,
-      fontSize: type.size.md,
-      // The browser draws the "Choose file" button and the filename
-      // beside it, and neither inherits from an ancestor — without
-      // this they render in the OS default face next to themed text.
-      // The only visible file input in the app; the one in
-      // BackupRestoreSection is display:none behind a styled button.
-      fontFamily: type.family,
-    }}
+    style={{ display: "none" }}
     />
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: space.md, marginBottom: space.md }}>
+    <Btn size="md" label="CHOOSE FILE…" color={palette.blue} onClick={() => fileInputRef.current?.click()} />
+    <span style={{
+      minWidth: 0, overflowWrap: "anywhere",
+      color: pendingFile ? palette.text : palette.muted, fontSize: type.size.md,
+    }}>
+    {pendingFile ? pendingFile.name : "No file chosen"}
+    </span>
+    </div>
 
     {/* May wrap, so on a 320px phone the button drops below the box instead
       * of running off the screen. The box needs no basis of its own: a text
