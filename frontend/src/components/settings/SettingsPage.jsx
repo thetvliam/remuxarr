@@ -2,6 +2,7 @@ import { Fragment, useState, useEffect, useCallback } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
+import { SectionHeader } from "./SectionHeader";
 import { DangerZone } from "./DangerZone";
 import { AppearanceSection } from "./AppearanceSection";
 import { BackupRestoreSection } from "./BackupRestoreSection";
@@ -29,25 +30,6 @@ const CATEGORIES = [
 ];
 const CATEGORY_IDS = new Set(CATEGORIES.map(c => c.id));
 const STORAGE_KEY = "remuxarr.settingsCategory";
-
-/* ── Section header ─────────────────────────────────────────────────────── */
-const SectionHeader = ({ label, first }) => {
-  const { palette, type, space } = useTheme();
-  return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: space.md,
-      margin: first ? `${space.xxs}px 0 0` : `${space.xxxl}px 0 0`,
-      paddingBottom: space.sm,
-      borderBottom: `1px solid ${palette.border}`,
-    }}>
-    <span style={{ color: palette.amber, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold }}>
-    {label.toUpperCase()}
-    </span>
-    </div>
-  );
-};
 
 /* ── Test connection button ─────────────────────────────────────────────── */
 const TestConnectionButton = ({ api, service }) => {
@@ -826,11 +808,14 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
 
       const cat = CATEGORIES.find(c => c.id === active) || CATEGORIES[0];
 
+      // `first` goes to the section whose heading opens the page, so its
+      // heading sits under the save bar as the schema groups' first one does.
+      // Only this file knows the order; see SectionHeader.
       const renderCategory = () => {
         if (cat.custom === "maintenance") {
           return (
             <>
-            <MaintenanceSection api={api} toast={toast} reloadKey={reloadKey}
+            <MaintenanceSection first api={api} toast={toast} reloadKey={reloadKey}
                                 onRecordsRemoved={onRecordsRemoved} />
             <LogViewer api={api} toast={toast} />
             <BuildInfoSection api={api} />
@@ -840,14 +825,14 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
         if (cat.custom === "backup") {
           return (
             <>
-            <BackupRestoreSection api={api} toast={toast} onImported={reloadAllSettings} />
+            <BackupRestoreSection first api={api} toast={toast} onImported={reloadAllSettings} />
             <FullBackupSection api={api} toast={toast} />
             <DangerZone api={api} toast={toast} onCleared={onRecordsRemoved} />
             </>
           );
         }
         if (cat.custom === "appearance") {
-          return <AppearanceSection />;
+          return <AppearanceSection first />;
         }
         if (schema.length === 0) {
           // Two different situations shared one message before. The fetch is a

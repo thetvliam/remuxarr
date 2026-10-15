@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtClock } from "../../utils";
 import { SegmentedControl } from "../atoms/SegmentedControl";
+import { SectionHeader } from "./SectionHeader";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * LOG VIEWER
@@ -26,7 +27,7 @@ import { SegmentedControl } from "../atoms/SegmentedControl";
 const LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
 const LEVELS = ["ALL", "INFO", "WARNING", "ERROR"];
 
-export const LogViewer = ({ api, toast }) => {
+export const LogViewer = ({ api, toast, first = false }) => {
   const { palette, type, space, radius, surface, levelColor } = useTheme();
   const [allRecords,  setAllRecords]  = useState([]);
   const [levelFilter, setLevelFilter] = useState("INFO");
@@ -119,23 +120,15 @@ export const LogViewer = ({ api, toast }) => {
     };
 
     return (
-      <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-      {/* Section header */}
-      <div style={{
-        color: palette.amber,
-        fontSize: type.size.xs,
-        letterSpacing: type.tracking.max,
-        fontWeight: type.weight.bold,
-        marginBottom: space.xl,
-      }}>
-      APPLICATION LOGS
-      </div>
+      <div>
+      <SectionHeader label="Application Logs" first={first} />
 
-      {/* Controls */}
+      {/* Controls. The top margin is the gap under the heading's rule. */}
       <div style={{
         display: "flex",
         alignItems: "center",
         gap: space.sm,
+        marginTop: space.lg,
         marginBottom: space.sm,
         flexWrap: "wrap",
       }}>

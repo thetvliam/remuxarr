@@ -3,6 +3,7 @@ import { useTheme, alpha, ALPHA } from "../../theme";
 import { IMPORT_CONFIRM_MS } from "../../constants";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
 
 /* ── Backup & Restore — settings export/import ───────────────────────────────
  * Export is safe/read-only — no confirmation needed. Import overwrites
@@ -12,7 +13,7 @@ import { Btn } from "../atoms/Btn";
  * reason given at CONFIRM_MS below. Merge semantics, not replace: keys absent from the imported
  * file (most notably secrets deliberately excluded at export time) are
  * left completely untouched here. ──────────────────────────────────────── */
-export const BackupRestoreSection = ({ api, toast, onImported }) => {
+export const BackupRestoreSection = ({ api, toast, onImported, first = false }) => {
   const { palette, type, space } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [importing,  setImporting]  = useState(false);
@@ -102,10 +103,8 @@ export const BackupRestoreSection = ({ api, toast, onImported }) => {
   };
 
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-    BACKUP &amp; RESTORE
-    </div>
+    <div>
+    <SectionHeader label="Backup & Restore" first={first} />
 
     {/* Export */}
     <div style={{ display: "flex", alignItems: "flex-start", gap: space.huge, padding: `${space.xl}px 0`, borderBottom: `1px solid ${palette.border}` }}>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
 
 /* ── Danger Zone — Clear Database ────────────────────────────────────────────
  * Wipes all scanned-file/track/queue/history/forge data so the next scan
@@ -19,7 +20,7 @@ import { Btn } from "../atoms/Btn";
  * unmounted, so without it the queue kept listing rows the wipe had already
  * deleted — clicking one opened a detail fetch that 404'd, and dismissing one
  * addressed a dead id. ─────────────────────────────────────────────────────*/
-export const DangerZone = ({ api, toast, onCleared }) => {
+export const DangerZone = ({ api, toast, onCleared, first = false }) => {
     const { palette, type, space } = useTheme();
     // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
     const { armed: confirming, arm, disarm } = useArmedConfirm();
@@ -52,10 +53,8 @@ export const DangerZone = ({ api, toast, onCleared }) => {
     };
 
     return (
-        <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-        <div style={{ color: palette.red, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-        DANGER ZONE
-        </div>
+        <div>
+        <SectionHeader label="Danger Zone" first={first} tone={palette.red} />
 
         {/* May wrap: the description keeps at least 220px and the button
           * drops below it on a narrow phone, as in MaintenanceSection. */}

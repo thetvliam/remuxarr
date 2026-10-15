@@ -1,4 +1,5 @@
 import { useTheme, themes, alpha, ALPHA } from "../../theme";
+import { SectionHeader } from "./SectionHeader";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * APPEARANCE
@@ -79,23 +80,13 @@ const ThemePreview = ({ t }) => (
   </div>
 );
 
-export const AppearanceSection = () => {
+export const AppearanceSection = ({ first = false }) => {
   const { palette, type, space, radius, themeId, setThemeId } = useTheme();
   const list = Object.values(themes);
 
   return (
     <div>
-      <div style={{
-        color: palette.amber,
-        fontSize: type.size.xs,
-        letterSpacing: type.tracking.max,
-        fontWeight: type.weight.bold,
-        margin: `${space.xxs}px 0 0`,
-        paddingBottom: space.sm,
-        borderBottom: `1px solid ${palette.border}`,
-      }}>
-        THEME
-      </div>
+      <SectionHeader label="Theme" first={first} />
 
       <div style={{
         color: palette.muted,

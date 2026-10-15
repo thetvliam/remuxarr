@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
+import { SectionHeader } from "./SectionHeader";
 import { Btn } from "../atoms/Btn";
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -198,7 +199,7 @@ const TimeTagInput = ({ value = [], onChange }) => {
 };
 
 /* ── Main component ─────────────────────────────────────────────────────── */
-export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved }) => {
+export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved, first = false }) => {
   const { palette, type, space, radius, surface } = useTheme();
   const [settings, setSettings]         = useState({
     scheduled_scan_enabled: false,
@@ -445,24 +446,15 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     }
   };
 
-  const sectionLabel = (text) => (
-    <div style={{
-      color: palette.amber,
-      fontSize: type.size.xs,
-      letterSpacing: type.tracking.max,
-      fontWeight: type.weight.bold,
-      marginBottom: space.xxs,
-    }}>
-    {text}
-    </div>
-  );
-
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    {sectionLabel("MAINTENANCE")}
+    <div>
+    <SectionHeader label="Maintenance" first={first} />
 
     {/* ── Card 1: Scheduled Scans ─────────────────────────────────────── */}
+    {/* The top margin is the gap under the heading's rule, the same as a
+      * schema group's first row has. */}
     <div style={{
+      marginTop: space.lg,
       padding: space.xl,
       border: `1px solid ${palette.border}`,
       borderRadius: radius.sm,

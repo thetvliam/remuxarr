@@ -1,8 +1,10 @@
 import { useState, useRef } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { Btn } from "../atoms/Btn";
+import { SectionHeader } from "./SectionHeader";
 
 const CONFIRM_PHRASE = "REPLACE DATABASE";
+const HEADING = "Full Database Backup & Restore";
 
 /* ── Full Database Backup & Restore ───────────────────────────────────────
  * Distinct from Backup & Restore above — this is the entire database
@@ -11,7 +13,7 @@ const CONFIRM_PHRASE = "REPLACE DATABASE";
  * typed confirmation phrase rather than the two-click pattern used
  * elsewhere — the stakes here are meaningfully higher than anything
  * else in this file. ──────────────────────────────────────────────────── */
-export const FullBackupSection = ({ api, toast }) => {
+export const FullBackupSection = ({ api, toast, first = false }) => {
   const { palette, type, space, radius } = useTheme();
   const [includeSecrets, setIncludeSecrets] = useState(true);
   const [pendingFile,    setPendingFile]    = useState(null);
@@ -62,11 +64,14 @@ export const FullBackupSection = ({ api, toast }) => {
   };
 
   // Persistent, not a toast — this must not be missable or auto-dismiss
-  // before the user actually restarts.
+  // before the user actually restarts. Under the section's own heading,
+  // which used to go with the rest of the section.
   if (restartNeeded) {
     return (
-      <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
+      <div>
+      <SectionHeader label={HEADING} first={first} />
       <div style={{
+        marginTop: space.lg,
         padding: space.xxl,
         border: `1px solid ${palette.yellow}`,
         borderRadius: radius.sm,
@@ -94,11 +99,9 @@ export const FullBackupSection = ({ api, toast }) => {
   const canImport = !!pendingFile && confirmText === CONFIRM_PHRASE;
 
   return (
-    <div style={{ marginTop: space.giant, paddingTop: space.huge, borderTop: `1px solid ${palette.border}` }}>
-    <div style={{ color: palette.dim, fontSize: type.size.xs, letterSpacing: type.tracking.max, fontWeight: type.weight.bold, marginBottom: space.xl }}>
-    FULL DATABASE BACKUP &amp; RESTORE
-    </div>
-    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.xxl }}>
+    <div>
+    <SectionHeader label={HEADING} first={first} />
+    <div style={{ color: palette.muted, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginTop: space.lg, marginBottom: space.xxl }}>
     The entire database — every scanned file, track, queue item, history
     entry, and Forge job — not just settings. A restore on a different
     system assumes the same container-side media paths as the system it
