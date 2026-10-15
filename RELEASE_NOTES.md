@@ -62,12 +62,9 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
-- Windows narrower than 860px now get the phone layout, which used to start at 640px. Between 860px and 1140px the header is more compact: the logo shows without its name, DRY RUN and PAUSE / RESUME show as their symbols, AUTO / MANUAL drops its symbol, and scan progress shows as "✕ 123/456". Hover over a control to see its full name.
+- Settings now looks the same from page to page. Every section has the same kind of heading, Maintenance & Logs and Backup & Danger Zone use the same ON/OFF switches as the rest of Settings, and on a phone every button sits below its description. Full Backup's file picker is now a button like the others.
+- The SCAN button looks the same on a phone as on the desktop.
 
 ## Fixed
 
-- The selected tab in History, and the selected level in the log viewer, now show their full outline when the page loads. Before, the right edge was missing until you clicked another tab and back, and that click also doubled the lines between the tabs.
-- Long entries in list settings, such as library paths, Exclude Patterns and Always Include, now wrap inside their box. Before, an entry with few spaces, like a release-style folder name, ran off the edge of the box and took the × that removes it with it.
-- On a narrow phone, the buttons in Maintenance & Logs and in Backup & Danger Zone now move below their description. Before, they squeezed the description into a thin column, and on the smallest screens CHECK FOR ORPHANED FILES and REPLACE DATABASE ran off the edge.
-- In narrower windows, the header no longer squeezes its buttons until their labels wrap onto two lines, or pushes PAUSE, SCAN and LIVE off the screen.
-- The History panel's tabs now have a row of their own, under HISTORY and its count, with RETRY ALL or CLEAR ALL beside the title. Before, on a phone or in a narrower window, the tabs squeezed until their labels broke onto two lines, and DRY RUN and RETRY ALL or CLEAR ALL ran past the edge of the panel, out of reach.
+- Closing a file's details before they finished loading no longer brings them back a moment later, and opening a second file quickly no longer shows the first one's details.
