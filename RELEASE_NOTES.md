@@ -60,11 +60,6 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Changed
-
-- Settings now looks the same from page to page. Every section has the same kind of heading, Maintenance & Logs and Backup & Danger Zone use the same ON/OFF switches as the rest of Settings, and on a phone every button sits below its description. Full Backup's file picker is now a button like the others.
-- The SCAN button looks the same on a phone as on the desktop.
-
 ## Fixed
 
-- Closing a file's details before they finished loading no longer brings them back a moment later, and opening a second file quickly no longer shows the first one's details.
+- In Settings, opening a section now starts at its top, and the section list no longer slides up as you scroll.

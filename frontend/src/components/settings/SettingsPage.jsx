@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback, useRef } from "react";
 import { useTheme, alpha, ALPHA, LAYER } from "../../theme";
 import { fmtCount } from "../../utils";
 import { SettingInput } from "./SettingInput";
@@ -386,8 +386,12 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       <nav style={{
         flexShrink: 0,
         width: 190,
+        // Sticks where it rests: the desktop layout's top padding, space.huge
+        // (see the end of SettingsPage). It stuck at 0, so the first 24px of
+        // scrolling (30px in soft and linen) carried it up to the header
+        // before it stopped, which read as the list sliding away with the page.
         position: "sticky",
-        top: 0,
+        top: space.huge,
         alignSelf: "flex-start",
         display: "flex",
         flexDirection: "column",
@@ -549,6 +553,22 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
           return s && CATEGORY_IDS.has(s) ? s : CATEGORIES[0].id;
         } catch (_) { return CATEGORIES[0].id; }
       });
+
+      // Each category opens at its top. They are all drawn in one scrolling
+      // area, App's container around this page, so switching kept the scroll
+      // position: from the bottom of a long category the next one opened
+      // partway down, or at its own bottom. Found as the nearest scrolling
+      // ancestor because the window does not scroll in this app. On a fresh
+      // mount it sets 0 on a container that is already at 0.
+      const rootRef = useRef(null);
+      useEffect(() => {
+        for (let el = rootRef.current?.parentElement; el; el = el.parentElement) {
+          if (/(auto|scroll)/.test(getComputedStyle(el).overflowY)) {
+            el.scrollTop = 0;
+            return;
+          }
+        }
+      }, [active]);
 
       // Extracted from the mount effect so it can be re-run on demand. Anything
       // that changes settings server-side WITHOUT going through this page's own
@@ -869,10 +889,18 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       );
 
       // ── Mobile: sticky dropdown + save bar stacked above the content ──────────
+      // The sticky block reaches up over the page's top padding (the negative
+      // margin) and fills it with the page's background (the padding), so it
+      // stays where it rests instead of sliding up 16px (20px in soft and
+      // linen) to the top before it sticks, and what scrolls up passes under
+      // that band.
       if (isMobile) {
         return (
-          <div style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
-          <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickyNav, background: palette.bg }}>
+          <div ref={rootRef} style={{ maxWidth: 700, margin: "0 auto", padding: `${space.xl}px ${space.xl}px ${space.giant}px` }}>
+          <div style={{
+            position: "sticky", top: 0, zIndex: LAYER.stickyNav, background: palette.bg,
+            marginTop: -space.xl, paddingTop: space.xl,
+          }}>
           <div style={{ padding: `${space.hair}px 0 ${space.sm}px` }}>
           <NavDropdown active={active} onSelect={setActive} />
           </div>
@@ -884,11 +912,18 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       }
 
       // ── Desktop: sticky sidebar + content with a sticky save bar ──────────────
+      // Both stay where they rest, below the top padding: the sidebar sticks
+      // at that offset, and the save bar's sticky block reaches up over the
+      // padding with the page's background, as the phone's does, so content
+      // scrolling up passes under the band rather than showing above the bar.
       return (
-        <div style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
+        <div ref={rootRef} style={{ maxWidth: 940, margin: "0 auto", padding: `${space.huge}px ${space.huge}px ${space.mega}px`, display: "flex", gap: space.max }}>
         <NavSidebar active={active} onSelect={setActive} dirty={isDirty} />
         <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ position: "sticky", top: 0, zIndex: LAYER.stickySaveBar }}>
+        <div style={{
+          position: "sticky", top: 0, zIndex: LAYER.stickySaveBar, background: palette.bg,
+          marginTop: -space.huge, paddingTop: space.huge,
+        }}>
         {saveBar}
         </div>
         <div style={{ marginTop: space.xs }}>{renderCategory()}</div>
