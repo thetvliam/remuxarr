@@ -590,3 +590,174 @@ def test_the_release_notes_file_is_shipped_in_the_image():
     with users told nothing, and nothing in the logs to say why.
     """
     assert "COPY RELEASE_NOTES.md" in _read("Dockerfile")
+
+
+# ── What publishes an image ────────────────────────────────────────────────
+#
+# publish.yml runs only for a push that changes a file the image is built
+# from. Every build stamps its commit into the image, so a rebuild with
+# nothing else changed still has a new digest, and Unraid offers it to every
+# user as an update: a README edit used to do exactly that. The filter is a
+# list kept by hand beside a Dockerfile kept by hand, so these compare the
+# two. A COPY added to the Dockerfile and not to the filter would mean
+# changes to that path never publish, and nothing would say so.
+#
+# GitHub documents `**` but not whether `**/` may match no directory at all,
+# so each check is made under both readings, and the filter is written to
+# mean the same under either.
+#
+# Verified by mutation, 7 applied, 7 killed, all surviving the tests that
+# read these files before the three below existed: app/** or RELEASE_NOTES.md
+# dropped from the filter, README.md added to it, either line excluding the
+# frontend's tests dropped, the Dockerfile copying a folder the filter does
+# not cover, and the README sync no longer triggered by README.md. Dropping
+# the frontend/src/__tests__ line is caught only under the reading where
+# `**/` must match a directory, which is the reason that line exists.
+
+def _trigger_list(workflow, key):
+    """The `key:` list (paths, branches) under the push trigger, in order."""
+    lines = _read(workflow).splitlines()
+    try:
+        push = lines.index("  push:")
+    except ValueError:
+        pytest.fail(f"{workflow} has no push trigger")
+    found = []
+    i = push + 1
+    while i < len(lines) and (lines[i].startswith("    ") or not lines[i].strip()):
+        if lines[i] == f"    {key}:":
+            i += 1
+            while i < len(lines) and lines[i].startswith("      - "):
+                item = lines[i][len("      - "):].split(" #")[0].strip()
+                found.append(item.strip("\"'"))
+                i += 1
+            return found
+        i += 1
+    pytest.fail(f"{workflow}'s push trigger has no {key} list")
+
+
+def _glob(pattern, empty_globstar_dir):
+    """GitHub's filter pattern as a regex, for the parts this repo uses."""
+    import re
+    if re.search(r"[?+\[\]]", pattern):
+        pytest.fail(f"{pattern!r}: these tests only read * and **; teach _glob "
+                    f"the rest of GitHub's filter syntax before using it")
+    out, i = "", 0
+    while i < len(pattern):
+        if empty_globstar_dir and pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r"\Z")
+
+
+def _publishes(path, patterns, empty_globstar_dir):
+    """Whether a push changing `path` runs the workflow: the last pattern
+    that matches decides, and a leading ! excludes."""
+    decided = False
+    for p in patterns:
+        if _glob(p.lstrip("!"), empty_globstar_dir).match(path):
+            decided = not p.startswith("!")
+    return decided
+
+
+def _never_bundled(path):
+    """Files under frontend/ that the image never receives. The build stage
+    copies all of frontend/, but only the built bundle reaches the image,
+    and these are not part of it: tests, the helpers only tests load (their
+    one reference is vitest's setupFiles), and the lint config."""
+    parts = path.split("/")
+    return (path.startswith("frontend/")
+            and ("__tests__" in parts or path.startswith("frontend/src/test/")
+                 or path == "frontend/.eslintrc.cjs"))
+
+
+def _image_inputs():
+    """Every repository file the Dockerfile copies into the image, found
+    from its COPY lines (not the --from ones, which copy between stages)."""
+    import shlex
+    files = {"Dockerfile"}
+    for line in _read("Dockerfile").splitlines():
+        if not line.startswith("COPY ") or "--from=" in line:
+            continue
+        args = [a for a in shlex.split(line)[1:] if not a.startswith("--")]
+        for source in args[:-1]:
+            matched = sorted(ROOT.glob(source.rstrip("/"))) or pytest.fail(
+                f"the Dockerfile copies {source}, which matches nothing in the repository")
+            for hit in matched:
+                walk = [hit] if hit.is_file() else [p for p in hit.rglob("*") if p.is_file()]
+                for p in walk:
+                    rel = p.relative_to(ROOT).as_posix()
+                    if {"node_modules", "dist"} & set(rel.split("/")) or _never_bundled(rel):
+                        continue
+                    files.add(rel)
+    return files
+
+
+@pytest.mark.parametrize("empty_globstar_dir", [True, False])
+def test_every_file_the_image_is_built_from_publishes_it(empty_globstar_dir):
+    """
+    A push that changes any file the Dockerfile copies (or the Dockerfile
+    itself) has to publish, or users never receive the change. The files
+    come from the Dockerfile's own COPY lines, so a new COPY is checked
+    without anyone remembering to add it here.
+    """
+    patterns = _trigger_list(".github/workflows/publish.yml", "paths")
+    inputs = _image_inputs()
+    assert any(p.startswith("app/") for p in inputs) and any(
+        p.startswith("frontend/src/") for p in inputs), (
+        "found no app/ or frontend/src/ files among the image's inputs, so "
+        "this test would pass without checking anything")
+
+    missing = sorted(p for p in inputs if not _publishes(p, patterns, empty_globstar_dir))
+    assert not missing, (
+        f"publish.yml's path filter misses {len(missing)} file(s) the image is "
+        f"built from, so changing them would never publish: {missing[:8]}")
+
+
+@pytest.mark.parametrize("empty_globstar_dir", [True, False])
+@pytest.mark.parametrize("path", [
+    "README.md",
+    "UNRAID_DEPLOYMENT.md",
+    "tests/README.md",
+    "tests/test_deployment_config.py",
+    "docker-compose.yml",
+    ".env.example",
+    "templates/remuxarr.xml",
+    "ca_profile.xml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/dockerhub-readme.yml",
+    "frontend/src/__tests__/App.test.jsx",
+    "frontend/src/components/settings/__tests__/SettingsPage.headings.test.jsx",
+    "frontend/src/test/setup.js",
+    "frontend/.eslintrc.cjs",
+])
+def test_a_change_to_nothing_in_the_image_does_not_publish(path, empty_globstar_dir):
+    """
+    The point of the filter. Documentation, tests, the Unraid templates and
+    the other workflows are not in the image, so a push that changes only
+    them must not publish one: it would reach every user as an update with
+    nothing in it.
+    """
+    patterns = _trigger_list(".github/workflows/publish.yml", "paths")
+    assert not _publishes(path, patterns, empty_globstar_dir), (
+        f"a push changing only {path} would publish an image")
+
+
+def test_a_readme_change_on_main_still_reaches_docker_hub():
+    """
+    Docker Hub shows the README only because a workflow sends it. That was a
+    step in publish.yml, run with every image build on main; a README change
+    now publishes no image, so the sync has a workflow of its own, and it
+    has to run for exactly that change. On main only, since the testing
+    branch should not rewrite the public description.
+    """
+    workflow = ".github/workflows/dockerhub-readme.yml"
+    assert _trigger_list(workflow, "branches") == ["main"]
+    assert "README.md" in _trigger_list(workflow, "paths")
+    text = _read(workflow)
+    assert "peter-evans/dockerhub-description" in text
+    assert "readme-filepath: ./README.md" in text

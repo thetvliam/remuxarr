@@ -114,9 +114,12 @@ COPY requirements.txt .
 # Upgrade pip first so the pip that ends up in the final image is current.
 # The base python:3.12-slim ships an older pip that vulnerability scanners
 # flag (it sits in site-packages even though it only runs at build time);
-# upgrading here clears those findings. Left unpinned deliberately — paired
-# with periodic image rebuilds, this keeps pip patched without editing the
-# Dockerfile each time. The application's own dependencies stay pinned in
+# upgrading here clears those findings. Left unpinned deliberately, so any
+# build picks up the current pip without editing the Dockerfile. Builds are
+# not periodic, though: publish.yml builds only when a file the image is made
+# from changes, so a newer pip (or base image, or FFmpeg 8.1.x) with nothing
+# else changed waits for the next such change, or for Run workflow in the
+# Actions tab. The application's own dependencies stay pinned in
 # requirements.txt for reproducibility.
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -r requirements.txt

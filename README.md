@@ -135,7 +135,7 @@ Prebuilt images are published to **both** the GitHub Container Registry (GHCR) a
 | Main (stable) | `thetvliam/remuxarr:latest` | `ghcr.io/thetvliam/remuxarr:latest` |
 | Testing (beta) | `thetvliam/remuxarr:testing` | `ghcr.io/thetvliam/remuxarr:testing` |
 
-Every build also publishes an immutable `:<short-commit-sha>` tag (e.g. `:37a7265`) to both registries, so you can pin to an exact build and roll back if a `latest`/`testing` update ever misbehaves.
+Every build also publishes an immutable `:<short-commit-sha>` tag (e.g. `:37a7265`) to both registries, so you can pin to an exact build and roll back if a `latest`/`testing` update ever misbehaves. A commit that changes only documentation or tests builds no image, so it has no tag of its own; the latest image is the one built from the last commit that changed what goes into it.
 
 ### Unraid
 

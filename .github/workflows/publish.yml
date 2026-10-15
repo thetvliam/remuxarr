@@ -5,11 +5,43 @@ name: Build and Publish Docker Image
 # landed on main or testing (i.e. from someone with actual write access)
 # should ever publish an image. Triggering this from PRs (especially from
 # forks) would be a real security concern, not just noise.
+#
+# Only a push that changes something the image is built from publishes. Every
+# build stamps its commit into the image (VERSION and COMMIT below), so a
+# rebuild with nothing else changed still has a new digest, and Unraid offers
+# it to every user as an update. A README edit used to do exactly that.
+#
+# The list is what the Dockerfile copies from the repository, and nothing
+# else: Dockerfile, requirements.txt, app/, RELEASE_NOTES.md and frontend/,
+# less the frontend's tests, test helpers and lint config, which the build
+# never bundles. Plus this file, so a broken edit to it shows the next time
+# it is pushed rather than at the next release. A new COPY in the Dockerfile
+# needs its path added here; test_deployment_config.py fails until it is.
+#
+# The tests' exclusion is written twice on purpose. GitHub documents `**`
+# but not whether `**/` may match no directory at all, and the two lines
+# exclude the same files under either reading.
+#
+# GitHub reads at most the first 300 changed files of a push; if the only
+# image files are past that, nothing runs. The largest merge to main so far
+# changed 83 files. If it ever happens, use Run workflow, which no path
+# filter applies to.
 on:
   push:
     branches:
       - main      # Triggers for stable updates
       - testing   # Triggers for dev updates
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - "app/**"
+      - RELEASE_NOTES.md
+      - "frontend/**"
+      - "!frontend/src/__tests__/**"
+      - "!frontend/src/**/__tests__/**"
+      - "!frontend/src/test/**"
+      - "!frontend/.eslintrc.cjs"
+      - .github/workflows/publish.yml
   workflow_dispatch:   # allows a manual, on-demand run from the Actions tab
 
 env:
@@ -138,34 +170,4 @@ jobs:
           # GitHub Actions' own build cache — meaningfully speeds up
           # subsequent builds, since layers (npm install, pip install,
           # the ffmpeg download) can be reused across runs instead of
-          # starting from scratch every single push.
-
-      # Docker Hub does NOT pull the GitHub README on its own the way the
-      # GHCR package page does, so without this the Docker Hub overview
-      # sits empty. Runs only on main (the testing branch shouldn't
-      # rewrite the public description) and only when Docker Hub is
-      # configured at all.
-      #
-      # enable-url-completion matters for this README specifically: it
-      # links to UNRAID_DEPLOYMENT.md, LICENSE and tests/README.md
-      # relatively, and those resolve to nothing on Docker Hub unless
-      # they're rewritten to absolute GitHub URLs.
-      #
-      # short-description comes from the GitHub repo's own description
-      # field (Docker Hub caps it at 100 bytes; the README body is capped
-      # at 25,000 — the action truncates and warns rather than failing).
-      #
-      # NOTE: this step needs a Docker Hub token with read/write/DELETE
-      # scope — wider than the read/write the push itself needs. If it
-      # fails with 401/403 while the push succeeded, that's the cause:
-      # regenerate DOCKERHUB_TOKEN with the broader scope.
-      - name: Sync README to Docker Hub
-        if: env.DOCKERHUB_NAMESPACE != '' && github.ref == 'refs/heads/main'
-        uses: peter-evans/dockerhub-description@v5
-        with:
-          username: ${{ env.DOCKERHUB_NAMESPACE }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.DOCKERHUB_NAMESPACE }}/remuxarr
-          short-description: ${{ github.event.repository.description }}
-          readme-filepath: ./README.md
-          enable-url-completion: true
+          # starting from scratch on every build.

@@ -1,0 +1,61 @@
+name: Sync README to Docker Hub
+
+# Docker Hub does NOT pull the GitHub README on its own the way the GHCR
+# package page does, so without this the Docker Hub overview sits empty.
+#
+# This was a step at the end of publish.yml, so it ran with every image
+# build on main. publish.yml now runs only when something the image is built
+# from changes, and a change to the README alone is exactly the kind that
+# should not publish an image, so the sync has its own trigger: a push to
+# main that changes the README, or Run workflow from the Actions tab (use
+# that after editing the repository's description, which is where the short
+# description comes from). Runs only on main, since the testing branch
+# shouldn't rewrite the public description, and only when Docker Hub is
+# configured at all.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - .github/workflows/dockerhub-readme.yml
+  workflow_dispatch:
+
+env:
+  # The same repository variable publish.yml reads; see the notes there.
+  # Leave it unset and the sync is skipped rather than failing.
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_USERNAME }}
+
+jobs:
+  sync-readme:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # enable-url-completion matters for this README specifically: it
+      # links to UNRAID_DEPLOYMENT.md, LICENSE and tests/README.md
+      # relatively, and those resolve to nothing on Docker Hub unless
+      # they're rewritten to absolute GitHub URLs.
+      #
+      # short-description comes from the GitHub repo's own description
+      # field (Docker Hub caps it at 100 bytes; the README body is capped
+      # at 25,000 — the action truncates and warns rather than failing).
+      #
+      # NOTE: this step needs a Docker Hub token with read/write/DELETE
+      # scope — wider than the read/write an image push needs. If it fails
+      # with 401/403, that's the cause: regenerate DOCKERHUB_TOKEN with the
+      # broader scope.
+      - name: Sync README to Docker Hub
+        if: env.DOCKERHUB_NAMESPACE != '' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ env.DOCKERHUB_NAMESPACE }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_NAMESPACE }}/remuxarr
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: ./README.md
+          enable-url-completion: true
