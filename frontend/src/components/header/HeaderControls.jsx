@@ -13,8 +13,9 @@ import { useTheme, alpha, ALPHA } from "../../theme";
  *   row    a full-width row in the phone drawer (the three toggles)
  *   phone  the phone's always-visible top row (SCAN)
  * A toggle's look in each state is decided once, in headerToggles, and its
- * form decides only its size, its alignment and its text. SCAN's two forms
- * differ in look as well; ScanButton keeps them side by side.
+ * form decides only its size, its alignment and its text. SCAN's look is
+ * decided once as well, in ScanButton; its forms differ in size, text and
+ * titles.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
@@ -106,21 +107,27 @@ export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
 
 /**
  * SCAN, which is also the stop button while a scan runs and shows its
- * progress. Both forms show ↻ when idle, and turn red and tinted while a
- * scan runs, as the bar's other lit controls do. The phone used to show ⟳,
- * and the bar used to stay untinted; nothing recorded either as a choice.
- * Neither bundled font has ↻ or ⟳, so each device draws the arrow from its
- * own fonts, and ↻ comes from the main Arrows block, which more fonts cover
- * than the supplementary block ⟳ is in.
+ * progress. Its look is decided once, here, for both forms: ↻ when idle,
+ * red and tinted while a scan runs as the bar's other lit controls are,
+ * and the toggles' regular weight and wide letter spacing. Each form adds
+ * only its size and its place in the row.
  *
- * The two forms still differ in weight and letter spacing (the phone's is
- * bold and tighter) and in their titles. Not for fit: measured in Chromium
- * during a 12345/12345 scan, the phone's top row fits at 320px in every
- * theme with either look, the button within 2px either way. The bar's is
- * left as it is because its widths are what the 1140px and 860px
- * breakpoints were measured against; the phone's has simply not been
- * changed. A tooltip never shows on touch, so the phone's titles matter
- * little either way.
+ * The two forms were written out separately and had drifted apart: the
+ * phone showed ⟳ and a bold, tighter label, and the bar alone stayed
+ * untinted while scanning. Nothing recorded any of it as a choice.
+ *
+ * ↻ because neither bundled font has ↻ or ⟳, so each device draws the
+ * arrow from its own fonts, and ↻ is in the main Arrows block, which more
+ * fonts cover than the supplementary block ⟳ is in. The bar's weight and
+ * spacing rather than the phone's because the bar's widths are what the
+ * 1140px and 860px breakpoints were measured against (AppHeader's header
+ * comment has the figures). The bold label was not needed for fit:
+ * measured in Chromium during a 12345/12345 scan, the phone's top row fits
+ * at 320px in every theme with either look, the button within 2px.
+ *
+ * The phone's padding is narrower, which is its size rather than its look.
+ * Its titles are its own as well; a tooltip never shows on touch, so they
+ * matter little either way.
  *
  * The bar's compact form and the phone both show progress as "✕ 123/456",
  * without STOP and the brackets; the compact bar keeps the full meaning in
@@ -129,27 +136,23 @@ export const HeaderToggle = ({ toggle: t, form, compact = false, onClick }) => {
 export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTriggerScan, onCancelScan }) => {
   const { palette, type, space, radius } = useTheme();
   const short = scanProgress && `✕ ${scanProgress.scanned}/${scanProgress.total}`;
-  const pulse = scanning ? "ledPulse 1.5s ease-in-out infinite" : "none";
-  const tint = scanning ? alpha(palette.red, ALPHA.low) : "transparent";
   const onClick = scanning ? onCancelScan : onTriggerScan;
+  const look = {
+    background: scanning ? alpha(palette.red, ALPHA.low) : "transparent",
+    border: `1px solid ${scanning ? palette.red : palette.border}`,
+    borderRadius: radius.sm,
+    color: scanning ? palette.red : palette.dim,
+    fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
+    cursor: "pointer",
+    animation: scanning ? "ledPulse 1.5s ease-in-out infinite" : "none",
+  };
 
   if (form === "phone") {
     return (
       <button
       onClick={onClick}
       title={scanning ? "Cancel the running scan" : "Scan library now"}
-      style={{
-        flexShrink: 0,
-        padding: `${space.xxs}px ${space.sm}px`,
-        background: tint,
-        border: `1px solid ${scanning ? palette.red : palette.border}`,
-        borderRadius: radius.sm,
-        color: scanning ? palette.red : palette.dim,
-        fontSize: type.size.xs, fontFamily: type.family, fontWeight: type.weight.bold,
-        letterSpacing: type.tracking.normal, cursor: "pointer",
-        whiteSpace: "nowrap",
-        animation: pulse,
-      }}
+      style={{ ...look, flexShrink: 0, padding: `${space.xxs}px ${space.sm}px`, whiteSpace: "nowrap" }}
       >
       {scanning ? (short || "✕ STOP") : "↻ SCAN"}
       </button>
@@ -166,16 +169,7 @@ export const ScanButton = ({ form, compact = false, scanning, scanProgress, onTr
     aria-label={shortened
       ? `Stop scan (${scanProgress.scanned} of ${scanProgress.total} scanned)` : undefined}
     title={shortened ? full : undefined}
-    style={{
-      padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl,
-      background: tint,
-      border: `1px solid ${scanning ? palette.red : palette.border}`,
-      borderRadius: radius.sm,
-      color: scanning ? palette.red : palette.dim,
-      fontSize: type.size.xs, fontFamily: type.family, letterSpacing: type.tracking.wide,
-      cursor: "pointer",
-      animation: pulse,
-    }}
+    style={{ ...look, padding: `${space.xxs}px ${space.lg}px`, marginRight: space.xl }}
     >
     {shortened ? short : full}
     </button>

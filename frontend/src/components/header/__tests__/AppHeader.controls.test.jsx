@@ -45,6 +45,16 @@
  * back to ⟳ (the old behaviour, which the old test required), and the bar
  * or the phone left untinted while scanning, both of which survived
  * without the tint test.
+ *
+ * SCAN's look. The phone's label was bold and more tightly spaced than the
+ * desktop's. The look is now defined once for both forms, and one test
+ * compares it across the layouts, idle and while scanning, leaving out the
+ * size, where the forms are meant to differ. Five mutants, all surviving
+ * the whole suite without that test and killed by it alone: the phone bold
+ * again or tighter again (the old behaviour), the desktop bold or tighter,
+ * and the phone's idle colour made its own. The earlier SCAN mutants above
+ * were re-run on the shared look, the two tint ones re-aimed at it, and
+ * each is still killed by the test written for it.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -213,5 +223,26 @@ describe("AppHeader — the phone's SCAN", () => {
       expect(stop.style.background).toBe(tint);
       cleanup();
     }
+  });
+
+  it("looks the same as the desktop's, idle and while scanning", () => {
+    /* SCAN's look is defined once for both forms; the phone's had drifted
+     * to a bold, more tightly spaced label. Size is where the forms are
+     * meant to differ (padding, margin, and the phone's no-shrink and
+     * no-wrap), so only the look is compared. */
+    const LOOK = ["fontWeight", "letterSpacing", "fontSize", "fontFamily", "color",
+                  "border", "borderRadius", "background", "animation", "cursor"];
+    const look = (el) => Object.fromEntries(LOOK.map(p => [p, el.style[p]]));
+    const seen = {};
+    for (const isMobile of [false, true]) {
+      const { rerender } = renderHeader({ isMobile, scanning: false, ...handlers() });
+      const idle = look(button("↻ SCAN"));
+      rerender({ scanning: true, scanProgress: { scanned: 12, total: 34 } });
+      const running = look(isMobile ? button("✕ 12/34") : button("✕ STOP (12/34)"));
+      seen[isMobile ? "phone" : "desktop"] = { idle, running };
+      cleanup();
+    }
+    expect(seen.desktop.idle.letterSpacing).not.toBe("");   // a real look, not two empty ones
+    expect(seen.phone).toEqual(seen.desktop);
   });
 });
