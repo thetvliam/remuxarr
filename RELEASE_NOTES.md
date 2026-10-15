@@ -62,4 +62,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- In Settings, opening a section now starts at its top, and the section list no longer slides up as you scroll.
+- In Settings, opening a section now starts at its top, the section list no longer slides up as you scroll, and the page no longer shifts sideways when you switch sections. The Review page no longer shifts sideways when its list gets short.
