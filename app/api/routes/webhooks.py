@@ -16,6 +16,8 @@ Both use the same debounce mechanism:
      translated to Remuxarr's local view.
   4. When a timer fires, the file is probed and queued via scanner.queue_single_file().
   5. The new QueueItem ID is broadcast over WebSocket.
+  6. If nothing is going to change the file, Plex is told about it now
+     (_tell_plex_if_unchanged), since no job will finish to tell it later.
 
 IMPORTANT: translation must happen BEFORE the debounce dict lookup, not
 after. It used to happen later (inside _queue_sync, after the debounce
@@ -37,6 +39,23 @@ Radarr : Download, Rename  (Test returns 200 immediately)
 A Rename also moves each renamed file's record from its old name to its
 new one before anything is queued — see _move_renamed and
 scanner.move_renamed_file.
+
+Telling Plex about an import nothing will change
+------------------------------------------------
+Plex hears about a file at the end of a job that succeeded. With Plex's own
+connection removed from Sonarr or Radarr, which the Enable Plex
+Notifications setting suggests, that was the only way Plex heard about an
+import at all, so an import that never got such a job never reached Plex:
+one that needed no changes, one the exclude settings match, and every
+import while dry run is on, whose job ends as a dry run. Each stayed out of
+Plex until Plex's own periodic scan found it. These now get the same
+folder-scoped refresh a job sends, as soon as the queue attempt has run.
+
+An import that will be processed is still left alone. Plex indexing the
+original first would mean reading the file again once the job has changed
+it, and a plain refresh often does not make Plex re-read a file's tracks;
+that is what the Plex Analyze Backlog exists for. Nor is this a reprocess,
+so it queues nothing for that backlog.
 
 Surviving a stop
 ----------------
@@ -67,9 +86,12 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.api.ws_manager import ws_manager
 from app.config import settings
+from app.core.exclude import ExcludeRules
+from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.scanner import move_renamed_file, queue_single_file
 from app.core.pathmap import translate_path
-from app.database.models import WebhookIntake
+from app.core.timeutil import utcnow
+from app.database.models import MediaFile, QueueItem, WebhookIntake
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -315,8 +337,9 @@ async def _delayed_queue(
         await asyncio.sleep(settings.WEBHOOK_DEBOUNCE_SECONDS)
         logger.info("Debounce fired — queuing: %s", path)
 
-        loop = asyncio.get_running_loop()
-        qi   = await loop.run_in_executor(
+        loop    = asyncio.get_running_loop()
+        started = utcnow()
+        qi      = await loop.run_in_executor(
             None, _queue_sync, path, series_id, radarr_movie_id, intake_id
         )
 
@@ -329,6 +352,14 @@ async def _delayed_queue(
             })
         else:
             logger.info("File skipped (no changes needed): %s", path)
+
+        # After the broadcast, so a slow Plex never holds up the queue's own
+        # news. Read here rather than in the thread: qi is detached once
+        # _queue_sync has closed its session.
+        await loop.run_in_executor(
+            None, _tell_plex_if_unchanged,
+            path, qi.is_dry_run if qi else None, started,
+        )
 
     except asyncio.CancelledError:
         # A debounce reset or a stop. The intake row is left alone either
@@ -381,6 +412,68 @@ def _queue_sync(
         db.close()
         if intake_id is not None:
             _forget_sync(intake_id)
+
+
+def _tell_plex_if_unchanged(
+    path: str,
+    queued_dry_run: bool | None,
+    started,
+) -> None:
+    """
+    Refresh the import's folder in Plex when nothing is going to change the
+    file. See "Telling Plex about an import nothing will change" above.
+
+    queued_dry_run is the queue item the attempt returned: None when it
+    returned none, else whether that item is a dry run. A real pending item
+    ends in a job that tells Plex itself. A real item held for review is
+    left too, though a review answered without a change runs no job, and
+    neither does a job that fails: telling Plex in those two cases needs the
+    job to know it came from an import, which today it does not.
+
+    With no item, the file was excluded, or it needed no changes, which is
+    told apart from the other ways to return none (the file vanished, the
+    probe failed, a job for it is already running) by the skipped row the
+    attempt itself wrote: one completed at or after `started`. An earlier
+    skip of the same path does not count; it was a different file.
+
+    Never raises: this runs after the import has been dealt with, and a
+    Plex failure must not look like a failure to queue.
+    """
+    try:
+        db = SessionLocal()
+        try:
+            cfg = get_app_settings(db)
+            if queued_dry_run is not None:
+                if not queued_dry_run:
+                    return
+                why = "dry run is on"
+            elif ExcludeRules.from_settings(cfg).reason(path):
+                why = "it is excluded"
+            else:
+                media = db.query(MediaFile).filter(MediaFile.path == path).first()
+                skipped_now = media is not None and (
+                    db.query(QueueItem)
+                    .filter(
+                        QueueItem.file_id == media.id,
+                        QueueItem.status == "skipped",
+                        QueueItem.completed_at >= started,
+                    )
+                    .first()
+                ) is not None
+                if not skipped_now:
+                    return
+                why = "it needs no changes"
+            connection = plex_connection(cfg, f"the import of {path}")
+        finally:
+            db.close()
+
+        if connection is None:
+            return
+        logger.info("Plex: refreshing for an import no job will change "
+                    "(%s): %s", why, path)
+        notify_plex_new_file(*connection, path)
+    except Exception:
+        logger.exception("Plex refresh failed for the import of %s", path)
 
 
 # ── Payload parsers ────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
-from app.core.plex import notify_plex_new_file
+from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import ScanStats, _delete_media_file_and_related, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
@@ -2299,25 +2299,10 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
         if not job:
             return None
         cfg = get_app_settings(db)
-        if not cfg.get("plex_enabled", False):
+        connection = plex_connection(cfg, f"job {job_id}")
+        if connection is None:
             return None
-        url   = (cfg.get("plex_url") or "").rstrip("/")
-        token = cfg.get("plex_token") or ""
-        if not url or not token:
-            logger.warning(
-                "Plex notification skipped for job %d: plex_url or "
-                "plex_token not configured",
-                job_id,
-            )
-            return None
-        mappings = cfg.get("plex_path_mappings", [])
-        if not mappings:
-            logger.warning(
-                "Plex notification skipped for job %d: no plex_path_mappings "
-                "configured",
-                job_id,
-            )
-            return None
+        url, token, mappings = connection
 
         # Always fire the immediate lightweight refresh, regardless of
         # is_new_file. A plain refresh is a single cheap call (no full
@@ -2463,27 +2448,10 @@ def _plex_refresh_target(db, cfg: dict, media: MediaFile,
     — a forge run, a revert — which a plain refresh often does not make
     Plex re-read. context names the caller for the log lines.
     """
-    if not cfg.get("plex_enabled", False):
+    connection = plex_connection(cfg, context)
+    if connection is None:
         return None
-
-    url   = (cfg.get("plex_url") or "").rstrip("/")
-    token = cfg.get("plex_token") or ""
-    if not url or not token:
-        logger.warning(
-            "Plex notification skipped for %s: plex_url or "
-            "plex_token not configured",
-            context,
-        )
-        return None
-
-    mappings = cfg.get("plex_path_mappings", [])
-    if not mappings:
-        logger.warning(
-            "Plex notification skipped for %s: no "
-            "plex_path_mappings configured",
-            context,
-        )
-        return None
+    url, token, mappings = connection
 
     # Tracks appearing or disappearing is precisely the case the backlog
     # exists for: a plain refresh often won't make Plex re-read stream

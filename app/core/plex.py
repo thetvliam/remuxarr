@@ -357,6 +357,44 @@ def _audio_language_matches(
     return False
 
 
+def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | None:
+    """
+    The URL, token and path mappings a Plex call needs, read from the app
+    settings, or None when Plex notifications are off or not fully set up.
+
+    Off is silent; on but incomplete is a warning, since that is a setup the
+    user meant to work. context names the caller in it ("job 12", "an
+    import of /media/tv/...").
+
+    One place for what each caller used to write out for itself: the
+    post-job notification, the forge and revert refresh, and the refresh
+    for an import that needs no job.
+    """
+    if not cfg.get("plex_enabled", False):
+        return None
+
+    url   = (cfg.get("plex_url") or "").rstrip("/")
+    token = cfg.get("plex_token") or ""
+    if not url or not token:
+        logger.warning(
+            "Plex notification skipped for %s: plex_url or "
+            "plex_token not configured",
+            context,
+        )
+        return None
+
+    mappings = cfg.get("plex_path_mappings", [])
+    if not mappings:
+        logger.warning(
+            "Plex notification skipped for %s: no "
+            "plex_path_mappings configured",
+            context,
+        )
+        return None
+
+    return url, token, mappings
+
+
 def notify_plex_new_file(
     base_url: str, token: str, mappings: list[str], local_path: str,
 ) -> None:
