@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1915 tests across 83 test files, plus 740 frontend tests under
+1931 tests across 84 test files, plus 740 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -94,7 +94,8 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,
 `test_arr_notifications.py`,
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
-`test_plex_on_import.py`, `test_email_notify.py`, `test_post_job_notify.py`.
+`test_plex_on_import.py`, `test_plex_after_review.py`, `test_email_notify.py`,
+`test_post_job_notify.py`.
 `test_arr_quality_restore.py` covers putting a file's quality back after a
 container change replaces it, and its fixture is the real history of one
 movie that this happened to — two deletion records newer than the import
@@ -111,8 +112,11 @@ whether Sonarr, Radarr or Plex are told anything at all and with which URL
 and key. `test_plex_on_import.py` covers the imports that decision never
 sees, because no job that changes the file follows them: one that needs no
 changes, one the exclude settings match, and any while dry run is on. Those
-tell Plex as soon as the queue attempt has run. The email circuit breaker's
-own decision lives in `test_assorted_regressions.py`.
+tell Plex as soon as the queue attempt has run. `test_plex_after_review.py`
+covers the same for a review: a newly found file whose review ends with
+nothing to change it, by an answer, a Skip or a Language Review answer,
+tells Plex once the answer is saved. The email circuit breaker's own
+decision lives in `test_assorted_regressions.py`.
 
 **Live updates** — `test_ws_manager.py`, `test_ws_broadcast_threadsafe.py`. The
 WebSocket hub every UI event leaves through: connection bookkeeping, the

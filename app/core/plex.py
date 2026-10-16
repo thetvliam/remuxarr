@@ -40,6 +40,7 @@ sonarr.py / radarr.py.
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -367,8 +368,9 @@ def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | Non
     import of /media/tv/...").
 
     One place for what each caller used to write out for itself: the
-    post-job notification, the forge and revert refresh, and the refresh
-    for an import that needs no job.
+    post-job notification, the forge and revert refresh, the refresh for an
+    import that needs no job, and the one after a review that leaves a file
+    alone (refresh_in_background).
     """
     if not cfg.get("plex_enabled", False):
         return None
@@ -393,6 +395,41 @@ def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | Non
         return None
 
     return url, token, mappings
+
+
+def refresh_in_background(cfg: dict, paths: list[str],
+                          context: str) -> threading.Thread | None:
+    """
+    Refresh each distinct folder among paths in Plex, on a thread of its own,
+    and return that thread; None when there is nothing to send or Plex
+    notifications are off or not set up.
+
+    For a request handler that has just left files alone: answering a page
+    of reviews must not wait on Plex, and must not fail because Plex is down.
+    A refresh is scoped to a folder, so one per folder does for a season of
+    episodes answered together. Each failure is logged and the rest carry on.
+    """
+    if not paths:
+        return None
+    connection = plex_connection(cfg, context)
+    if connection is None:
+        return None
+
+    one_per_folder: dict[str, str] = {}
+    for path in paths:
+        one_per_folder.setdefault(os.path.dirname(path), path)
+
+    def run() -> None:
+        for path in one_per_folder.values():
+            try:
+                notify_plex_new_file(*connection, path)
+            except Exception:
+                logger.exception("Plex refresh failed for %s after %s",
+                                 path, context)
+
+    thread = threading.Thread(target=run, name="plex-refresh", daemon=True)
+    thread.start()
+    return thread
 
 
 def notify_plex_new_file(

@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
                               _track_to_dict, descriptors_by_stream)
 from app.core.decision import ISO_639_2_TO_1
+from app.core.plex import refresh_in_background
 from app.database.models import MediaFile, QueueItem, RevertPoint, Track
 from app.database.session import get_app_settings, get_db
 
@@ -438,6 +439,9 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # discard the question, which leaves an apply that looks from the
         # response alone exactly like a real one.
         results = {"applied": 0, "errors": [], "dry_run": dry_run}
+        # Files this leaves with nothing to change them, for Plex once
+        # everything is committed. See queue.left_alone_after_review.
+        left_alone: list[str] = []
 
         # Group the flags by file before doing anything.
         #
@@ -659,6 +663,12 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             )
             sonarr_series_id = active_items[0].sonarr_series_id if active_items else None
             radarr_movie_id  = active_items[0].radarr_movie_id  if active_items else None
+            # Read before the delete. The item _process_file makes in its
+            # place cannot say this: the file is no longer new to it. A
+            # pending item counts as well as a review: its job was what would
+            # have told Plex, and an answer that leaves nothing to do means
+            # that job never runs.
+            first_seen = any(i.is_new_file for i in active_items)
             for active_item in active_items:
                 db.delete(active_item)
             db.flush()
@@ -701,6 +711,12 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                     })
                 else:
                     results["applied"] += 1
+                    # The file was skipped as needing nothing, or queued as
+                    # a dry run that will tell Plex nothing. A real job tells
+                    # Plex itself, and another review is not an ending.
+                    if first_seen and (
+                            stats.skipped or (stats.queued and dry_run)):
+                        left_alone.append(media.path)
             except Exception as exc:
                 # Without this, one bad file (e.g. the ValueError decision.py
                 # raises for genuinely unknown container info) kills the whole
@@ -716,6 +732,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 db.rollback()
 
         db.commit()
+        refresh_in_background(app_cfg, left_alone,
+                              f"{kind.slug} language answers")
         return results
 
     @router.post("/ignore", description=kind.ignore_description)

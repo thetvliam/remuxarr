@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
+from app.core.plex import refresh_in_background
 from app.core.scanner import (ScanStats, _file_info_for, _process_file,
                               _load_subtitle_overrides, _load_audio_language_overrides,
                               _load_subtitle_language_overrides, _load_track_answers,
@@ -667,6 +668,7 @@ def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_d
     """
     outcomes: list[dict] = []
     errors: list[dict] = []
+    left_alone: list[str] = []
 
     # Whole-request validation first, before anything is written: a choice
     # this endpoint does not have, or a file both answered and skipped, is a
@@ -721,6 +723,8 @@ def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_d
             continue
 
         db.commit()
+        if left_alone_after_review(item):
+            left_alone.append(item.media_file.path)
         outcomes.append({
             "file_id":    entry.file_id,
             "status":     item.status,
@@ -740,6 +744,8 @@ def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_d
 
         _cancel_item_row(item)
         db.commit()
+        if left_alone_after_review(item) and item.media_file:
+            left_alone.append(item.media_file.path)
         outcomes.append({
             "file_id":    file_id,
             "status":     item.status,
@@ -747,6 +753,8 @@ def apply_review_decisions(body: ReviewApplyRequest, db: Session = Depends(get_d
             "is_dry_run": item.is_dry_run,
         })
 
+    # After every commit, so a slow or absent Plex never holds up the answer.
+    refresh_in_background(get_app_settings(db), left_alone, "review answers")
     return {"outcomes": outcomes, "errors": errors}
 
 
@@ -1030,9 +1038,15 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Queue item not found")
     if item.status not in ("pending", "manual_review"):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
+    was_review = item.status == "manual_review"
 
     _cancel_item_row(item)
     db.commit()
+    # Only a review: cancelling a pending job leaves the file for the next
+    # scan to queue again, and the job that follows tells Plex.
+    if was_review and left_alone_after_review(item) and item.media_file:
+        refresh_in_background(get_app_settings(db), [item.media_file.path],
+                              "a skipped review")
     return {"success": True}
 
 
@@ -1237,6 +1251,29 @@ def _answer_subtitle_review(db: Session, item: QueueItem, media: MediaFile,
     decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
     _apply_decision_to_item(db, item, media, decision)
+
+
+def left_alone_after_review(item: QueueItem) -> bool:
+    """
+    Whether a review that has just ended leaves a file Plex should now hear
+    about: one Remuxarr first saw when the review was raised, that nothing
+    is going to change.
+
+    A file first seen with a question is usually an import, and Plex has not
+    been told about it: with Plex's own connection removed from Sonarr or
+    Radarr, Remuxarr is what tells Plex, and it does so when a job finishes.
+    A review answered so the file needs nothing ("skipped"), skipped from
+    the Review page ("cancelled"), or answered while dry run is on (a
+    pending dry run, whose job will tell Plex nothing) never gets that job.
+    A pending real job is left to tell Plex itself, after it has changed the
+    file. is_new_file is what the scan wrote when it raised the review; see
+    _process_file. Call it on an item that was in review.
+    """
+    if not item.is_new_file:
+        return False
+    if item.status in ("skipped", "cancelled"):
+        return True
+    return item.status == "pending" and bool(item.is_dry_run)
 
 
 def _cancel_item_row(item: QueueItem) -> None:
