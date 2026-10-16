@@ -62,6 +62,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
+- The recycle bin is no longer in beta.
 - The Sonarr and Radarr path settings under Integrations are now called each app's Container Path, with an example of what to enter. Anything you have already set is kept.
 
 ## Fixed
