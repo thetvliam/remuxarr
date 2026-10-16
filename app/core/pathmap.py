@@ -3,8 +3,9 @@ Translating a path between Remuxarr's view of the filesystem and an *arr's.
 
 Sonarr, Radarr and Remuxarr often run in separate containers with the same
 physical directory mounted at different paths — Radarr sees /media where
-Remuxarr sees /media/movies. The prefixes are configured per service as
-"Path Prefix (Remote)" and "Path Prefix (Local)".
+Remuxarr sees /media/movies. The prefixes are configured per service in
+Settings as the *arr's Container Path (remote here) and Remuxarr's
+Container Path (local).
 
 This runs in both directions, which is why the parameters are named for the
 direction rather than for the service:

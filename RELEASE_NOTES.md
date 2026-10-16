@@ -60,6 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- The Sonarr and Radarr path settings under Integrations are now called each app's Container Path, with an example of what to enter. Anything you have already set is kept.
+
 ## Fixed
 
 - In Settings, opening a section now starts at its top, the section list no longer slides up as you scroll, and the page no longer shifts sideways when you switch sections. The Review page no longer shifts sideways when its list gets short.
