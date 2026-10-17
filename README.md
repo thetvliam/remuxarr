@@ -92,9 +92,9 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
 </table>
 
-<video src="https://github.com/user-attachments/assets/14579abe-7f3f-4005-8a11-0a6d3c5ba7f5" aria-label="Demo video" title="Demo video">Demo video</video>
+---
 
-▶ [**Watch the demo video**](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/demo_video.mp4) — plays inline on GitHub above; this link is for viewers that strip embedded video, such as Docker Hub.
+[![Watch the demo video]](https://github.com/user-attachments/assets/14579abe-7f3f-4005-8a11-0a6d3c5ba7f5)
 
 ---
 
