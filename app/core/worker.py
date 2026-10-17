@@ -29,7 +29,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ScanStats, _delete_media_file_and_related, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1953,6 +1953,24 @@ def _finish_job(
                         fmt_info   = extract_format_info(probe_data)
                         track_list = extract_tracks(probe_data)
 
+                        # The rows about to be replaced are what the stored
+                        # answers are keyed against, so the answers are
+                        # carried across first. See rekey_track_answers.
+                        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+                            before = [_track_to_dict(t) for t in
+                                      db.query(Track).filter(Track.file_id == media.id)]
+                            removed = {
+                                a.stream_index for a in db.query(PlannedAction).filter(
+                                    PlannedAction.queue_item_id == job.id,
+                                    PlannedAction.action_type.in_(
+                                        ("drop_track", "extract_subtitle")),
+                                )
+                            }
+                            rekey_media_answers(
+                                media, before, track_list,
+                                job_stream_mapping(before, track_list, removed, final_path),
+                            )
+
                         db.query(Track).filter(Track.file_id == media.id).delete()
                         for td in track_list:
                             db.add(Track(
@@ -1996,6 +2014,7 @@ def _finish_job(
                             "rescan",
                             final_path, exc,
                         )
+                        clear_media_answers(media, "the processed file could not be probed")
             else:
                 media.status = "error"
 

@@ -351,6 +351,8 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     are correct; a bookkeeping failure is fixed by the next full rescan
     and must not be reported to the user as a failed revert.
     """
+    from app.core.scanner import (ANSWER_COLUMNS, _track_to_dict,
+                                  clear_media_answers, rekey_media_answers)
     from app.database.models import MediaFile, RevertPoint, Track
 
     media = db.get(MediaFile, plan.file_id)
@@ -418,6 +420,23 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         fmt_info = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)
 
+        # Carried back before the rows below are replaced, for the reason a
+        # job carries them forward (see rekey_track_answers). The manifest
+        # already says where each original stream sat in the processed file:
+        # processed_index is kept current across every job a point is
+        # extended over, and the restore writes the streams back in manifest
+        # order, so each one's own index is where it now sits. A stream the
+        # revert brought back from the sidecar had no track to answer for in
+        # the processed file, so its question is asked again.
+        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+            before = [_track_to_dict(t) for t in
+                      db.query(Track).filter(Track.file_id == media.id)]
+            rekey_media_answers(media, before, track_list, {
+                stream["processed_index"]: stream["index"]
+                for stream in plan.manifest.get("streams", [])
+                if stream.get("processed_index") is not None
+            })
+
         db.query(Track).filter(Track.file_id == media.id).delete()
         for td in track_list:
             db.add(Track(
@@ -448,6 +467,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             "Post-revert track refresh failed for %s: %s — Track rows may be "
             "stale until the next full rescan", restored_path, exc,
         )
+        clear_media_answers(media, "the restored file could not be probed")
 
     # The point has been spent: the file is back to the original it
     # described, so there is nothing left to restore. Deleting by file_id

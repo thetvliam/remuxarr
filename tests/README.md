@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1937 tests across 84 test files, plus 740 frontend tests under
+1950 tests across 85 test files, plus 740 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -132,7 +132,8 @@ nothing.
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`,
 `test_subtitle_rename.py`, `test_font_attachment_review.py`,
-`test_font_attachment_pipeline.py`, `test_review_reason.py`.
+`test_font_attachment_pipeline.py`, `test_review_reason.py`,
+`test_answers_follow_tracks.py`.
 `test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
@@ -153,6 +154,14 @@ The font gate is that trigger, and nothing about it fails. The same module
 covers the scanner and the worker recording that field, which they did not at
 first: every review they raised came out unlabelled, and both bulk endpoints
 read an unlabelled review with flagged tracks as an image-subtitle one.
+`test_answers_follow_tracks.py` covers what happens to the answers given in
+review when Remuxarr rewrites the file. They are keyed by what a track is plus
+which one it is among identical tracks, and a job that drops the first of two
+identical tracks renumbers the second: at the next full scan the dropped
+track's Remove landed on the subtitle the user had kept, and a language answer
+moved to the other audio track. A job now carries each answer to the track it
+was given for and a revert carries it back. `test_job_finalisation.py` and
+`test_revert_multiple_jobs.py` pin the two places that do it.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

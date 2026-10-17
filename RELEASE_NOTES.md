@@ -60,12 +60,7 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Changed
-
-- The recycle bin is no longer in beta.
-- The Sonarr and Radarr path settings under Integrations are now called each app's Container Path, with an example of what to enter. Anything you have already set is kept.
-
 ## Fixed
 
-- Files Sonarr or Radarr imports now show up in Plex straight away when nothing is going to change them: when they need no changes or are excluded, and when their review is answered or skipped with nothing left to change. They used to wait for Plex's own scan. This matters if you have removed Plex's connection from Sonarr or Radarr and let Remuxarr tell Plex instead. As before, nothing is sent to Plex, Sonarr or Radarr while dry run is on.
-- In Settings, opening a section now starts at its top, the section list no longer slides up as you scroll, and the page no longer shifts sideways when you switch sections. The Review page no longer shifts sideways when its list gets short.
+- Answers you give in Review now stay with the track you gave them for when a job removes another track that looks the same. After a job removed one of two similar tracks, a later full scan or Re-process could apply the removed track's answer to the one left behind: a subtitle you chose to keep could be deleted, or an audio track given the other one's language. Files an earlier job already affected this way are not detected or corrected.
+- After you revert a file, a track the job had removed is no longer removed again at the next scan by the answer you gave the first time. If it needs a decision, Review asks again.

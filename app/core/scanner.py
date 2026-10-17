@@ -1351,12 +1351,21 @@ def _process_file(
 # throw away a Keep answer the moment the same file's language was fixed.
 #
 # The ordinal is what tells identical tracks apart — two untitled ASS tracks,
-# or the several undefined audio tracks the threshold exists for. It holds
-# because the remux pipeline copies kept streams in source order and never
-# reorders them, which forge.py's undo resolver relies on for the same
-# reason. An answer whose descriptor matches no current track, or whose
-# ordinal is not there any more, is dropped: the question comes back rather
-# than being applied to a track nobody answered for.
+# or the several undefined audio tracks the threshold exists for. It is also
+# the one part of a descriptor that can change while the track itself does
+# not. A job that drops the first of two identical tracks renumbers the
+# second from 2 to 1, and the answer given for the dropped one then matched
+# the survivor: Remove English, Keep Spanish on two untitled PGS tracks
+# became Remove on the Spanish one at the next full scan. So whenever
+# Remuxarr rewrites a file itself, the answers are carried across with it
+# (rekey_track_answers): a job moves each one to the track it was given for,
+# and a revert moves it back. The forge needs neither. It appends its track
+# after every existing one of the same shape and its undo removes that last
+# one again, so no other track's ordinal moves.
+#
+# An answer whose descriptor matches no current track, or whose ordinal is
+# not there any more, is dropped: the question comes back rather than being
+# applied to a track nobody answered for.
 
 
 def _descriptor_fields(track: dict) -> list:
@@ -1405,6 +1414,116 @@ def resolve_track_answers(stored: dict[str, str], tracks: list[dict]) -> dict[in
     stream_for = {key: si for si, key in descriptors_by_stream(tracks).items()}
     return {stream_for[key]: answer
             for key, answer in stored.items() if key in stream_for}
+
+
+ANSWER_COLUMNS = (
+    "subtitle_overrides",
+    "audio_language_overrides",
+    "subtitle_language_overrides",
+)
+
+
+def job_stream_mapping(
+    before:  list[dict],
+    after:   list[dict],
+    removed: set[int],
+    path:    str,
+) -> dict[int, int]:
+    """
+    Where each track a job kept now sits: before stream_index -> after.
+
+    Paired by position within each track type, because that is how
+    build_ffmpeg_command writes the output: every video track, then the kept
+    audio, then the kept subtitles, each type in source order. Interleaved
+    sources come out grouped by type, so counting across types would pair a
+    subtitle with an audio track.
+
+    A type whose kept count does not match what the output holds is left
+    out entirely and its answers dropped. Some step this does not know about
+    added or lost a track, and guessing the pairing is exactly the failure
+    being fixed here.
+    """
+    mapping: dict[int, int] = {}
+    for track_type in sorted({t["track_type"] for t in before + after}):
+        kept = sorted(
+            (t for t in before
+             if t["track_type"] == track_type and t["stream_index"] not in removed),
+            key=lambda t: t["stream_index"],
+        )
+        out = sorted((t for t in after if t["track_type"] == track_type),
+                     key=lambda t: t["stream_index"])
+        if len(kept) != len(out):
+            logger.warning(
+                "Stored answers for %s tracks of %s dropped: the job kept %d "
+                "but the output has %d, so which is which cannot be told",
+                track_type, path, len(kept), len(out),
+            )
+            continue
+        for src, dst in zip(kept, out):
+            mapping[src["stream_index"]] = dst["stream_index"]
+    return mapping
+
+
+def rekey_track_answers(
+    stored:  dict[str, str],
+    before:  list[dict],
+    after:   list[dict],
+    mapping: dict[int, int],
+) -> dict[str, str]:
+    """
+    Stored answers, carried from the file as it was to the file as it is.
+
+    `stored` is keyed against `before`; the result is keyed against `after`.
+    Each answer is resolved to the track it was given for, followed through
+    `mapping` (before stream_index -> after stream_index), and stored under
+    that track's descriptor in the new file. The new descriptor is read from
+    `after` rather than carried over: a re-encode changes the codec, and a
+    dropped neighbour changes the ordinal, both without changing which track
+    it is.
+
+    Dropped, so the question is asked again: an answer for a track that is
+    gone, one whose key matched nothing in `before`, and one the mapping
+    would put on a track of another type.
+    """
+    type_before = {t["stream_index"]: t["track_type"] for t in before}
+    type_after = {t["stream_index"]: t["track_type"] for t in after}
+    key_after = descriptors_by_stream(after)
+    carried: dict[str, str] = {}
+    for si, answer in resolve_track_answers(stored, before).items():
+        new_si = mapping.get(si)
+        if new_si is None or type_after.get(new_si) != type_before[si]:
+            continue
+        carried[key_after[new_si]] = answer
+    return carried
+
+
+def rekey_media_answers(
+    media:   MediaFile,
+    before:  list[dict],
+    after:   list[dict],
+    mapping: dict[int, int],
+) -> None:
+    """rekey_track_answers applied to all three of a file's answer columns."""
+    for attr in ANSWER_COLUMNS:
+        stored = _load_track_answers(media, attr)
+        if not stored:
+            continue
+        carried = rekey_track_answers(stored, before, after, mapping)
+        setattr(media, attr, json.dumps(carried) if carried else None)
+
+
+def clear_media_answers(media: MediaFile, why: str) -> None:
+    """
+    Forget a file's answers when it was rewritten and its new tracks could
+    not be read, so they cannot be carried across. Left in place they are
+    keyed to a layout the file no longer has, and the next full scan would
+    resolve them against whatever now matches; cleared, the questions come
+    back.
+    """
+    if any(getattr(media, attr) for attr in ANSWER_COLUMNS):
+        logger.warning("Stored answers for %s cleared: %s", media.path, why)
+    for attr in ANSWER_COLUMNS:
+        setattr(media, attr, None)
 
 
 def _load_track_answers(media_file: MediaFile, attr: str) -> dict[str, str]:

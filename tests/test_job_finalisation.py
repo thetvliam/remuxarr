@@ -22,6 +22,15 @@ coverage number. test_the_font_count_is_refreshed_to_the_processed_file came
 later, with its own mutant — the refresh's write deleted — which survived the
 full suite until it existed.
 
+The two stored-answer tests at the end came with the re-keying in
+test_answers_follow_tracks.py, whose docstring holds their mutation record:
+the re-key not called, an extracted subtitle counted as kept, each of the
+three columns left out, and a failed probe keeping the answers, all of which
+survived the full suite first. Because the re-key sits inside the Track
+refresh, two mutants of that block were run again with it in place: the
+whole delete and re-add removed, as recorded above, and the delete alone.
+test_track_rows_are_replaced_with_what_is_now_on_disk still kills both.
+
 Two of those mutations are worth recording because they are the ones a
 plausible "tidy-up" would actually produce, and neither is caught by
 anything else:
@@ -714,3 +723,104 @@ def test_the_font_count_is_refreshed_to_the_processed_file(worker, Session,
     worker._finish_job(job_id, True, str(src), 10, None)
 
     assert _media(Session, media_id).font_attachments == 0
+
+
+# ── Stored answers follow the tracks ─────────────────────────────────────────
+# The rekeying itself is tested in test_answers_follow_tracks.py. These pin
+# that _finish_job does it, for all three columns, with the job's own drops
+# and extractions, and that a probe it cannot read forgets the answers.
+
+def _answered_job(Session, src):
+    """
+    A job that dropped the first of two identical audio tracks and the first
+    of two identical PGS tracks, and extracted the English subtitle, on a
+    file holding answers in all three columns.
+
+    Before: 0 video, 1 and 2 undefined AC3 (answered fre and jpn; 1 dropped),
+    3 SubRip eng (extracted), 4 and 5 undefined PGS (answered remove and
+    keep, 5 also spa; 4 dropped). After: 0 video, 1 AC3, 2 PGS.
+
+    Dropping the first of each pair is what renumbers the second, so every
+    column holds an answer whose key changes, and a column left alone keeps
+    the dropped track's answer on the survivor. The extracted subtitle sits
+    among the PGS tracks: counted as kept, it would make the subtitle count
+    disagree with the output.
+    """
+    import json
+
+    from app.core.scanner import descriptors_by_stream
+    from app.database.models import MediaFile, PlannedAction, Track
+
+    before = [
+        _track(0, "video", "h264", "und", channels=None),
+        _track(1, "audio", "ac3", "und"),
+        _track(2, "audio", "ac3", "und"),
+        _track(3, "subtitle", "subrip", "eng", channels=None),
+        _track(4, "subtitle", "hdmv_pgs_subtitle", "und", channels=None),
+        _track(5, "subtitle", "hdmv_pgs_subtitle", "und", channels=None),
+    ]
+    keys = descriptors_by_stream(before)
+    media_id, job_id = _seed(Session, src)
+    with Session() as db:
+        media = db.get(MediaFile, media_id)
+        media.audio_language_overrides = json.dumps({keys[1]: "fre", keys[2]: "jpn"})
+        media.subtitle_overrides = json.dumps({keys[4]: "remove", keys[5]: "keep"})
+        media.subtitle_language_overrides = json.dumps({keys[5]: "spa"})
+        for td in before:
+            db.add(Track(file_id=media_id, **td))
+        for order, (action, si) in enumerate([
+                ("drop_track", 1), ("copy_track", 2), ("extract_subtitle", 3),
+                ("drop_track", 4), ("copy_track", 5)]):
+            db.add(PlannedAction(queue_item_id=job_id, order=order, action_type=action,
+                                 description=action, stream_index=si))
+        db.commit()
+    after = [
+        _track(0, "video", "h264", "und", channels=None),
+        _track(1, "audio", "ac3", "und"),
+        _track(2, "subtitle", "hdmv_pgs_subtitle", "und", channels=None),
+    ]
+    return media_id, job_id, after
+
+
+def _stored(Session, media_id, column, tracks):
+    import json
+
+    from app.core.scanner import resolve_track_answers
+    return resolve_track_answers(
+        json.loads(getattr(_media(Session, media_id), column) or "{}"), tracks)
+
+
+def test_answers_move_with_the_tracks_the_job_kept(worker, Session, media_dir,
+                                                   monkeypatch):
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    media_id, job_id, after = _answered_job(Session, src)
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _stored(Session, media_id, "audio_language_overrides", after) == {1: "jpn"}, (
+        "the survivor took the dropped track's language answer")
+    assert _stored(Session, media_id, "subtitle_overrides", after) == {2: "keep"}
+    assert _stored(Session, media_id, "subtitle_language_overrides", after) == {2: "spa"}
+
+
+def test_a_probe_failure_after_a_job_forgets_the_answers(worker, Session,
+                                                         media_dir, monkeypatch):
+    """
+    The file was rewritten and its new layout could not be read, so the
+    answers cannot be carried. Kept, they would be resolved against whatever
+    the next full scan finds; forgotten, the questions are asked again.
+    """
+    from app.core.probe import ProbeError
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    media_id, job_id, _after = _answered_job(Session, src)
+    _stub_probe(monkeypatch, worker, raises=ProbeError("ffprobe returned 1"))
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    media = _media(Session, media_id)
+    assert (media.audio_language_overrides, media.subtitle_overrides,
+            media.subtitle_language_overrides) == (None, None, None)
