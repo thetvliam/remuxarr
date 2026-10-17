@@ -46,10 +46,14 @@ Plex hears about a file at the end of a job that succeeded. With Plex's own
 connection removed from Sonarr or Radarr, which the Enable Plex
 Notifications setting suggests, that was the only way Plex heard about an
 import at all, so an import that never got such a job never reached Plex:
-one that needed no changes, one the exclude settings match, and every
-import while dry run is on, whose job ends as a dry run. Each stayed out of
-Plex until Plex's own periodic scan found it. These now get the same
+one that needed no changes, or one the exclude settings match. Each stayed
+out of Plex until Plex's own periodic scan found it. These now get the same
 folder-scoped refresh a job sends, as soon as the queue attempt has run.
+
+Not while dry run is on. Dry run sends nothing to Plex, Sonarr or Radarr,
+whatever it decides about a file: it is for watching what Remuxarr would do
+before trusting it, and a refresh is something Remuxarr does. An import
+during dry run reaches Plex through Plex's own scan, as it always has.
 
 An import that will be processed is still left alone. Plex indexing the
 original first would mean reading the file again once the job has changed
@@ -354,12 +358,8 @@ async def _delayed_queue(
             logger.info("File skipped (no changes needed): %s", path)
 
         # After the broadcast, so a slow Plex never holds up the queue's own
-        # news. Read here rather than in the thread: qi is detached once
-        # _queue_sync has closed its session.
-        await loop.run_in_executor(
-            None, _tell_plex_if_unchanged,
-            path, qi.is_dry_run if qi else None, started,
-        )
+        # news.
+        await loop.run_in_executor(None, _tell_plex_if_unchanged, path, started)
 
     except asyncio.CancelledError:
         # A debounce reset or a stop. The intake row is left alone either
@@ -414,27 +414,21 @@ def _queue_sync(
             _forget_sync(intake_id)
 
 
-def _tell_plex_if_unchanged(
-    path: str,
-    queued_dry_run: bool | None,
-    started,
-) -> None:
+def _tell_plex_if_unchanged(path: str, started) -> None:
     """
     Refresh the import's folder in Plex when nothing is going to change the
     file. See "Telling Plex about an import nothing will change" above.
 
-    queued_dry_run is the queue item the attempt returned: None when it
-    returned none, else whether that item is a dry run. A real pending item
-    ends in a job that tells Plex itself. A real item held for review is
-    left too, though a review answered without a change runs no job, and
-    neither does a job that fails: telling Plex in those two cases needs the
-    job to know it came from an import, which today it does not.
+    Nothing at all while dry run is on; see the notes above.
 
-    With no item, the file was excluded, or it needed no changes, which is
-    told apart from the other ways to return none (the file vanished, the
-    probe failed, a job for it is already running) by the skipped row the
-    attempt itself wrote: one completed at or after `started`. An earlier
-    skip of the same path does not count; it was a different file.
+    Told when the file is excluded, or when it needed no changes, which is
+    the skipped row this attempt wrote: one completed at or after `started`.
+    That is what tells it apart from every other outcome. A file queued for a
+    job, or held for review, has no such row: its job tells Plex itself, and
+    a review tells Plex when it ends with nothing to change
+    (queue.left_alone_after_review). Nor does a file that vanished, failed to
+    probe, or already has a job running. An earlier skip of the same path
+    does not count either; it was a different file.
 
     Never raises: this runs after the import has been dealt with, and a
     Plex failure must not look like a failure to queue.
@@ -443,11 +437,9 @@ def _tell_plex_if_unchanged(
         db = SessionLocal()
         try:
             cfg = get_app_settings(db)
-            if queued_dry_run is not None:
-                if not queued_dry_run:
-                    return
-                why = "dry run is on"
-            elif ExcludeRules.from_settings(cfg).reason(path):
+            if cfg.get("dry_run_mode", False):
+                return
+            if ExcludeRules.from_settings(cfg).reason(path):
                 why = "it is excluded"
             else:
                 media = db.query(MediaFile).filter(MediaFile.path == path).first()

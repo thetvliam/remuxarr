@@ -1262,18 +1262,16 @@ def left_alone_after_review(item: QueueItem) -> bool:
     A file first seen with a question is usually an import, and Plex has not
     been told about it: with Plex's own connection removed from Sonarr or
     Radarr, Remuxarr is what tells Plex, and it does so when a job finishes.
-    A review answered so the file needs nothing ("skipped"), skipped from
-    the Review page ("cancelled"), or answered while dry run is on (a
-    pending dry run, whose job will tell Plex nothing) never gets that job.
-    A pending real job is left to tell Plex itself, after it has changed the
-    file. is_new_file is what the scan wrote when it raised the review; see
-    _process_file. Call it on an item that was in review.
+    A review answered so the file needs nothing ("skipped"), or skipped from
+    the Review page ("cancelled"), never gets that job. A pending job is left
+    to tell Plex itself, after it has changed the file. is_new_file is what
+    the scan wrote when it raised the review; see _process_file. Call it on
+    an item that was in review.
+
+    Says nothing about dry run: refresh_in_background sends nothing while it
+    is on, for every route that calls it.
     """
-    if not item.is_new_file:
-        return False
-    if item.status in ("skipped", "cancelled"):
-        return True
-    return item.status == "pending" and bool(item.is_dry_run)
+    return bool(item.is_new_file) and item.status in ("skipped", "cancelled")
 
 
 def _cancel_item_row(item: QueueItem) -> None:

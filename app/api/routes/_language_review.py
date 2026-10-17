@@ -711,11 +711,10 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                     })
                 else:
                     results["applied"] += 1
-                    # The file was skipped as needing nothing, or queued as
-                    # a dry run that will tell Plex nothing. A real job tells
-                    # Plex itself, and another review is not an ending.
-                    if first_seen and (
-                            stats.skipped or (stats.queued and dry_run)):
+                    # The file was skipped as needing nothing. A job tells
+                    # Plex itself, and another review is not an ending. Dry
+                    # run is refresh_in_background's to check.
+                    if first_seen and stats.skipped:
                         left_alone.append(media.path)
             except Exception as exc:
                 # Without this, one bad file (e.g. the ValueError decision.py

@@ -67,5 +67,5 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- Files Sonarr or Radarr imports now show up in Plex straight away when nothing is going to change them: when they need no changes, are excluded or arrive while dry run is on, and when their review is answered or skipped with nothing left to change. They used to wait for Plex's own scan. This matters if you have removed Plex's connection from Sonarr or Radarr and let Remuxarr tell Plex instead.
+- Files Sonarr or Radarr imports now show up in Plex straight away when nothing is going to change them: when they need no changes or are excluded, and when their review is answered or skipped with nothing left to change. They used to wait for Plex's own scan. This matters if you have removed Plex's connection from Sonarr or Radarr and let Remuxarr tell Plex instead. As before, nothing is sent to Plex, Sonarr or Radarr while dry run is on.
 - In Settings, opening a section now starts at its top, the section list no longer slides up as you scroll, and the page no longer shifts sideways when you switch sections. The Review page no longer shifts sideways when its list gets short.

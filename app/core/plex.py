@@ -401,15 +401,20 @@ def refresh_in_background(cfg: dict, paths: list[str],
                           context: str) -> threading.Thread | None:
     """
     Refresh each distinct folder among paths in Plex, on a thread of its own,
-    and return that thread; None when there is nothing to send or Plex
-    notifications are off or not set up.
+    and return that thread; None when there is nothing to send, dry run is
+    on, or Plex notifications are off or not set up.
+
+    Dry run sends nothing to Plex, Sonarr or Radarr, whatever it decides
+    about a file: it is for watching what Remuxarr would do before trusting
+    it, and a refresh is something Remuxarr does. Checked here, once, for
+    every route that leaves files alone.
 
     For a request handler that has just left files alone: answering a page
     of reviews must not wait on Plex, and must not fail because Plex is down.
     A refresh is scoped to a folder, so one per folder does for a season of
     episodes answered together. Each failure is logged and the rest carry on.
     """
-    if not paths:
+    if not paths or cfg.get("dry_run_mode", False):
         return None
     connection = plex_connection(cfg, context)
     if connection is None:

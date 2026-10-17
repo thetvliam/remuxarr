@@ -9,36 +9,41 @@ nothing to change it, no job followed, and Plex never heard of the file:
 
   • an answer that leaves the file needing nothing (the review is "skipped")
   • Skip, on the Review page or in a batch (the review is "cancelled")
-  • an answer given while dry run is on, whose job tells Plex nothing
-  • a Language Review answer with either of those results, which re-checks
-    the file from scratch and so replaces its review, or its pending job
+  • a Language Review answer that leaves the file needing nothing, which
+    re-checks the file from scratch and so replaces its review, or its
+    pending job
 
 Each now sends Plex a refresh, once everything is saved and in the
 background. A newly found file is one whose review was raised the first time
 Remuxarr saw it, which is what the queue item's is_new_file records: every
 import, and a brand-new file a scan found, which Plex has not heard of either.
-A file seen before is not told, and an answer that leads to a real job leaves
-the telling to the job, after it has changed the file.
+A file seen before is not told, and an answer that leads to a job leaves the
+telling to the job, after it has changed the file.
+
+Nothing is sent while dry run is on, whatever the answer: dry run sends
+nothing to Plex, Sonarr or Radarr. The first version of this told Plex about
+answers given in dry run, which is not what anyone running a dry run expects.
+The check is made once, in plex.refresh_in_background, for every route.
 
 The review routes are driven directly against an in-memory database, as
-test_queue_routes.py and test_audio_language_review.py drive them, with the
-background refresh recorded rather than started. refresh_in_background
-itself is tested at the end with the Plex call recorded.
+test_queue_routes.py and test_audio_language_review.py drive them. The
+background refresh is the real one, waited for, with only the Plex call
+recorded, so the dry-run check and the one refresh per folder are part of
+what each route is tested through.
 
-Verified by mutation, 16 applied, 16 killed, every one surviving the whole
+Verified by mutation, 15 applied, 15 killed, every one surviving the whole
 suite without this file:
 
   • a file seen before told too
-  • an answer that leaves the file needing nothing, Skip, or a dry-run
-    answer not counted (three)
-  • an answer leading to a real job told early
+  • an answer that leaves the file needing nothing, or Skip, not counted (two)
+  • an answer leading to a job told early
   • answers or batch skips never collected (two)
   • the Skip button never telling, or cancelling a pending job telling (two)
-  • Language Review telling for any file, not counting a dry run, telling
-    for a real job, never sending, or counting only a review and not an
-    import's pending job (five)
+  • Language Review telling for any file, telling for a job, never sending,
+    or counting only a review and not an import's pending job (four)
   • one refresh per file rather than per folder
-  • the background refresh sent with Plex notifications off
+  • the background refresh sent with Plex notifications off, or while dry
+    run is on (two)
 """
 import json
 
@@ -64,43 +69,54 @@ def db():
     return sessionmaker(bind=engine)()
 
 
-def _settings(db, **values):
+def _settings(db, *, dry_run, **values):
     from app.database.models import AppSetting
 
-    for key, value in values.items():
+    for key, value in {**PLEX_ON, "dry_run_mode": dry_run, **values}.items():
         db.merge(AppSetting(key=key, value=json.dumps(value)))
     db.commit()
 
 
 @pytest.fixture
 def told(monkeypatch):
-    """The paths each route hands to the background refresh, call by call.
-    Only non-empty calls are kept: a route passes an empty list when it
-    has nothing to send."""
+    """
+    The paths Plex is sent, in order. The routes start the real background
+    refresh; this waits for each thread it starts, so a test reads the
+    outcome rather than racing it.
+    """
     import app.api.routes._language_review as lr
     import app.api.routes.queue as queue
+    import app.core.plex as plex
 
-    calls = []
+    sent = []
+    monkeypatch.setattr(plex, "notify_plex_new_file",
+                        lambda url, token, mappings, path: sent.append(path))
 
-    def record(_cfg, paths, _context):
-        if paths:
-            calls.append(list(paths))
+    real = plex.refresh_in_background
 
-    monkeypatch.setattr(queue, "refresh_in_background", record)
-    monkeypatch.setattr(lr, "refresh_in_background", record)
-    return calls
+    def and_wait(cfg, paths, context):
+        thread = real(cfg, paths, context)
+        if thread is not None:
+            thread.join(5)
+        return thread
+
+    monkeypatch.setattr(queue, "refresh_in_background", and_wait)
+    monkeypatch.setattr(lr, "refresh_in_background", and_wait)
+    return sent
 
 
 # ── The Review page ──────────────────────────────────────────────────────────
 
 def _review_file(db, file_id, *, first_seen=True):
-    """A file waiting in review for one styled subtitle, stream 2. Keeping it
-    leaves an MKV with nothing to change; removing it leaves a conversion."""
+    """A file waiting in review for one styled subtitle, stream 2, in a
+    folder of its own. Keeping it leaves an MKV with nothing to change;
+    removing it leaves a conversion."""
     from app.database.models import MediaFile, QueueItem, Track
 
-    path = f"/m/Show/Show {file_id}.mkv"
+    folder = f"/m/Show {file_id}"
+    path = f"{folder}/Show {file_id}.mkv"
     db.add(MediaFile(id=file_id, path=path, filename=path.rsplit("/", 1)[-1],
-                     directory="/m/Show", size=1, mtime=1.0, container="mkv",
+                     directory=folder, size=1, mtime=1.0, container="mkv",
                      video_codec="h264"))
     db.add(Track(file_id=file_id, stream_index=0, track_type="video", codec="h264"))
     db.add(Track(file_id=file_id, stream_index=1, track_type="audio",
@@ -137,18 +153,18 @@ def _statuses(db):
 
 
 def test_an_answer_that_leaves_nothing_to_do_tells_plex(db, told):
-    _settings(db, dry_run_mode=False)
+    _settings(db, dry_run=False)
     path = _review_file(db, 1)
 
     _apply(db, files=[(1, {2: "keep"})])
 
     assert _statuses(db) == [("skipped", False)]
-    assert told == [[path]]
+    assert told == [path]
 
 
 def test_an_answer_that_leads_to_a_job_leaves_plex_to_the_job(db, told):
     """Told now, Plex would index the file before the job changed it."""
-    _settings(db, dry_run_mode=False)
+    _settings(db, dry_run=False)
     _review_file(db, 1)
 
     _apply(db, files=[(1, {2: "remove"})])
@@ -157,20 +173,25 @@ def test_an_answer_that_leads_to_a_job_leaves_plex_to_the_job(db, told):
     assert told == []
 
 
-def test_an_answer_given_in_dry_run_tells_plex(db, told):
-    """The job that follows ends as a dry run, which tells Plex nothing."""
-    _settings(db, dry_run_mode=True)
-    path = _review_file(db, 1)
+@pytest.mark.parametrize("answer,expected", [
+    ({"files": [(1, {2: "keep"})]}, ("skipped", False)),
+    ({"files": [(1, {2: "remove"})]}, ("pending", True)),
+    ({"skips": [1]}, ("cancelled", False)),
+], ids=["needs nothing", "a dry-run job", "skipped"])
+def test_nothing_is_sent_while_dry_run_is_on(db, told, answer, expected):
+    """Dry run sends nothing to Plex, Sonarr or Radarr, whatever the answer."""
+    _settings(db, dry_run=True)
+    _review_file(db, 1)
 
-    _apply(db, files=[(1, {2: "remove"})])
+    _apply(db, **answer)
 
-    assert _statuses(db) == [("pending", True)]
-    assert told == [[path]]
+    assert _statuses(db) == [expected]
+    assert told == []
 
 
 def test_a_file_seen_before_is_not_told(db, told):
     """Its review was raised on a later look, so Plex already knows it."""
-    _settings(db, dry_run_mode=False)
+    _settings(db, dry_run=False)
     _review_file(db, 1, first_seen=False)
 
     _apply(db, files=[(1, {2: "keep"})])
@@ -180,9 +201,8 @@ def test_a_file_seen_before_is_not_told(db, told):
 
 
 def test_a_page_of_answers_and_skips_is_told_together(db, told):
-    """One call to the background refresh for the page, after every commit,
-    with the files the answers and the skips left alone."""
-    _settings(db, dry_run_mode=False)
+    """The files the answers and the skips left alone, after every commit."""
+    _settings(db, dry_run=False)
     kept = _review_file(db, 1)
     _review_file(db, 2)
     skipped = _review_file(db, 3)
@@ -191,17 +211,29 @@ def test_a_page_of_answers_and_skips_is_told_together(db, told):
 
     assert _statuses(db) == [("skipped", False), ("pending", False),
                              ("cancelled", False)]
-    assert told == [[kept, skipped]]
+    assert told == [kept, skipped]
 
 
 def test_the_skip_button_tells_plex(db, told):
     from app.api.routes.queue import cancel_item
 
+    _settings(db, dry_run=False)
     path = _review_file(db, 1)
 
     cancel_item(1, db)
 
-    assert told == [[path]]
+    assert told == [path]
+
+
+def test_the_skip_button_sends_nothing_while_dry_run_is_on(db, told):
+    from app.api.routes.queue import cancel_item
+
+    _settings(db, dry_run=True)
+    _review_file(db, 1)
+
+    cancel_item(1, db)
+
+    assert told == []
 
 
 def test_cancelling_a_pending_job_does_not(db, told):
@@ -210,6 +242,7 @@ def test_cancelling_a_pending_job_does_not(db, told):
     from app.api.routes.queue import cancel_item
     from app.database.models import MediaFile, QueueItem
 
+    _settings(db, dry_run=False)
     db.add(MediaFile(id=1, path="/m/Show/Show 1.mkv", filename="Show 1.mkv",
                      directory="/m/Show", size=1, mtime=1.0))
     db.add(QueueItem(id=1, file_id=1, status="pending", is_new_file=True))
@@ -252,26 +285,35 @@ def _answer(db, monkeypatch, flag_id, *, dry_run, outcome):
     def recheck(_db, _path, _cfg, *, stats, **_kw):
         setattr(stats, outcome, 1)
 
-    monkeypatch.setattr(lr, "get_app_settings", lambda _db: {"dry_run_mode": dry_run})
+    monkeypatch.setattr(lr, "get_app_settings",
+                        lambda _db: {**PLEX_ON, "dry_run_mode": dry_run})
     monkeypatch.setattr(lr, "_process_file", recheck)
     result = apply_language(ApplyRequest(flag_ids=[flag_id], target_language="eng"), db)
     assert result["applied"] == 1, result["errors"]
 
 
-@pytest.mark.parametrize("dry_run,outcome", [
-    (False, "skipped"), (True, "skipped"), (True, "queued"),
-], ids=["needs nothing", "needs nothing, in dry run", "a dry-run job"])
 def test_a_language_answer_that_leaves_a_review_alone_tells_plex(
-        db, tmp_path, monkeypatch, told, dry_run, outcome):
+        db, tmp_path, monkeypatch, told):
     path, flag_id = _flagged(db, tmp_path, "manual_review")
 
-    _answer(db, monkeypatch, flag_id, dry_run=dry_run, outcome=outcome)
+    _answer(db, monkeypatch, flag_id, dry_run=False, outcome="skipped")
 
-    assert told == [[path]]
+    assert told == [path]
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "queued"],
+                         ids=["needs nothing", "a dry-run job"])
+def test_a_language_answer_sends_nothing_while_dry_run_is_on(
+        db, tmp_path, monkeypatch, told, outcome):
+    _, flag_id = _flagged(db, tmp_path, "manual_review")
+
+    _answer(db, monkeypatch, flag_id, dry_run=True, outcome=outcome)
+
+    assert told == []
 
 
 @pytest.mark.parametrize("outcome", ["queued", "manual_review"],
-                         ids=["a real job", "another review"])
+                         ids=["a job", "another review"])
 def test_a_language_answer_that_leads_on_does_not(
         db, tmp_path, monkeypatch, told, outcome):
     _, flag_id = _flagged(db, tmp_path, "manual_review")
@@ -297,38 +339,43 @@ def test_a_language_answer_that_cancels_an_imports_job_tells_plex(
 
     _answer(db, monkeypatch, flag_id, dry_run=False, outcome="skipped")
 
-    assert told == [[path]]
+    assert told == [path]
 
 
 # ── The background refresh ───────────────────────────────────────────────────
 
-def test_the_background_refresh_sends_one_per_folder(monkeypatch):
+@pytest.fixture
+def sent(monkeypatch):
+    import app.core.plex as plex
+
+    calls = []
+    monkeypatch.setattr(plex, "notify_plex_new_file",
+                        lambda url, token, mappings, path: calls.append(path))
+    return calls
+
+
+def test_the_background_refresh_sends_one_per_folder(sent):
     """Answering a season sends one refresh for its folder, not one per
     episode: a refresh is scoped to the folder anyway."""
     import app.core.plex as plex
 
-    sent = []
-    monkeypatch.setattr(plex, "notify_plex_new_file",
-                        lambda url, token, mappings, path: sent.append(path))
-
     thread = plex.refresh_in_background(
-        PLEX_ON,
+        {**PLEX_ON, "dry_run_mode": False},
         ["/m/Show/S01E01.mkv", "/m/Show/S01E02.mkv", "/m/Film/Film.mkv"],
         "a test")
     thread.join(5)
 
-    assert sorted(sent) == ["/m/Film/Film.mkv", "/m/Show/S01E01.mkv"]
+    assert sent == ["/m/Show/S01E01.mkv", "/m/Film/Film.mkv"]
 
 
-def test_the_background_refresh_sends_nothing_with_plex_off(monkeypatch):
+@pytest.mark.parametrize("cfg", [
+    {**PLEX_ON, "dry_run_mode": False, "plex_enabled": False},
+    {**PLEX_ON, "dry_run_mode": True},
+], ids=["Plex off", "dry run on"])
+def test_the_background_refresh_sends_nothing(sent, cfg):
     import app.core.plex as plex
 
-    sent = []
-    monkeypatch.setattr(plex, "notify_plex_new_file",
-                        lambda *args: sent.append(args))
-
-    thread = plex.refresh_in_background(
-        {**PLEX_ON, "plex_enabled": False}, ["/m/Show/S01E01.mkv"], "a test")
+    thread = plex.refresh_in_background(cfg, ["/m/Show/S01E01.mkv"], "a test")
 
     assert thread is None
     assert sent == []

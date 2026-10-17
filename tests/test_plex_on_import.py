@@ -4,26 +4,35 @@ An import that no job will change is shown to Plex at once.
 Plex hears about a file at the end of a job that succeeded. Someone who has
 removed Plex's own connection from Sonarr or Radarr, as the Enable Plex
 Notifications setting suggests, relies on that alone, so an import that never
-got such a job never reached Plex: one that needed no changes, one the
-exclude settings match, and every import while dry run is on, whose job ends
-as a dry run. Each stayed out of Plex until Plex's own periodic scan found
-it. They now get the folder refresh a job sends, once the queue attempt has
-run (webhooks._tell_plex_if_unchanged).
+got such a job never reached Plex: one that needed no changes, or one the
+exclude settings match. Each stayed out of Plex until Plex's own periodic
+scan found it. They now get the folder refresh a job sends, once the queue
+attempt has run (webhooks._tell_plex_if_unchanged).
 
 An import that will be processed is still left to its job, so Plex does not
-index the original first and then need to read the file again.
+index the original first and then need to read the file again. And nothing
+is sent while dry run is on, whatever the import needed: dry run sends
+nothing to Plex, Sonarr or Radarr. It briefly did here, for every import
+while dry run was on, which is not what anyone running a dry run expects.
 
 These drive the real Sonarr handler, debounce and queue against a
 file-backed database, as test_webhook_intake.py does, with the probe
 stubbed and the Plex call recorded rather than sent.
 
-Verified by mutation, 7 applied, 7 killed. Six survived the whole suite
-without this file: dry-run imports not told; imports with a real job told
-too; excluded imports not told; an earlier skip of the same path counting as
-this one; every import that returned no item told, a failed probe included;
-and the debounce never asking. The seventh, Plex told with its notifications
-off, was already killed by test_post_job_notify.py through the settings
-check this shares with the post-job notification, and is killed here too.
+Verified by mutation, 6 applied, 6 killed. Five survived the whole suite
+without this file: excluded imports not told; an earlier skip of the same
+path counting as this one; every import without a fresh skip told, a queued
+one or a failed probe included; the debounce never asking; and an import
+telling Plex while dry run is on. The sixth, Plex told with its notifications
+off, was already killed by test_post_job_notify.py through the settings check
+this shares with the post-job notification, and is killed here too.
+
+The first version told Plex about every import while dry run was on, and
+checked separately whether the import had been queued. The first is gone.
+The second turned out to change nothing: an import with a job writes no
+fresh skipped row, so the fresh-skip check already left it alone, and
+removing the queued check survived every test. It was taken out rather than kept as
+code nothing can pin.
 """
 import asyncio
 import json
@@ -155,15 +164,24 @@ def test_an_excluded_import_is_shown_to_plex(lib):
     assert lib.told == [(PLEX_CALL, path)]
 
 
-def test_an_import_while_dry_run_is_on_is_shown_to_plex(lib):
-    """Its job will end as a dry run, which tells Plex nothing."""
-    lib.settings(dry_run_mode=True, **PLEX_ON)
-    path = lib.media()
+@pytest.mark.parametrize("name,prefer_mp4,expected", [
+    ("Show - S01E01.mkv", False, [("skipped", False)]),
+    ("Show - S01E01-trailer.mkv", True, []),
+    ("Show - S01E01.mkv", True, [("pending", True)]),
+], ids=["needs no changes", "excluded", "a dry-run job"])
+def test_nothing_is_sent_while_dry_run_is_on(lib, name, prefer_mp4, expected):
+    """
+    Dry run sends nothing to Plex, Sonarr or Radarr, whatever it decides
+    about a file: it is for watching what Remuxarr would do before trusting
+    it. The import reaches Plex through Plex's own scan, as it always has.
+    """
+    lib.settings(dry_run_mode=True, prefer_mp4_container=prefer_mp4, **PLEX_ON)
+    path = lib.media(name)
 
     lib.import_(path)
 
-    assert lib.items() == [("pending", True)]
-    assert lib.told == [(PLEX_CALL, path)]
+    assert lib.items() == expected
+    assert lib.told == []
 
 
 # ── Left to the job, or not told at all ──────────────────────────────────────
@@ -183,7 +201,8 @@ def test_an_import_a_job_will_change_waits_for_the_job(lib):
 
 def test_nothing_is_sent_with_plex_notifications_off(lib):
     """Set up in full but switched off, so the switch alone decides."""
-    lib.settings(prefer_mp4_container=False, **{**PLEX_ON, "plex_enabled": False})
+    lib.settings(dry_run_mode=False, prefer_mp4_container=False,
+                 **{**PLEX_ON, "plex_enabled": False})
     path = lib.media()
 
     lib.import_(path)
@@ -198,7 +217,7 @@ def test_an_earlier_skip_is_not_this_import(lib, monkeypatch):
     cannot be probed. The skip on record describes the old file; nothing was
     decided about this one, so Plex is not told on the strength of it.
     """
-    lib.settings(prefer_mp4_container=False, **PLEX_ON)
+    lib.settings(dry_run_mode=False, prefer_mp4_container=False, **PLEX_ON)
     path = lib.media()
     lib.import_(path)
     assert lib.told == [(PLEX_CALL, path)]
@@ -214,7 +233,7 @@ def test_an_earlier_skip_is_not_this_import(lib, monkeypatch):
 
 
 def test_a_plex_failure_leaves_the_import_dealt_with(lib, monkeypatch):
-    lib.settings(prefer_mp4_container=False, **PLEX_ON)
+    lib.settings(dry_run_mode=False, prefer_mp4_container=False, **PLEX_ON)
     path = lib.media()
 
     def down(*_a, **_kw):
