@@ -875,26 +875,37 @@ SETTINGS_SCHEMA = [
         "placeholder": "your-api-key-here",
         "description": "Found in Sonarr → Settings → General → Security → API Key.",
     },
+    # The two path settings are one folder as each container names it. They
+    # were "Path Prefix (Remote)" and "(Local)", which needed the reader to
+    # know which side was remote, and the placeholders, /media and
+    # /media/tv, read as a folder and its own subfolder. They are worded in
+    # Unraid's term, Container Path, with a worked example; the keys are
+    # unchanged, so saved values stay where they are. The Remuxarr labels
+    # name their library because a label is also the field's accessible
+    # name, and two fields on one page called "Remuxarr's Container Path"
+    # could not be told apart. test_settings_schema.py checks the example
+    # against the translation itself.
     {
         "key":         "sonarr_path_prefix_remote",
         "group":       "Sonarr",
-        "label":       "Sonarr Path Prefix (Remote)",
+        "label":       "Sonarr's Container Path",
         "type":        "string",
-        "placeholder": "/media",
-        "description": "The path prefix that Sonarr uses in its webhook "
-                       "payloads. Leave blank if Sonarr and Remuxarr see "
-                       "the same paths.",
+        "placeholder": "/tv",
+        "description": "Where Sonarr finds your TV folder: the Container Path "
+                       "mapped into Sonarr's container, usually Sonarr's root "
+                       "folder. Leave this and the next one blank if Sonarr "
+                       "and Remuxarr use the same path.",
     },
     {
         "key":         "sonarr_path_prefix_local",
         "group":       "Sonarr",
-        "label":       "Sonarr Path Prefix (Local)",
+        "label":       "Remuxarr's Container Path for TV",
         "type":        "string",
         "placeholder": "/media/tv",
-        "description": "The actual path prefix on Remuxarr's filesystem that "
-                       "corresponds to the remote prefix above. Both prefix "
-                       "settings must be set together — if either is blank, "
-                       "no translation is applied.",
+        "description": "Where Remuxarr finds that same folder. For example, if "
+                       "Sonarr calls a file /tv/Show/S01E01.mkv and Remuxarr "
+                       "calls it /media/tv/Show/S01E01.mkv, enter /tv above "
+                       "and /media/tv here. Fill in both or neither.",
     },
     # ── Radarr ─────────────────────────────────────────────────────────────
     {
@@ -929,24 +940,29 @@ SETTINGS_SCHEMA = [
         "placeholder": "your-api-key-here",
         "description": "Found in Radarr → Settings → General → Security → API Key.",
     },
+    # Worded as Sonarr's pair is; see the note there.
     {
         "key":         "radarr_path_prefix_remote",
         "group":       "Radarr",
-        "label":       "Radarr Path Prefix (Remote)",
+        "label":       "Radarr's Container Path",
         "type":        "string",
-        "placeholder": "/media",
-        "description": "The path prefix that Radarr uses in its webhook payloads. "
-                       "Leave blank if Radarr and Remuxarr see the same paths.",
+        "placeholder": "/movies",
+        "description": "Where Radarr finds your movies folder: the Container "
+                       "Path mapped into Radarr's container, usually Radarr's "
+                       "root folder. Leave this and the next one blank if "
+                       "Radarr and Remuxarr use the same path.",
     },
     {
         "key":         "radarr_path_prefix_local",
         "group":       "Radarr",
-        "label":       "Radarr Path Prefix (Local)",
+        "label":       "Remuxarr's Container Path for Movies",
         "type":        "string",
         "placeholder": "/media/movies",
-        "description": "The actual path prefix on Remuxarr's filesystem that "
-                       "corresponds to the remote prefix above. Both prefix "
-                       "settings must be set together.",
+        "description": "Where Remuxarr finds that same folder. For example, if "
+                       "Radarr calls a file /movies/Film (2024)/Film.mkv and "
+                       "Remuxarr calls it /media/movies/Film (2024)/Film.mkv, "
+                       "enter /movies above and /media/movies here. Fill in "
+                       "both or neither.",
     },
     # ── Plex ───────────────────────────────────────────────────────────────
     {

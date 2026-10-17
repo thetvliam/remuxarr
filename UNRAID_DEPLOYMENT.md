@@ -102,7 +102,7 @@ in the web UI, not in Unraid itself.
    `http://<your-unraid-ip>:9191/api/webhooks/radarr` (with the port you
    set above), and the triggers to tick are **On File Import**, **On File
    Upgrade** and **On Rename**. The README's *Connecting Sonarr and Radarr*
-   section covers path prefixes and the rest.
+   section covers the Container Paths and the rest.
 
 ## Updating
 

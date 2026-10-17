@@ -180,6 +180,19 @@ describe("ThemeEditorPage — preview", () => {
 
     expect(screen.getByTestId("probe").style.outlineColor).toBe("rgb(255, 0, 102)");
   });
+
+  /* The Settings page shown here moved sideways between a section long
+   * enough to scroll and one that is not, by the scrollbar's width or half
+   * of it, as it did in App until both reserved the scrollbar's strip.
+   * Verified by mutation: the strip dropped from the preview survived the
+   * suite without this test, and is killed by it. */
+  it("keeps the scrollbar's strip, so the page in it does not move sideways", () => {
+    renderEditor();
+    const preview = screen.getByTestId("theme-preview");
+
+    expect(preview.style.overflowY).toBe("auto");
+    expect(preview.style.scrollbarGutter).toBe("stable");
+  });
 });
 
 describe("ThemeEditorPage — isolation", () => {

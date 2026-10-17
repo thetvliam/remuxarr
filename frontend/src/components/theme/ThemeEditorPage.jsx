@@ -662,10 +662,14 @@ export const ThemeEditorPage = ({ children, isMobile = false }) => {
     </div>
 
     {/* ── Preview: a real page under the draft ────────────────────────── */}
+    {/* The scrollbar's strip stays reserved, as it does around the real
+      * Settings page in App (see PAGE_SCROLLER there): switching between a
+      * section long enough to scroll and one that is not otherwise moved the
+      * page sideways by the scrollbar's width, or half of it. */}
     <div
     data-testid="theme-preview"
     style={{
-      flex: 1, overflowY: "auto",
+      flex: 1, overflowY: "auto", scrollbarGutter: "stable",
       background: draft.palette.bg, color: draft.palette.text,
     }}
     >

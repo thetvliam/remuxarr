@@ -40,6 +40,7 @@ sonarr.py / radarr.py.
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -355,6 +356,85 @@ def _audio_language_matches(
         rating_key, expected, found_audio_codes or "(none)",
     )
     return False
+
+
+def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | None:
+    """
+    The URL, token and path mappings a Plex call needs, read from the app
+    settings, or None when Plex notifications are off or not fully set up.
+
+    Off is silent; on but incomplete is a warning, since that is a setup the
+    user meant to work. context names the caller in it ("job 12", "an
+    import of /media/tv/...").
+
+    One place for what each caller used to write out for itself: the
+    post-job notification, the forge and revert refresh, the refresh for an
+    import that needs no job, and the one after a review that leaves a file
+    alone (refresh_in_background).
+    """
+    if not cfg.get("plex_enabled", False):
+        return None
+
+    url   = (cfg.get("plex_url") or "").rstrip("/")
+    token = cfg.get("plex_token") or ""
+    if not url or not token:
+        logger.warning(
+            "Plex notification skipped for %s: plex_url or "
+            "plex_token not configured",
+            context,
+        )
+        return None
+
+    mappings = cfg.get("plex_path_mappings", [])
+    if not mappings:
+        logger.warning(
+            "Plex notification skipped for %s: no "
+            "plex_path_mappings configured",
+            context,
+        )
+        return None
+
+    return url, token, mappings
+
+
+def refresh_in_background(cfg: dict, paths: list[str],
+                          context: str) -> threading.Thread | None:
+    """
+    Refresh each distinct folder among paths in Plex, on a thread of its own,
+    and return that thread; None when there is nothing to send, dry run is
+    on, or Plex notifications are off or not set up.
+
+    Dry run sends nothing to Plex, Sonarr or Radarr, whatever it decides
+    about a file: it is for watching what Remuxarr would do before trusting
+    it, and a refresh is something Remuxarr does. Checked here, once, for
+    every route that leaves files alone.
+
+    For a request handler that has just left files alone: answering a page
+    of reviews must not wait on Plex, and must not fail because Plex is down.
+    A refresh is scoped to a folder, so one per folder does for a season of
+    episodes answered together. Each failure is logged and the rest carry on.
+    """
+    if not paths or cfg.get("dry_run_mode", False):
+        return None
+    connection = plex_connection(cfg, context)
+    if connection is None:
+        return None
+
+    one_per_folder: dict[str, str] = {}
+    for path in paths:
+        one_per_folder.setdefault(os.path.dirname(path), path)
+
+    def run() -> None:
+        for path in one_per_folder.values():
+            try:
+                notify_plex_new_file(*connection, path)
+            except Exception:
+                logger.exception("Plex refresh failed for %s after %s",
+                                 path, context)
+
+    thread = threading.Thread(target=run, name="plex-refresh", daemon=True)
+    thread.start()
+    return thread
 
 
 def notify_plex_new_file(

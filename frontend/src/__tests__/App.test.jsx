@@ -215,3 +215,46 @@ describe("App — records removed in Settings reach the dashboard", () => {
     expect(screen.queryByText("ep1.mkv")).toBeNull();
   });
 });
+
+/* Settings and Review each scroll in a container App draws around them
+ * (PAGE_SCROLLER in App.jsx), which keeps the scrollbar's strip reserved
+ * whether or not the page is long enough to scroll. Without it the scrollbar
+ * took its width from the page only when it appeared, so moving between a
+ * Settings section that scrolls and one that does not moved the page
+ * sideways, and Review moved when its list got short. jsdom draws no
+ * scrollbars, so these read the property; the movement was measured in
+ * Chromium with real scrollbars, before and after.
+ *
+ * Verified by mutation: the strip dropped from the Settings page's
+ * container, from Review's, and from the style they share, each survived the
+ * suite without these tests. The first two are each killed by their own test
+ * here and by no other, the third by both. The theme editor's preview, which
+ * shows the Settings page in a container of its own, is pinned in
+ * ThemeEditorPage.test.jsx. */
+describe("App — Settings and Review keep the scrollbar's strip", () => {
+  beforeEach(() => { stubViewport(1280); });
+  // Choosing a page puts it in the address, which outlives the render.
+  afterEach(() => { window.location.hash = ""; });
+
+  /** The nearest element around `el` that scrolls. */
+  const scrollerAround = (el) => {
+    for (let e = el.parentElement; e; e = e.parentElement) {
+      if (e.style.overflowY === "auto") return e;
+    }
+    return null;
+  };
+
+  it.each([
+    ["SETTINGS", "SAVE CHANGES"],
+    ["REVIEW", "MANUAL REVIEW"],
+  ])("the %s page scrolls in a container that reserves it", async (link, onThePage) => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    fireEvent.click(screen.getByRole("button", { name: link, exact: true }));
+    const scroller = scrollerAround(await screen.findByText(onThePage));
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+
+    expect(scroller.style.scrollbarGutter).toBe("stable");
+  });
+});

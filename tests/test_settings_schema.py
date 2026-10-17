@@ -182,3 +182,62 @@ def test_the_retention_limits_accept_zero():
     assert len(limits) == 2
     for field in limits:
         assert field.get("min", 0) == 0, f"{field['key']} cannot be set to 0"
+
+
+# ── Labels, and the Container Path pairs ─────────────────────────────────────
+#
+# Verified by mutation, 4 applied, 4 killed, each surviving the whole suite
+# without these tests: the Movies label made the same as the TV one (killed
+# by the uniqueness test), the TV example naming the wrong Sonarr path,
+# Sonarr's placeholder back to /media, and the Movies example's Remuxarr
+# file put in the TV folder (each killed by its service's example test).
+
+def test_every_label_is_unique():
+    """
+    A label is also its control's accessible name (SettingInput uses it as
+    the aria-label), so two settings sharing one are two controls a screen
+    reader cannot tell apart. It came up with the Container Paths: worded
+    alike, Sonarr's and Radarr's Remuxarr fields would both have been
+    "Remuxarr's Container Path", on the same page.
+    """
+    labels = [field["label"] for field in SETTINGS_SCHEMA]
+    repeated = sorted({label for label in labels if labels.count(label) > 1})
+
+    assert not repeated, f"labels used by more than one setting: {repeated}"
+
+
+# Each pair is one folder as the *arr's container names it (remote) and as
+# Remuxarr's names it (local). The local field's description walks through an
+# example; these read it back out.
+EXAMPLE = re.compile(
+    r"calls a file (?P<arr_file>/.+?) and Remuxarr calls it (?P<our_file>/.+?), "
+    r"enter (?P<remote>/\S+) above and (?P<local>/\S+) here\.")
+
+
+@pytest.mark.parametrize("service", ["sonarr", "radarr"])
+def test_the_container_path_example_is_what_the_translation_does(service):
+    """
+    The example is the explanation, so it has to be right: entering the two
+    paths it names turns its *arr file into its Remuxarr file and back,
+    through the same function the webhooks and the rescan use, and the two
+    paths it names are the fields' own placeholders, so the boxes and the
+    sentence under them agree.
+
+    The placeholders were /media and /media/tv, a folder and its own
+    subfolder, which read as a typing slip rather than as two names for one
+    folder. Two unrelated paths are pinned here too.
+    """
+    from app.core.pathmap import translate_path
+
+    fields = {f["key"]: f for f in SETTINGS_SCHEMA}
+    remote = fields[f"{service}_path_prefix_remote"]
+    local = fields[f"{service}_path_prefix_local"]
+    example = EXAMPLE.search(local["description"])
+    assert example, f"{service}: no worked example in the description"
+
+    assert (example["remote"], example["local"]) == (remote["placeholder"], local["placeholder"])
+    assert translate_path(example["arr_file"], example["remote"], example["local"]) == example["our_file"]
+    assert translate_path(example["our_file"], example["local"], example["remote"]) == example["arr_file"]
+
+    a, b = remote["placeholder"], local["placeholder"]
+    assert a != b and not b.startswith(a + "/") and not a.startswith(b + "/")

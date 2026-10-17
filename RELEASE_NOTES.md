@@ -62,9 +62,10 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
-- Settings now looks the same from page to page. Every section has the same kind of heading, Maintenance & Logs and Backup & Danger Zone use the same ON/OFF switches as the rest of Settings, and on a phone every button sits below its description. Full Backup's file picker is now a button like the others.
-- The SCAN button looks the same on a phone as on the desktop.
+- The recycle bin is no longer in beta.
+- The Sonarr and Radarr path settings under Integrations are now called each app's Container Path, with an example of what to enter. Anything you have already set is kept.
 
 ## Fixed
 
-- Closing a file's details before they finished loading no longer brings them back a moment later, and opening a second file quickly no longer shows the first one's details.
+- Files Sonarr or Radarr imports now show up in Plex straight away when nothing is going to change them: when they need no changes or are excluded, and when their review is answered or skipped with nothing left to change. They used to wait for Plex's own scan. This matters if you have removed Plex's connection from Sonarr or Radarr and let Remuxarr tell Plex instead. As before, nothing is sent to Plex, Sonarr or Radarr while dry run is on.
+- In Settings, opening a section now starts at its top, the section list no longer slides up as you scroll, and the page no longer shifts sideways when you switch sections. The Review page no longer shifts sideways when its list gets short.

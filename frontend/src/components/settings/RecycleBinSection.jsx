@@ -106,7 +106,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 
   if (error) {
     return (
-      <Panel title="RECYCLE BIN · BETA">
+      <Panel title="RECYCLE BIN">
       <Note tone="red">
       Couldn&apos;t load the recycle bin. Reload the page to try again.
       </Note>
@@ -116,7 +116,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
 
   if (!data) {
     return (
-      <Panel title="RECYCLE BIN · BETA">
+      <Panel title="RECYCLE BIN">
       <Note tone="dim">Loading…</Note>
       </Panel>
     );
@@ -127,7 +127,7 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
   .reduce((sum, p) => sum + (p.sidecar_size || 0), 0);
 
   return (
-    <Panel title="RECYCLE BIN · BETA">
+    <Panel title="RECYCLE BIN">
     {/* An empty bin means two different things and the difference matters:
       * nothing kept yet, or the volume was never mounted. */}
       {!data.recycle_bin_ready && (

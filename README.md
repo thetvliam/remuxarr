@@ -92,7 +92,7 @@ If you've used [Unmanic](https://github.com/Unmanic/unmanic) or similar tools an
   </tr>
 </table>
 
-<video src="https://github.com/user-attachments/assets/deacb14e-df96-489f-a0ad-e71670d1d4c1" aria-label="Demo video" title="Demo video">Demo video</video>
+<video src="https://github.com/user-attachments/assets/14579abe-7f3f-4005-8a11-0a6d3c5ba7f5" aria-label="Demo video" title="Demo video">Demo video</video>
 
 ▶ [**Watch the demo video**](https://raw.githubusercontent.com/thetvliam/remuxarr/main/images_and_demo/demo_video.mp4) — plays inline on GitHub above; this link is for viewers that strip embedded video, such as Docker Hub.
 
@@ -122,7 +122,7 @@ This application was generated entirely using Claude. I acted as the architect, 
 - **Manual review, with bulk resolution** - ambiguous files are held for a human decision rather than guessed at, resolvable in bulk or by a standing policy (Settings → Library & Processing → Subtitles); see Screenshots above.
 - **Audio Language Review** - search-and-bulk-correct tool for tracks that have a *wrong* language tag rather than a missing one (common with some release groups) - confirm it's actually correct, or apply the right tag to every matching file at once.
 - **Dry run mode** - see every planned action across your whole library before anything real is touched. **On by default** for a fresh install - see First-time configuration below.
-- **Revert to original** (beta) - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
+- **Revert to original** - keeps the audio and subtitle tracks a job removed, so a processed file can be put back exactly as it was. Off by default and needs a volume mounted; see Reverting a processed file below.
 - **Email notifications** - on job failure, with a circuit breaker so a bad setting doesn't flood your inbox.
 - **Scheduled scans**, **manual and orphaned-file cleanup**, **abort/pause controls**, and a live log viewer, all from the web UI.
 
@@ -270,20 +270,19 @@ Remuxarr can process a file as soon as Sonarr or Radarr imports it, rather than 
 
 Radarr is the same, with `http://<address>:9191/api/webhooks/radarr` as the URL. The **Test** button should report success.
 
-**If Sonarr or Radarr sees your files at different paths** from Remuxarr - Sonarr reports `/data/TV/...` where Remuxarr sees `/media/tv/...`, say - set the two path prefixes under **Settings → Integrations → Sonarr** (or Radarr): `/data/TV` as the remote prefix and `/media/tv` as the local one.
+**If Sonarr or Radarr sees your files at different paths** from Remuxarr - Sonarr reports `/data/TV/...` where Remuxarr sees `/media/tv/...`, say - set the two Container Paths under **Settings → Integrations → Sonarr** (or Radarr): `/data/TV` as **Sonarr's Container Path** and `/media/tv` as **Remuxarr's Container Path for TV**.
 
 **Enable Sonarr Integration** (with Sonarr's URL and API key) is separate: after each job, Remuxarr asks Sonarr to rescan the series, so Sonarr picks up a file whose name or extension changed. Webhooks are accepted whether it is on or not. Radarr's works the same way.
 
-## Reverting a processed file (beta)
+## Reverting a processed file
 
 Remuxarr can keep whatever a job removed, so a file can be put back the way it
 was. It is off by default and needs the `/recycle` volume mounted - see
 Installation above.
 
-**This feature is in beta.** It is newer than the rest of Remuxarr and has had
-less time in front of real libraries. Nothing it does is destructive on its own -
-it only ever adds a copy of what a job removed - but treat a revert point as a
-convenience rather than a backup, and do not rely on it as your only route back.
+Nothing it does is destructive on its own - it only ever adds a copy of what a
+job removed - but treat a revert point as a convenience rather than a backup,
+and do not rely on it as your only route back.
 
 It exists for the period while you are still working out what your language and
 subtitle rules should be, which is exactly when a rule turns out to be wrong on

@@ -15,6 +15,20 @@ import { TabBar } from "./components/atoms/TabBar";
 import { DetailModal } from "./components/DetailModal";
 import { ReleaseNotesModal } from "./components/ReleaseNotesModal";
 
+/* The scrolling area around Settings and Review. scrollbarGutter keeps the
+ * scrollbar's strip reserved whether or not the page is long enough to
+ * scroll. Without it the scrollbar took its width from the page only when it
+ * appeared, so moving between a Settings section long enough to scroll and
+ * one that is not moved everything sideways: by half the scrollbar's width
+ * where the page is centred (wider than 940px), and the right-hand edge by
+ * all of it below that. Review, centred at 860px, did the same when its list
+ * got short. When nothing scrolls the strip is empty, in the page's
+ * background, so a short page sits where a long one does. A browser that
+ * draws its scrollbar over the page rather than beside it reserves nothing,
+ * and nothing moved there to begin with. The theme editor's preview, which
+ * shows the Settings page, does the same. */
+const PAGE_SCROLLER = { flex: 1, overflowY: "auto", scrollbarGutter: "stable" };
+
 /* ── Unsaved-changes navigation guard modal ─────────────────────────────── */
 const UnsavedChangesModal = ({ onKeep, onDiscard }) => {
   const { palette, type, space, radius, surface } = useTheme();
@@ -342,7 +356,7 @@ export default function App() {
           )}
 
           {page === "settings" && (
-            <div style={{ flex: 1, overflowY: "auto" }}>
+            <div style={PAGE_SCROLLER}>
             <SettingsPage
             api={api}
             toast={toast}
@@ -372,7 +386,7 @@ export default function App() {
           )}
 
           {page === "review" && (
-            <div style={{ flex: 1, overflowY: "auto" }}>
+            <div style={PAGE_SCROLLER}>
             <ReviewPage api={api} onRefresh={fetchAll} toast={toast} invalidateHistory={invalidateHistory} reviewRefreshKey={reviewRefreshKey} onReviewResolved={refreshAfterReviewResolved} />
             </div>
           )}
