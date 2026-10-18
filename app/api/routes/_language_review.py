@@ -438,7 +438,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # happens under dry run except the two steps that touch the disk or
         # discard the question, which leaves an apply that looks from the
         # response alone exactly like a real one.
-        results = {"applied": 0, "errors": [], "dry_run": dry_run}
+        # "deferred" lists files whose job is running: the choice is saved
+        # and applied once the job finishes, so they are neither applied now
+        # nor an error. They were reported as errors, and the Review page
+        # turned that into a red "not updated" toast.
+        results = {"applied": 0, "errors": [], "deferred": [], "dry_run": dry_run}
         # Files this leaves with nothing to change them, for Plex once
         # everything is committed. See queue.left_alone_after_review.
         left_alone: list[str] = []
@@ -626,13 +630,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             if processing:
                 media.reevaluate_after_job = True
                 db.commit()
-                results["errors"].append({
-                    "file_id": file_id,
-                    "error": "File is currently being processed — the language "
-                             "choice is saved and is applied once the running "
-                             "job finishes, or at the next scan if the job does "
-                             "not succeed.",
-                })
+                results["deferred"].append(file_id)
                 continue
 
             # Clear any existing WAITING QueueItem(s) so _process_file starts

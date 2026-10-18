@@ -291,6 +291,11 @@ export const LanguageReviewSection = ({
                 const data     = await r.json().catch(() => ({}));
                 const applied  = typeof data.applied === "number" ? data.applied : selected.size;
                 const problems = Array.isArray(data.errors) ? data.errors : [];
+                // Files whose job was running. The choice is saved and applied
+                // once the job finishes, so these are neither applied now nor
+                // a failure: they used to arrive among the errors and turn
+                // into a red "not updated" toast.
+                const deferred = Array.isArray(data.deferred) ? data.deferred.length : 0;
                 // Absent means a real run. That is the safe default of the
                 // two: it reports what happened rather than promising nothing
                 // was touched, and a wrong promise of safety is the worse
@@ -315,11 +320,19 @@ export const LanguageReviewSection = ({
                         : `Set ${trackNoun} to ${lang.toUpperCase()} on ${applied} file${applied === 1 ? "" : "s"}`,
                         preview ? "preview" : "success",
                     );
-                } else if (!problems.length) {
-                    /* Both toasts above and below are gated — one on applied
-                     * being non-zero, the other on there being errors — so a
-                     * response of applied 0 with an empty errors list
-                     * satisfied neither and the click said nothing at all.
+                }
+                if (deferred > 0) {
+                    toast?.(
+                        `${lang.toUpperCase()} saved for ${deferred} file${deferred === 1 ? "" : "s"} ` +
+                        `being processed — applied once ${deferred === 1 ? "its job finishes" : "their jobs finish"}`,
+                        "neutral",
+                    );
+                }
+                if (applied === 0 && !deferred && !problems.length) {
+                    /* The other toasts are gated — on applied being
+                     * non-zero, on deferred files, on there being errors — so
+                     * a response of applied 0 with neither deferred files nor
+                     * errors satisfied none and the click said nothing at all.
                      * That is indistinguishable from a click that never
                      * registered, and it is a real answer with a specific
                      * meaning: every flag id sent had already gone, so the
@@ -331,13 +344,8 @@ export const LanguageReviewSection = ({
                             "neutral");
                 }
                 if (problems.length) {
-                    // Deliberately not called "failed". One of the outcomes the
-                    // backend returns here is "currently being processed", where
-                    // the choice IS saved and applies automatically after the
-                    // running job finishes — reporting that as a failure would
-                    // be wrong in the opposite direction. The details go to the
-                    // console; the toast just makes sure the count is not
-                    // silently absorbed.
+                    // The details go to the console; the toast just makes
+                    // sure the count is not silently absorbed.
                     console.warn("Language apply — files not updated now:", problems);
                     toast?.(
                         `${problems.length} file${problems.length === 1 ? " was" : "s were"} not updated — ` +
