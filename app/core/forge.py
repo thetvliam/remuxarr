@@ -743,14 +743,42 @@ def update_forge_progress(job_id: int, percent: float, current_action: str) -> N
         db.close()
 
 
+def probe_tracks_after_forge(path: str) -> list[dict] | None:
+    """
+    Probe a file the forge has just rewritten, for finish_forge_job's
+    Track refresh.
+
+    None when the probe fails. The rewrite itself succeeded, so the job is
+    still a success and the stored rows are left as they were; the next
+    scan re-probes the file regardless, because the rewrite changed its
+    size and mtime and the stored ones are not updated here.
+    """
+    try:
+        return extract_tracks(probe_file(path, app_settings.FFPROBE_PATH))
+    except ProbeError as exc:
+        logger.warning(
+            "Could not probe %s after the forge rewrote it: %s. Its stored "
+            "tracks are out of date until the next scan.", path, exc,
+        )
+        return None
+
+
 def finish_forge_job(
     job_id:      int,
     success:     bool,
     output_size: int | None,
     error:       str | None,
+    *,
+    fresh_tracks: list[dict] | None = None,
 ) -> None:
     """
     Record a forge job's terminal state.
+
+    fresh_tracks, on a successful run, is the rewritten file's probed track
+    list (probe_tracks_after_forge), and replaces the stored Track rows in
+    the same commit as the status change. See the comment at that write.
+    Keyword-only, so a stale positional call with a fifth argument still
+    raises rather than landing in it.
 
     Deliberately takes no output_path. Forge rewrites the media file in place
     (worker.py passes output_path=input_path to run_forge_command), so the
@@ -776,6 +804,18 @@ def finish_forge_job(
             job.status = "undone"    if success else "undo_failed"
         else:
             job.status = "success"   if success else "failed"
+
+        # An add or undo rewrites the file in place, which leaves the stored
+        # Track rows describing a file that is gone. A queued job for this
+        # file decides from those rows when it starts (worker._load_job_data):
+        # after an add it would strip the new AC3, after an undo it would map
+        # the removed one and fail. Same commit as the status change, because
+        # the worker holds a queued job back only while this forge job is
+        # "processing": rows written after that would leave a window for a
+        # job to start on the old ones.
+        if success and fresh_tracks is not None:
+            from app.core.scanner import replace_track_rows
+            replace_track_rows(db, job.file_id, fresh_tracks)
 
         db.commit()
         logger.info(

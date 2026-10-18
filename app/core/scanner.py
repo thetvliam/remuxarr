@@ -1640,6 +1640,33 @@ def _track_to_dict(t: Track) -> dict:
     }
 
 
+def replace_track_rows(db: Session, file_id: int, track_list: list[dict]) -> None:
+    """
+    Replace a file's stored Track rows with a freshly probed track list
+    (probe.extract_tracks output). Does not commit.
+
+    Used after the AC3 forge rewrites a file in place. _process_file above
+    and the job finaliser in worker.py write the same columns inline; the
+    three have to stay in step.
+    """
+    db.query(Track).filter(Track.file_id == file_id).delete()
+    for td in track_list:
+        db.add(Track(
+            file_id        = file_id,
+            stream_index   = td["stream_index"],
+            track_type     = td["track_type"],
+            codec          = td["codec"],
+            language       = td["language"],
+            channels       = td.get("channels"),
+            channel_layout = td.get("channel_layout"),
+            is_default          = td.get("is_default", False),
+            is_forced           = td.get("is_forced", False),
+            is_hearing_impaired = td.get("is_hearing_impaired", False),
+            is_dub              = td.get("is_dub", False),
+            title          = td.get("title"),
+        ))
+
+
 def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     """
     If this file has an AC3 forge job in any state where the added AC3

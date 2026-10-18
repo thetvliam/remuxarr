@@ -104,6 +104,7 @@ def forge(monkeypatch, tmp_path):
         "captures":  [],
         "recorded":  [],
         "sidecars":  [],
+        "probed":    [],
     }
 
     def claim_next_forge_job():
@@ -134,11 +135,17 @@ def forge(monkeypatch, tmp_path):
     def update_forge_progress(job_id, percent, action):
         calls["progress"].append((job_id, percent, action))
 
-    def finish_forge_job(job_id, success, output_size, error):
+    def finish_forge_job(job_id, success, output_size, error, *, fresh_tracks=None):
         calls["finish"].append(
             {"job_id": job_id, "success": success,
-             "output_size": output_size, "error": error}
+             "output_size": output_size, "error": error,
+             "fresh_tracks": fresh_tracks}
         )
+
+    def probe_tracks_after_forge(path):
+        # A stand-in track list, so a test can see it reach finish_forge_job.
+        calls["probed"].append(path)
+        return [{"stream_index": 0, "probed": path}]
 
     def load_forge_final_state(job_id):
         return {"status": "success", "filename": "ep.mkv", "error": None}
@@ -152,6 +159,7 @@ def forge(monkeypatch, tmp_path):
         ("update_forge_progress", update_forge_progress),
         ("finish_forge_job", finish_forge_job),
         ("load_forge_final_state", load_forge_final_state),
+        ("probe_tracks_after_forge", probe_tracks_after_forge),
     ]:
         monkeypatch.setattr(forge_mod, name, fn)
 

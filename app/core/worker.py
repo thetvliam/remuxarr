@@ -2848,6 +2848,7 @@ async def _process_next_forge(ws_manager) -> bool:
         build_add_ac3_command, build_undo_command,
         run_forge_command, ForgeProgress,
         update_forge_progress, finish_forge_job, load_forge_final_state,
+        probe_tracks_after_forge,
     )
 
     loop   = asyncio.get_running_loop()
@@ -2995,6 +2996,7 @@ async def _process_next_forge(ws_manager) -> bool:
             None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
+        fresh_tracks = None
         if result.success:
             # Before the job is marked finished, for the reason _run_job
             # gives: a crash in between leaves a usable point.
@@ -3003,12 +3005,18 @@ async def _process_next_forge(ws_manager) -> bool:
                     None, _record_revert_point,
                     job_data["file_id"], captured[0], input_path,
                 )
+            # For the Track refresh finish_forge_job does with the status.
+            fresh_tracks = await loop.run_in_executor(
+                None, probe_tracks_after_forge, input_path,
+            )
         else:
             for stale in captured:
                 delete_sidecar(stale.sidecar_path)
         await loop.run_in_executor(
-            None, finish_forge_job,
-            job_id, result.success, result.output_size, result.error
+            None, lambda: finish_forge_job(
+                job_id, result.success, result.output_size, result.error,
+                fresh_tracks=fresh_tracks,
+            ),
         )
 
     final = await loop.run_in_executor(None, load_forge_final_state, job_id)
