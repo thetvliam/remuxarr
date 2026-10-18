@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1995 tests across 89 test files, plus 740 frontend tests under
+2001 tests across 89 test files, plus 740 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -94,7 +94,10 @@ for a human, and so goes to manual review, rather than a plain failure.
 `test_existing_subtitle_files.py` covers extracting a subtitle onto a name
 that already holds one: a `.srt` Bazarr downloaded was overwritten, and the
 revert point held no copy of it. The Existing Subtitle Files setting now
-decides, and the default numbers past the file instead.
+decides, and the default numbers past the file instead. It also covers a job
+that stops short of success after extracting some subtitles: numbering past
+its own leftovers gave every failed attempt another `Movie.en.N.srt`, so the
+job now removes them.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,

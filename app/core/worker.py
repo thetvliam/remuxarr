@@ -923,19 +923,20 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return stop_if_changed() or make_room(
             [p for p in extraction_targets if p not in written_here])
 
-    async def stop_for_change() -> None:
-        # Stopped by the check above, with nothing swapped into place. What
-        # this job produced describes a file that is no longer the one on
-        # disk, so it all goes: the revert sidecar, and any subtitle files
-        # the two-pass path extracted from the old source before it was
-        # refused. Only those it wrote: a planned name it had not reached
-        # yet may hold a file another program put there while the job ran,
-        # and removing every planned name deleted that file. Then the job is
-        # cancelled rather than failed, and whatever is at the path now is
-        # decided afresh: a webhook announcing the new file while this job
-        # ran found the job in progress and queued nothing of its own.
-        for stale in captured:
-            delete_sidecar(stale.sidecar_path)
+    def undo_own_files() -> None:
+        # A job that ends without success leaves the video as it was, every
+        # subtitle still in it. The two-pass path has by then extracted some
+        # of them beside it, and those used to be left there as harmless:
+        # a retry would overwrite them. Under keep_both a retry treats them
+        # as someone else's and numbers past them instead, and every failed
+        # attempt added another Movie.en.N.srt; embedded_first moves them
+        # aside, to the same effect. So they go, and the retry extracts to
+        # the same names again.
+        #
+        # Only what this job wrote: a planned name it had not reached yet
+        # may hold a file another program put there while the job ran, and
+        # removing every planned name deleted that file. What embedded_first
+        # moved aside for them goes back to its name.
         for path in written_here:
             try:
                 os.remove(path)
@@ -943,7 +944,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 pass
             except OSError as exc:
                 logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
-        # And what embedded_first moved aside for them goes back to its name.
+        written_here.clear()
         for old, new in reversed(moved_aside):
             try:
                 if not os.path.exists(old):
@@ -951,6 +952,20 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             except OSError as exc:
                 logger.warning("Job %d: could not move %s back to %s: %s",
                                job_id, new, old, exc)
+        moved_aside.clear()
+
+    async def stop_for_change() -> None:
+        # Stopped by the check above, with nothing swapped into place. What
+        # this job produced describes a file that is no longer the one on
+        # disk, so it all goes: the revert sidecar, and any subtitle files
+        # the two-pass path extracted from the old source before it was
+        # refused. Then the job is cancelled rather than failed, and
+        # whatever is at the path now is decided afresh: a webhook
+        # announcing the new file while this job ran found the job in
+        # progress and queued nothing of its own.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        undo_own_files()
         await loop.run_in_executor(
             None, _cancel_for_changed_source, job_id, changed[0]
         )
@@ -1285,6 +1300,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                             (action.stream_index, action.external_path)
                         )
                         continue
+                    undo_own_files()
                     await loop.run_in_executor(
                         None, _finish_job, job_id, False, None, None,
                         f"Subtitle extraction failed (stream {action.stream_index}): {ext_result.error}",
@@ -1296,17 +1312,17 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 # these tracks from the muxed output (extracted streams are
                 # excluded from the map list) with no sidecar to replace
                 # them, which is exactly the silent loss this routing
-                # exists to prevent. Any sidecars from streams that DID
-                # extract successfully above are left in place — same
-                # rationale as the failed-remux case below: they're valid,
-                # standalone files next to the (unmodified) original, and
-                # the post-review re-run simply re-extracts over them.
+                # exists to prevent. Sidecars from streams that DID extract
+                # successfully above are removed, as on every ending short
+                # of success (see undo_own_files): the run after the review
+                # extracts them again under the same names.
                 logger.warning(
                     "Two-pass extraction hit encoding failures for job %d "
                     "(%s) — flagging for manual review (subtitle stream(s): %s)",
                     job_id, file_dict["path"],
                     ", ".join(str(si) for si, _ in encoding_failed_pairs),
                 )
+                undo_own_files()
                 await loop.run_in_executor(
                     None, _flag_subtitle_encoding_review,
                     job_id, encoding_failed_pairs, tracks,
@@ -1347,10 +1363,18 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     before_swap       = on_before_swap,
                 )
 
+    except asyncio.CancelledError:
+        # Aborted, or cut off by a clean stop and put back in the queue.
+        # Always before the output replaced anything: run_staged_subprocess
+        # awaits nothing between the swap and its return, so a cancellation
+        # can only land before it. The video still holds every subtitle.
+        undo_own_files()
+        raise
     except Exception as exc:
         logger.exception("FFmpeg raised an exception for job %d", job_id)
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
+        undo_own_files()
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, str(exc)
         )
@@ -1413,16 +1437,15 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             raise
     else:
         # The main remux failed AFTER subtitles were already extracted to
-        # disk. Leave the extracted .srt files in place — they're valid,
-        # standalone sidecars and harmless next to the (unmodified) original.
-        # A retry will simply re-extract (overwriting) and try the remux again.
+        # disk. They go (see undo_own_files): the original is unmodified and
+        # still holds them, and a retry extracts them again.
         #
-        # A captured sidecar does NOT get the same treatment: the file it
-        # describes was never written, so it documents a state that does not
-        # exist. Staging failing after the hook has run is the ordinary way
-        # to get here.
+        # A captured sidecar goes too: the file it describes was never
+        # written, so it documents a state that does not exist. Staging
+        # failing after the hook has run is the ordinary way to get here.
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
+        undo_own_files()
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, result.error
         )

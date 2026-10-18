@@ -91,6 +91,19 @@ One proposed mutant was not run. Counting every file in the folder rather
 than only this file's subtitles is equivalent: the check is equality with
 the one name being built, which another file's name never matches. So the
 listing is the whole folder, unfiltered, and there is no filter to mutate.
+
+Then a job that stops short of success after the two-pass path extracted
+some subtitles. It left them, as harmless, and the retry numbered past them
+under keep_both, so every failed attempt added a Movie.en.N.srt (reproduced
+first). Each ending now removes what the job wrote and moves back what
+embedded_first moved aside, through the one helper the cancel path already
+used. Verified by mutation, 7 applied, 7 killed. Six survived the suite
+before these tests and are killed by the tests at the end of this file: the
+cleanup left out of each of the five endings (a later extraction failing,
+one that cannot be decoded and goes to review, the remux failing, the remux
+raising, the job cut off), and the remux failure removing the files without
+moving the old one back (embedded first). The helper not moving anything
+back at all was already killed by the routing module's cancel test.
 """
 import asyncio
 import hashlib
@@ -535,3 +548,138 @@ def test_a_cancelled_job_does_not_delete_a_subtitle_it_did_not_write(lib, monkey
     assert _jobs(lib)[0][0] == "cancelled"
     assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha, (
         "the cancelled job deleted a subtitle another program wrote")
+
+
+# ── A job that does not succeed ──────────────────────────────────────────────
+#
+# Driven down the two-pass path, which a job takes when extraction is its
+# only work: a video with no audio, so nothing else is planned, and Prefer
+# MP4 off. The subtitles are extracted before the remux. A job that stopped
+# there used to leave what it had extracted, as harmless: the retry would
+# overwrite it. Under keep_both the retry numbers past it instead, and every
+# failed attempt added a Movie.en.N.srt (reproduced first: a failed remux
+# left Movie.en.srt, and the retry planned Movie.en.2.srt).
+
+def _two_pass(lib, subtitles):
+    """Movie.mkv as video and `subtitles` English SubRip tracks, nothing else."""
+    from app.database.models import AppSetting
+
+    lib.video.unlink()
+    cmd = ["ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1"]
+    for n in range(subtitles):
+        srt = f"{lib.video}.{n}.input.srt"
+        with open(srt, "w") as f:
+            f.write(f"1\n00:00:00,000 --> 00:00:00,900\nFROM THE RELEASE {n + 1}\n")
+        cmd += ["-i", srt]
+    cmd += ["-map", "0:v"]
+    for n in range(subtitles):
+        cmd += ["-map", f"{n + 1}:s", f"-metadata:s:s:{n}", "language=eng"]
+    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:s", "srt", str(lib.video)]
+    subprocess.run(cmd, check=True)
+    for n in range(subtitles):
+        os.remove(f"{lib.video}.{n}.input.srt")
+    with lib.Session() as db:
+        db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(False)))
+        db.commit()
+    return hashlib.sha256(lib.video.read_bytes()).hexdigest()
+
+
+def _failed():
+    from app.core.ffmpeg import FFmpegResult
+    return FFmpegResult(success=False, output_path=None, output_size=None,
+                        error="exit 1: remux failed")
+
+
+def _ending(lib, monkeypatch, how):
+    """Make the job end `how`, after the first subtitle is in place."""
+    from app.core.ffmpeg import ExtractionResult
+
+    def second_extraction_fails(error):
+        real = lib.worker.execute_subtitle_extraction
+        calls = []
+
+        async def extract(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                return ExtractionResult(success=False, output_path=None, error=error)
+            return await real(**kwargs)
+        monkeypatch.setattr(lib.worker, "execute_subtitle_extraction", extract)
+
+    def remux(outcome):
+        async def run(**kwargs):
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+        monkeypatch.setattr(lib.worker, "execute_ffmpeg", run)
+
+    if how == "a second extraction fails":
+        second_extraction_fails("Conversion failed: no space left on device")
+    elif how == "a second extraction cannot be decoded":
+        second_extraction_fails(
+            "Invalid UTF-8 in decoded subtitles text; maybe missing -sub_charenc option")
+    elif how == "the remux fails":
+        remux(_failed())
+    elif how == "the remux raises":
+        remux(RuntimeError("ffmpeg vanished"))
+    elif how == "the job is cut off":
+        remux(asyncio.CancelledError())
+    else:
+        raise AssertionError(how)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("how, status", [
+    ("a second extraction fails",              "failed"),
+    ("a second extraction cannot be decoded",  "manual_review"),
+    ("the remux fails",                        "failed"),
+    ("the remux raises",                       "failed"),
+    ("the job is cut off",                     "pending"),
+])
+def test_a_job_that_does_not_succeed_leaves_none_of_its_subtitles(lib, monkeypatch,
+                                                                  how, status):
+    """
+    The video is unchanged on every one of these endings, so it still holds
+    every subtitle and nothing is lost by removing the extracted copies. The
+    file Bazarr put there is not this job's and stays. A cut-off job (a
+    clean stop) goes back in the queue; an abort ends the same way here.
+    """
+    from app.core import scanner
+
+    before = _two_pass(lib, subtitles=2)
+    _ending(lib, monkeypatch, how)
+
+    try:
+        _run_one(lib)
+    except asyncio.CancelledError:
+        pass
+
+    assert _jobs(lib)[0][0] == status, _jobs(lib)
+    assert sorted(p.name for p in lib.library.iterdir()) == ["Movie.en.srt", "Movie.mkv"], (
+        "the job left subtitles it extracted")
+    assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha
+    assert hashlib.sha256(lib.video.read_bytes()).hexdigest() == before
+
+    if status != "pending":
+        with lib.Session() as db:
+            scanner.queue_single_file(db, str(lib.video))
+    planned = _jobs(lib)[-1][2]
+    assert any(d.endswith("Movie.en.2.srt") for d in planned), planned
+    assert not any(d.endswith("Movie.en.4.srt") for d in planned), planned
+
+
+@needs_ffmpeg
+def test_under_embedded_first_the_moved_file_gets_its_name_back(lib, monkeypatch):
+    """The extracted subtitle took Movie.en.srt and Bazarr's moved to
+    Movie.en.2.srt; the remux then failed, so Bazarr's goes back."""
+    _two_pass(lib, subtitles=1)
+    _mode(lib, "embedded_first")
+    _ending(lib, monkeypatch, "the remux fails")
+
+    _run_one(lib)
+
+    assert _jobs(lib)[0][0] == "failed"
+    assert sorted(p.name for p in lib.library.iterdir()) == ["Movie.en.srt", "Movie.mkv"]
+    assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha, (
+        "the file the job moved aside was not given its name back")
