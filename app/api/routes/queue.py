@@ -141,7 +141,20 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         db.rollback()
         raise HTTPException(400, f"Retry failed: {exc}") from exc
 
-    db.commit()  # ensure the deletion above is persisted even on early-return paths
+    # A file it cannot stat or probe is logged and returned from, before
+    # anything is written. The item deleted above was then committed below,
+    # and the reply said the file needed no further action: the failure was
+    # gone from Failed with nothing in its place. Kept instead, as the
+    # exception above keeps it, and the reason is in the log.
+    if stats.errors:
+        db.rollback()
+        raise HTTPException(
+            400, "Retry failed: could not re-read the file — see the log for details")
+
+    # Every other way _process_file returns has committed already, so this
+    # changes nothing today. It is what makes the deletion above stick on a
+    # path added later without a commit of its own.
+    db.commit()
 
     new_item = (
         db.query(QueueItem)
@@ -1119,6 +1132,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
         db.delete(item)
         db.flush()
 
+        errors_before = stats.errors
         try:
             _process_file(
                 db, file_path, app_cfg,
@@ -1143,6 +1157,19 @@ def retry_all_failed(db: Session = Depends(get_db)):
             # already committed internally inside _process_file, so their
             # results are unaffected.
             db.rollback()
+            continue
+
+        # A file it cannot stat or probe is logged and returned from, without
+        # a commit or an exception. The delete above stayed pending, and the
+        # next item's commit made it permanent: the failure left Failed with
+        # nothing re-queued and nothing reported. The same rollback as above
+        # puts it back, and it is reported the way the exception is.
+        if stats.errors > errors_before:
+            db.rollback()
+            errors.append({
+                "path":  file_path,
+                "error": "Could not re-read the file — see the log for details",
+            })
 
     return {
         # Only items that actually became pending work.
