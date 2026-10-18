@@ -448,7 +448,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
 
     <ToggleRow
     label="Auto-cleanup on Scan"
-    description="At the end of every scan, automatically remove database entries for files that no longer exist on disk. Files whose jobs are currently processing are skipped. You can also trigger this manually below."
+    description="At the end of every scan, automatically remove database entries for files that no longer exist on disk. Files whose jobs are currently processing are skipped. Files in a folder that is now empty are kept, because an unmounted share looks the same. You can also trigger this manually below."
     checked={settings.auto_cleanup_on_scan}
     onChange={v => saveSetting("auto_cleanup_on_scan", v)}
     />
@@ -471,7 +471,8 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     description={<>
       Scan the database for files that no longer exist on disk and remove
       their entries — including tracks, queue items, history, and forge
-      records. Scoped to configured scan paths only.
+      records. Scoped to configured scan paths only. Files in a folder that
+      is now empty are kept, because an unmounted share looks the same.
     </>}
     action={
       <Btn

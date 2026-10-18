@@ -702,6 +702,9 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     skipped — the running job will fail naturally when it tries to open the
     missing file, which produces a cleaner error than deleting mid-job.
 
+    A missing file is also kept when the nearest folder still on disk above
+    it is empty: see _deletion_is_shown for why that proves nothing.
+
     Returns the number of MediaFile rows removed.
     """
     if not scan_paths:
@@ -721,6 +724,8 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     candidates = [m for m in all_media if any(m.path.startswith(p) for p in prefixes)]
 
     removed = 0
+    listed: dict[str, bool] = {}
+    kept_in: dict[str, int] = {}
     for media in candidates:
         if os.path.exists(media.path):
             continue   # still on disk — leave it alone
@@ -738,6 +743,12 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
         except InvalidRequestError:
             continue   # gone already — deleted by someone else meanwhile
         if os.path.exists(media.path):
+            continue
+
+        root = next(p for p in prefixes if media.path.startswith(p))
+        shown, folder = _deletion_is_shown(media.path, root, listed)
+        if not shown:
+            kept_in[folder] = kept_in.get(folder, 0) + 1
             continue
 
         # Skip files whose job is currently running — deleting mid-job would
@@ -761,11 +772,59 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
         _delete_media_file_and_related(db, media)
         removed += 1
 
+    for folder, count in kept_in.items():
+        logger.warning(
+            "Cleanup: kept %d missing file(s) under %s: the folder is empty or "
+            "cannot be read, which is also what an unmounted share looks like. "
+            "If it is a share, check that it is mounted.", count, folder,
+        )
+
     if removed:
         db.commit()
         logger.info("Cleanup: removed %d deleted file(s) from database", removed)
 
     return removed
+
+
+def _deletion_is_shown(path: str, root: str, listed: dict[str, bool]) -> tuple[bool, str]:
+    """
+    Whether the disk shows that the missing file at `path` was deleted,
+    rather than out of reach. Returns (shown, the folder that decided it).
+
+    An unmounted share is still there as an empty folder: the mount point
+    stays, only what was mounted on it goes. The scan path can be that
+    mount point, or a folder below it can be (a scan path of /media holding
+    /media/tv and /media/movies as two shares). Either way every file under
+    it is missing, and removing their records threw away the user's answers,
+    ignores and history, and the forge jobs, so a forged file was offered
+    for forging again after the share came back.
+
+    So the decision is made by the nearest folder that still exists on the
+    way from the file up to `root` (its scan path, with a trailing
+    separator). Anything in it means the disk is there and the file is not:
+    a deleted episode beside others, a deleted show beside other shows. An
+    empty folder, or one that cannot be listed, could be a share that is not
+    mounted, and the record is kept. The cost is a record that stays when the
+    last file in a folder is deleted and the empty folder left behind, until
+    the folder goes or something new appears in it.
+
+    The walk never goes above `root`. A scan path that is not there at all
+    (Run Cleanup Now hands over every configured path, mounted or not)
+    stops at the scan path itself, which cannot be listed, so its records
+    are kept too.
+
+    `listed` caches each folder's answer for one cleanup pass.
+    """
+    root = root.rstrip(os.sep)
+    folder = os.path.dirname(path)
+    while not os.path.isdir(folder) and len(folder) > len(root):
+        folder = os.path.dirname(folder)
+    if folder not in listed:
+        try:
+            listed[folder] = bool(os.listdir(folder))
+        except OSError:
+            listed[folder] = False
+    return listed[folder], folder
 
 
 def find_orphaned_media_files(db: Session, scan_paths: list[str]) -> list[MediaFile]:

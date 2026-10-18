@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1985 tests across 87 test files, plus 740 frontend tests under
+1990 tests across 88 test files, plus 740 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -23,7 +23,8 @@ see each docstring.
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`,
-`test_exclude_rules.py`, `test_exclude_scan.py`. Real SQLite, real
+`test_exclude_rules.py`, `test_exclude_scan.py`,
+`test_cleanup_keeps_unmounted_shares.py`. Real SQLite, real
 temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
@@ -34,9 +35,12 @@ whether a setting is reachable at all — default, accepted key, schema entry an
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
 `test_scan_library.py` covers the walk itself, and mostly one line of it: the
-cleanup pass is scoped to the scan paths that are directories right now, which
-is the only thing standing between a share that has not mounted and every row
-under it being deleted.
+cleanup pass is scoped to the scan paths that are directories right now, so a
+scan path that is not there at all keeps every row under it.
+`test_cleanup_keeps_unmounted_shares.py` covers the case that line cannot
+see: an unmounted share is still there as an empty folder, at the scan path or
+below it, and cleanup removed every record under it. It now keeps a missing
+file's record when the nearest folder still there on its way up is empty.
 `test_scan_routes.py` covers the wiring around that walk: the module-level flag
 that allows one scan at a time, whose documented contract is that whoever sets
 it either hands ownership to a thread that started or rolls it back themselves.

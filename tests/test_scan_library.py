@@ -221,7 +221,10 @@ def test_a_file_that_is_really_gone_is_still_removed(db, tmp_path,
     files deleted on disk never leave the UI.
     """
     _record_processed(monkeypatch)
-    mounted = _library(tmp_path, "tv")
+    # Something else in the folder: a file missing from an empty one could
+    # be on a share that is not mounted, and is kept (see
+    # test_cleanup_keeps_unmounted_shares).
+    mounted = _library(tmp_path, "tv", "Other.mkv")
     _media(db, os.path.join(mounted, "Deleted.mkv"))
     kept = _library(tmp_path, "kept", "Here.mkv")
     _media(db, os.path.join(kept, "Here.mkv"))
