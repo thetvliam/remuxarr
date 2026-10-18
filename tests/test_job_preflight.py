@@ -55,6 +55,15 @@ paths, not calling the cancel helper, and the old message for the failure.
 All five survived it; all five are killed here, the first, second and
 fourth also by test_source_changed_mid_job.py, which runs the real worker.
 17 applied, 17 killed.
+
+Dry Run switched on after a job was queued now makes it a preview at
+pickup, one way only. Four more mutations, against the suite before the
+three tests at the end (1973 tests): ignoring the setting, returning the
+preview without saving it on the row, following the setting both ways,
+and the comparison inverted. The first three survived it and are killed
+here, the second only by the check on the row. The inverted one was already
+killed by test_clean_shutdown.py, since it turns every real job into a
+preview, and is not claimed here. 21 applied, 21 killed.
 """
 import json
 import os
@@ -560,3 +569,58 @@ def test_faststart_is_probed_for_mp4(rig):
 
     assert rig.faststart_calls == [rig.path]
     assert rig.analyze_calls[0].kwargs["has_faststart"] is True
+
+
+# ── Dry Run switched on after the job was queued ─────────────────────────────
+
+def _dry_run_setting(rig, on):
+    from app.database.models import AppSetting
+    rig.db.merge(AppSetting(key="dry_run_mode", value=json.dumps(on)))
+    rig.db.commit()
+
+
+def test_a_job_queued_for_real_runs_as_a_preview_once_dry_run_is_on(rig):
+    """
+    The job was stamped at queue time, before Dry Run went on, and a rescan
+    does not touch a waiting job. Without this it rewrote the file — the
+    one thing the setting promises will not happen. Reproduced with the real
+    worker before this test existed: the MKV was converted and deleted.
+
+    The row has to change, not only what is returned: _finish_job reads
+    the row to record a dry run and leave the file queued for a real pass.
+    """
+    media_row(rig)
+    queue_row(rig, is_dry_run=False)
+    _dry_run_setting(rig, True)
+
+    job_dict, *_rest = worker._load_job_data(1)
+
+    assert job_dict["is_dry_run"] is True
+    assert job(rig).is_dry_run is True, "the preview was not saved on the row"
+
+
+def test_a_preview_stays_a_preview_when_dry_run_is_switched_off(rig):
+    """
+    One way only, by decision: switching Dry Run off never turns a waiting
+    preview into a real run. The preview finishes, and the next scan queues
+    the file for real.
+    """
+    media_row(rig)
+    queue_row(rig, is_dry_run=True)
+    _dry_run_setting(rig, False)
+
+    job_dict, *_rest = worker._load_job_data(1)
+
+    assert job_dict["is_dry_run"] is True
+    assert job(rig).is_dry_run is True
+
+
+def test_a_real_job_stays_real_while_dry_run_is_off(rig):
+    media_row(rig)
+    queue_row(rig, is_dry_run=False)
+    _dry_run_setting(rig, False)
+
+    job_dict, *_rest = worker._load_job_data(1)
+
+    assert job_dict["is_dry_run"] is False
+    assert job(rig).is_dry_run is False

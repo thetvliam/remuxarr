@@ -1675,6 +1675,26 @@ def _load_job_data(job_id: int):
                 stream_index     = action.stream_index,
                 target_language  = getattr(action, "target_language", None),
             ))
+
+        # Dry Run switched on after this job was queued: it runs as a
+        # preview. is_dry_run is stamped when the job is queued, and a
+        # rescan does not touch a waiting job, so without this a job queued
+        # before the switch rewrote the file after it — past the one setting
+        # that promises nothing will be modified. Saved on the row, not only
+        # returned: _finish_job reads the row to record a dry run and leave
+        # the file queued for a later real pass.
+        #
+        # One way only. A job queued as a preview stays one when Dry Run is
+        # switched off; the next scan queues the file for real, as it always
+        # has. A job already running when Dry Run goes on finishes for real.
+        # The AC3 Forge and reverts never consult Dry Run, by design: each
+        # is started by hand from its own page.
+        if app_cfg.get("dry_run_mode", False) and not job.is_dry_run:
+            job.is_dry_run = True
+            logger.info(
+                "Job %d: Dry Run was switched on after it was queued — "
+                "running it as a preview", job_id,
+            )
         db.commit()
 
         return (
