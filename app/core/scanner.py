@@ -1011,11 +1011,25 @@ def _process_file(
     # used by the post-job Plex notification to choose refresh vs analyze.
     is_new_file = existing is None
 
+    # An answer that landed while this file's job was running (see
+    # MediaFile.reevaluate_after_job). Honoured, and cleared below, only
+    # once no job is running for the file: a scan during the job would
+    # otherwise use the mark up and reach the in-progress check further
+    # down, which returns without queueing, and the answer would be lost
+    # again when the job ended.
+    reevaluate = bool(
+        existing is not None and existing.reevaluate_after_job
+        and not db.query(QueueItem.id).filter(
+            QueueItem.file_id == existing.id,
+            QueueItem.status == "processing",
+        ).first()
+    )
+
     if existing and not force_probe:
         size_match  = existing.size == current_size
         mtime_match = abs(existing.mtime - current_mtime) < 1.0
 
-        if size_match and mtime_match:
+        if size_match and mtime_match and not reevaluate:
             # File is identical on disk. media_file.status == "queued" is
             # set in TWO different situations that look identical from
             # this field alone: (a) the file is simply still pending its
@@ -1086,6 +1100,8 @@ def _process_file(
         existing.video_codec   = primary_video_codec
         existing.font_attachments = fmt_info.get("font_attachments")
         existing.last_scanned  = utcnow()
+        if reevaluate:
+            existing.reevaluate_after_job = False
         media_file = existing
     else:
         media_file = MediaFile(

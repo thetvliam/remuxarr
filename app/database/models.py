@@ -123,6 +123,14 @@ class MediaFile(Base):
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 
+    # Set when a language answer lands while this file's job is running.
+    # That job decided before the answer existed, and when it ends it
+    # records the file's new size and mtime, so a delta scan finds nothing
+    # to look at. The worker re-checks the file straight after a successful
+    # job (worker._reevaluate_after_job); otherwise a scan does, once no job
+    # is running for it (scanner._process_file), which also clears it.
+    reevaluate_after_job = Column(Boolean, default=False)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",

@@ -609,10 +609,14 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # version of this code deleted "processing" rows here and
             # presented that as deliberate and safe — it was neither.
             #
-            # Skipping is safe because the override was already committed
-            # above: the running job rewrites the file (new mtime), so the
-            # next delta scan re-evaluates it and picks the override up
-            # automatically.
+            # Skipping alone loses the answer, though. The override is
+            # committed above, but the running job decided before it existed,
+            # and when the job ends it records the file's new size and mtime:
+            # a delta scan then sees the file as unchanged, and only a Full
+            # Scan used to pick the override up. So the file is marked, and
+            # looked at again once nothing is running for it: straight after
+            # a successful job by the worker, otherwise by the next scan. See
+            # MediaFile.reevaluate_after_job.
             processing = (
                 db.query(QueueItem)
                 .filter(QueueItem.file_id == file_id,
@@ -620,11 +624,14 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 .first()
             )
             if processing:
+                media.reevaluate_after_job = True
+                db.commit()
                 results["errors"].append({
                     "file_id": file_id,
                     "error": "File is currently being processed — the language "
-                             "choice is saved and will apply automatically after "
-                             "the running job finishes (next scan).",
+                             "choice is saved and is applied once the running "
+                             "job finishes, or at the next scan if the job does "
+                             "not succeed.",
                 })
                 continue
 

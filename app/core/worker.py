@@ -30,7 +30,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -487,6 +487,11 @@ async def _run_and_broadcast(
                 )
                 if plex_data:
                     asyncio.create_task(_trigger_plex_notify(plex_data, loop))
+
+                # A language answered while this job ran. Only after a
+                # success: a failed or aborted job leaves it to the next scan
+                # or a retry, rather than queueing a job nobody asked for.
+                await loop.run_in_executor(None, _reevaluate_after_job, job_id)
 
             # Email — runs for BOTH success and failure, unlike the blocks
             # above. A success quietly resets the consecutive-failure
@@ -2287,6 +2292,33 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
             "job will be reset to 'failed' on next restart",
             job_id,
         )
+
+
+def _reevaluate_after_job(job_id: int) -> None:
+    """
+    Look at the job's file again if a language was answered while the job
+    ran (MediaFile.reevaluate_after_job), so the answer is applied now.
+
+    The job decided before the answer existed, and _finish_job has just
+    recorded the file's new size and mtime, so no delta scan would look.
+    queue_single_file re-probes and re-decides the way a webhook does, and
+    _process_file clears the mark; nothing is running for the file any more.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(QueueItem, job_id)
+        media = db.get(MediaFile, job.file_id) if job else None
+        if media is None or not media.reevaluate_after_job:
+            return
+        logger.info("Job %d: a language was answered while it ran — looking at %s again",
+                    job_id, media.path)
+        queue_single_file(db, media.path)
+    except Exception:
+        db.rollback()
+        logger.exception("Job %d: could not look at its file again after it finished; "
+                         "the next scan will", job_id)
+    finally:
+        db.close()
 
 
 def _load_post_job_data(job_id: int) -> dict | None:

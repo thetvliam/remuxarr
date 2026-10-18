@@ -86,6 +86,11 @@ existed, and all three survived:
   • the re-keying never run                    → killed
   • answers it could not match kept anyway     → killed
   • writing and logging on every startup       → killed
+
+One for media_files.reevaluate_after_job, run against the full suite first
+and surviving it, because the live-schema test creates media_files whole:
+
+  • its ADD COLUMN missing                     → killed
 """
 import importlib
 import json
@@ -691,6 +696,50 @@ def test_existing_files_come_out_uncounted_not_font_free(uncounted):
 
     assert "font_attachments" in columns
     assert value == (None,)
+
+
+# ── media_files.reevaluate_after_job ─────────────────────────────────────────
+
+def test_existing_files_gain_the_reevaluate_mark_unset(tmp_path, monkeypatch):
+    """
+    The live-schema test above cannot see a column missing from media_files:
+    its database starts without the table, so create_all makes it whole. A
+    file on an install from before the mark must gain it, unset, or every
+    scan and every finished job fails reading it.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE media_files DROP COLUMN reevaluate_after_job")
+    conn.execute(
+        "INSERT INTO media_files (path, filename, directory, size, mtime, status) "
+        "VALUES ('/m/Show.mkv', 'Show.mkv', '/m', 1, 1.0, 'processed')"
+    )
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(media_files)")}
+        value = conn.execute(
+            "SELECT reevaluate_after_job FROM media_files WHERE path = '/m/Show.mkv'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "reevaluate_after_job" in columns
+    assert not value[0], "a file nobody answered anything for is marked"
 
 
 # ── Subtitle-encoding reviews written unlabelled ─────────────────────────────
