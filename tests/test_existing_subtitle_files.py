@@ -71,6 +71,22 @@ ascending order, where moving the old file on again when the next target
 finds it repairs the first move; the test now uses the order a relabelled
 undefined track produces, Movie.en.2.srt before Movie.en.srt.
 
+A subtitle arriving while the job runs came last. Under keep_both it stops
+the job through the same check as a changed source, and the re-decided job
+numbers past it; and a cancelled job now removes only the subtitles it
+wrote, where it used to remove every name it had planned, which deleted a
+file Bazarr had put at one of them (reproduced first). Verified by
+mutation, 6 applied, 6 killed. Five survived the suite before these tests
+and are killed here or in test_subtitle_extraction_routing.py: the arrival
+check removed (the keep_both tests on both paths), applied under replace
+too (replace carries on), the cleanup removing every planned name (does
+not delete a subtitle it did not write, and both keep_both tests), and on
+the two-pass path the extraction's hook not checking and its refusal
+recorded as a failure (the routing arrival test). The sixth, this job's
+own two-pass subtitle counted as an arrival, was already killed by
+test_source_changed_mid_job.py's refused-remux test, which then reports
+the wrong reason, so no test here claims it.
+
 One proposed mutant was not run. Counting every file in the folder rather
 than only this file's subtitles is equivalent: the check is equality with
 the one name being built, which another file's name never matches. So the
@@ -444,3 +460,78 @@ def test_a_move_that_fails_fails_the_job_and_replaces_nothing(lib, monkeypatch):
     assert "Could not move an existing subtitle file aside" in error
     assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha
     assert lib.video.exists(), "the source was replaced although the job failed"
+
+
+# ── A subtitle that arrives while the job runs ───────────────────────────────
+#
+# Bazarr reacts to the same import that queues the job, so a subtitle can
+# land at an extraction name mid-job. Under keep_both that stops the job
+# like any other change on disk, and the re-decided job numbers past it.
+# The other two modes deal with it at the swap. These drive the combined
+# path; the two-pass path is in test_subtitle_extraction_routing.py.
+
+def _while_ffmpeg_runs(lib, monkeypatch, *, change_source=False):
+    """Bazarr's Movie.en.srt appears during the combined pass, and the
+    source is optionally replaced at the same time."""
+    lib.bazarr.unlink()
+    real = lib.worker.execute_ffmpeg_combined
+
+    async def combined(**kwargs):
+        lib.bazarr.write_text("1\n00:00:00,000 --> 00:00:00,900\nFROM BAZARR\n")
+        if change_source:
+            with open(lib.video, "ab") as f:
+                f.write(b"\0")
+        return await real(**kwargs)
+    monkeypatch.setattr(lib.worker, "execute_ffmpeg_combined", combined)
+
+
+def _jobs(lib):
+    from app.database.models import PlannedAction, QueueItem
+    with lib.Session() as db:
+        return [(job.status, job.error_message or "",
+                 [a.description for a in db.query(PlannedAction)
+                  .filter(PlannedAction.queue_item_id == job.id)])
+                for job in db.query(QueueItem).order_by(QueueItem.id)]
+
+
+@needs_ffmpeg
+def test_a_subtitle_arriving_mid_job_stops_it_under_keep_both(lib, monkeypatch):
+    _while_ffmpeg_runs(lib, monkeypatch)
+
+    _run_one(lib)
+
+    jobs = _jobs(lib)
+    assert jobs[0][0] == "cancelled", jobs
+    assert "Movie.en.srt appeared beside it" in jobs[0][1]
+    assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha
+    assert jobs[1][0] == "pending", "the file was not decided again"
+    assert any(d.endswith("Movie.en.2.srt") for d in jobs[1][2]), jobs[1][2]
+
+
+@needs_ffmpeg
+def test_replace_carries_on_when_a_subtitle_arrives(lib, monkeypatch):
+    _mode(lib, "replace")
+    _while_ffmpeg_runs(lib, monkeypatch)
+
+    _run_one(lib)
+
+    assert _jobs(lib)[0][0] == "success"
+    assert "FROM THE RELEASE 1" in lib.bazarr.read_text()
+
+
+@needs_ffmpeg
+def test_a_cancelled_job_does_not_delete_a_subtitle_it_did_not_write(lib, monkeypatch):
+    """
+    Reproduced before this change: the job is cancelled because its source
+    was replaced, and its cleanup removed every name it had planned to
+    write, including the subtitle Bazarr had just put at one of them.
+    Under replace, so the arrival itself is not what stops the job.
+    """
+    _mode(lib, "replace")
+    _while_ffmpeg_runs(lib, monkeypatch, change_source=True)
+
+    _run_one(lib)
+
+    assert _jobs(lib)[0][0] == "cancelled"
+    assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha, (
+        "the cancelled job deleted a subtitle another program wrote")

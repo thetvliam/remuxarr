@@ -62,8 +62,9 @@ baseline the three mutations ran against.
 
 It gained before_swap the same way, when this path learned to move an
 existing subtitle aside under existing_srt_handling="embedded_first". The
-two tests at the end cover that here; their mutants are recorded in
-test_existing_subtitle_files.py.
+two tests after that cover it here, and the last one covers a subtitle
+arriving at an extraction's name under keep_both, which cancels the job.
+Their mutants are recorded in test_existing_subtitle_files.py.
 """
 import asyncio
 import threading
@@ -497,3 +498,37 @@ def test_a_cancelled_job_puts_the_old_file_back(rig, monkeypatch, tmp_path):
     assert cancelled, "the change was not noticed"
     assert srt.read_text() == "FROM BAZARR"
     assert not (tmp_path / "Show.en.2.srt").exists()
+
+
+# ── A subtitle arriving during an extraction (keep_both) ─────────────────────
+
+def test_a_subtitle_arriving_during_an_extraction_cancels_the_job(rig, monkeypatch, tmp_path):
+    """
+    Under the default keep_both, a file appearing at the extraction's name
+    before its swap stops the job, the way a changed source does: the
+    extraction is refused, nothing is overwritten, and the job is cancelled
+    and decided again rather than failed.
+    """
+    import app.core.ffmpeg as ffmpeg
+    from app.config import settings as app_settings
+
+    srt = tmp_path / "Show.en.srt"
+    monkeypatch.setattr(worker, "execute_subtitle_extraction",
+                        ffmpeg.execute_subtitle_extraction)
+    monkeypatch.setattr(ffmpeg, "build_extract_subtitle_command",
+                        lambda _input, _stream, temp: [
+                            "sh", "-c", f"printf EXTRACTED > '{temp}'; printf BAZARR > '{srt}'"])
+    monkeypatch.setattr(app_settings, "TEMP_DIR", str(tmp_path / "tmp"))
+    _remux_calling_its_hook(rig, monkeypatch)
+    cancelled = []
+    monkeypatch.setattr(worker, "_cancel_for_changed_source",
+                        lambda job_id, reason: cancelled.append(reason))
+    rig.actions = [extraction(2, str(srt))]
+
+    run(rig)
+
+    assert cancelled and "Show.en.srt appeared" in cancelled[0], cancelled
+    assert srt.read_text() == "BAZARR"
+    assert rig.ffmpeg_calls == [], "the remux ran after the extraction was refused"
+    assert rig.finish_calls == [], "the job was finished as a failure, not cancelled"
+

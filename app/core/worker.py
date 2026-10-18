@@ -892,6 +892,16 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         if output_path != input_path and _fingerprint(output_path) != target_print:
             return (f"{os.path.basename(output_path)} appeared or changed at "
                     f"the name this job writes to")
+        # Under keep_both a subtitle extracted onto a name that holds a file
+        # would overwrite it, so one that arrived at an extraction name while
+        # the job ran (Bazarr reacting to the same import, typically) stops
+        # it like any other change. Re-decided, the job then numbers past
+        # the new file. The other two modes deal with it at the swap.
+        if srt_mode == "keep_both":
+            for path in will_create:
+                if path not in written_here and os.path.exists(path):
+                    return (f"{os.path.basename(path)} appeared beside it, at a "
+                            f"name this job extracts a subtitle to")
         return None
 
     def stop_if_changed() -> str | None:
@@ -907,6 +917,38 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     async def on_before_swap() -> str | None:
         return stop_if_changed() or make_room(
             [p for p in extraction_targets if p not in written_here])
+
+    async def stop_for_change() -> None:
+        # Stopped by the check above, with nothing swapped into place. What
+        # this job produced describes a file that is no longer the one on
+        # disk, so it all goes: the revert sidecar, and any subtitle files
+        # the two-pass path extracted from the old source before it was
+        # refused. Only those it wrote: a planned name it had not reached
+        # yet may hold a file another program put there while the job ran,
+        # and removing every planned name deleted that file. Then the job is
+        # cancelled rather than failed, and whatever is at the path now is
+        # decided afresh: a webhook announcing the new file while this job
+        # ran found the job in progress and queued nothing of its own.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        for path in written_here:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        # And what embedded_first moved aside for them goes back to its name.
+        for old, new in reversed(moved_aside):
+            try:
+                if not os.path.exists(old):
+                    os.rename(new, old)
+            except OSError as exc:
+                logger.warning("Job %d: could not move %s back to %s: %s",
+                               job_id, new, old, exc)
+        await loop.run_in_executor(
+            None, _cancel_for_changed_source, job_id, changed[0]
+        )
 
     # ── Room for an extracted subtitle (embedded_first) ────────────────────
     # The decision gave each extracted subtitle its own name whatever is
@@ -1210,7 +1252,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 # gets a fresh one too. A timeout here is a hard failure:
                 # its message matches none of the encoding patterns below.
                 async def room_for_this_one(path=action.external_path) -> str | None:
-                    return make_room([path])
+                    return stop_if_changed() or make_room([path])
                 ext_result = await execute_subtitle_extraction(
                     input_path     = input_path,
                     stream_index   = action.stream_index,
@@ -1221,6 +1263,10 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 )
                 if ext_result.success:
                     written_here.add(action.external_path)
+                elif changed:
+                    # Refused by the check above: cancelled, not failed.
+                    await stop_for_change()
+                    return
                 if not ext_result.success:
                     if _is_subtitle_encoding_failure(ext_result.error):
                         logger.warning(
@@ -1306,35 +1352,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return
 
     if changed:
-        # Stopped by the check above, with nothing swapped into place. What
-        # this job produced describes a file that is no longer the one on
-        # disk, so it all goes: the revert sidecar, and any subtitle files
-        # the two-pass path extracted from the old source before the remux
-        # was refused (only those this job created; one that was there
-        # before the job is not ours to remove). Then the job is cancelled
-        # rather than failed, and whatever is at the path now is decided
-        # afresh: a webhook announcing the new file while this job ran
-        # found the job in progress and queued nothing of its own.
-        for stale in captured:
-            delete_sidecar(stale.sidecar_path)
-        for path in will_create:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
-        # And what embedded_first moved aside for them goes back to its name.
-        for old, new in reversed(moved_aside):
-            try:
-                if not os.path.exists(old):
-                    os.rename(new, old)
-            except OSError as exc:
-                logger.warning("Job %d: could not move %s back to %s: %s",
-                               job_id, new, old, exc)
-        await loop.run_in_executor(
-            None, _cancel_for_changed_source, job_id, changed[0]
-        )
+        await stop_for_change()
         return
 
     if result.success:

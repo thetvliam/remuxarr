@@ -689,11 +689,12 @@ def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
     which players list as duplicate tracks.
 
     Only the file the job created is removed. The other .srt here stands
-    in for one Bazarr put there first, which the job overwrote rather than
-    created: deleting that would destroy something Remuxarr never made.
+    in for one Bazarr put there first, which a job under
+    existing_srt_handling="replace" overwrites rather than creates:
+    deleting that would destroy something Remuxarr never made.
     """
     mine = lib["path"].with_suffix(".ger.srt")      # the job will create this
-    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten
+    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten (replace)
     theirs.write_text("downloaded by Bazarr")
 
     _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],

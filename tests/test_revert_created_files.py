@@ -10,7 +10,8 @@ on, so this is the ordinary path rather than a corner.
 
 The obvious fix is a trap. Deleting every .srt beside the media would
 destroy files that predate Remuxarr entirely: someone with Bazarr already
-has Movie.eng.srt, the job OVERWROTE it, and a revert removing it takes
+has Movie.eng.srt, a job under existing_srt_handling="replace" OVERWRITES
+it (the default numbers past it instead), and a revert removing it takes
 something Remuxarr never made. So only files the job actually created are
 recorded, which is knowable only BEFORE the job runs — by the time
 capture sees them they all exist and look identical.
@@ -40,7 +41,8 @@ import pytest
 def test_only_files_the_job_created_are_recorded(tmp_path):
     """
     The distinction the whole feature turns on. A path that already
-    existed was overwritten, not created, and is not Remuxarr's to remove.
+    existed was overwritten (under replace), not created, and is not
+    Remuxarr's to remove.
     """
     from app.core.revert_capture import _record_created_files
 
@@ -143,8 +145,8 @@ class _Action:
 def test_only_paths_that_do_not_yet_exist_are_claimed(tmp_path):
     """
     The Bazarr case, at the point where it is decided. A path that already
-    exists will be overwritten by the job, not created by it, so a revert
-    must not take it away.
+    exists will be overwritten by a job under replace, not created by it,
+    so a revert must not take it away.
 
     Checked here rather than at capture time because by then the job has
     run and every extraction target exists.
@@ -264,7 +266,7 @@ def extracted(tmp_path, monkeypatch):
 
     mine = tmp_path / "Show.ger.srt"          # created by the job
     mine.write_text("extracted by the job")
-    theirs = tmp_path / "Show.eng.srt"        # pre-existed; job overwrote it
+    theirs = tmp_path / "Show.eng.srt"        # pre-existed; a replace job overwrote it
     theirs.write_text("downloaded by Bazarr, overwritten by the job")
 
     stat = media_file.stat()
@@ -297,8 +299,8 @@ def extracted(tmp_path, monkeypatch):
 
 def test_a_revert_removes_only_what_the_job_created(extracted):
     """
-    The Bazarr case. The job overwrote Show.eng.srt, so it is not in the
-    record and survives; Show.ger.srt was created by the job and goes.
+    The Bazarr case. The job overwrote Show.eng.srt, as one under replace
+    does, so it is not in the record and survives; Show.ger.srt was created by the job and goes.
     """
     from app.core.revert_restore import _remove_created_files
 
