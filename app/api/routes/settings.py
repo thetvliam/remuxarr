@@ -706,12 +706,19 @@ SETTINGS_SCHEMA = [
                 "value": "replace",
                 "label": "Replace (the extracted one overwrites the existing file)",
             },
+            {
+                "value": "embedded_first",
+                "label": "Embedded first (the extracted one takes the name, the existing file moves to Movie.en.2.srt)",
+            },
         ],
         "description": "What to do when extracting a subtitle would use a "
                        "name that already holds a file, such as one Bazarr "
                        "downloaded. Replace cannot be undone: a revert puts "
                        "the subtitle back inside the video but cannot bring "
-                       "back the file it replaced.",
+                       "back the file it replaced. With Embedded first, a "
+                       "revert removes the extracted file but leaves the "
+                       "earlier one under its new number; rename it back if "
+                       "you want it at its original name.",
     },
     {
         "key":     "image_subtitle_handling",

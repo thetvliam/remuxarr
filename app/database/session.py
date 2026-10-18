@@ -66,6 +66,8 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     #   "keep_both" — the extracted one takes the next free number
     #                 (Movie.en.2.srt); the existing file is not touched
     #   "replace"   — the extracted one overwrites it, as before
+    #   "embedded_first" — the extracted one takes the name and the existing
+    #                 file moves to the next free number (worker._move_aside)
     "existing_srt_handling": "keep_both",
     # What to do with a KEPT image-based subtitle track (PGS, VOBSUB,
     # DVD/DVB) when extraction above is enabled and it can't be converted:

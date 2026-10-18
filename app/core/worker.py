@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
@@ -904,7 +905,38 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return message
 
     async def on_before_swap() -> str | None:
-        return stop_if_changed()
+        return stop_if_changed() or make_room(
+            [p for p in extraction_targets if p not in written_here])
+
+    # ── Room for an extracted subtitle (embedded_first) ────────────────────
+    # The decision gave each extracted subtitle its own name whatever is
+    # already there. Under embedded_first, a file holding that name when the
+    # subtitle is about to be swapped in is moved to the next free number
+    # first, so the embedded track takes the name and nothing is lost. At
+    # the swap rather than at the start, so one that arrived while the job
+    # ran is kept the same way. The name it freed is one this job then
+    # creates, so a revert removes the extracted file; the moved one keeps
+    # its new number, which the setting's description says.
+    srt_mode = app_cfg.get("existing_srt_handling", "keep_both")
+    extraction_targets = [a.external_path for a in extract_actions if a.external_path]
+    written_here: set[str] = set()       # two-pass extractions already in place
+    moved_aside: list[tuple[str, str]] = []
+    def make_room(paths: list[str]) -> str | None:
+        if srt_mode != "embedded_first" or not paths:
+            return None
+        try:
+            moves = _move_aside(paths, {t.casefold() for t in extraction_targets})
+        except OSError as exc:
+            message = (f"Could not move an existing subtitle file aside to make "
+                       f"room for the extracted one: {exc}. Nothing was replaced.")
+            logger.error("Job %d: %s", job_id, message)
+            return message
+        for old, new in moves:
+            logger.info("Job %d: moved existing %s to %s", job_id,
+                        os.path.basename(old), os.path.basename(new))
+            moved_aside.append((old, new))
+            will_create.append(old)
+        return None
 
     # ── Disk space pre-flight ──────────────────────────────────────────────
     # Check before spawning FFmpeg to give a clear, immediate error rather
@@ -1177,13 +1209,18 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 # command in this function does — the corrupt-audio retry
                 # gets a fresh one too. A timeout here is a hard failure:
                 # its message matches none of the encoding patterns below.
+                async def room_for_this_one(path=action.external_path) -> str | None:
+                    return make_room([path])
                 ext_result = await execute_subtitle_extraction(
                     input_path     = input_path,
                     stream_index   = action.stream_index,
                     output_srt_path= action.external_path,
                     job_id         = job_id,
                     timeout_seconds= timeout_seconds,
+                    before_swap    = room_for_this_one,
                 )
+                if ext_result.success:
+                    written_here.add(action.external_path)
                 if not ext_result.success:
                     if _is_subtitle_encoding_failure(ext_result.error):
                         logger.warning(
@@ -1287,6 +1324,14 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 pass
             except OSError as exc:
                 logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        # And what embedded_first moved aside for them goes back to its name.
+        for old, new in reversed(moved_aside):
+            try:
+                if not os.path.exists(old):
+                    os.rename(new, old)
+            except OSError as exc:
+                logger.warning("Job %d: could not move %s back to %s: %s",
+                               job_id, new, old, exc)
         await loop.run_in_executor(
             None, _cancel_for_changed_source, job_id, changed[0]
         )
@@ -1685,6 +1730,46 @@ def _files_the_job_will_create(extract_actions) -> list[str]:
         action.external_path for action in extract_actions
         if action.external_path and not os.path.exists(action.external_path)
     ]
+
+
+def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
+    """
+    Move each file at `paths` to the next free numbered name beside it, for
+    existing_srt_handling="embedded_first": the extracted subtitle takes the
+    name and the file that held it is kept rather than overwritten.
+
+    Movie.en.srt goes to Movie.en.2.srt, or the first number after that
+    which is neither on disk nor in `avoid` (casefolded), which holds every
+    name this job is about to write: a job extracting two English tracks
+    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3.
+
+    Returns (old, new) for each file moved. A path holding nothing is
+    skipped. If a move fails, the ones already made are put back before the
+    OSError is raised, so the folder is left as it was found.
+    """
+    moved: list[tuple[str, str]] = []
+    try:
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
+                          if path.lower().endswith(".srt") else os.path.splitext(path)[0])
+            n = 2
+            while True:
+                candidate = f"{stem}.{n}.srt"
+                if candidate.casefold() not in avoid and not os.path.exists(candidate):
+                    break
+                n += 1
+            os.rename(path, candidate)
+            moved.append((path, candidate))
+    except OSError:
+        for old, new in reversed(moved):
+            try:
+                os.rename(new, old)
+            except OSError:
+                logger.warning("Could not move %s back to %s", new, old)
+        raise
+    return moved
 
 
 def _record_revert_point(

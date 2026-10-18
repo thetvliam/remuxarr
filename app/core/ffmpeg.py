@@ -853,6 +853,7 @@ async def execute_subtitle_extraction(
     output_srt_path: str,
     job_id: int,
     timeout_seconds: float | None = None,
+    before_swap: Callable[[], Awaitable[str | None]] | None = None,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -877,6 +878,10 @@ async def execute_subtitle_extraction(
     pass but not this: an extraction FFmpeg that hung held its worker slot
     until Abort or a restart. It reads the same source file the remux does,
     so whatever can hang one can hang the other.
+
+    before_swap is awaited once the .srt has been copied beside its
+    destination and before it replaces anything, as for the remux; an error
+    string from it fails the extraction with nothing written.
     """
     # See execute_ffmpeg's docstring for why the temp name is derived from
     # job_id rather than the destination filename. stream_index (already
@@ -899,6 +904,7 @@ async def execute_subtitle_extraction(
             on_progress_line=None,
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
+            before_swap=before_swap,
         )
 
         if not result.success:

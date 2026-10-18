@@ -336,7 +336,9 @@ content goes back inside the file - but only the ones that job created, and
 not one you have edited since. A `.srt` that was already there (from Bazarr,
 say) is not overwritten in the first place: the extracted one is saved under
 the next free number, such as `Movie.en.2.srt`. The **Existing Subtitle Files**
-setting can make extraction replace it instead, which a revert cannot undo.
+setting can make extraction replace it instead, which a revert cannot undo, or
+give the extracted subtitle the name and move the existing file to the next
+free number, where a revert leaves it.
 
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no

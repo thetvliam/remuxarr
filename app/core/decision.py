@@ -999,8 +999,10 @@ def analyze_file(
     # Seeded with what is already in the folder under keep_both, so a
     # sidecar that is there — one Bazarr downloaded, or one the user edited
     # — is numbered past like a second track of the same language would be,
-    # rather than overwritten. Under replace it is overwritten, as it always
-    # was; the setting's description says a revert cannot bring it back.
+    # rather than overwritten. Under replace and embedded_first the name is
+    # used anyway: replace overwrites the file, as it always did, and
+    # embedded_first moves it to the next free number just before the swap
+    # (worker._move_aside).
     used_srt_paths: set[str] = (
         set(file_info.get("folder_entries") or ())
         if settings.get("existing_srt_handling", "keep_both") == "keep_both"

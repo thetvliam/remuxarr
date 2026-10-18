@@ -38,6 +38,39 @@ job below kills it too), and the stored default changed to replace
 (test_base_settings_match_production_defaults, through the BASE_SETTINGS
 entry this setting added).
 
+Embedded first came next: the decision keeps the name and the worker moves
+the file holding it to the next free number just before the swap, on both
+execution paths. Verified by mutation, 12 applied, 11 killed, 1 equivalent.
+The baseline was the suite after the setting's first two options, plus one
+mechanical change: test_subtitle_extraction_routing.py's fake extraction
+names its keywords exactly and gained before_swap. All 12 survived it.
+Killed here unless the routing module is named:
+
+  • no move at all                           → takes the name, and both
+                                               routing tests
+  • the job's own targets not avoided        → does not take a name the
+                                               job writes
+  • the two-pass extraction given no hook,
+    and execute_subtitle_extraction not
+    passing it on (two mutants)              → both routing tests
+  • the freed name not recorded as created   → takes the name (its revert),
+                                               routing cancel test
+  • the remux moving this job's own two-pass
+    output                                   → routing, this path too
+  • a cancel not putting the old file back   → routing cancel test
+  • a numbered target not numbered from its
+    base                                     → a name the job is writing
+  • a failed move not put back               → puts back what it moved
+  • a name holding nothing not skipped       → holding nothing
+  • the disk ignored when numbering          → a name the job is writing
+
+Equivalent: making room before the mid-job change check rather than after.
+A cancel puts back whatever was moved, so the order cannot be observed. The
+avoided-targets mutant first survived a scenario whose targets came in
+ascending order, where moving the old file on again when the next target
+finds it repairs the first move; the test now uses the order a relabelled
+undefined track produces, Movie.en.2.srt before Movie.en.srt.
+
 One proposed mutant was not run. Counting every file in the folder rather
 than only this file's subtitles is equivalent: the check is equality with
 the one name being built, which another file's name never matches. So the
@@ -170,6 +203,30 @@ class _WS:
         pass
 
 
+def _video(path, *, subtitles, languages=None):
+    """A real MKV with English audio and `subtitles` SubRip tracks, English
+    unless `languages` says otherwise, each saying FROM THE RELEASE and its
+    number."""
+    languages = languages or ["eng"] * subtitles
+    cmd = ["ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+           "-f", "lavfi", "-i", "sine=frequency=440:duration=1"]
+    for n in range(subtitles):
+        srt = f"{path}.{n}.input.srt"
+        with open(srt, "w") as f:
+            f.write(f"1\n00:00:00,000 --> 00:00:00,900\nFROM THE RELEASE {n + 1}\n")
+        cmd += ["-i", srt]
+    cmd += ["-map", "0:v", "-map", "1:a", "-metadata:s:a:0", "language=eng"]
+    for n in range(subtitles):
+        cmd += ["-map", f"{n + 2}:s", f"-metadata:s:s:{n}", f"language={languages[n]}"]
+    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-c:s", "srt", str(path)]
+    subprocess.run(cmd, check=True)
+    for n in range(subtitles):
+        os.remove(f"{path}.{n}.input.srt")
+    return path
+
+
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     """
@@ -201,17 +258,7 @@ def lib(tmp_path, monkeypatch):
         db.merge(AppSetting(key="revert_enabled", value=json.dumps(True)))
         db.commit()
 
-    video = library / "Movie.mkv"
-    embedded = tmp_path / "embedded.srt"
-    embedded.write_text("1\n00:00:00,000 --> 00:00:00,900\nFROM THE RELEASE\n")
-    subprocess.run(
-        ["ffmpeg", "-v", "error", "-y",
-         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-i", str(embedded),
-         "-map", "0:v", "-map", "1:a", "-map", "2:s",
-         "-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=eng",
-         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-c:s", "srt", str(video)], check=True)
+    video = _video(library / "Movie.mkv", subtitles=1)
     bazarr = library / "Movie.en.srt"
     bazarr.write_text("1\n00:00:00,000 --> 00:00:00,900\nFROM BAZARR\n")
 
@@ -244,7 +291,7 @@ def test_a_real_job_leaves_the_existing_subtitle_alone(lib):
     assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha, (
         "the subtitle that was already there was overwritten")
     extracted = lib.library / "Movie.en.2.srt"
-    assert "FROM THE RELEASE" in extracted.read_text()
+    assert "FROM THE RELEASE 1" in extracted.read_text()
 
     with lib.Session() as db:
         point_id = db.query(RevertPoint).one().id
@@ -253,3 +300,147 @@ def test_a_real_job_leaves_the_existing_subtitle_alone(lib):
     assert outcome.success, outcome.error
     assert not extracted.exists(), "the job's own subtitle file was left behind"
     assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha
+
+
+# ── Embedded first ───────────────────────────────────────────────────────────
+#
+# The decision keeps the name and the job moves whatever holds it to the next
+# free number just before the swap (worker._move_aside), on both execution
+# paths. The two-pass path is covered in test_subtitle_extraction_routing.py,
+# whose rig drives it; these drive the real combined path.
+
+def _mode(lib, value):
+    from app.database.models import AppSetting
+    with lib.Session() as db:
+        db.merge(AppSetting(key="existing_srt_handling", value=json.dumps(value)))
+        db.commit()
+
+
+def test_a_file_is_moved_to_the_next_free_number(tmp_path):
+    from app.core.worker import _move_aside
+
+    (tmp_path / "Movie.en.srt").write_text("old")
+
+    moved = _move_aside([str(tmp_path / "Movie.en.srt")], set())
+
+    assert moved == [(str(tmp_path / "Movie.en.srt"), str(tmp_path / "Movie.en.2.srt"))]
+    assert (tmp_path / "Movie.en.2.srt").read_text() == "old"
+
+
+def test_a_name_the_job_is_writing_is_skipped(tmp_path):
+    """The job writes Movie.en.srt and Movie.en.2.srt, so the old file goes
+    to .3, and a numbered target is numbered from its own base."""
+    from app.core.worker import _move_aside
+
+    (tmp_path / "Movie.en.srt").write_text("old")
+    (tmp_path / "Movie.en.2.srt").write_text("older")
+    targets = {str(tmp_path / n).casefold() for n in ("Movie.en.srt", "Movie.en.2.srt")}
+
+    moved = _move_aside([str(tmp_path / "Movie.en.srt"),
+                         str(tmp_path / "Movie.en.2.srt")], targets)
+
+    assert [new.rsplit("/", 1)[1] for _old, new in moved] == ["Movie.en.3.srt",
+                                                              "Movie.en.4.srt"]
+
+
+def test_a_name_holding_nothing_is_left_alone(tmp_path):
+    from app.core.worker import _move_aside
+
+    assert _move_aside([str(tmp_path / "Movie.en.srt")], set()) == []
+
+
+def test_a_failed_move_puts_back_what_it_moved(tmp_path, monkeypatch):
+    from app.core import worker
+
+    (tmp_path / "Movie.en.srt").write_text("first")
+    (tmp_path / "Movie.fr.srt").write_text("second")
+    real_rename = os.rename
+    calls = []
+
+    def rename(src, dst):
+        calls.append(src)
+        if src.endswith("Movie.fr.srt"):
+            raise PermissionError("read-only")
+        real_rename(src, dst)
+    monkeypatch.setattr(worker.os, "rename", rename)
+
+    with pytest.raises(OSError):
+        worker._move_aside([str(tmp_path / "Movie.en.srt"),
+                            str(tmp_path / "Movie.fr.srt")], set())
+
+    monkeypatch.setattr(worker.os, "rename", real_rename)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Movie.en.srt", "Movie.fr.srt"]
+
+
+@needs_ffmpeg
+def test_the_embedded_subtitle_takes_the_name_and_the_old_file_is_kept(lib):
+    from app.core.revert_restore import restore_revert_point
+    from app.database.models import RevertPoint
+
+    _mode(lib, "embedded_first")
+    _run_one(lib)
+
+    assert "FROM THE RELEASE 1" in lib.bazarr.read_text()
+    moved = lib.library / "Movie.en.2.srt"
+    assert hashlib.sha256(moved.read_bytes()).hexdigest() == lib.bazarr_sha, (
+        "the file that held the name was not kept under the next number")
+
+    # What the setting's description says a revert does.
+    with lib.Session() as db:
+        point_id = db.query(RevertPoint).one().id
+    outcome = asyncio.run(restore_revert_point(point_id))
+
+    assert outcome.success, outcome.error
+    assert not lib.bazarr.exists(), "the extracted file was left at the name"
+    assert hashlib.sha256(moved.read_bytes()).hexdigest() == lib.bazarr_sha
+
+
+@needs_ffmpeg
+def test_the_old_file_does_not_take_a_name_the_job_writes(lib):
+    """
+    The job writes two English subtitles, and Movie.en.2.srt comes first:
+    the undefined track before the English one is relabelled to English
+    after the English one has taken Movie.en.srt. The old Movie.en.srt is
+    moved before either is written, so it must skip .2 as well, or the job
+    writes the relabelled subtitle over it. In the other order the move
+    happens to come out right anyway: the second target, finding the old
+    file at .2, moves it on to .3.
+    """
+    from app.database.models import AppSetting
+
+    lib.video.unlink()
+    _video(lib.video, subtitles=2, languages=["und", "eng"])
+    _mode(lib, "embedded_first")
+    with lib.Session() as db:
+        for key, value in {"fix_undefined_language": "always_fix",
+                           "undefined_language_value": "eng",
+                           "undefined_language_mode": "all_undefined",
+                           "keep_undefined_subtitles": True}.items():
+            db.merge(AppSetting(key=key, value=json.dumps(value)))
+        db.commit()
+
+    _run_one(lib)
+
+    assert "FROM THE RELEASE 2" in lib.bazarr.read_text()
+    assert "FROM THE RELEASE 1" in (lib.library / "Movie.en.2.srt").read_text()
+    assert hashlib.sha256((lib.library / "Movie.en.3.srt").read_bytes()).hexdigest() \
+        == lib.bazarr_sha, "the file that held the name was overwritten"
+
+
+@needs_ffmpeg
+def test_a_move_that_fails_fails_the_job_and_replaces_nothing(lib, monkeypatch):
+    def refuse(paths, avoid):
+        raise PermissionError("read-only folder")
+    monkeypatch.setattr(lib.worker, "_move_aside", refuse)
+    _mode(lib, "embedded_first")
+
+    _run_one(lib)
+
+    from app.database.models import QueueItem
+    with lib.Session() as db:
+        job = db.query(QueueItem).one()
+        status, error = job.status, job.error_message or ""
+    assert status == "failed"
+    assert "Could not move an existing subtitle file aside" in error
+    assert hashlib.sha256(lib.bazarr.read_bytes()).hexdigest() == lib.bazarr_sha
+    assert lib.video.exists(), "the source was replaced although the job failed"
