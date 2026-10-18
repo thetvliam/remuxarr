@@ -169,9 +169,9 @@ def _cleanup_orphaned_temp_files() -> None:
        orphans consume RAM and eventually cause 'No space left on device' for
        later jobs even when the array has plenty of space.
 
-    2. The configured scan_paths — *.part plus the same two temp suffixes.
-       This sweep was missing entirely, and it covers the cases most likely to
-       accumulate large files:
+    2. The configured scan_paths — the same two temp suffixes, and each of
+       them followed by ".part". This sweep was missing entirely, and it
+       covers the cases most likely to accumulate large files:
 
          • _stage_parts() writes its staged copies NEXT TO THE TARGET, i.e.
            inside the media library — named after the temp file, so
@@ -185,9 +185,18 @@ def _cleanup_orphaned_temp_files() -> None:
            fallback fires precisely when disk is already tight, which is
            exactly when leaked temps hurt most.
 
-    Deleting a .part is safe: it is a staged copy that has not yet been
-    os.replace()'d into position, so the original file is still intact and
-    nothing is lost by removing it.
+    Deleting one of these is safe: it is a staged copy that has not yet been
+    os.replace()'d into position, or the temp it was copied from, so the
+    original file is still intact and nothing is lost by removing it.
+
+    Only Remuxarr's own names, in the library. This matched every ".part"
+    there once, from when a staged copy was named after its destination
+    ("Movie.mkv.part"), and so it deleted whatever else in the library ends
+    that way: a download still in progress, a browser's or yt-dlp's partial
+    file. Staged copies have been named after the temp file since v1.9.8,
+    so a ".part" Remuxarr leaves in a library always ends in one of the two
+    temp suffixes first. One left by an earlier version is no longer
+    collected; every restart since then has collected them already.
 
     Called from lifespan BEFORE start_worker(), so none of this can race a job
     of our own. The mtime guard below covers the one case ordering does not:
@@ -252,12 +261,16 @@ def _cleanup_orphaned_temp_files() -> None:
         #    retained file with a database row pointing at it, not an
         #    orphan. Deleting those here would empty the recycle bin on
         #    every container restart.
-        sweep_roots = list(scan_paths)
+        #    Everything on the recycle volume is Remuxarr's, so any ".part"
+        #    there is one of its own; a library holds other programs' files.
+        library_suffixes = (".remuxarr_tmp", ".forge_tmp",
+                            ".remuxarr_tmp.part", ".forge_tmp.part")
+        sweep_roots = [(path, library_suffixes) for path in scan_paths]
         if settings.RECYCLE_DIR and os.path.isdir(settings.RECYCLE_DIR):
-            sweep_roots.append(settings.RECYCLE_DIR)
+            sweep_roots.append((settings.RECYCLE_DIR,
+                                (".part", ".remuxarr_tmp", ".forge_tmp")))
 
-        suffixes = (".part", ".remuxarr_tmp", ".forge_tmp")
-        for root_path in sweep_roots:
+        for root_path, suffixes in sweep_roots:
             if not root_path or not os.path.isdir(root_path):
                 continue
             for dirpath, _dirnames, filenames in os.walk(root_path):

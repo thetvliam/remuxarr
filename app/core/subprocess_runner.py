@@ -138,10 +138,11 @@ def staged_part_path(output: StagedOutput) -> str:
     is why it writes job_35106.remuxarr_tmp instead of anything derived
     from the file. This is the same fix, one step further down.
 
-    The ".part" suffix is load-bearing beyond this module: the startup
-    sweep clears "*.part" under the scan paths, and without it an
-    interrupted run leaves a copy the scanner never surfaces, since .part
-    is not in MEDIA_EXTENSIONS.
+    The name is load-bearing beyond this module: the startup sweep clears
+    "*.remuxarr_tmp.part" and "*.forge_tmp.part" under the scan paths, and
+    without it an interrupted run leaves a copy the scanner never surfaces,
+    since .part is not in MEDIA_EXTENSIONS. It matches only those two, not
+    every ".part", because a library holds other programs' partial files.
 
     Uniqueness rests on temp paths being distinct, which they are by
     construction: two outputs of one FFmpeg run cannot share an output
