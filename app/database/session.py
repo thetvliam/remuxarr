@@ -59,6 +59,14 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # image-based subtitles (PGS, VOBSUB, DVD/DVB) can't be converted —
     # see image_subtitle_handling below for how that's resolved.
     "extract_text_subtitles_to_srt": True,
+    # What to do when the .srt a subtitle would be extracted to already
+    # exists beside the media — one Bazarr downloaded, or one the user
+    # edited. Extraction used to overwrite it silently, and the revert point
+    # never held a copy, so it was gone for good.
+    #   "keep_both" — the extracted one takes the next free number
+    #                 (Movie.en.2.srt); the existing file is not touched
+    #   "replace"   — the extracted one overwrites it, as before
+    "existing_srt_handling": "keep_both",
     # What to do with a KEPT image-based subtitle track (PGS, VOBSUB,
     # DVD/DVB) when extraction above is enabled and it can't be converted:
     #   "always_ask"    — flag for manual review (the original, and still

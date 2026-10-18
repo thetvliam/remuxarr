@@ -332,9 +332,11 @@ folder. A revert will not overwrite another file: if one already has the name
 it would write, the entry says so and does not offer to revert.
 
 **Extracted subtitle files** are removed again when you revert, since their
-content goes back inside the file - but only the ones that job created. If you
-already had a `.srt` there (from Bazarr, say) it is left alone, as is one you
-have edited since.
+content goes back inside the file - but only the ones that job created, and
+not one you have edited since. A `.srt` that was already there (from Bazarr,
+say) is not overwritten in the first place: the extracted one is saved under
+the next free number, such as `Movie.en.2.srt`. The **Existing Subtitle Files**
+setting can make extraction replace it instead, which a revert cannot undo.
 
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no

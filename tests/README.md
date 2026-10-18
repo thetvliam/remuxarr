@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1950 tests across 85 test files, plus 740 frontend tests under
+1960 tests across 86 test files, plus 740 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -74,7 +74,8 @@ acts on it.
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
-`test_source_changed_mid_job.py`, `test_output_name_taken.py`. Some run a
+`test_source_changed_mid_job.py`, `test_output_name_taken.py`,
+`test_existing_subtitle_files.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -86,6 +87,10 @@ stream-copied, in both execution branches — the same guard twice over, so
 killing it in one says nothing about the other. The last two are the two-pass
 and combined-pass halves of one question: which failed extraction is a decision
 for a human, and so goes to manual review, rather than a plain failure.
+`test_existing_subtitle_files.py` covers extracting a subtitle onto a name
+that already holds one: a `.srt` Bazarr downloaded was overwritten, and the
+revert point held no copy of it. The Existing Subtitle Files setting now
+decides, and the default numbers past the file instead.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.

@@ -337,6 +337,7 @@ KNOWN_KEYS = {
     "include_patterns",
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
+    "existing_srt_handling",
     "image_subtitle_handling",
     "font_attachment_handling",
     "add_faststart_to_mp4",
@@ -690,6 +691,27 @@ SETTINGS_SCHEMA = [
                        "play compatibility. Kept image-based subtitles (PGS, "
                        "VOBSUB, DVD/DVB) can't be converted — see Image-Based "
                        "Subtitle Handling below for how that's resolved.",
+    },
+    {
+        "key":     "existing_srt_handling",
+        "group":   "Subtitles",
+        "label":   "Existing Subtitle Files",
+        "type":    "select",
+        "options": [
+            {
+                "value": "keep_both",
+                "label": "Keep both (save the extracted one as Movie.en.2.srt)",
+            },
+            {
+                "value": "replace",
+                "label": "Replace (the extracted one overwrites the existing file)",
+            },
+        ],
+        "description": "What to do when extracting a subtitle would use a "
+                       "name that already holds a file, such as one Bazarr "
+                       "downloaded. Replace cannot be undone: a revert puts "
+                       "the subtitle back inside the video but cannot bring "
+                       "back the file it replaced.",
     },
     {
         "key":     "image_subtitle_handling",

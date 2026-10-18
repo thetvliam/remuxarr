@@ -1585,6 +1585,12 @@ def _file_info_for(media_file: MediaFile) -> dict:
     From the row rather than a probe because two of the three callers have
     only the row. The scanner writes the row from its probe first, so all
     three see the same values.
+
+    folder_entries is the one key read from disk: what is beside the file
+    now, so a subtitle is never extracted onto a name that already holds
+    one (existing_srt_handling). Read at each decision rather than stored,
+    because Bazarr can add a file at any time and the decision a job runs
+    is the one made at pickup.
     """
     return {
         "path":             media_file.path,
@@ -1593,7 +1599,20 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "font_attachments": media_file.font_attachments,
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
+        "folder_entries":   _folder_entries(media_file.path),
     }
+
+
+def _folder_entries(path: str) -> list[str]:
+    """
+    Every name in the folder holding `path`, as full paths. A folder that
+    cannot be listed gives none, and is decided as though it were empty.
+    """
+    folder = os.path.dirname(path)
+    try:
+        return [os.path.join(folder, name) for name in os.listdir(folder)]
+    except OSError:
+        return []
 
 
 def _track_to_dict(t: Track) -> dict:

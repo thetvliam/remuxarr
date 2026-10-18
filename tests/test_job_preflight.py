@@ -493,6 +493,8 @@ def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
         "video_codec": "hevc",
         "font_attachments": 3,
         "und_audio_threshold_acknowledged": True,
+        # The rig's folder holds only the video itself.
+        "folder_entries": [rig.path],
     }
     assert [(t["stream_index"], t["track_type"]) for t in call.tracks] == [
         (0, "video"), (1, "audio"),
