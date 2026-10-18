@@ -30,6 +30,33 @@ here:
   • the worker passing no tracks             → both real runs
   • the worker probing the temp file         → both real runs
   • a probe failure not caught               → the unreadable-file test
+
+The forge's own record of the file went stale the same way. An add ran on
+the stream index and audio count stored when it was queued, and a job that
+removed an audio track in between shifted the streams under it. With the
+French stereo track dropped, the stored index named the Commentary track:
+the forge appended a second copy of it, built no AC3, and reported
+success. An add now re-reads the file when it starts, works from the
+first AAC 5.1 track it finds, the rule queue_forge_job applies, and stores
+what it found on the job. With no AAC 5.1 track left it fails and leaves
+the file alone.
+
+Verified by mutation, 7 applied, 7 killed. The baseline was the suite with
+commit A's tests plus two changes the re-read forced: the faststart test in
+test_forge_and_staging loads an add from a file that is not real media and
+now stubs the probe, and the forge helper in test_revert_multiple_jobs
+forged from the English AAC 5.1 where a Japanese one came first, which
+queue_forge_job never does, so it takes the first and two tests expect a
+Japanese AC3. Picking the last AAC 5.1 instead of the first is killed by
+those two. The other six survived the baseline and are killed here:
+
+  • no re-read at all                        → the shifted-tracks run, the
+                                               no-AAC 5.1 run
+  • the stored stream index kept             → the shifted-tracks run
+  • the stored audio count kept              → the shifted-tracks run
+  • the new values not committed to the job  → the shifted-tracks run
+  • no refusal with no AAC 5.1 left          → the no-AAC 5.1 run
+  • a probe failure not caught               → the unprobeable-file run
 """
 import asyncio
 import json
@@ -63,20 +90,41 @@ def _streams(path):
             for s in json.loads(out.stdout)["streams"]]
 
 
-def _video(path):
-    """Video, English AAC 5.1 (what the forge works from), French SubRip."""
+def _audio(path):
+    """(codec, channels, language, title) of each audio stream, in order."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+         "stream=codec_name,channels:stream_tags=language,title",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, check=True)
+    return [(s["codec_name"], s["channels"], (s.get("tags") or {}).get("language"),
+             (s.get("tags") or {}).get("title"))
+            for s in json.loads(out.stdout)["streams"]]
+
+
+ENGLISH_51 = ("eng", 6, None)
+
+
+def _video(path, audio=(ENGLISH_51,)):
+    """Video, an AAC track for each (language, channels, title) in `audio`,
+    and a French SubRip track."""
     srt = path.parent / "input.srt"
     srt.write_text("1\n00:00:00,000 --> 00:00:00,900\nbonjour\n")
-    subprocess.run([
-        "ffmpeg", "-v", "error", "-y",
-        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=2",
-        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-        "-i", str(srt),
-        "-map", "0:v", "-map", "1:a", "-map", "2:s",
-        "-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=fre",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-ac", "6", "-b:a", "64k", "-c:s", "srt",
-        "-f", "matroska", str(path)], check=True)
+    cmd = ["ffmpeg", "-v", "error", "-y",
+           "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=2"]
+    for n, _ in enumerate(audio):
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency={440 + 110 * n}:duration=2"]
+    cmd += ["-i", str(srt), "-map", "0:v"]
+    for n, (language, channels, title) in enumerate(audio):
+        cmd += ["-map", f"{n + 1}:a", f"-ac:a:{n}", str(channels),
+                f"-metadata:s:a:{n}", f"language={language}"]
+        if title:
+            cmd += [f"-metadata:s:a:{n}", f"title={title}"]
+    cmd += ["-map", f"{len(audio) + 1}:s", "-metadata:s:s:0", "language=fre",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k", "-c:s", "srt",
+            "-f", "matroska", str(path)]
+    subprocess.run(cmd, check=True)
     srt.unlink()
     return path
 
@@ -85,8 +133,8 @@ def _video(path):
 def lib(tmp_path, monkeypatch):
     """
     A file-backed database every session in both pipelines points at, and
-    Movie.mkv in a library folder. French subtitles are kept to begin with,
-    so nothing is queued until a test drops them from the keep list.
+    Movie.mkv in a library folder. French audio and subtitles are kept to
+    begin with, so nothing is queued until a test drops them.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -119,8 +167,8 @@ def lib(tmp_path, monkeypatch):
         db.merge(AppSetting(key="dry_run_mode", value=json.dumps(False)))
         # Stays Movie.mkv, so every step works on the same path.
         db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(False)))
-        db.merge(AppSetting(key="keep_subtitle_languages",
-                            value=json.dumps(["eng", "fre"])))
+        for key in ("keep_audio_languages", "keep_subtitle_languages"):
+            db.merge(AppSetting(key=key, value=json.dumps(["eng", "fre"])))
         db.commit()
 
     yield SimpleNamespace(Session=factory, worker=worker, forge=forge,
@@ -137,11 +185,11 @@ def _queue(lib):
         return item.id if item is not None and item.status == "pending" else None
 
 
-def _drop_french(lib):
+def _drop_french(lib, key="keep_subtitle_languages"):
     from app.database.models import AppSetting
 
     with lib.Session() as db:
-        db.merge(AppSetting(key="keep_subtitle_languages", value=json.dumps(["eng"])))
+        db.merge(AppSetting(key=key, value=json.dumps(["eng"])))
         db.commit()
 
 
@@ -242,3 +290,85 @@ def test_a_file_that_cannot_be_probed_after_the_forge_gives_no_tracks(monkeypatc
     with caplog.at_level(logging.WARNING, logger="app.core.forge"):
         assert forge.probe_tracks_after_forge("/media/Movie.mkv") is None
     assert "moov atom not found" in caplog.text
+
+
+# ── An add works from the file as it is when it starts ──────────────────────
+
+def _forge_job(lib, job_id):
+    from app.database.models import Ac3ForgeJob
+
+    with lib.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        return SimpleNamespace(status=job.status, error=job.error_message,
+                               aac_stream_index=job.aac_stream_index,
+                               audio_track_count=job.audio_track_count)
+
+
+def _queue_forge(lib):
+    from app.database.models import MediaFile
+
+    with lib.Session() as db:
+        return lib.forge.queue_forge_job(db, db.query(MediaFile).one().id).id
+
+
+def _run_forge(lib):
+    assert asyncio.run(lib.worker._process_next_forge(_WS())) is True
+
+
+@needs_ffmpeg
+def test_an_add_queued_before_a_job_shifted_the_tracks_builds_the_ac3(lib):
+    _video(lib.video, audio=[("fre", 2, None), ENGLISH_51, ("eng", 2, "Commentary")])
+    _queue(lib)
+    forge_job = _queue_forge(lib)
+    assert _forge_job(lib, forge_job).aac_stream_index == 2
+
+    _drop_french(lib, "keep_audio_languages")
+    assert _queue(lib) is not None, "dropping French audio queued nothing"
+    assert _run_queued(lib) == ("success", None)
+
+    _run_forge(lib)
+    job = _forge_job(lib, forge_job)
+    assert job.status == "success", job.error
+    assert _audio(lib.video) == [("aac", 6, "eng", None),
+                                 ("aac", 2, "eng", "Commentary"),
+                                 ("ac3", 6, "eng", None)]
+    assert (job.aac_stream_index, job.audio_track_count) == (1, 2), \
+        "the job does not record what the run used"
+
+
+@needs_ffmpeg
+def test_an_add_with_no_aac_51_left_fails_and_changes_nothing(lib):
+    _video(lib.video, audio=[("eng", 2, None), ("fre", 6, None)])
+    _queue(lib)
+    forge_job = _queue_forge(lib)
+
+    _drop_french(lib, "keep_audio_languages")
+    assert _queue(lib) is not None, "dropping French audio queued nothing"
+    assert _run_queued(lib) == ("success", None)
+    before = lib.video.read_bytes()
+
+    _run_forge(lib)
+    job = _forge_job(lib, forge_job)
+    assert job.status == "failed"
+    assert "no longer has an AAC 5.1 track" in job.error
+    assert lib.video.read_bytes() == before
+
+
+@needs_ffmpeg
+def test_an_add_that_cannot_probe_the_file_fails_and_changes_nothing(lib, monkeypatch):
+    from app.core.probe import ProbeError
+
+    _queue(lib)
+    forge_job = _queue_forge(lib)
+    before = lib.video.read_bytes()
+
+    def unreadable(path, ffprobe_path):
+        raise ProbeError("moov atom not found")
+    monkeypatch.setattr(lib.forge, "probe_file", unreadable)
+
+    _run_forge(lib)
+    job = _forge_job(lib, forge_job)
+    assert job.status == "failed"
+    assert "moov atom not found" in job.error
+    assert lib.video.read_bytes() == before
+

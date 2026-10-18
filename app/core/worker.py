@@ -2862,9 +2862,10 @@ async def _process_next_forge(ws_manager) -> bool:
     job_data = await loop.run_in_executor(None, load_forge_job_data, job_id)
     if job_data is None:
         # The job reached a terminal state inside load_forge_job_data
-        # itself (file missing, probe failure, AC3 already absent →
-        # undone, or a layout mismatch → failed) — broadcast that final
-        # state now, same as the post-execution path below does.
+        # itself (file missing, probe failure, no AAC 5.1 left to add
+        # from, AC3 already absent → undone, or a layout mismatch →
+        # failed) — broadcast that final state now, same as the
+        # post-execution path below does.
         # Previously this returned silently, so a job settled at load
         # time looked stuck in the UI until the next poll happened by.
         final = await loop.run_in_executor(None, load_forge_final_state, job_id)

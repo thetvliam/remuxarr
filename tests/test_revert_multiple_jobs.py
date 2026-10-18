@@ -1443,12 +1443,13 @@ def _forge(lib, *, undo=False):
     from app.database.models import Ac3ForgeJob
     import app.core.worker as worker_mod
 
+    # The first AAC 5.1, as queue_forge_job picks it: an add works from that
+    # one whatever the row says, because it re-reads the file when it starts.
     audio = [s for s in _probe(lib["path"])["streams"] if s["codec_type"] == "audio"]
-    english = next(s for s in audio if s["codec_name"] == "aac"
-                   and (s.get("tags") or {}).get("language") == "eng")
+    first = next(s for s in audio if s["codec_name"] == "aac" and s.get("channels") == 6)
     job = Ac3ForgeJob(file_id=lib["media"].id, is_undo=undo,
                       status="undo_pending" if undo else "pending",
-                      aac_stream_index=english["index"],
+                      aac_stream_index=first["index"],
                       audio_track_count=len(audio))
     lib["db"].add(job)
     lib["db"].commit()
@@ -1504,13 +1505,13 @@ def test_undoing_a_forged_track_the_original_had_keeps_it_restorable(forge_lib):
     lib = forge_lib
     assert _forge(lib).status == "success"
     before_the_job = _codecs(lib["path"])
-    assert ("audio", "ac3", "eng") in before_the_job
+    assert ("audio", "ac3", "jpn") in before_the_job
 
     # The job drops the Japanese audio and keeps everything else.
     _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
 
     assert _forge(lib, undo=True).status == "undone"
-    assert ("audio", "ac3", "eng") not in _codecs(lib["path"])
+    assert ("audio", "ac3", "jpn") not in _codecs(lib["path"])
 
     assert lib["db"].query(RevertPoint).count() == 1
     outcome = _revert(lib)
@@ -1592,7 +1593,7 @@ def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
 
     outcome = _revert(lib)
     assert outcome.success is True, outcome.error
-    assert ("audio", "ac3", "eng") in _codecs(outcome.restored_path)
+    assert ("audio", "ac3", "jpn") in _codecs(outcome.restored_path)
 
     lib["db"].expire_all()
     assert lib["db"].get(Ac3ForgeJob, forged.id).status == "success"

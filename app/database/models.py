@@ -360,11 +360,13 @@ class Ac3ForgeJob(Base):
     # True while this row represents an undo operation
     is_undo = Column(Boolean, default=False)
 
-    # Stream metadata captured at job-creation time.
+    # Stream metadata recorded when an add is queued, and replaced from a
+    # fresh probe when it starts (forge.load_forge_job_data).
     # aac_stream_index  → global ffprobe index of the AAC 5.1 track
     # audio_track_count → number of audio tracks BEFORE adding AC3
-    #   The AC3 is always appended as output audio stream [audio_track_count],
-    #   so undo can always use: -map -0:a:{audio_track_count}
+    #   The AC3 is appended as output audio stream [audio_track_count].
+    #   Undo does not find the track by it: later jobs can shift the track,
+    #   so undo locates it from a fresh probe (forge.resolve_forge_ac3_for_undo).
     aac_stream_index  = Column(Integer)
     audio_track_count = Column(Integer)
 
