@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2037 tests across 92 test files, plus 743 frontend tests under
+2042 tests across 93 test files, plus 743 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -107,11 +107,16 @@ traceback, and the other three left the reason out.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
-`test_forge_keeps_tracks_current.py`. The last runs a real forge add and undo
+`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`.
+`test_forge_keeps_tracks_current.py` runs a real forge add and undo
 with a job waiting for the same file: the stored track list stayed as it was
 before the rewrite, so the job left out a just-added AC3, or mapped a removed
 one and failed. It also runs an add queued before a job shifted the file's
 tracks, which used to copy the wrong track instead of building an AC3.
+`test_forge_shutdown.py` stops the real worker loop while a forge run is in
+progress. A stop used to leave the run going until the event loop was torn
+down, and the next start failed it as a crash, though the file was
+untouched.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
 `test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,

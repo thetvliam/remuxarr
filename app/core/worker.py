@@ -49,6 +49,12 @@ _active_jobs: set[int] = set() # job IDs currently being processed
 # only tracks which IDs are active; this additionally holds the Task
 # object itself, which is what .cancel() needs to act on.
 _active_task_registry: dict[int, asyncio.Task] = {}
+# The forge run _loop() started, mirrored for the same reason: stop_worker()
+# has to reach it from outside the loop. It was a local of _loop() only, so
+# a stop left the run going until the event loop's own teardown cancelled it,
+# after the lifespan had returned. Nothing then updated its row, and the
+# next start failed it as a crash.
+_forge_task: asyncio.Task | None = None
 
 
 def pause_worker() -> None:
@@ -266,6 +272,11 @@ async def stop_worker() -> None:
     was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
     kill, and recover_interrupted_jobs fails it on the next start, as a
     crash is.
+
+    A forge run is stopped the same way and in the same wait. Cut off before
+    it replaced the file, it goes back to the forge queue
+    (_requeue_cut_off_forge_job); after, it finishes its bookkeeping first
+    (_run_forge_job).
     """
     # _worker_task is only READ here, never reassigned — no `global`
     # needed for it specifically (only _running, which IS reassigned
@@ -280,6 +291,8 @@ async def stop_worker() -> None:
             pass
 
     jobs = [task for task in _active_task_registry.values() if not task.done()]
+    if _forge_task is not None and not _forge_task.done():
+        jobs.append(_forge_task)
     for task in jobs:
         task.cancel()
     if jobs:
@@ -307,6 +320,7 @@ async def _loop() -> None:
       4. Sleep briefly before the next iteration.
     """
     from app.api.ws_manager import ws_manager   # avoid circular import
+    global _forge_task
 
     loop         = asyncio.get_running_loop()
     active_tasks: dict[int, asyncio.Task] = {}  # job_id → Task
@@ -355,6 +369,7 @@ async def _loop() -> None:
                         forge_task = asyncio.create_task(
                             _process_next_forge(ws_manager)
                         )
+                        _forge_task = forge_task
                         total_active += 1
 
                 # ── Claim regular jobs up to the concurrency limit ─────────
@@ -2910,18 +2925,58 @@ async def _trigger_email_notify(data: dict, loop: asyncio.AbstractEventLoop) -> 
 
 async def _process_next_forge(ws_manager) -> bool:
     """Claim and run the next pending forge job. Returns True if a job ran."""
-    from app.core.forge import (
-        claim_next_forge_job, load_forge_job_data,
-        build_add_ac3_command, build_undo_command,
-        run_forge_command, ForgeProgress,
-        update_forge_progress, finish_forge_job, load_forge_final_state,
-        probe_tracks_after_forge,
-    )
+    from app.core.forge import claim_next_forge_job
 
     loop   = asyncio.get_running_loop()
     job_id = await loop.run_in_executor(None, claim_next_forge_job)
     if job_id is None:
         return False
+
+    # Only a stop cancels this task: stop_worker, or the event loop's own
+    # teardown if that never ran. A run cut off before the file was replaced
+    # goes back to the queue; one that got further has already recorded its
+    # outcome (see _run_forge_job), and is left as it is. The single
+    # cancellation is spent by the time it gets here, so this await
+    # completes, as the one in _run_and_broadcast's finally does.
+    try:
+        return await _run_forge_job(job_id, ws_manager, loop)
+    except asyncio.CancelledError:
+        await loop.run_in_executor(None, _requeue_cut_off_forge_job, job_id)
+        raise
+
+
+def _requeue_cut_off_forge_job(job_id: int) -> None:
+    """
+    Put a forge run a shutdown cut off back in the forge queue.
+
+    The forge counterpart of _requeue_cut_off_job, and safe for the same
+    reason: _run_forge_job records the outcome before letting a cancellation
+    through once run_forge_command has returned, and the file is replaced
+    only inside that call, so a row still at "processing" here never
+    replaced it. An undo goes back to "undo_pending", the state it was
+    claimed from.
+    """
+    with SessionLocal() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "undo_pending" if job.is_undo else "pending"
+        job.started_at     = None
+        job.progress       = 0.0
+        job.current_action = None
+        db.commit()
+        logger.info("Forge job %d was cut off by shutdown — back in the queue", job_id)
+
+
+async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> bool:
+    """Run a claimed forge job. Returns True, as it was claimed."""
+    from app.core.forge import (
+        load_forge_job_data,
+        build_add_ac3_command, build_undo_command,
+        run_forge_command, ForgeProgress,
+        update_forge_progress, finish_forge_job, load_forge_final_state,
+        probe_tracks_after_forge,
+    )
 
     logger.info("Forge worker picked up job %d", job_id)
     await ws_manager.broadcast_json({"event": "forge_job_started", "job_id": job_id})
@@ -3056,6 +3111,13 @@ async def _process_next_forge(ws_manager) -> bool:
             timeout_seconds   = timeout_seconds,
             before_staging    = on_before_staging,
         )
+    except asyncio.CancelledError:
+        # Stopped before the file was replaced: run_staged_subprocess swaps
+        # and returns with no await in between. A revert point captured
+        # for the output describes a write that never happened.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        raise
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)
         for stale in captured:
@@ -3064,28 +3126,39 @@ async def _process_next_forge(ws_manager) -> bool:
             None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
-        fresh_tracks = None
-        if result.success:
-            # Before the job is marked finished, for the reason _run_job
-            # gives: a crash in between leaves a usable point.
-            if captured:
-                await loop.run_in_executor(
-                    None, _record_revert_point,
-                    job_data["file_id"], captured[0], input_path,
-                )
-            # For the Track refresh finish_forge_job does with the status.
-            fresh_tracks = await loop.run_in_executor(
-                None, probe_tracks_after_forge, input_path,
-            )
-        else:
-            for stale in captured:
-                delete_sidecar(stale.sidecar_path)
-        await loop.run_in_executor(
-            None, lambda: finish_forge_job(
+        def complete() -> None:
+            fresh_tracks = None
+            if result.success:
+                # Before the job is marked finished, for the reason _run_job
+                # gives: a crash in between leaves a usable point.
+                if captured:
+                    _record_revert_point(
+                        job_data["file_id"], captured[0], input_path,
+                    )
+                # For the Track refresh finish_forge_job does with the status.
+                fresh_tracks = probe_tracks_after_forge(input_path)
+            else:
+                for stale in captured:
+                    delete_sidecar(stale.sidecar_path)
+            finish_forge_job(
                 job_id, result.success, result.output_size, result.error,
                 fresh_tracks=fresh_tracks,
-            ),
-        )
+            )
+
+        # One executor call that a cancellation does not interrupt, as in
+        # _run_job. The run is over and its outcome known, and after a
+        # success the file has already been rewritten: cut off here, the
+        # row would stay at "processing" and be put back in the queue, and
+        # an add run again appends a second AC3. On cancellation the
+        # bookkeeping is waited for and the cancellation then let through.
+        # The completion broadcast and the Plex refresh below are skipped,
+        # as the app is stopping.
+        tail = asyncio.ensure_future(loop.run_in_executor(None, complete))
+        try:
+            await asyncio.shield(tail)
+        except asyncio.CancelledError:
+            await tail
+            raise
 
     final = await loop.run_in_executor(None, load_forge_final_state, job_id)
     if final:
