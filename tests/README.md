@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2035 tests across 91 test files, plus 743 frontend tests under
+2037 tests across 92 test files, plus 743 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -156,7 +156,8 @@ nothing.
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`,
 `test_subtitle_rename.py`, `test_font_attachment_review.py`,
 `test_font_attachment_pipeline.py`, `test_review_reason.py`,
-`test_answers_follow_tracks.py`, `test_language_answer_during_job.py`.
+`test_answers_follow_tracks.py`, `test_language_answer_during_job.py`,
+`test_review_keeps_language_flags.py`.
 `test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
@@ -189,6 +190,10 @@ was given for and a revert carries it back. `test_job_finalisation.py` and
 file's job runs. The job had already decided, and when it ended it recorded the
 file's new size and mtime, so no delta scan looked again: the question was gone
 and only a Full Scan applied the answer. It runs the real worker and scanner.
+`test_review_keeps_language_flags.py` covers a file sent to manual review
+while it has language questions. The review decision carries no language
+findings, so the scan and the review answer leave the questions alone, and
+the file is then in two sections of the Review page at once.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

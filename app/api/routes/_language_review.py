@@ -287,8 +287,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # depends on it, and the "n of m" on the select-all row is built from
         # it. The section heading's badge was reading the same number, so
         # typing a show name took the badge from 57 to 2 and the overall
-        # figure was then nowhere on the page — the nav tab's count is
-        # manual-review QUEUE items, which is a different thing.
+        # figure was then nowhere on the page. The nav tab's count does not
+        # give it either: it adds this backlog to the other two sections'.
         #
         # The facets cannot stand in for this. They honour `search` on
         # purpose, so the dropdown only offers tags the current search has,

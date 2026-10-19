@@ -124,9 +124,9 @@ export const LanguageReviewSection = ({
      * The badge read `total`, which is the FILTERED figure — pagination needs
      * it that way and the select-all row's "n of m" is built from it. So
      * typing a show name took the badge from the size of the backlog to the
-     * size of the match, and the backlog number was then nowhere on the page:
-     * the nav tab's count is manual-review QUEUE items, which is a different
-     * thing entirely.
+     * size of the match, and the backlog number was then nowhere on the page.
+     * The nav tab's count does not give it either: it adds this backlog to
+     * the other two sections'.
      *
      * No need to ask which filters are active. total_unfiltered is the same
      * query with the filters taken off, so it can only exceed `total` when
