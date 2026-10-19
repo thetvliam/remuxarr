@@ -34,6 +34,13 @@ of a day or more not counted (the host asleep). Two were already killed
 here: the reference never moved (the same-minute and already-running tests)
 and the first check after a start counting from midnight (a non-matching
 minute).
+
+The backlog drain checking the Plex settings before taking an entry came
+after that. Five mutants, all surviving the suite as it stood, all killed by
+the incomplete-settings tests: the entry deleted before the check again,
+the drain's own check put back in place of plex_connection (without the
+token), a warning every tick, the warning never reset once the settings
+work, and plex_connection warning although asked not to.
 """
 import asyncio
 from datetime import datetime as _real_datetime, timedelta
@@ -64,10 +71,11 @@ def _reset_guard():
     """The last-checked time is module state — isolate it."""
     import app.core.scheduler as sched
 
-    before = sched._last_checked
+    before = sched._last_checked, sched._warned_incomplete_plex
     sched._last_checked = None
+    sched._warned_incomplete_plex = False
     yield
-    sched._last_checked = before
+    sched._last_checked, sched._warned_incomplete_plex = before
 
 
 @pytest.fixture
@@ -432,11 +440,17 @@ def test_an_empty_backlog_is_a_quiet_no_op(sched, monkeypatch):
     assert asyncio.run(sched._drain_tick()) is False
 
 
-def test_incomplete_plex_config_sends_nothing(sched, monkeypatch):
-    """URL, token and mappings are all required to address an item."""
+@pytest.mark.parametrize("missing", ["plex_url", "plex_token", "plex_path_mappings"])
+def test_incomplete_plex_config_sends_nothing_and_keeps_the_entry(sched, monkeypatch, missing):
+    """
+    URL, token and mappings are all required to address an item. The entry
+    used to be deleted before they were checked, so with one missing every
+    tick threw one away (reproduced: three ticks, three entries gone,
+    nothing sent, nothing logged). It now waits for the settings.
+    """
     _at(monkeypatch, sched, "04:00")
-    _drain_stub(monkeypatch, sched, entry=_Entry())
-    sched._cfg = _full_cfg(plex_path_mappings=[])
+    deleted = _drain_stub(monkeypatch, sched, entry=_Entry())
+    sched._cfg = _full_cfg(**{missing: [] if missing == "plex_path_mappings" else ""})
 
     sent = []
     monkeypatch.setattr(sched, "notify_plex_reprocessed_file",
@@ -444,6 +458,46 @@ def test_incomplete_plex_config_sends_nothing(sched, monkeypatch):
 
     assert asyncio.run(sched._drain_tick()) is False
     assert sent == []
+    assert deleted == [], "the entry was thrown away"
+
+
+def _incomplete_warnings(caplog):
+    return [r for r in caplog.records if "Analyze backlog: waiting" in r.getMessage()]
+
+
+def test_incomplete_settings_are_reported_once_not_every_tick(sched, monkeypatch, caplog):
+    """The drain ticks every second while it cannot send anything."""
+    import logging
+
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry())
+    sched._cfg = _full_cfg(plex_path_mappings=[])
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            asyncio.run(sched._drain_tick())
+
+    assert len(_incomplete_warnings(caplog)) == 1
+    assert not [r for r in caplog.records if "Plex notification skipped" in r.getMessage()], (
+        "plex_connection's own warning, every tick")
+
+
+def test_settings_broken_again_after_working_are_reported_again(sched, monkeypatch, caplog):
+    import logging
+
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry())
+    monkeypatch.setattr(sched, "notify_plex_reprocessed_file", lambda *a: False)
+
+    with caplog.at_level(logging.WARNING):
+        sched._cfg = _full_cfg(plex_path_mappings=[])
+        asyncio.run(sched._drain_tick())
+        sched._cfg = _full_cfg()
+        asyncio.run(sched._drain_tick())
+        sched._cfg = _full_cfg(plex_token="")
+        asyncio.run(sched._drain_tick())
+
+    assert len(_incomplete_warnings(caplog)) == 2
 
 
 # ── _drain_tick: processing one entry ────────────────────────────────────────

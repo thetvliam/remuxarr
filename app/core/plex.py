@@ -368,7 +368,8 @@ def _audio_languages_match(
     return False
 
 
-def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | None:
+def plex_connection(cfg: dict, context: str, *,
+                    warn: bool = True) -> tuple[str, str, list[str]] | None:
     """
     The URL, token and path mappings a Plex call needs, read from the app
     settings, or None when Plex notifications are off or not fully set up.
@@ -379,8 +380,11 @@ def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | Non
 
     One place for what each caller used to write out for itself: the
     post-job notification, the forge and revert refresh, the refresh for an
-    import that needs no job, and the one after a review that leaves a file
-    alone (refresh_in_background).
+    import that needs no job, the one after a review that leaves a file
+    alone (refresh_in_background), and the Analyze backlog drain.
+
+    warn=False leaves the warning to the caller: the drain asks every second
+    through its window and warns once itself.
     """
     if not cfg.get("plex_enabled", False):
         return None
@@ -388,20 +392,22 @@ def plex_connection(cfg: dict, context: str) -> tuple[str, str, list[str]] | Non
     url   = (cfg.get("plex_url") or "").rstrip("/")
     token = cfg.get("plex_token") or ""
     if not url or not token:
-        logger.warning(
-            "Plex notification skipped for %s: plex_url or "
-            "plex_token not configured",
-            context,
-        )
+        if warn:
+            logger.warning(
+                "Plex notification skipped for %s: plex_url or "
+                "plex_token not configured",
+                context,
+            )
         return None
 
     mappings = cfg.get("plex_path_mappings", [])
     if not mappings:
-        logger.warning(
-            "Plex notification skipped for %s: no "
-            "plex_path_mappings configured",
-            context,
-        )
+        if warn:
+            logger.warning(
+                "Plex notification skipped for %s: no "
+                "plex_path_mappings configured",
+                context,
+            )
         return None
 
     return url, token, mappings

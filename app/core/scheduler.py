@@ -24,7 +24,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from app.core.plex import notify_plex_reprocessed_file
+from app.core.plex import notify_plex_reprocessed_file, plex_connection
 from app.core.recycle import sweep_retention
 from app.database.models import PlexAnalyzeBacklog
 from app.database.session import SessionLocal, get_app_settings
@@ -53,6 +53,11 @@ PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS = 8
 # request to Plex, and a back-to-back flood of even lightweight requests
 # is worth avoiding on principle.
 PLEX_BACKLOG_SKIP_INTERVAL_SECONDS = 1
+
+# Whether the drain has said that the Plex settings are incomplete. It asks
+# every second through its window, so it warns once and then again only after
+# the settings have worked in between. Resets on restart — intentional.
+_warned_incomplete_plex: bool = False
 
 
 async def run_scheduler(ws_manager) -> None:
@@ -198,6 +203,23 @@ async def _drain_tick() -> bool:
         if not entry:
             return False
 
+        # Before the entry is taken. It used to be deleted first and the
+        # settings checked after, silently, so with the URL, token or path
+        # mappings missing every tick threw one away: the backlog emptied
+        # itself in seconds, and those files kept Plex's stale data. Now it
+        # waits for the settings, and says once why.
+        global _warned_incomplete_plex
+        connection = plex_connection(cfg, "the Plex Analyze backlog", warn=False)
+        if connection is None:
+            if not _warned_incomplete_plex:
+                logger.warning(
+                    "Plex Analyze backlog: waiting, nothing analyzed: Plex is "
+                    "on but its URL, token or path mappings are not set")
+                _warned_incomplete_plex = True
+            return False
+        _warned_incomplete_plex = False
+        url, token, mappings = connection
+
         media = entry.media_file
         # Capture everything needed for the network call before deleting
         # the row — deletion happens regardless of outcome (best-effort,
@@ -213,12 +235,6 @@ async def _drain_tick() -> bool:
 
         if not media or not local_path or not os.path.exists(local_path):
             logger.debug("Plex backlog: skipping missing/deleted file (entry %d)", entry.id)
-            return False
-
-        url      = (cfg.get("plex_url") or "").rstrip("/")
-        token    = cfg.get("plex_token") or ""
-        mappings = cfg.get("plex_path_mappings", [])
-        if not url or not token or not mappings:
             return False
     finally:
         db.close()
