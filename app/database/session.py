@@ -4,6 +4,7 @@ Database session management and settings helpers.
 import json
 from copy import deepcopy
 import logging
+import os
 from pathlib import Path
 from typing import Any, Generator
 
@@ -272,8 +273,48 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # ── Initialization ─────────────────────────────────────────────────────────
+def pending_import_path(live_path: str) -> str:
+    """Where an imported backup waits for the next start (see apply_pending_import)."""
+    return live_path + ".pending-import"
+
+
+def apply_pending_import() -> bool:
+    """
+    Put a backup imported before this start in place of the database.
+
+    The import used to replace the file while the running process held
+    pooled connections to it: until the restart, a write landed in the old
+    file or the new one depending on which connection it got, and those in
+    the old one were gone after it. The import now only stages the file
+    (backup.import_full_backup), and it is swapped here, before anything has
+    connected.
+
+    The old database's -wal and -shm go first. Left beside the new file,
+    SQLite would replay the old journal over it; removed before the rename,
+    a crash in between leaves the old file without its journal, which is
+    about to be replaced anyway, and the import still pending. True when an
+    import was applied.
+    """
+    live = settings.DATABASE_PATH
+    pending = pending_import_path(live)
+    if not os.path.exists(pending):
+        return False
+    engine.dispose()
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(live + suffix)
+        except FileNotFoundError:
+            pass
+    os.replace(pending, live)
+    logger.warning("Applied the database backup imported before this start: %s", live)
+    return True
+
+
 def init_db() -> None:
     """Create all tables, run lightweight migrations, and seed default settings."""
+    # First, before anything connects: an imported backup is migrated below
+    # like any other database.
+    apply_pending_import()
     Base.metadata.create_all(bind=engine)
     _relax_revert_point_file_id()
     # Runs BEFORE _migrate_schema, like the rebuild above: a rebuilt table

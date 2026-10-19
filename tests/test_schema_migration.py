@@ -91,6 +91,11 @@ One for media_files.reevaluate_after_job, run against the full suite first
 and surviving it, because the live-schema test creates media_files whole:
 
   • its ADD COLUMN missing                     → killed
+
+One for a backup imported before the restart, which init_db puts in place
+first (session.apply_pending_import), surviving the suite first:
+
+  • the swap made after the migrations         → killed
 """
 import importlib
 import json
@@ -740,6 +745,46 @@ def test_existing_files_gain_the_reevaluate_mark_unset(tmp_path, monkeypatch):
 
     assert "reevaluate_after_job" in columns
     assert not value[0], "a file nobody answered anything for is marked"
+
+
+# ── A backup imported before the restart ─────────────────────────────────────
+
+def test_an_imported_backup_is_put_in_place_before_it_is_migrated(tmp_path, monkeypatch):
+    """
+    The import stages the backup and the next start puts it in place
+    (session.apply_pending_import). It has to come first in init_db: a backup
+    from an older version is then brought up to date like any other database,
+    where swapped in after the migrations it would start without the tables
+    and columns the code expects.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE marker (name TEXT)")
+    conn.execute("INSERT INTO marker VALUES ('in use')")
+    conn.commit()
+    conn.close()
+    conn = sqlite3.connect(str(path) + ".pending-import")
+    conn.execute("CREATE TABLE marker (name TEXT)")
+    conn.execute("INSERT INTO marker VALUES ('imported')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        marker = conn.execute("SELECT name FROM marker").fetchone()
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+    assert marker == ("imported",)
+    assert set(Base.metadata.tables) <= tables, "the imported database was not migrated"
 
 
 # ── Subtitle-encoding reviews written unlabelled ─────────────────────────────

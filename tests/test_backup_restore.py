@@ -2,9 +2,13 @@
 backup.py — export and restore of the whole database.
 
 The most destructive endpoint in the app. /api/backup/import replaces every
-scanned file, track, queue item and history row in the instance, and the live
-process is holding open connections against the file being swapped out from
-under it while the request is being served.
+scanned file, track, queue item and history row in the instance. It used to
+swap the file while the live process held pooled connections to it, and
+until the restart writes landed in the old file or the new one depending on
+which connection they got (reproduced: two of four writes after an import
+reached the file the app restarted on). The import now stages the backup
+beside the database, and session.apply_pending_import puts it in place at the
+next start, before anything connects.
 
 That makes the ORDER of operations the thing under test, more than any
 individual step. Every validation failure has to happen BEFORE the live
@@ -27,6 +31,17 @@ results, so no end-state assertion can distinguish it — the difference only
 shows if the process dies partway through. That one is pinned by observing
 that the live path is never a copy destination, rather than by checking what
 ends up there.
+
+Staging the import came later. Five mutants were run against the suite as it
+stood, less the two tests that pinned the immediate swap (now the
+next-start and swap-time journal tests). Four survived it and are killed
+here or in test_schema_migration: swapping at the import again, the start
+never applying what is waiting, the swap leaving the old -wal and -shm, and
+the swap running after the migrations. The fifth, the backup copied straight
+to its waiting name, was already killed by the never-written-incrementally
+test. Removing the old journal after the rename rather than before is not
+tested: it differs only if the process dies between the two, and the
+comment at apply_pending_import says why the order matters.
 """
 import io
 import json
@@ -328,12 +343,61 @@ def good_upload(tmp_path):
     return _zip({"manifest.json": _good_manifest(), "database.db": db_bytes})
 
 
-def test_a_valid_import_replaces_the_database(client, live, good_upload):
+def _start(live, monkeypatch):
+    """The startup step that puts a staged import in place."""
+    import app.database.session as session_mod
+
+    monkeypatch.setattr(session_mod.settings, "DATABASE_PATH", live.path)
+    return session_mod.apply_pending_import()
+
+
+def test_a_valid_import_replaces_the_database_at_the_next_start(
+        client, live, good_upload, monkeypatch):
     r = _upload(client, good_upload)
 
     assert r.status_code == 200, r.text
+    assert _read_marker(live.path) == "live", "the database was replaced while in use"
+    assert _start(live, monkeypatch) is True
     assert _read_marker(live.path) == "restored"
     assert _settings_of(live.path)["scan_paths"] == "/restored"
+    assert not os.path.exists(live.path + ".pending-import")
+
+
+def test_the_file_in_use_is_left_alone_until_the_restart(client, live, good_upload):
+    """
+    The same file, not one put in its place: every pooled connection goes on
+    using one database until the restart, so no write is split from the
+    others. Replaced under them, writes went to whichever file a connection
+    had open, and those in the old one were lost at the restart.
+    """
+    before = os.stat(live.path).st_ino
+    held = sqlite3.connect(live.path)
+
+    _upload(client, good_upload)
+    held.execute("INSERT INTO app_settings VALUES ('written_after_import', 'x')")
+    held.commit()
+    held.close()
+
+    assert os.stat(live.path).st_ino == before
+    assert _settings_of(live.path)["written_after_import"] == "x"
+
+
+def test_a_start_with_nothing_waiting_changes_nothing(live, monkeypatch):
+    assert _start(live, monkeypatch) is False
+    assert _read_marker(live.path) == "live"
+
+
+def test_a_second_import_before_the_restart_replaces_the_first(
+        client, live, good_upload, tmp_path, monkeypatch):
+    later = _make_db(str(tmp_path / "later.db"), {"scan_paths": "/later"}, marker="later")
+    with open(later, "rb") as f:
+        second = _zip({"manifest.json": _good_manifest(), "database.db": f.read()})
+
+    _upload(client, good_upload)
+    _upload(client, second)
+    _start(live, monkeypatch)
+
+    assert _read_marker(live.path) == "later"
 
 
 def test_the_worker_is_paused_before_the_swap(client, live, good_upload):
@@ -377,26 +441,54 @@ def test_a_failed_pre_import_backup_aborts_without_touching_anything(
     assert _read_marker(live.path) == "live", (
         "database replaced despite having no pre-import backup"
     )
+    assert not os.path.exists(live.path + ".pending-import"), (
+        "an import was staged despite having no pre-import backup"
+    )
 
 
-def test_stale_wal_and_shm_sidecars_are_removed(client, live, good_upload):
+def test_stale_wal_and_shm_sidecars_are_removed_at_the_swap(
+        client, live, good_upload, monkeypatch):
     """
-    The failure this code exists for. The live process still holds a
-    connection to the OLD database while serving this request, so its -wal is
-    very likely populated. Left in place, SQLite replays it over the
-    freshly-restored main file on next startup and silently reinstates the
-    old state — a restore that reports success and then quietly undoes itself.
+    The failure this code exists for. The old database's -wal holds its
+    recent writes. Left beside the restored file, SQLite replays it over
+    the restore and silently reinstates the old state — a restore that
+    reports success and then quietly undoes itself. The import leaves them
+    alone, as they belong to the database still in use; the swap at the next
+    start removes them.
     """
     for suffix in ("-wal", "-shm"):
         with open(live.path + suffix, "wb") as f:
             f.write(b"stale journal contents")
 
     _upload(client, good_upload)
+    for suffix in ("-wal", "-shm"):
+        assert os.path.exists(live.path + suffix), (
+            f"the {suffix} of the database in use was removed by the import")
 
+    _start(live, monkeypatch)
     for suffix in ("-wal", "-shm"):
         assert not os.path.exists(live.path + suffix), (
             f"stale {suffix} left beside the restore — it will replay on restart"
         )
+
+
+def test_a_real_journal_of_the_old_database_does_not_replay_over_the_restore(
+        client, live, good_upload, tmp_path, monkeypatch):
+    """The same, with a -wal SQLite really wrote rather than stand-in bytes."""
+    import shutil
+
+    _upload(client, good_upload)
+    conn = sqlite3.connect(live.path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("UPDATE marker SET name = 'written-before-the-restart'")
+    conn.commit()
+    shutil.copy(live.path + "-wal", tmp_path / "saved-wal")
+    conn.close()                      # checkpoints and removes its -wal
+    shutil.copy(tmp_path / "saved-wal", live.path + "-wal")
+
+    _start(live, monkeypatch)
+
+    assert _read_marker(live.path) == "restored"
 
 
 def test_a_missing_sidecar_is_not_an_error(client, live, good_upload):
@@ -412,12 +504,13 @@ def test_the_live_database_is_never_written_to_incrementally(
         client, live, good_upload, monkeypatch):
     """
     Atomicity, which no end-state assertion can catch — copying the new file
-    straight over the live path leaves exactly the same bytes behind, and
+    straight to its destination leaves exactly the same bytes behind, and
     differs only if the process dies partway. So this asserts the property
-    directly: the live path is never a copy destination. It only ever comes
-    into existence via the single os.replace() of a fully-written staging
-    file. A truncate-and-overwrite would leave a window where the live
-    database is neither the old one nor the new one, and a crash inside that
+    directly: only the staging name is ever a copy destination. The waiting
+    backup only comes into existence via the single os.replace() of a
+    fully-written staging file, and the live database only via the rename
+    at the next start. A truncate-and-overwrite would leave a window where
+    the file is neither the old one nor the new one, and a crash inside that
     window costs the user both.
     """
     real_copy = live.module.shutil.copy2
@@ -439,12 +532,14 @@ def test_the_live_database_is_never_written_to_incrementally(
 
 def test_no_staging_file_is_left_behind(client, live, good_upload):
     """
-    The swap writes to <live>.importing then renames. A leftover staging file
-    means the rename didn't happen and the restore is not actually in place.
+    The import writes to <live>.importing then renames it to the waiting
+    name. A leftover staging file means the rename didn't happen and nothing
+    is waiting for the restart.
     """
     _upload(client, good_upload)
 
     assert not os.path.exists(live.path + ".importing")
+    assert _read_marker(live.path + ".pending-import") == "restored"
 
 
 def test_the_response_demands_a_restart(client, live, good_upload):

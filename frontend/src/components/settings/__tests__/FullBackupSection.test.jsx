@@ -118,3 +118,33 @@ describe("FullBackupSection — choosing the backup file", () => {
     expect(screen.queryByText("No file chosen")).not.toBeInTheDocument();
   });
 });
+
+describe("FullBackupSection — after an import", () => {
+  /* The import now waits for the restart and replaces the database then; it
+   * used to be swapped in at once under the running instance. The screen
+   * said the database "has been replaced on disk", and has to say instead
+   * that the restart is when it happens and that changes before it are
+   * lost. Verified by mutation: the old wording passed every test before
+   * this and is killed by it. */
+  it("says the backup takes effect at the restart and what is lost until then", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, restart_required: true,
+                           previous_database_backup: "/config/remuxarr.db.before-import-1" }),
+    }));
+    render(
+      <ThemeProvider>
+        <FullBackupSection api="" toast={() => {}} />
+      </ThemeProvider>,
+    );
+    const file = new File(["PK"], "remuxarr-backup.zip", { type: "application/zip" });
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [file] } });
+    fireEvent.change(screen.getByPlaceholderText('Type "REPLACE DATABASE" to confirm'),
+                     { target: { value: "REPLACE DATABASE" } });
+    fireEvent.click(screen.getByRole("button", { name: "REPLACE DATABASE" }));
+
+    const panel = await screen.findByText(/replaces this database when you restart/);
+    expect(panel.textContent).toMatch(/discarded/);
+    expect(screen.getByText("/config/remuxarr.db.before-import-1")).toBeInTheDocument();
+  });
+});

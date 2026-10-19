@@ -31,6 +31,7 @@ from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 
 from app.config import settings as app_settings
 from app.core.worker import pause_worker
+from app.database.session import pending_import_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
@@ -150,17 +151,19 @@ async def import_backup(file: UploadFile = File(...)):
     in order: the current database is backed up (via the same WAL-safe
     method) to a timestamped file in /config before anything is touched,
     so there's a real, findable way back if this goes wrong; the worker
-    is paused immediately, before any file operation, so nothing can be
-    mid-write against a database that's about to be replaced out from
-    under it; the actual file swap is atomic (write to a temp path, then
-    a single os.replace() into place — never a truncate-and-overwrite of
-    the live file, which would leave a window where it's invalid).
+    is paused immediately, before any file operation, so no job starts
+    work the import is about to discard; the upload is staged atomically
+    (written to a temp path, then a single os.replace() to the pending
+    name) and never written over the live file.
 
-    Does NOT attempt to make the new database take effect immediately.
-    The live process already holds connections against the old file —
-    swapping the file on disk doesn't retroactively fix those. The
-    response tells the caller a restart is required; the frontend is
-    responsible for making that unmistakable rather than silent.
+    Does NOT make the new database take effect now. The live process
+    holds connections to the current file, so the backup waits beside it
+    and replaces it at the next start, before anything connects
+    (session.apply_pending_import). Until then everything keeps using
+    the current database, and what changes in it is discarded at the
+    restart. The response tells the caller a restart is required; the
+    frontend is responsible for making that unmistakable rather than
+    silent.
     """
     with tempfile.TemporaryDirectory() as tmp:
         upload_path = os.path.join(tmp, "upload.zip")
@@ -222,32 +225,22 @@ async def import_backup(file: UploadFile = File(...)):
                 "aborted without touching anything, to be safe.",
             )
 
-        # Atomic swap: write fully in place first, then one rename.
+        # Staged, not swapped. Replacing the live file here, with the pool
+        # holding connections to it, split every write until the restart
+        # between the old file and the new one, and those in the old one were
+        # gone after it. The file waits beside the database and is put in
+        # place at the next start, before anything connects, which is also
+        # where the old -wal and -shm are removed (session.apply_pending_
+        # import). Written fully under another name first, then renamed, so
+        # a crash never leaves half a backup waiting. A second import before
+        # the restart replaces the first.
         staging_path = live_path + ".importing"
         shutil.copy2(new_db_path, staging_path)
-        os.replace(staging_path, live_path)
-
-        # Critical: also remove any stale WAL/SHM sidecar files left over
-        # from the database we just replaced. The live app's own
-        # connection to the OLD database is necessarily still open at
-        # this exact moment — it's what's serving this very request — so
-        # the old database's -wal file is very likely still populated
-        # with recent writes (e.g. whatever Clear Database or a settings
-        # change just wrote). Without removing it here, SQLite sees that
-        # leftover WAL sitting next to the freshly-restored main file on
-        # next startup and replays it, silently re-applying the OLD
-        # state right back on top of the restore. Verified this exact
-        # failure mode directly, and confirmed this fix resolves it,
-        # before shipping it.
-        for suffix in ("-wal", "-shm"):
-            sidecar = live_path + suffix
-            if os.path.exists(sidecar):
-                os.remove(sidecar)
-                logger.info("Removed stale %s file from the replaced database", suffix)
+        os.replace(staging_path, pending_import_path(live_path))
 
         logger.warning(
-            "Database replaced via import. Previous database backed up to "
-            "%s. A container restart is required for this to take effect.",
+            "Database import staged; it replaces the database at the next "
+            "container restart. Current database backed up to %s.",
             pre_import_backup,
         )
 
