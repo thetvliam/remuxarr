@@ -15,7 +15,7 @@ Two distinct operations, used for two distinct situations:
       refresh does NOT force re-analysis of an already-known path, so this
       finds the matching item by file path and issues an explicit Analyze
       call on it directly — unless a language-fix verification check
-      (see _audio_language_matches) finds Plex's own scheduled maintenance
+      (see _audio_languages_match) finds Plex's own scheduled maintenance
       already caught it, in which case the Analyze call is skipped as
       unnecessary. That check makes its own dedicated per-item request —
       an earlier version tried reading language data from the same bulk
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 # A/B testing showed that assumption didn't hold (the bulk listing didn't
 # reliably return usable Stream data, causing the language check to
 # silently never find a match for any file). Language verification makes
-# its own dedicated per-item request instead — see _audio_language_matches.
+# its own dedicated per-item request instead — see _audio_languages_match.
 #
 # Expires after SECTION_CACHE_TTL seconds so a new import that lands
 # mid-drain still gets picked up on the next fetch cycle, rather than
@@ -264,13 +264,21 @@ def _find_rating_key_for_path(
     return entry["rating_key"] if entry else None
 
 
-def _audio_language_matches(
-    base_url: str, token: str, rating_key: int, expected_language: str,
+def _audio_languages_match(
+    base_url: str, token: str, rating_key: int, expected: list[str],
 ) -> bool | None:
     """
-    Check whether ANY audio stream on this Plex item already reports the
-    expected language, by fetching the item's own full metadata directly —
-    the same data Plex's "View XML" option shows.
+    Check whether this Plex item's audio streams already report exactly the
+    expected languages, in order, by fetching the item's own full metadata
+    directly — the same data Plex's "View XML" option shows.
+
+    Every stream, not any one. This used to pass when ANY audio stream had
+    the one expected language, so a file that already had an English track
+    skipped the Analyze while the track the job had just retagged English
+    still showed its old tag in Plex. A different language, a different
+    number of streams (Plex still listing one the job dropped) or a stream
+    with no tag yet all mean the Analyze still runs. "und" and no tag at all
+    count as the same.
 
     IMPORTANT: this makes its own dedicated /library/metadata/{ratingKey}
     request rather than reading from the shared section-listing cache.
@@ -296,14 +304,17 @@ def _audio_language_matches(
 
     An unanalyzed stream has NONE of these three keys present at all, so
     a plain dict .get() correctly returns None/empty for a not-yet-
-    analyzed file.
+    analyzed file. The streams are taken in the order Plex lists them,
+    assumed to be the file's own stream order (not checked against a real
+    server; were it not, the lists would differ and the Analyze would run,
+    which is the safe direction).
 
     Returns:
-      True  — at least one audio stream already matches expected_language.
-              Plex's own maintenance already caught this file; no need for
-              Remuxarr to force an explicit Analyze.
-      False — no audio stream matches yet. Plex hasn't picked it up (or
-              hasn't gotten to it yet) — fall back to an explicit Analyze.
+      True  — every audio stream already matches, in order. Plex's own
+              maintenance already caught this file; no need for Remuxarr
+              to force an explicit Analyze.
+      False — they do not match yet. Plex hasn't picked it up (or hasn't
+              gotten to it yet) — fall back to an explicit Analyze.
       None  — the check itself failed (network error, item not found,
               unexpected response shape). Caller should treat this the
               same as False — when in doubt, do the explicit Analyze
@@ -331,29 +342,28 @@ def _audio_language_matches(
         )
         return None
 
-    expected = expected_language.strip().lower()
-    found_audio_codes: list[str] = []
+    def code(value) -> str:
+        value = (value or "").strip().lower()
+        return value or "und"
 
-    for item in items:
-        for media in item.get("Media", []):
-            for part in media.get("Part", []):
-                for stream in part.get("Stream", []):
-                    if str(stream.get("streamType")) != "2":
-                        continue   # not an audio stream
-                    lang_code = (stream.get("languageCode") or "").strip().lower()
-                    found_audio_codes.append(lang_code or "(none)")
-                    if lang_code == expected:
-                        logger.debug(
-                            "Plex: language check for ratingKey %d — match "
-                            "found (languageCode=%r)",
-                            rating_key, lang_code,
-                        )
-                        return True
+    found = [
+        code(stream.get("languageCode"))
+        for item in items
+        for media in item.get("Media", [])
+        for part in media.get("Part", [])
+        for stream in part.get("Stream", [])
+        if str(stream.get("streamType")) == "2"      # audio
+    ]
+    wanted = [code(value) for value in expected]
+    if found == wanted:
+        logger.debug("Plex: language check for ratingKey %d — all match (%s)",
+                     rating_key, found)
+        return True
 
     logger.info(
         "Plex: language check for ratingKey %d — no match. "
-        "expected=%r, found audio languageCode(s)=%s",
-        rating_key, expected, found_audio_codes or "(none)",
+        "expected=%s, found audio languageCode(s)=%s",
+        rating_key, wanted, found or "(none)",
     )
     return False
 
@@ -477,16 +487,16 @@ def notify_plex_new_file(
 
 def notify_plex_reprocessed_file(
     base_url: str, token: str, mappings: list[str], local_path: str,
-    expected_language: str | None = None,
+    expected_audio_languages: list[str] | None = None,
 ) -> bool:
     """
     Fire-and-forget explicit Analyze call for a file at a path Plex has
     already indexed. Finds the matching item by file path, then issues
     PUT /library/metadata/{ratingKey}/analyze.
 
-    If expected_language is provided (this reprocess was a language-tag
-    fix), first checks whether Plex's own scheduled maintenance has
-    already picked up the change — confirmed via manual testing to happen
+    If expected_audio_languages is provided (this reprocess changed an
+    audio track's language), first checks whether Plex's own scheduled
+    maintenance has already picked up the change — confirmed via manual testing to happen
     for most files, just not reliably every single one. If it already
     matches, the explicit Analyze is skipped as unnecessary. If the check
     is inconclusive (network error, item not found) or doesn't match yet,
@@ -532,15 +542,15 @@ def notify_plex_reprocessed_file(
         notify_plex_new_file(base_url, token, mappings, local_path)
         return False
 
-    if expected_language:
-        already_correct = _audio_language_matches(
-            base_url, token, rating_key, expected_language,
+    if expected_audio_languages:
+        already_correct = _audio_languages_match(
+            base_url, token, rating_key, expected_audio_languages,
         )
         if already_correct:
             logger.info(
-                "Plex: %s already shows language=%s — Plex's own "
+                "Plex: %s already shows audio languages %s — Plex's own "
                 "maintenance already caught this, skipping analyze",
-                plex_path, expected_language,
+                plex_path, expected_audio_languages,
             )
             return False
         # already_correct is False or None (check failed/inconclusive) —

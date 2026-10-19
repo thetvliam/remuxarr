@@ -340,9 +340,10 @@ def test_an_already_running_scan_still_consumes_the_scheduled_minute(sched, monk
 # ── _drain_tick: the guards ──────────────────────────────────────────────────
 
 class _Entry:
-    def __init__(self, path="/media/ep.mkv", language="eng"):
+    def __init__(self, path="/media/ep.mkv", audio='["eng"]', legacy=None):
         self.id = 1
-        self.expected_language = language
+        self.expected_audio_languages = audio
+        self.expected_language = legacy
         self.media_file = type("MF", (), {"path": path})() if path else None
 
 
@@ -463,11 +464,27 @@ def test_a_drained_entry_reports_a_real_analyze(sched, monkeypatch):
     assert asyncio.run(sched._drain_tick()) is True
     assert len(deleted) == 1
 
-    url, token, mappings, path, lang = sent[0]
+    url, token, mappings, path, audio = sent[0]
     assert url == "http://plex:32400", "trailing slash not stripped"
     assert token == "tok"
     assert path == "/media/ep.mkv"
-    assert lang == "eng"
+    assert audio == ["eng"]
+
+
+def test_an_entry_from_before_the_audio_list_is_analyzed_without_a_check(sched, monkeypatch):
+    """Its single expected_language passed too easily (any audio stream with
+    it), so it is not used: the drain asks for the Analyze outright."""
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry(audio=None, legacy="eng"))
+    sched._cfg = _full_cfg()
+
+    sent = []
+    monkeypatch.setattr(sched, "notify_plex_reprocessed_file",
+                        lambda *a: sent.append(a) or True)
+
+    asyncio.run(sched._drain_tick())
+
+    assert sent[0][4] is None
 
 
 def test_a_skipped_analyze_reports_false(sched, monkeypatch):

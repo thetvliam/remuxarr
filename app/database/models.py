@@ -427,7 +427,20 @@ class PlexAnalyzeBacklog(Base):
     # maintenance has already picked up the change (confirmed to happen
     # for most files, just not reliably every time), the Analyze call is
     # skipped entirely as unnecessary.
+    #
+    # No longer written: rows from before expected_audio_languages carry
+    # it, and the drain analyzes those without a check (see below).
     expected_language = Column(String, nullable=True)
+
+    # What replaced it: every audio track's language in the file the job
+    # wrote, in stream order, as JSON (["eng", "und"]). Set only when the
+    # job changed an AUDIO track's language. The single expected_language
+    # passed if ANY audio stream in Plex had it, so a file that already had
+    # an English track skipped the Analyze while the track the job retagged
+    # still showed the old tag; and it was taken from the first action with
+    # a target language, which could be a subtitle's. Plex now has to show
+    # this exact list for the Analyze to be skipped.
+    expected_audio_languages = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=utcnow)
 

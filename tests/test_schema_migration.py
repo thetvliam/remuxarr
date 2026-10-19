@@ -747,6 +747,45 @@ def test_existing_files_gain_the_reevaluate_mark_unset(tmp_path, monkeypatch):
     assert not value[0], "a file nobody answered anything for is marked"
 
 
+# ── plex_analyze_backlog.expected_audio_languages ────────────────────────────
+
+def test_backlog_entries_gain_the_audio_language_list_empty(tmp_path, monkeypatch):
+    """
+    The live-schema test creates plex_analyze_backlog whole, so it cannot see
+    this column missing. An entry from before it must gain it empty, which
+    the drain reads as "no check": an Analyze, as the old single language
+    check passed too easily to trust.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    Base.metadata.tables["plex_analyze_backlog"].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE plex_analyze_backlog DROP COLUMN expected_audio_languages")
+    conn.execute("INSERT INTO plex_analyze_backlog (file_id, expected_language) VALUES (1, 'eng')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            "SELECT expected_language, expected_audio_languages FROM plex_analyze_backlog"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("eng", None)
+
+
 # ── A backup imported before the restart ─────────────────────────────────────
 
 def test_an_imported_backup_is_put_in_place_before_it_is_migrated(tmp_path, monkeypatch):

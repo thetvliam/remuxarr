@@ -407,7 +407,7 @@ def test_a_reprocessed_file_is_queued_for_the_backlog_when_enabled(db):
     job(db, 1, is_new_file=False)
 
     assert worker._load_plex_notify_data(1) is not None
-    assert [(r.file_id, r.expected_language) for r in backlog_rows(db)] == [(1, None)]
+    assert [(r.file_id, r.expected_audio_languages) for r in backlog_rows(db)] == [(1, None)]
 
 
 def test_a_new_file_is_never_queued_for_the_backlog(db):
@@ -435,22 +435,53 @@ def test_a_second_run_does_not_queue_the_same_file_twice(db):
     assert len(backlog_rows(db)) == 1
 
 
-def test_the_backlog_records_the_language_the_job_set(db):
+def _audio_tracks(db, *languages):
+    from app.database.models import Track
+
+    for n, language in enumerate(languages, start=1):
+        db.add(Track(file_id=1, stream_index=n, track_type="audio", codec="aac",
+                     language=language))
+    db.add(Track(file_id=1, stream_index=9, track_type="subtitle", codec="subrip",
+                 language="fre"))
+    db.commit()
+
+
+def test_the_backlog_records_every_audio_language_the_job_left(db):
     """
     The drain loop uses this to check whether Plex's own maintenance
-    already applied the tag, and skips the Analyze call when it did.
-    Losing it turns every language fix into an unconditional Analyze.
+    already applied the tags, and skips the Analyze call when it did.
+    Losing it turns every language fix into an unconditional Analyze. Every
+    audio track, in order, from the file the job wrote: one language
+    passed whenever any track had it.
     """
     settings(db, **(PLEX_ON | {"plex_analyze_backlog_enabled": True}))
     job(db, 1, is_new_file=False)
-    db.add(PlannedAction(queue_item_id=1, order=0, action_type="set_language",
-                         description="Fix undefined language tag",
-                         target_language="eng"))
+    # As _finish_job left them: the second track retagged English, the
+    # third still undefined.
+    _audio_tracks(db, "eng", "eng", None)
+    db.add(PlannedAction(queue_item_id=1, order=0, action_type="copy_track",
+                         description="Fix undefined language tag", track_type="audio",
+                         stream_index=2, target_language="eng"))
     db.commit()
 
     worker._load_plex_notify_data(1)
 
-    assert backlog_rows(db)[0].expected_language == "eng"
+    assert json.loads(backlog_rows(db)[0].expected_audio_languages) == ["eng", "eng", "und"]
+
+
+def test_a_subtitle_language_fix_records_no_audio_check(db):
+    """A subtitle's language used to stand in for the audio's."""
+    settings(db, **(PLEX_ON | {"plex_analyze_backlog_enabled": True}))
+    job(db, 1, is_new_file=False)
+    _audio_tracks(db, "eng")
+    db.add(PlannedAction(queue_item_id=1, order=0, action_type="copy_track",
+                         description="Fix subtitle language", track_type="subtitle",
+                         stream_index=9, target_language="fre"))
+    db.commit()
+
+    worker._load_plex_notify_data(1)
+
+    assert backlog_rows(db)[0].expected_audio_languages is None
 
 
 def test_the_backlog_records_no_language_when_the_job_set_none(db):
@@ -462,7 +493,7 @@ def test_the_backlog_records_no_language_when_the_job_set_none(db):
 
     worker._load_plex_notify_data(1)
 
-    assert backlog_rows(db)[0].expected_language is None
+    assert backlog_rows(db)[0].expected_audio_languages is None
 
 
 # ── _load_forge_plex_notify_data ─────────────────────────────────────────────
@@ -501,7 +532,7 @@ def test_a_missing_forge_job_or_media_row_returns_nothing(db):
     assert worker._load_forge_plex_notify_data(2) is None
 
 
-def test_a_forge_job_queues_the_backlog_with_no_expected_language(db):
+def test_a_forge_job_queues_the_backlog_with_no_audio_check(db):
     """
     Forge changes the codec layout, never a language tag, so there is
     nothing for the drain loop to verify against — a language here would
@@ -512,7 +543,7 @@ def test_a_forge_job_queues_the_backlog_with_no_expected_language(db):
 
     worker._load_forge_plex_notify_data(1)
 
-    assert [(r.file_id, r.expected_language) for r in backlog_rows(db)] == [(1, None)]
+    assert [(r.file_id, r.expected_audio_languages) for r in backlog_rows(db)] == [(1, None)]
 
 
 def test_a_forge_job_does_not_queue_the_backlog_when_the_toggle_is_off(db):

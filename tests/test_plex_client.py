@@ -20,7 +20,7 @@ Three things carry real weight.
   pinned separately.
 
   THE LANGUAGE CHECK MUST FAIL TOWARDS DOING THE WORK.
-  _audio_language_matches returns True/False/None, and None means the check
+  _audio_languages_match returns True/False/None, and None means the check
   itself broke. Both False and None have to fall through to the explicit
   analyze — correctness is never traded for the optimisation. A check that
   returned True on error would silently skip analysis on exactly the files
@@ -54,6 +54,18 @@ assumed:
     equal to the local prefix exactly — and the paths passed here are
     always files, never the bare prefix. The `is not None` form is kept
     because it states the contract swap_prefix actually has.
+
+The language check came later: it passed when ANY audio stream had the one
+expected language, so an English track already there let a file skip the
+Analyze while the track the job had retagged still showed its old tag in
+Plex. It now compares every audio language, in order, with the list the job
+recorded. Seven mutants, all surviving the suite as it stood, all killed:
+any language in common passing, the order ignored and the count ignored
+(the tests under _audio_languages_match here), an undefined track not
+matching an untagged one (here), a subtitle language fix recorded as an
+audio one (test_post_job_notify), an entry from before the list still
+checked with its single language (test_scheduler), and the column's upgrade
+step missing (test_schema_migration).
 """
 import urllib.error
 
@@ -318,18 +330,18 @@ def test_different_sections_are_cached_independently(plex):
     assert plex._get_section_items(URL, TOKEN, 1) != plex._get_section_items(URL, TOKEN, 2)
 
 
-# ── _audio_language_matches ──────────────────────────────────────────────────
+# ── _audio_languages_match ───────────────────────────────────────────────────
 
 def test_a_matching_audio_language_is_detected(plex):
     plex._routes["/library/metadata/9"] = _streams(("2", "eng"))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is True
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is True
 
 
 def test_a_non_matching_audio_language_returns_false(plex):
     plex._routes["/library/metadata/9"] = _streams(("2", "dut"))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is False
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is False
 
 
 def test_video_and_subtitle_streams_are_not_consulted(plex):
@@ -340,7 +352,7 @@ def test_video_and_subtitle_streams_are_not_consulted(plex):
     plex._routes["/library/metadata/9"] = _streams(("1", "eng"), ("3", "eng"),
                                                    ("2", "dut"))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is False
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is False
 
 
 def test_the_stream_type_is_compared_as_a_string(plex):
@@ -350,13 +362,13 @@ def test_the_stream_type_is_compared_as_a_string(plex):
     """
     plex._routes["/library/metadata/9"] = _streams((2, "eng"))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is True
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is True
 
 
 def test_the_language_comparison_ignores_case_and_padding(plex):
     plex._routes["/library/metadata/9"] = _streams(("2", " ENG "))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "Eng") is True
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["Eng"]) is True
 
 
 def test_an_unanalyzed_stream_has_no_language_key_at_all(plex):
@@ -366,7 +378,43 @@ def test_an_unanalyzed_stream_has_no_language_key_at_all(plex):
     """
     plex._routes["/library/metadata/9"] = _streams(("2", None))
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is False
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is False
+
+
+def test_an_english_track_already_there_does_not_pass_for_the_retagged_one(plex):
+    """
+    The check used to pass when ANY audio stream had the expected language.
+    The job retagged the undefined second track English; Plex still shows
+    it untagged beside the English one that was always there, and the
+    Analyze has to run.
+    """
+    plex._routes["/library/metadata/9"] = _streams(("2", "eng"), ("2", None))
+
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng", "eng"]) is False
+
+
+def test_every_audio_stream_matching_in_order_passes(plex):
+    plex._routes["/library/metadata/9"] = _streams(("2", "eng"), ("1", "eng"), ("2", "jpn"))
+
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng", "jpn"]) is True
+
+
+def test_the_same_languages_in_another_order_do_not_pass(plex):
+    plex._routes["/library/metadata/9"] = _streams(("2", "jpn"), ("2", "eng"))
+
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng", "jpn"]) is False
+
+
+def test_a_stream_plex_still_lists_after_the_job_dropped_it_does_not_pass(plex):
+    plex._routes["/library/metadata/9"] = _streams(("2", "eng"), ("2", "fre"))
+
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is False
+
+
+def test_an_undefined_track_matches_one_plex_shows_untagged(plex):
+    plex._routes["/library/metadata/9"] = _streams(("2", "eng"), ("2", None))
+
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng", "und"]) is True
 
 
 def test_a_failed_language_check_returns_none_not_false(plex):
@@ -377,13 +425,13 @@ def test_a_failed_language_check_returns_none_not_false(plex):
     """
     plex._routes["/library/metadata/9"] = ConnectionError("plex down")
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is None
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is None
 
 
 def test_an_empty_metadata_response_returns_none(plex):
     plex._routes["/library/metadata/9"] = {"MediaContainer": {}}
 
-    assert plex._audio_language_matches(URL, TOKEN, 9, "eng") is None
+    assert plex._audio_languages_match(URL, TOKEN, 9, ["eng"]) is None
 
 
 # ── notify_plex_new_file ─────────────────────────────────────────────────────
@@ -514,7 +562,7 @@ def test_an_already_correct_language_skips_the_analyze(plex):
 
     assert plex.notify_plex_reprocessed_file(
         URL, TOKEN, ["/media=/data"], "/media/tv/ep.mkv",
-        expected_language="eng") is False
+        expected_audio_languages=["eng"]) is False
     assert "/library/metadata/99/analyze" not in _paths(plex)
 
 
@@ -524,7 +572,7 @@ def test_a_language_that_has_not_caught_up_still_analyzes(plex):
 
     assert plex.notify_plex_reprocessed_file(
         URL, TOKEN, ["/media=/data"], "/media/tv/ep.mkv",
-        expected_language="eng") is True
+        expected_audio_languages=["eng"]) is True
     assert "/library/metadata/99/analyze" in _paths(plex)
 
 
@@ -539,11 +587,11 @@ def test_a_broken_language_check_falls_through_to_the_analyze(plex):
 
     assert plex.notify_plex_reprocessed_file(
         URL, TOKEN, ["/media=/data"], "/media/tv/ep.mkv",
-        expected_language="eng") is True
+        expected_audio_languages=["eng"]) is True
     assert "/library/metadata/99/analyze" in _paths(plex)
 
 
-def test_without_an_expected_language_no_check_is_made(plex):
+def test_without_expected_audio_languages_no_check_is_made(plex):
     """
     The check costs a request per item. A reprocess that wasn't a language fix
     has nothing to verify, so it goes straight to the analyze.
@@ -567,7 +615,7 @@ def test_the_language_check_does_not_reuse_the_bulk_listing(plex):
     plex._routes["/library/metadata/99"] = _streams(("2", "eng"))
 
     plex.notify_plex_reprocessed_file(URL, TOKEN, ["/media=/data"],
-                                      "/media/tv/ep.mkv", expected_language="eng")
+                                      "/media/tv/ep.mkv", expected_audio_languages=["eng"])
 
     assert "/library/metadata/99" in _paths(plex)
 

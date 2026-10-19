@@ -19,6 +19,7 @@ restart, after which only the current minute counts, as before.
 """
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -202,7 +203,11 @@ async def _drain_tick() -> bool:
         # the row — deletion happens regardless of outcome (best-effort,
         # matching the rest of the Plex integration's philosophy).
         local_path        = media.path if media else None
-        expected_language = entry.expected_language
+        # A row from before expected_audio_languages has only the old
+        # single expected_language, whose check passed too easily; it is
+        # analyzed without one. See PlexAnalyzeBacklog.
+        expected_audio = (json.loads(entry.expected_audio_languages)
+                          if entry.expected_audio_languages else None)
         db.delete(entry)
         db.commit()
 
@@ -222,7 +227,7 @@ async def _drain_tick() -> bool:
     try:
         analyzed = await loop.run_in_executor(
             None, notify_plex_reprocessed_file,
-            url, token, mappings, local_path, expected_language,
+            url, token, mappings, local_path, expected_audio,
         )
         return bool(analyzed)
     except Exception:

@@ -2555,24 +2555,35 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
             .first()
         )
         if not existing:
-            # If this job involved a language-tag fix, record which
-            # language was set so the drain loop can check whether Plex's
-            # own scheduled maintenance already picked it up before
-            # bothering with an explicit Analyze call. Confirmed (via
-            # manual testing) that Plex's own maintenance does often catch
-            # these on its own, just not reliably for every file — this
-            # lets Remuxarr skip the redundant Analyze call for the files
-            # Plex already got right, while still guaranteeing correctness
-            # via the fallback for the ones it missed.
-            lang_action = (
-                db.query(PlannedAction)
+            # If this job changed an audio track's language, record every
+            # audio track's language in the file it wrote, so the drain loop
+            # can check whether Plex's own scheduled maintenance already
+            # picked the change up before bothering with an explicit Analyze
+            # call. Confirmed (via manual testing) that Plex's own
+            # maintenance does often catch these on its own, just not
+            # reliably for every file — this lets Remuxarr skip the redundant
+            # Analyze call for the files Plex already got right, while still
+            # guaranteeing correctness via the fallback for the ones it
+            # missed. The whole list, not one language: see
+            # PlexAnalyzeBacklog.expected_audio_languages. From the Track
+            # rows, which _finish_job has just refreshed from the output.
+            audio_fix = (
+                db.query(PlannedAction.id)
                 .filter(
                     PlannedAction.queue_item_id == job.id,
                     PlannedAction.target_language.isnot(None),
+                    PlannedAction.track_type == "audio",
                 )
                 .first()
             )
-            expected_language = lang_action.target_language if lang_action else None
+            expected_audio = None
+            if audio_fix:
+                expected_audio = [
+                    t.language or "und"
+                    for t in db.query(Track)
+                    .filter(Track.file_id == job.file_id, Track.track_type == "audio")
+                    .order_by(Track.stream_index)
+                ]
 
             # Deliberately explicit rather than folded into the queued-for-
             # backlog message below — this is the one line that tells us,
@@ -2583,20 +2594,21 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
             # persisted) — not in the Plex-side verification check.
             logger.info(
                 "Plex: backlog capture for job %d (reason=%r) — "
-                "expected_language=%r",
-                job.id, job.reason, expected_language,
+                "expected audio languages=%r",
+                job.id, job.reason, expected_audio,
             )
 
             db.add(PlexAnalyzeBacklog(
                 file_id=job.file_id,
-                expected_language=expected_language,
+                expected_audio_languages=(json.dumps(expected_audio)
+                                          if expected_audio is not None else None),
             ))
             db.commit()
             logger.info(
                 "Plex: queued %s for backlog analyze (drains during the "
                 "configured window)%s",
                 job.output_path,
-                f" — will verify language={expected_language} first" if expected_language else "",
+                f" — will verify audio languages {expected_audio} first" if expected_audio else "",
             )
         return refresh_data
 

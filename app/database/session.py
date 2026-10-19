@@ -767,6 +767,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE planned_actions ADD COLUMN target_language TEXT"),
         ("plex_analyze_backlog", "expected_language",
          "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
+        ("plex_analyze_backlog", "expected_audio_languages",
+         "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_audio_languages TEXT"),
         ("revert_points", "detached_at",
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
         ("subtitle_language_flags", "extracted_path",
