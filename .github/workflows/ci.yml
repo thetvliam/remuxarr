@@ -146,8 +146,12 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
+      # npm ci, as the Dockerfile: exactly the tree package-lock.json
+      # records, and a failure if the lock does not match package.json.
+      # npm install resolved fresh on every run and rewrote the lock, so the
+      # suite tested whatever was newest that day.
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       # package.json has had a lint script all along and CI never ran it.
       # .eslintrc.cjs sets react-hooks/exhaustive-deps to "error" rather than

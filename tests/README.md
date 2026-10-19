@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2042 tests across 93 test files, plus 743 frontend tests under
+2044 tests across 93 test files, plus 743 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -216,6 +216,10 @@ playable files and argv-level assertions saw nothing amiss.
 revert re-embeds the subtitles extraction wrote beside the media, so leaving
 those files gives every subtitle twice, while deleting every `.srt` next to the
 media would take out the ones that predate Remuxarr.
+`test_deployment_config.py` also checks the build beyond the recycle volume.
+Among other things, CI and the image install the frontend with `npm ci`, from
+a lockfile that matches `package.json`: both ran `npm install`, which ignored
+the lock, and it fell so far behind that `npm ci` refused it.
 
 **Sample library** — `test_sample_library.py` runs the real pipeline against a
 fixed set of probed media files (`tests/sample_library/`) and compares against
@@ -293,7 +297,7 @@ picked. It is the target that is wrong, not the tool.
 pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 
-cd frontend && npm install && npm test
+cd frontend && npm ci && npm test
 ```
 
 **Option B — inside the deployed container**, against the real production

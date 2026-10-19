@@ -365,7 +365,7 @@ developer theme editor's preview isolation, control coverage and export, and
 the invariants every shipped theme must satisfy:
 
 ```bash
-cd frontend && npm install && npm test
+cd frontend && npm ci && npm test
 ```
 
 Both run in CI on every push, alongside pyflakes and eslint. A few backend
