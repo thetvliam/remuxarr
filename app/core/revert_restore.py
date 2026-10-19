@@ -351,8 +351,9 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     are correct; a bookkeeping failure is fixed by the next full rescan
     and must not be reported to the user as a failed revert.
     """
-    from app.core.scanner import (ANSWER_COLUMNS, _track_to_dict,
-                                  clear_media_answers, rekey_media_answers)
+    from app.core.scanner import (ANSWER_COLUMNS, _delete_media_file_and_related,
+                                  _track_to_dict, clear_media_answers,
+                                  rekey_media_answers)
     from app.database.models import MediaFile, RevertPoint, Track
 
     media = db.get(MediaFile, plan.file_id)
@@ -369,8 +370,12 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             .first()
         )
         if stale:
+            # With everything that refers to it, as _finish_job removes one.
+            # A bare delete failed on a stale row that still had a language
+            # flag or a forge job (their file_id is NOT NULL), and the whole
+            # update below went with it.
             logger.info("Removing stale MediaFile row for %s", restored_path)
-            db.delete(stale)
+            _delete_media_file_and_related(db, stale)
             db.flush()
 
         media.path = restored_path
@@ -513,6 +518,29 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))
 
+    # What the revert starts from, as _run_job keeps it: the processed file,
+    # and the destination when that is another name. Checked again just
+    # before the restored file is swapped in. Sonarr or Radarr importing an
+    # upgrade meanwhile used to be overwritten by the restored original, or,
+    # after a container change, deleted below as the processed copy.
+    from app.core.worker import _fingerprint
+    source_print = _fingerprint(plan.current_path)
+    target_print = (_fingerprint(plan.destination)
+                    if plan.destination != plan.current_path else None)
+
+    async def unchanged() -> str | None:
+        if _fingerprint(plan.current_path) != source_print:
+            detail = (f"{os.path.basename(plan.current_path)} was replaced, "
+                      f"modified or removed while it was being reverted")
+        elif (plan.destination != plan.current_path
+              and _fingerprint(plan.destination) != target_print):
+            detail = (f"{os.path.basename(plan.destination)} appeared at the "
+                      f"name the revert writes to while it ran")
+        else:
+            return None
+        logger.warning("Revert point %d stopped: %s", point_id, detail)
+        return f"{detail}. Nothing was changed."
+
     logger.info(
         "Reverting %s → %s", plan.current_path, plan.destination,
     )
@@ -523,6 +551,7 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         timeout_label="Revert",
+        before_swap=unchanged,
     )
 
     if not result.success:
@@ -530,15 +559,23 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
 
     # A container change during processing means the file lived under a
     # different extension; the restored original is now beside it and the
-    # processed copy is dead weight.
+    # processed copy is dead weight. Only if it is still the file the revert
+    # read: something can replace it in the moment after the swap, and that
+    # file is not the revert's to delete.
     if plan.destination != plan.current_path and os.path.exists(plan.current_path):
-        try:
-            os.remove(plan.current_path)
-        except OSError as exc:
+        if _fingerprint(plan.current_path) != source_print:
             logger.warning(
-                "Could not remove the processed file %s after reverting: %s",
-                plan.current_path, exc,
+                "Not removing %s after reverting: it changed while the revert "
+                "ran and is not the file the revert read", plan.current_path,
             )
+        else:
+            try:
+                os.remove(plan.current_path)
+            except OSError as exc:
+                logger.warning(
+                    "Could not remove the processed file %s after reverting: %s",
+                    plan.current_path, exc,
+                )
 
     # After the swap, so a failed restore leaves the extracted files where
     # they are — they are the user's only copy of those subtitles while

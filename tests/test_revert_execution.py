@@ -85,6 +85,17 @@ ID overridden by the carried one, and the Radarr ID not carried. Two more,
 the newest-item ordering reversed and the has-an-ID filter dropped, were
 already killed by the revert-notification tests in test_post_job_notify,
 which use the same lookup.
+
+Two protections a job already had came last. Something else writing while
+the revert runs: the processed file replaced, or a file arriving at the
+destination, between FFmpeg reading the file and the swap, used to be
+overwritten, or deleted after a container change, with the revert
+reporting success (reproduced first). And a stale record at the restored
+name holding rows of its own, whose bare delete failed and lost the whole
+record update. Five mutants, all surviving the suite as it stood, all
+killed by the tests at the end: no check passed at the swap, the processed
+file's check dropped, the destination's check dropped, the removal after
+the swap unguarded, and the bare delete put back.
 """
 import asyncio
 import json
@@ -832,3 +843,127 @@ def test_a_stalled_revert_is_stopped_and_leaves_everything_as_it_was(env, monkey
     )
     leftovers = [p for p in env["media_dir"].parent.rglob("*.remuxarr_tmp")]
     assert leftovers == [], leftovers
+
+
+# ── Something else writing while the revert runs ─────────────────────────────
+#
+# The check at the start refuses a file already at the destination. Nothing
+# looked again before the swap, so Sonarr or Radarr importing an upgrade
+# while FFmpeg ran was overwritten by the restored original or, after a
+# container change, deleted as the processed copy (reproduced first, both
+# reporting success). The revert now checks again at the swap, as a job
+# does. These stand in for the import with a hook that runs where it would
+# land: after FFmpeg has read the file, before the restored one is swapped
+# in (or straight after, for the removal).
+
+def _meanwhile(monkeypatch, *, before_swap=None, after=None):
+    import app.core.revert_restore as restore_mod
+    real = restore_mod.run_staged_subprocess
+
+    async def run(*args, **kwargs):
+        if before_swap is not None:
+            ours = kwargs["before_swap"]
+
+            async def hook():
+                before_swap()
+                return await ours() if ours is not None else None
+            kwargs["before_swap"] = hook
+        result = await real(*args, **kwargs)
+        if after is not None:
+            after()
+        return result
+    monkeypatch.setattr(restore_mod, "run_staged_subprocess", run)
+
+
+UPGRADE = b"the upgrade Sonarr imported" * 100
+
+
+@ffmpeg_required
+@pytest.mark.parametrize("converted", [False, True], ids=["same name", "container change"])
+def test_a_file_replaced_during_the_revert_is_left_alone(env, monkeypatch, converted):
+    from app.database.models import RevertPoint
+
+    current = env["path"]
+    if converted:
+        current = env["media_dir"] / "Show.mp4"
+        _rename_and_match_back(env, current)
+    _meanwhile(monkeypatch, before_swap=lambda: current.write_bytes(UPGRADE))
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is False
+    assert ("Show.mp4" if converted else "Show.mkv") in outcome.error
+    assert "replaced, modified or removed" in outcome.error
+    assert current.read_bytes() == UPGRADE, "the upgrade was overwritten or deleted"
+    if converted:
+        assert not (env["media_dir"] / "Show.mkv").exists()
+    env["db"].expire_all()
+    assert env["db"].get(RevertPoint, env["point"].id) is not None
+
+
+@ffmpeg_required
+def test_a_file_appearing_at_the_destination_during_the_revert_is_left_alone(env, monkeypatch):
+    converted = env["media_dir"] / "Show.mp4"
+    _rename_and_match_back(env, converted)
+    converted_bytes = converted.read_bytes()
+    arrival = env["media_dir"] / "Show.mkv"
+    _meanwhile(monkeypatch, before_swap=lambda: arrival.write_bytes(UPGRADE))
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is False
+    assert "Show.mkv appeared" in outcome.error
+    assert arrival.read_bytes() == UPGRADE, "the file that arrived was overwritten"
+    assert converted.read_bytes() == converted_bytes
+
+
+@ffmpeg_required
+def test_a_file_replaced_just_after_the_swap_is_not_deleted(env, monkeypatch):
+    """The restored original is in place, so the revert stands; the file now
+    at the processed name is not the one it read, and stays."""
+    converted = env["media_dir"] / "Show.mp4"
+    _rename_and_match_back(env, converted)
+    _meanwhile(monkeypatch, after=lambda: converted.write_bytes(UPGRADE))
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    assert (env["media_dir"] / "Show.mkv").exists()
+    assert converted.read_bytes() == UPGRADE, "the file at the processed name was deleted"
+
+
+@ffmpeg_required
+def test_a_stale_record_with_rows_of_its_own_is_cleared_with_them(env):
+    """
+    A record from earlier still holds the name the revert restores to, with
+    no file there, and it has a language question and a forge job of its
+    own. The bare delete failed on those (their file_id is NOT NULL), and
+    the record update after the revert was lost with it: the live record
+    went on naming the processed file, which the revert had just removed.
+    """
+    from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile
+
+    converted = env["media_dir"] / "Show.mp4"
+    media = _rename_and_match_back(env, converted)
+    db = env["db"]
+    stale = MediaFile(path=str(env["media_dir"] / "Show.mkv"), filename="Show.mkv",
+                      directory=str(env["media_dir"]), size=1, mtime=1.0, container="mkv")
+    db.add(stale)
+    db.flush()
+    db.add_all([
+        AudioLanguageFlag(file_id=stale.id, stream_index=1, detected_language="und"),
+        Ac3ForgeJob(file_id=stale.id, status="success", aac_stream_index=1,
+                    audio_track_count=1),
+    ])
+    db.commit()
+    stale_id = stale.id
+
+    outcome = _revert(env["point"].id)
+
+    assert outcome.success is True, outcome.error
+    db.expire_all()
+    assert db.get(MediaFile, media.id).path == str(env["media_dir"] / "Show.mkv"), (
+        "the record was not moved to the restored file")
+    assert db.get(MediaFile, stale_id) is None
+    assert db.query(AudioLanguageFlag).filter(AudioLanguageFlag.file_id == stale_id).count() == 0
+    assert db.query(Ac3ForgeJob).filter(Ac3ForgeJob.file_id == stale_id).count() == 0
