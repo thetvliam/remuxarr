@@ -8,17 +8,20 @@ times in the `scheduled_scan_times` setting (HH:MM, 24-hour format).
 Uses the system's local time, which respects the TZ environment variable
 on the container — the standard way Docker handles timezone configuration.
 
-A module-level dedup guard (_last_triggered_minute) prevents the scan from
-being triggered twice if the loop fires more than once within the same
-minute (e.g. on startup near a scheduled time).  The guard resets on a
-container restart, which is acceptable — a redundant scan on restart is
-harmless.
+A scheduled time fires when it came round since the previous check
+(_last_checked), not only when the check lands on its exact minute. Each
+cycle is the tick, the retention sweep and a 60-second sleep, so a cycle
+runs a little over a minute and the checked minute skipped one every so
+often: 12 times a day at half a second per cycle, 102 at five, and a scan
+due in a skipped minute did not run that day. Remembering the last check
+also keeps a time from firing twice. The reference resets on a container
+restart, after which only the current minute counts, as before.
 """
 
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.plex import notify_plex_reprocessed_file
 from app.core.recycle import sweep_retention
@@ -27,9 +30,9 @@ from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
 
-# Minute string ("HH:MM") of the most recently triggered scheduled scan.
-# Resets on restart — intentional.
-_last_triggered_minute: str = ""
+# When _tick last looked at the clock. None until the first tick after a
+# start — intentional, see _due_time.
+_last_checked: datetime | None = None
 
 # Seconds between each backlog item processed during the analyze window,
 # when that item actually triggers a real Analyze call — the genuinely
@@ -230,11 +233,51 @@ async def _drain_tick() -> bool:
         return False
 
 
+def _due_time(scan_times: list[str], since: datetime | None,
+              now: datetime) -> str | None:
+    """
+    A scheduled "HH:MM" that came round after `since` and at or before
+    `now`, or None. At most one: a gap covering several times gives one
+    scan, which covers them all.
+
+    With no `since`, the first tick after a start, only the current minute
+    counts, so a restart does not fire for times earlier in the day. A clock
+    that went back fires nothing and the next tick measures from here. A gap
+    of a day or more, the host asleep for one, has passed every time, and
+    the scan runs once on waking, as a missed one should.
+    """
+    if since is None:
+        current = now.strftime("%H:%M")
+        return current if current in scan_times else None
+    if now <= since:
+        return None
+    for scheduled in scan_times:
+        try:
+            hour, minute = (int(part) for part in scheduled.split(":"))
+            # Today's and the previous check's day: a gap over midnight.
+            occurrences = [day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                           for day in (since, now)]
+        except ValueError:
+            continue
+        if now - since >= timedelta(days=1):
+            return scheduled
+        if any(since < when <= now for when in occurrences):
+            return scheduled
+    return None
+
+
 async def _tick(ws_manager) -> None:
     """
-    Called once per minute.  Checks settings and fires a scan if needed.
+    Called about once a minute. Checks settings and fires a scan if a
+    scheduled time came round since the previous call.
     """
-    global _last_triggered_minute
+    global _last_checked
+
+    # Moved on every call, including the early returns below: switching
+    # scheduled scans on must not fire for times that passed while they
+    # were off.
+    now = datetime.now()   # respects TZ env var
+    since, _last_checked = _last_checked, now
 
     db = SessionLocal()
     try:
@@ -249,18 +292,13 @@ async def _tick(ws_manager) -> None:
     if not scan_times:
         return
 
-    current_minute = datetime.now().strftime("%H:%M")   # respects TZ env var
-
-    # Dedup: don't trigger twice in the same minute window
-    if current_minute == _last_triggered_minute:
+    due = _due_time(scan_times, since, now)
+    if due is None:
         return
 
-    if current_minute not in scan_times:
-        return
-
-    # Time matches — dispatch the scan
-    _last_triggered_minute = current_minute
-    logger.info("Scheduler: triggering scheduled scan at %s", current_minute)
+    # Time matches — dispatch the scan. The time is used up even if a scan
+    # is already running (below): one running then satisfies it.
+    logger.info("Scheduler: triggering scheduled scan for %s", due)
 
     # Deferred (in-function) import to avoid circular imports: scan.py
     # imports scanner.py; scheduler.py is imported by main.py, which also
