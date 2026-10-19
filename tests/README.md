@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2031 tests across 90 test files, plus 743 frontend tests under
+2035 tests across 91 test files, plus 743 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -82,7 +82,7 @@ acts on it.
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
-`test_existing_subtitle_files.py`. Some run a
+`test_existing_subtitle_files.py`, `test_timeout_logging.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -101,6 +101,9 @@ decides, and the default numbers past the file instead. It also covers a job
 that stops short of success after extracting some subtitles: numbering past
 its own leftovers gave every failed attempt another `Movie.en.N.srt`, so the
 job now removes them.
+`test_timeout_logging.py` covers what the container log says when a run hits
+the job time limit: the remux's log line raised instead and left a
+traceback, and the other three left the reason out.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,

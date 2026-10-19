@@ -281,7 +281,13 @@ async def run_forge_command(
     )
 
     if not result.success:
-        if result.returncode is not None and result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("Forge FFmpeg failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error(
                 "Forge FFmpeg failed (rc=%d):\n%s", result.returncode, result.error
             )

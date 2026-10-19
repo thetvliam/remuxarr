@@ -829,7 +829,13 @@ async def execute_ffmpeg(
         # exit), not the "temp file missing after a clean exit" edge case
         # — preserve that distinction. A clean exit (rc=0) combined with
         # success=False uniquely identifies the missing-temp-file case.
-        if result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("FFmpeg failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error("FFmpeg failed (rc=%d):\n%s", result.returncode, result.error)
         return FFmpegResult(
             success=False, output_path=None, error=result.error, output_size=None
@@ -911,7 +917,14 @@ async def execute_subtitle_extraction(
             # Only log for genuine FFmpeg failures (rc != 0), not for the
             # "temp file missing after a clean exit" edge case — matches the
             # original asymmetric logging behaviour.
-            if result.returncode is not None and result.returncode != 0:
+            # No exit code means the run was stopped at its time limit: that is
+            # the only result run_staged_subprocess returns without one. Logged
+            # with its reason; it used to be either skipped or formatted with
+            # %d, which raised inside logging and left a traceback instead.
+            if result.returncode is None:
+                logger.error("Subtitle extraction failed (stream %d): %s",
+                             stream_index, result.error)
+            elif result.returncode != 0:
                 logger.error(
                     "Subtitle extraction failed (stream %d, rc=%d): %s",
                     stream_index, result.returncode, result.error,
@@ -1153,7 +1166,13 @@ async def execute_ffmpeg_combined(
     if not result.success:
         # Log only for genuine FFmpeg failures (rc != 0), not for the
         # missing-temp edge case — matches original asymmetric logging.
-        if result.returncode is not None and result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("FFmpeg (combined) failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error(
                 "FFmpeg (combined) failed (rc=%d):\n%s", result.returncode, result.error
             )
