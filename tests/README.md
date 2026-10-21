@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2044 tests across 93 test files, plus 746 frontend tests under
+2045 tests across 93 test files, plus 746 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -112,7 +112,9 @@ traceback, and the other three left the reason out.
 with a job waiting for the same file: the stored track list stayed as it was
 before the rewrite, so the job left out a just-added AC3, or mapped a removed
 one and failed. It also runs an add queued before a job shifted the file's
-tracks, which used to copy the wrong track instead of building an AC3.
+tracks, which used to copy the wrong track instead of building an AC3, and
+an add for a file whose stored container is empty, which was forged as
+Matroska whatever the file was.
 `test_forge_shutdown.py` stops the real worker loop while a forge run is in
 progress. A stop used to leave the run going until the event loop was torn
 down, and the next start failed it as a crash, though the file was

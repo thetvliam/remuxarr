@@ -57,6 +57,18 @@ those two. The other six survived the baseline and are killed here:
   • the new values not committed to the job  → the shifted-tracks run
   • no refusal with no AAC 5.1 left          → the no-AAC 5.1 run
   • a probe failure not caught               → the unprobeable-file run
+
+The forge also read an empty stored container as "mkv", and wrote
+Matroska into the file whatever it was. The scanner stores an empty
+container only when ffprobe reports no format name, so this guards a
+value that should not arrive rather than one any file was seen to produce.
+With the guess gone the command builders refuse it, as they refuse any
+container they do not know, and the job fails with the file untouched.
+
+Verified by mutation, 1 applied, 1 killed. Putting `or "mkv"` back is the
+code as it stood, which the suite then (2044 tests) passed. The
+no-container run kills it: on that code the forge reported success and
+left Matroska in the .mp4.
 """
 import asyncio
 import json
@@ -372,3 +384,42 @@ def test_an_add_that_cannot_probe_the_file_fails_and_changes_nothing(lib, monkey
     assert "moov atom not found" in job.error
     assert lib.video.read_bytes() == before
 
+
+def _mp4(path):
+    """A real MP4: video and one English AAC 5.1 track."""
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-map", "0:v", "-map", "1:a", "-ac", "6",
+         "-metadata:s:a:0", "language=eng",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "64k", "-f", "mp4", str(path)],
+        check=True)
+    return path
+
+
+@needs_ffmpeg
+def test_an_add_for_a_file_with_no_stored_container_fails_and_changes_nothing(lib):
+    """
+    An empty container is what the scanner stores when ffprobe reports no
+    format name. The forge read it as "mkv" and wrote Matroska into the
+    file whatever it was, here an .mp4.
+    """
+    from app.core import scanner
+    from app.database.models import MediaFile
+
+    mp4 = _mp4(lib.video.parent / "Clip.mp4")
+    with lib.Session() as db:
+        scanner.queue_single_file(db, str(mp4))
+        media = db.query(MediaFile).filter(MediaFile.path == str(mp4)).one()
+        media.container = ""
+        db.commit()
+        forge_job = lib.forge.queue_forge_job(db, media.id).id
+    before = mp4.read_bytes()
+
+    _run_forge(lib)
+    job = _forge_job(lib, forge_job)
+    assert job.status == "failed"
+    assert "Unsupported container ''" in job.error
+    assert mp4.read_bytes() == before

@@ -104,7 +104,7 @@ def build_add_ac3_command(
     # story). Note this map is even narrower than that one (no "mov"
     # entry), so without this a forge job on a .mov would have written
     # Matroska bytes into the .mov in place. Raising here is caught by
-    # _process_next_forge's job-level exception handler and becomes a
+    # worker._run_forge_job's job-level exception handler and becomes a
     # visible failed forge job, before FFmpeg ever starts.
     if container not in _FORMAT_MAP:
         raise ValueError(
@@ -770,7 +770,13 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "is_undo":            job.is_undo,
             "file_path":          media.path,
             "filename":           media.filename,
-            "container":          media.container or "mkv",
+            # As stored, with no fallback. This was `or "mkv"`, so an empty
+            # value had the forge write Matroska into the file whatever it
+            # was, an .mp4 included. The scanner stores one only when
+            # ffprobe reports no format name. The command builders refuse a
+            # container they do not know, empty included, so the job fails
+            # with the file untouched.
+            "container":          media.container,
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,
