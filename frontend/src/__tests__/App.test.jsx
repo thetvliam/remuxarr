@@ -43,7 +43,12 @@ import App from "../App";
 import { ThemeProvider } from "../theme";
 import { stubViewport } from "../test/viewport";
 
-vi.mock("../hooks/useWebSocket", () => ({ useWebSocket: () => true }));
+/* The handler is kept so a test can deliver a message, as useAppData's
+ * tests do. The mock answers as before for every test that does not. */
+const ws = vi.hoisted(() => ({ onMessage: null }));
+vi.mock("../hooks/useWebSocket", () => ({
+  useWebSocket: (_url, onMessage) => { ws.onMessage = onMessage; return true; },
+}));
 
 function emptyAnswer(url) {
   const u = String(url);
@@ -284,5 +289,59 @@ describe("App — Settings and Review keep the scrollbar's strip", () => {
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
 
     expect(scroller.style.scrollbarGutter).toBe("stable");
+  });
+});
+
+/* The header's PAUSE button follows the worker when the worker pauses
+ * itself. Switching to MANUAL pauses it (worker._loop acts on the setting
+ * changing), and so does the end of a run started with Resume while
+ * auto-start is off, which arrives as worker_paused. useActions and
+ * useAppData each pin their half on spies or on the hook's return; these
+ * pin that App carries it to the button, at the full header's width where
+ * both controls are labelled. The server is modelled as the backend now
+ * behaves: once auto-start is switched off, the status reports paused.
+ *
+ * Verified by mutation: useAppData handing useActions a setWorkerPaused that
+ * does nothing, and App handing the header a fixed workerPaused, each
+ * survived the suite without this block. */
+describe("App — the header's PAUSE button follows the worker", () => {
+  let autoStart;
+
+  beforeEach(() => {
+    stubViewport(1140);
+    autoStart = true;
+    vi.stubGlobal("fetch", vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (u.includes("/api/settings/auto_start_jobs")) {
+        if (opts.method === "PUT") autoStart = JSON.parse(opts.body).value;
+        return reply({ key: "auto_start_jobs", value: autoStart });
+      }
+      if (u.includes("/api/worker/status")) return reply({ paused: !autoStart, active_jobs: 0 });
+      return reply(emptyAnswer(url));
+    }));
+  });
+
+  const control = (name) => screen.getByRole("button", { name });
+
+  it("reads paused as soon as auto-start is switched to MANUAL", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+    expect(control("⏸ PAUSE")).toBeTruthy();
+
+    await act(async () => { fireEvent.click(control("⚡ AUTO")); });
+
+    expect(await screen.findByRole("button", { name: "⏸ MANUAL" })).toBeTruthy();
+    expect(control("▶ RESUME")).toBeTruthy();
+  });
+
+  it("reads paused when the worker says it has paused", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+    expect(control("⏸ PAUSE")).toBeTruthy();
+
+    await act(async () => { ws.onMessage({ event: "worker_paused" }); });
+
+    expect(control("▶ RESUME")).toBeTruthy();
   });
 });

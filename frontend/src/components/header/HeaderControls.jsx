@@ -55,8 +55,8 @@ export const headerToggles = ({
     // buttons in the usual state of manual start, running.
     compact: autoStart ? "AUTO" : "MANUAL",
     title: autoStart
-      ? "Auto-start enabled — files process immediately after a scan"
-      : "Auto-start disabled — files queue but won't process until you click Resume",
+      ? "Auto-start enabled — files process as soon as a scan or an import queues them"
+      : "Auto-start disabled — files from a scan or an import wait until you click Resume",
     row: autoStart ? "⚡ AUTO-START  — tap to disable" : "⏸ MANUAL  — tap to enable auto-start",
   },
   {

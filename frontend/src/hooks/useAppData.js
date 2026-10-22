@@ -386,6 +386,15 @@ export function useAppData() {
             setReviewRefreshKey(k => k + 1);
             break;
 
+          /* The worker paused itself: auto-start was turned off somewhere
+           * other than this tab's header (a Settings import, another tab),
+           * or a run started with Resume while auto-start is off has
+           * emptied the queue. Without this PAUSE went on reading PAUSE
+           * until something else happened to refresh it. */
+          case "worker_paused":
+            setWorkerPaused(true);
+            break;
+
           case "scan_started":
             setScanning(true);
             setScanProgress(null);

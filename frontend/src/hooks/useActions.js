@@ -118,6 +118,12 @@ export function useActions({
       toast(`Could not change auto-start — still ${next ? "OFF" : "ON"}`, "error");
       return;
     }
+    // Switching to MANUAL pauses processing: the worker sees the setting
+    // change on its next pass and pauses itself. PAUSE shows it now rather
+    // than waiting for that pass's worker_paused message. Switching to AUTO
+    // leaves the pause alone, because the worker does too: a paused queue
+    // waits for Resume.
+    if (!next) setWorkerPaused(true);
     toast(`Auto-start ${next ? "enabled" : "disabled"}`, "quiet");
   };
 

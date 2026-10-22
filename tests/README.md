@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2048 tests across 93 test files, plus 747 frontend tests under
+2056 tests across 93 test files, plus 753 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -67,8 +67,9 @@ and the endpoint that lists excluded files, which a scan only counts.
 `test_retry_unreadable_file.py`. The last retries failed items whose file
 ffprobe cannot read, through Retry All and the item's own Retry: both deleted
 the failed row and reported nothing wrong. Four more follow one job through `worker.py` in
-order: `test_worker_loop.py` on the pool that claims it and the three places a
-running job is tracked at once, `test_job_preflight.py` on the re-decision
+order: `test_worker_loop.py` on the pool that claims it, the three places a
+running job is tracked at once, and the pause that holds it while auto-start
+is off, `test_job_preflight.py` on the re-decision
 against current settings between queueing and execution,
 `test_run_job_preflight.py` on the dry-run and disk-space checks made before
 FFmpeg is spawned, and `test_post_job_broadcast.py` on the dispatch afterwards.

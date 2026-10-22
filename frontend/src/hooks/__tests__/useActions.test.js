@@ -569,4 +569,34 @@ describe("useActions — toggleAutoStart", () => {
     expect(deps.toast).toHaveBeenCalledTimes(1);
     expect(deps.toast.mock.calls[0][0]).not.toMatch(/disabled|enabled/i);
   });
+
+  /* Switching to MANUAL pauses the worker, which acts on the setting
+   * changing (worker._loop), so PAUSE has to read paused straight away.
+   * Switching to AUTO does not resume it, by decision: a paused queue waits
+   * for Resume, and PAUSE must not claim it is running.
+   *
+   * Verified by mutation, 3 applied, 3 killed, all three surviving the whole
+   * suite first: not marking it paused (the first test, and App's), marking
+   * it running on a switch to AUTO (the second), and marking it paused
+   * before the PUT has succeeded (the third). */
+  it("marks the worker paused when switching to MANUAL", async () => {
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).toHaveBeenCalledWith(true);
+  });
+
+  it("leaves the pause alone when switching to AUTO", async () => {
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: false, workerPaused: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+
+  it("does not mark the worker paused when the switch failed", async () => {
+    mockFetch({ ok: false });
+    await useSubject({ autoStart: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
 });
