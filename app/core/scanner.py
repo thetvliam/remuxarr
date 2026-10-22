@@ -1091,8 +1091,6 @@ def _process_file(
     )
 
     if existing:
-        # Drop old tracks — we'll re-insert them fresh
-        db.query(Track).filter(Track.file_id == existing.id).delete()
         existing.size          = current_size
         existing.mtime         = current_mtime
         existing.container     = fmt_info.get("container")
@@ -1120,28 +1118,8 @@ def _process_file(
 
     db.flush()  # ensure media_file.id is populated
 
-    # ── Insert tracks ──────────────────────────────────────────────────────
-    for td in track_list:
-        db.add(Track(
-            file_id        = media_file.id,
-            stream_index   = td["stream_index"],
-            track_type     = td["track_type"],
-            codec          = td["codec"],
-            language       = td["language"],
-            channels       = td.get("channels"),
-            channel_layout = td.get("channel_layout"),
-            is_default          = td.get("is_default", False),
-            is_forced           = td.get("is_forced", False),
-            is_hearing_impaired = td.get("is_hearing_impaired", False),
-            is_dub              = td.get("is_dub", False),
-            title          = td.get("title"),
-            # codec_long/raw_ffprobe/sample_rate/bit_rate deliberately NOT
-            # populated — confirmed genuinely write-only (nothing in the
-            # codebase ever reads them). Columns kept in the schema in
-            # case a future feature wants them (raw_ffprobe especially,
-            # for debugging), but there's no reason to spend the write
-            # cost until something actually consumes them.
-        ))
+    # ── Replace tracks ─────────────────────────────────────────────────────
+    replace_track_rows(db, media_file.id, track_list)
 
     db.flush()
 
@@ -1720,9 +1698,11 @@ def replace_track_rows(db: Session, file_id: int, track_list: list[dict]) -> Non
     Replace a file's stored Track rows with a freshly probed track list
     (probe.extract_tracks output). Does not commit.
 
-    Used after the AC3 forge rewrites a file in place. _process_file above
-    and the job finaliser in worker.py write the same columns inline; the
-    three have to stay in step.
+    The one place they are written: by the scan (_process_file above), after
+    a job (worker._finish_job), after a revert (revert_restore._apply) and
+    after the AC3 forge rewrites a file in place (forge.finish_forge_job).
+    The first three wrote the same columns out inline, so a column added to
+    one had to be remembered in the others.
     """
     db.query(Track).filter(Track.file_id == file_id).delete()
     for td in track_list:
@@ -1739,6 +1719,12 @@ def replace_track_rows(db: Session, file_id: int, track_list: list[dict]) -> Non
             is_hearing_impaired = td.get("is_hearing_impaired", False),
             is_dub              = td.get("is_dub", False),
             title          = td.get("title"),
+            # codec_long/raw_ffprobe/sample_rate/bit_rate deliberately NOT
+            # populated — confirmed genuinely write-only (nothing in the
+            # codebase ever reads them). Columns kept in the schema in
+            # case a future feature wants them (raw_ffprobe especially,
+            # for debugging), but there's no reason to spend the write
+            # cost until something actually consumes them.
         ))
 
 

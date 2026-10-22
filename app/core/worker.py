@@ -30,7 +30,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -2137,25 +2137,7 @@ def _finish_job(
                                 job_stream_mapping(before, track_list, removed, final_path),
                             )
 
-                        db.query(Track).filter(Track.file_id == media.id).delete()
-                        for td in track_list:
-                            db.add(Track(
-                                file_id        = media.id,
-                                stream_index   = td["stream_index"],
-                                track_type     = td["track_type"],
-                                codec          = td["codec"],
-                                language       = td["language"],
-                                channels       = td.get("channels"),
-                                channel_layout = td.get("channel_layout"),
-                                is_default          = td.get("is_default", False),
-                                is_forced           = td.get("is_forced", False),
-                                is_hearing_impaired = td.get("is_hearing_impaired", False),
-                                is_dub              = td.get("is_dub", False),
-                                title          = td.get("title"),
-                                # codec_long/raw_ffprobe/sample_rate/bit_rate
-                                # deliberately not populated — see the matching
-                                # comment in scanner.py's own Track creation.
-                            ))
+                        replace_track_rows(db, media.id, track_list)
 
                         primary_video_codec = next(
                             (t["codec"] for t in track_list if t["track_type"] == "video"),

@@ -353,7 +353,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     """
     from app.core.scanner import (ANSWER_COLUMNS, _delete_media_file_and_related,
                                   _track_to_dict, clear_media_answers,
-                                  rekey_media_answers)
+                                  rekey_media_answers, replace_track_rows)
     from app.database.models import MediaFile, RevertPoint, Track
 
     media = db.get(MediaFile, plan.file_id)
@@ -442,22 +442,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
                 if stream.get("processed_index") is not None
             })
 
-        db.query(Track).filter(Track.file_id == media.id).delete()
-        for td in track_list:
-            db.add(Track(
-                file_id             = media.id,
-                stream_index        = td["stream_index"],
-                track_type          = td["track_type"],
-                codec               = td["codec"],
-                language            = td["language"],
-                channels            = td.get("channels"),
-                channel_layout      = td.get("channel_layout"),
-                is_default          = td.get("is_default", False),
-                is_forced           = td.get("is_forced", False),
-                is_hearing_impaired = td.get("is_hearing_impaired", False),
-                is_dub              = td.get("is_dub", False),
-                title               = td.get("title"),
-            ))
+        replace_track_rows(db, media.id, track_list)
 
         media.duration = fmt_info.get("duration")
         media.font_attachments = fmt_info.get("font_attachments")
