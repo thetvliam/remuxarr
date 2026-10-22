@@ -118,3 +118,39 @@ describe("FullBackupSection — choosing the backup file", () => {
     expect(screen.queryByText("No file chosen")).not.toBeInTheDocument();
   });
 });
+
+describe("FullBackupSection — after an import", () => {
+  /* The import now waits for the restart and replaces the database then; it
+   * used to be swapped in at once under the running instance. The screen
+   * said the database "has been replaced on disk", and has to say instead
+   * that the restart is when it happens. Verified by mutation: the old
+   * wording passed every test before this and is killed by it.
+   *
+   * It then said that changes made before the restart were discarded. That
+   * stopped being true when the swap began keeping the database it
+   * replaces, so the screen now says where that is. Verified the same way:
+   * the "discarded" wording passes the test as it was and is killed by this
+   * one. */
+  it("says the backup takes effect at the restart and where this database is kept", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, restart_required: true,
+                           previous_database_backup: "/config/remuxarr.db.before-import-1" }),
+    }));
+    render(
+      <ThemeProvider>
+        <FullBackupSection api="" toast={() => {}} />
+      </ThemeProvider>,
+    );
+    const file = new File(["PK"], "remuxarr-backup.zip", { type: "application/zip" });
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [file] } });
+    fireEvent.change(screen.getByPlaceholderText('Type "REPLACE DATABASE" to confirm'),
+                     { target: { value: "REPLACE DATABASE" } });
+    fireEvent.click(screen.getByRole("button", { name: "REPLACE DATABASE" }));
+
+    const panel = await screen.findByText(/replaces this database when you restart/);
+    expect(panel.textContent).toMatch(/not carried over/);
+    expect(panel.textContent).toMatch(/kept at the restart, in the same folder as the copy below/);
+    expect(screen.getByText("/config/remuxarr.db.before-import-1")).toBeInTheDocument();
+  });
+});

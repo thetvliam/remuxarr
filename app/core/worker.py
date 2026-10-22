@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
@@ -29,7 +30,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ScanStats, _delete_media_file_and_related, _process_file, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -48,6 +49,12 @@ _active_jobs: set[int] = set() # job IDs currently being processed
 # only tracks which IDs are active; this additionally holds the Task
 # object itself, which is what .cancel() needs to act on.
 _active_task_registry: dict[int, asyncio.Task] = {}
+# The forge run _loop() started, mirrored for the same reason: stop_worker()
+# has to reach it from outside the loop. It was a local of _loop() only, so
+# a stop left the run going until the event loop's own teardown cancelled it,
+# after the lifespan had returned. Nothing then updated its row, and the
+# next start failed it as a crash.
+_forge_task: asyncio.Task | None = None
 
 
 def pause_worker() -> None:
@@ -265,6 +272,11 @@ async def stop_worker() -> None:
     was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
     kill, and recover_interrupted_jobs fails it on the next start, as a
     crash is.
+
+    A forge run is stopped the same way and in the same wait. Cut off before
+    it replaced the file, it goes back to the forge queue
+    (_requeue_cut_off_forge_job); after, it finishes its bookkeeping first
+    (_run_forge_job).
     """
     # _worker_task is only READ here, never reassigned — no `global`
     # needed for it specifically (only _running, which IS reassigned
@@ -279,6 +291,8 @@ async def stop_worker() -> None:
             pass
 
     jobs = [task for task in _active_task_registry.values() if not task.done()]
+    if _forge_task is not None and not _forge_task.done():
+        jobs.append(_forge_task)
     for task in jobs:
         task.cancel()
     if jobs:
@@ -306,6 +320,7 @@ async def _loop() -> None:
       4. Sleep briefly before the next iteration.
     """
     from app.api.ws_manager import ws_manager   # avoid circular import
+    global _forge_task
 
     loop         = asyncio.get_running_loop()
     active_tasks: dict[int, asyncio.Task] = {}  # job_id → Task
@@ -354,6 +369,7 @@ async def _loop() -> None:
                         forge_task = asyncio.create_task(
                             _process_next_forge(ws_manager)
                         )
+                        _forge_task = forge_task
                         total_active += 1
 
                 # ── Claim regular jobs up to the concurrency limit ─────────
@@ -486,6 +502,11 @@ async def _run_and_broadcast(
                 )
                 if plex_data:
                     asyncio.create_task(_trigger_plex_notify(plex_data, loop))
+
+                # A language answered while this job ran. Only after a
+                # success: a failed or aborted job leaves it to the next scan
+                # or a retry, rather than queueing a job nobody asked for.
+                await loop.run_in_executor(None, _reevaluate_after_job, job_id)
 
             # Email — runs for BOTH success and failure, unlike the blocks
             # above. A success quietly resets the consecutive-failure
@@ -891,6 +912,16 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         if output_path != input_path and _fingerprint(output_path) != target_print:
             return (f"{os.path.basename(output_path)} appeared or changed at "
                     f"the name this job writes to")
+        # Under keep_both a subtitle extracted onto a name that holds a file
+        # would overwrite it, so one that arrived at an extraction name while
+        # the job ran (Bazarr reacting to the same import, typically) stops
+        # it like any other change. Re-decided, the job then numbers past
+        # the new file. The other two modes deal with it at the swap.
+        if srt_mode == "keep_both":
+            for path in will_create:
+                if path not in written_here and os.path.exists(path):
+                    return (f"{os.path.basename(path)} appeared beside it, at a "
+                            f"name this job extracts a subtitle to")
         return None
 
     def stop_if_changed() -> str | None:
@@ -904,7 +935,85 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return message
 
     async def on_before_swap() -> str | None:
-        return stop_if_changed()
+        return stop_if_changed() or make_room(
+            [p for p in extraction_targets if p not in written_here])
+
+    def undo_own_files() -> None:
+        # A job that ends without success leaves the video as it was, every
+        # subtitle still in it. The two-pass path has by then extracted some
+        # of them beside it, and those used to be left there as harmless:
+        # a retry would overwrite them. Under keep_both a retry treats them
+        # as someone else's and numbers past them instead, and every failed
+        # attempt added another Movie.en.N.srt; embedded_first moves them
+        # aside, to the same effect. So they go, and the retry extracts to
+        # the same names again.
+        #
+        # Only what this job wrote: a planned name it had not reached yet
+        # may hold a file another program put there while the job ran, and
+        # removing every planned name deleted that file. What embedded_first
+        # moved aside for them goes back to its name.
+        for path in written_here:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        written_here.clear()
+        for old, new in reversed(moved_aside):
+            try:
+                if not os.path.exists(old):
+                    os.rename(new, old)
+            except OSError as exc:
+                logger.warning("Job %d: could not move %s back to %s: %s",
+                               job_id, new, old, exc)
+        moved_aside.clear()
+
+    async def stop_for_change() -> None:
+        # Stopped by the check above, with nothing swapped into place. What
+        # this job produced describes a file that is no longer the one on
+        # disk, so it all goes: the revert sidecar, and any subtitle files
+        # the two-pass path extracted from the old source before it was
+        # refused. Then the job is cancelled rather than failed, and
+        # whatever is at the path now is decided afresh: a webhook
+        # announcing the new file while this job ran found the job in
+        # progress and queued nothing of its own.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        undo_own_files()
+        await loop.run_in_executor(
+            None, _cancel_for_changed_source, job_id, changed[0]
+        )
+
+    # ── Room for an extracted subtitle (embedded_first) ────────────────────
+    # The decision gave each extracted subtitle its own name whatever is
+    # already there. Under embedded_first, a file holding that name when the
+    # subtitle is about to be swapped in is moved to the next free number
+    # first, so the embedded track takes the name and nothing is lost. At
+    # the swap rather than at the start, so one that arrived while the job
+    # ran is kept the same way. The name it freed is one this job then
+    # creates, so a revert removes the extracted file; the moved one keeps
+    # its new number, which the setting's description says.
+    srt_mode = app_cfg.get("existing_srt_handling", "keep_both")
+    extraction_targets = [a.external_path for a in extract_actions if a.external_path]
+    written_here: set[str] = set()       # two-pass extractions already in place
+    moved_aside: list[tuple[str, str]] = []
+    def make_room(paths: list[str]) -> str | None:
+        if srt_mode != "embedded_first" or not paths:
+            return None
+        try:
+            moves = _move_aside(paths, {t.casefold() for t in extraction_targets})
+        except OSError as exc:
+            message = (f"Could not move an existing subtitle file aside to make "
+                       f"room for the extracted one: {exc}. Nothing was replaced.")
+            logger.error("Job %d: %s", job_id, message)
+            return message
+        for old, new in moves:
+            logger.info("Job %d: moved existing %s to %s", job_id,
+                        os.path.basename(old), os.path.basename(new))
+            moved_aside.append((old, new))
+            will_create.append(old)
+        return None
 
     # ── Disk space pre-flight ──────────────────────────────────────────────
     # Check before spawning FFmpeg to give a clear, immediate error rather
@@ -1177,13 +1286,22 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 # command in this function does — the corrupt-audio retry
                 # gets a fresh one too. A timeout here is a hard failure:
                 # its message matches none of the encoding patterns below.
+                async def room_for_this_one(path=action.external_path) -> str | None:
+                    return stop_if_changed() or make_room([path])
                 ext_result = await execute_subtitle_extraction(
                     input_path     = input_path,
                     stream_index   = action.stream_index,
                     output_srt_path= action.external_path,
                     job_id         = job_id,
                     timeout_seconds= timeout_seconds,
+                    before_swap    = room_for_this_one,
                 )
+                if ext_result.success:
+                    written_here.add(action.external_path)
+                elif changed:
+                    # Refused by the check above: cancelled, not failed.
+                    await stop_for_change()
+                    return
                 if not ext_result.success:
                     if _is_subtitle_encoding_failure(ext_result.error):
                         logger.warning(
@@ -1197,6 +1315,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                             (action.stream_index, action.external_path)
                         )
                         continue
+                    undo_own_files()
                     await loop.run_in_executor(
                         None, _finish_job, job_id, False, None, None,
                         f"Subtitle extraction failed (stream {action.stream_index}): {ext_result.error}",
@@ -1208,17 +1327,17 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 # these tracks from the muxed output (extracted streams are
                 # excluded from the map list) with no sidecar to replace
                 # them, which is exactly the silent loss this routing
-                # exists to prevent. Any sidecars from streams that DID
-                # extract successfully above are left in place — same
-                # rationale as the failed-remux case below: they're valid,
-                # standalone files next to the (unmodified) original, and
-                # the post-review re-run simply re-extracts over them.
+                # exists to prevent. Sidecars from streams that DID extract
+                # successfully above are removed, as on every ending short
+                # of success (see undo_own_files): the run after the review
+                # extracts them again under the same names.
                 logger.warning(
                     "Two-pass extraction hit encoding failures for job %d "
                     "(%s) — flagging for manual review (subtitle stream(s): %s)",
                     job_id, file_dict["path"],
                     ", ".join(str(si) for si, _ in encoding_failed_pairs),
                 )
+                undo_own_files()
                 await loop.run_in_executor(
                     None, _flag_subtitle_encoding_review,
                     job_id, encoding_failed_pairs, tracks,
@@ -1259,37 +1378,25 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     before_swap       = on_before_swap,
                 )
 
+    except asyncio.CancelledError:
+        # Aborted, or cut off by a clean stop and put back in the queue.
+        # Always before the output replaced anything: run_staged_subprocess
+        # awaits nothing between the swap and its return, so a cancellation
+        # can only land before it. The video still holds every subtitle.
+        undo_own_files()
+        raise
     except Exception as exc:
         logger.exception("FFmpeg raised an exception for job %d", job_id)
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
+        undo_own_files()
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, str(exc)
         )
         return
 
     if changed:
-        # Stopped by the check above, with nothing swapped into place. What
-        # this job produced describes a file that is no longer the one on
-        # disk, so it all goes: the revert sidecar, and any subtitle files
-        # the two-pass path extracted from the old source before the remux
-        # was refused (only those this job created; one that was there
-        # before the job is not ours to remove). Then the job is cancelled
-        # rather than failed, and whatever is at the path now is decided
-        # afresh: a webhook announcing the new file while this job ran
-        # found the job in progress and queued nothing of its own.
-        for stale in captured:
-            delete_sidecar(stale.sidecar_path)
-        for path in will_create:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
-        await loop.run_in_executor(
-            None, _cancel_for_changed_source, job_id, changed[0]
-        )
+        await stop_for_change()
         return
 
     if result.success:
@@ -1345,16 +1452,15 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             raise
     else:
         # The main remux failed AFTER subtitles were already extracted to
-        # disk. Leave the extracted .srt files in place — they're valid,
-        # standalone sidecars and harmless next to the (unmodified) original.
-        # A retry will simply re-extract (overwriting) and try the remux again.
+        # disk. They go (see undo_own_files): the original is unmodified and
+        # still holds them, and a retry extracts them again.
         #
-        # A captured sidecar does NOT get the same treatment: the file it
-        # describes was never written, so it documents a state that does not
-        # exist. Staging failing after the hook has run is the ordinary way
-        # to get here.
+        # A captured sidecar goes too: the file it describes was never
+        # written, so it documents a state that does not exist. Staging
+        # failing after the hook has run is the ordinary way to get here.
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
+        undo_own_files()
         await loop.run_in_executor(
             None, _finish_job, job_id, False, None, None, result.error
         )
@@ -1612,6 +1718,26 @@ def _load_job_data(job_id: int):
                 stream_index     = action.stream_index,
                 target_language  = getattr(action, "target_language", None),
             ))
+
+        # Dry Run switched on after this job was queued: it runs as a
+        # preview. is_dry_run is stamped when the job is queued, and a
+        # rescan does not touch a waiting job, so without this a job queued
+        # before the switch rewrote the file after it — past the one setting
+        # that promises nothing will be modified. Saved on the row, not only
+        # returned: _finish_job reads the row to record a dry run and leave
+        # the file queued for a later real pass.
+        #
+        # One way only. A job queued as a preview stays one when Dry Run is
+        # switched off; the next scan queues the file for real, as it always
+        # has. A job already running when Dry Run goes on finishes for real.
+        # The AC3 Forge and reverts never consult Dry Run, by design: each
+        # is started by hand from its own page.
+        if app_cfg.get("dry_run_mode", False) and not job.is_dry_run:
+            job.is_dry_run = True
+            logger.info(
+                "Job %d: Dry Run was switched on after it was queued — "
+                "running it as a preview", job_id,
+            )
         db.commit()
 
         return (
@@ -1685,6 +1811,46 @@ def _files_the_job_will_create(extract_actions) -> list[str]:
         action.external_path for action in extract_actions
         if action.external_path and not os.path.exists(action.external_path)
     ]
+
+
+def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
+    """
+    Move each file at `paths` to the next free numbered name beside it, for
+    existing_srt_handling="embedded_first": the extracted subtitle takes the
+    name and the file that held it is kept rather than overwritten.
+
+    Movie.en.srt goes to Movie.en.2.srt, or the first number after that
+    which is neither on disk nor in `avoid` (casefolded), which holds every
+    name this job is about to write: a job extracting two English tracks
+    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3.
+
+    Returns (old, new) for each file moved. A path holding nothing is
+    skipped. If a move fails, the ones already made are put back before the
+    OSError is raised, so the folder is left as it was found.
+    """
+    moved: list[tuple[str, str]] = []
+    try:
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
+                          if path.lower().endswith(".srt") else os.path.splitext(path)[0])
+            n = 2
+            while True:
+                candidate = f"{stem}.{n}.srt"
+                if candidate.casefold() not in avoid and not os.path.exists(candidate):
+                    break
+                n += 1
+            os.rename(path, candidate)
+            moved.append((path, candidate))
+    except OSError:
+        for old, new in reversed(moved):
+            try:
+                os.rename(new, old)
+            except OSError:
+                logger.warning("Could not move %s back to %s", new, old)
+        raise
+    return moved
 
 
 def _record_revert_point(
@@ -1953,25 +2119,25 @@ def _finish_job(
                         fmt_info   = extract_format_info(probe_data)
                         track_list = extract_tracks(probe_data)
 
-                        db.query(Track).filter(Track.file_id == media.id).delete()
-                        for td in track_list:
-                            db.add(Track(
-                                file_id        = media.id,
-                                stream_index   = td["stream_index"],
-                                track_type     = td["track_type"],
-                                codec          = td["codec"],
-                                language       = td["language"],
-                                channels       = td.get("channels"),
-                                channel_layout = td.get("channel_layout"),
-                                is_default          = td.get("is_default", False),
-                                is_forced           = td.get("is_forced", False),
-                                is_hearing_impaired = td.get("is_hearing_impaired", False),
-                                is_dub              = td.get("is_dub", False),
-                                title          = td.get("title"),
-                                # codec_long/raw_ffprobe/sample_rate/bit_rate
-                                # deliberately not populated — see the matching
-                                # comment in scanner.py's own Track creation.
-                            ))
+                        # The rows about to be replaced are what the stored
+                        # answers are keyed against, so the answers are
+                        # carried across first. See rekey_track_answers.
+                        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+                            before = [_track_to_dict(t) for t in
+                                      db.query(Track).filter(Track.file_id == media.id)]
+                            removed = {
+                                a.stream_index for a in db.query(PlannedAction).filter(
+                                    PlannedAction.queue_item_id == job.id,
+                                    PlannedAction.action_type.in_(
+                                        ("drop_track", "extract_subtitle")),
+                                )
+                            }
+                            rekey_media_answers(
+                                media, before, track_list,
+                                job_stream_mapping(before, track_list, removed, final_path),
+                            )
+
+                        replace_track_rows(db, media.id, track_list)
 
                         primary_video_codec = next(
                             (t["codec"] for t in track_list if t["track_type"] == "video"),
@@ -1996,6 +2162,7 @@ def _finish_job(
                             "rescan",
                             final_path, exc,
                         )
+                        clear_media_answers(media, "the processed file could not be probed")
             else:
                 media.status = "error"
 
@@ -2145,6 +2312,33 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
             "job will be reset to 'failed' on next restart",
             job_id,
         )
+
+
+def _reevaluate_after_job(job_id: int) -> None:
+    """
+    Look at the job's file again if a language was answered while the job
+    ran (MediaFile.reevaluate_after_job), so the answer is applied now.
+
+    The job decided before the answer existed, and _finish_job has just
+    recorded the file's new size and mtime, so no delta scan would look.
+    queue_single_file re-probes and re-decides the way a webhook does, and
+    _process_file clears the mark; nothing is running for the file any more.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(QueueItem, job_id)
+        media = db.get(MediaFile, job.file_id) if job else None
+        if media is None or not media.reevaluate_after_job:
+            return
+        logger.info("Job %d: a language was answered while it ran — looking at %s again",
+                    job_id, media.path)
+        queue_single_file(db, media.path)
+    except Exception:
+        db.rollback()
+        logger.exception("Job %d: could not look at its file again after it finished; "
+                         "the next scan will", job_id)
+    finally:
+        db.close()
 
 
 def _load_post_job_data(job_id: int) -> dict | None:
@@ -2358,24 +2552,35 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
             .first()
         )
         if not existing:
-            # If this job involved a language-tag fix, record which
-            # language was set so the drain loop can check whether Plex's
-            # own scheduled maintenance already picked it up before
-            # bothering with an explicit Analyze call. Confirmed (via
-            # manual testing) that Plex's own maintenance does often catch
-            # these on its own, just not reliably for every file — this
-            # lets Remuxarr skip the redundant Analyze call for the files
-            # Plex already got right, while still guaranteeing correctness
-            # via the fallback for the ones it missed.
-            lang_action = (
-                db.query(PlannedAction)
+            # If this job changed an audio track's language, record every
+            # audio track's language in the file it wrote, so the drain loop
+            # can check whether Plex's own scheduled maintenance already
+            # picked the change up before bothering with an explicit Analyze
+            # call. Confirmed (via manual testing) that Plex's own
+            # maintenance does often catch these on its own, just not
+            # reliably for every file — this lets Remuxarr skip the redundant
+            # Analyze call for the files Plex already got right, while still
+            # guaranteeing correctness via the fallback for the ones it
+            # missed. The whole list, not one language: see
+            # PlexAnalyzeBacklog.expected_audio_languages. From the Track
+            # rows, which _finish_job has just refreshed from the output.
+            audio_fix = (
+                db.query(PlannedAction.id)
                 .filter(
                     PlannedAction.queue_item_id == job.id,
                     PlannedAction.target_language.isnot(None),
+                    PlannedAction.track_type == "audio",
                 )
                 .first()
             )
-            expected_language = lang_action.target_language if lang_action else None
+            expected_audio = None
+            if audio_fix:
+                expected_audio = [
+                    t.language or "und"
+                    for t in db.query(Track)
+                    .filter(Track.file_id == job.file_id, Track.track_type == "audio")
+                    .order_by(Track.stream_index)
+                ]
 
             # Deliberately explicit rather than folded into the queued-for-
             # backlog message below — this is the one line that tells us,
@@ -2386,20 +2591,21 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
             # persisted) — not in the Plex-side verification check.
             logger.info(
                 "Plex: backlog capture for job %d (reason=%r) — "
-                "expected_language=%r",
-                job.id, job.reason, expected_language,
+                "expected audio languages=%r",
+                job.id, job.reason, expected_audio,
             )
 
             db.add(PlexAnalyzeBacklog(
                 file_id=job.file_id,
-                expected_language=expected_language,
+                expected_audio_languages=(json.dumps(expected_audio)
+                                          if expected_audio is not None else None),
             ))
             db.commit()
             logger.info(
                 "Plex: queued %s for backlog analyze (drains during the "
                 "configured window)%s",
                 job.output_path,
-                f" — will verify language={expected_language} first" if expected_language else "",
+                f" — will verify audio languages {expected_audio} first" if expected_audio else "",
             )
         return refresh_data
 
@@ -2701,17 +2907,58 @@ async def _trigger_email_notify(data: dict, loop: asyncio.AbstractEventLoop) -> 
 
 async def _process_next_forge(ws_manager) -> bool:
     """Claim and run the next pending forge job. Returns True if a job ran."""
-    from app.core.forge import (
-        claim_next_forge_job, load_forge_job_data,
-        build_add_ac3_command, build_undo_command,
-        run_forge_command, ForgeProgress,
-        update_forge_progress, finish_forge_job, load_forge_final_state,
-    )
+    from app.core.forge import claim_next_forge_job
 
     loop   = asyncio.get_running_loop()
     job_id = await loop.run_in_executor(None, claim_next_forge_job)
     if job_id is None:
         return False
+
+    # Only a stop cancels this task: stop_worker, or the event loop's own
+    # teardown if that never ran. A run cut off before the file was replaced
+    # goes back to the queue; one that got further has already recorded its
+    # outcome (see _run_forge_job), and is left as it is. The single
+    # cancellation is spent by the time it gets here, so this await
+    # completes, as the one in _run_and_broadcast's finally does.
+    try:
+        return await _run_forge_job(job_id, ws_manager, loop)
+    except asyncio.CancelledError:
+        await loop.run_in_executor(None, _requeue_cut_off_forge_job, job_id)
+        raise
+
+
+def _requeue_cut_off_forge_job(job_id: int) -> None:
+    """
+    Put a forge run a shutdown cut off back in the forge queue.
+
+    The forge counterpart of _requeue_cut_off_job, and safe for the same
+    reason: _run_forge_job records the outcome before letting a cancellation
+    through once run_forge_command has returned, and the file is replaced
+    only inside that call, so a row still at "processing" here never
+    replaced it. An undo goes back to "undo_pending", the state it was
+    claimed from.
+    """
+    with SessionLocal() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        if job is None or job.status != "processing":
+            return
+        job.status         = "undo_pending" if job.is_undo else "pending"
+        job.started_at     = None
+        job.progress       = 0.0
+        job.current_action = None
+        db.commit()
+        logger.info("Forge job %d was cut off by shutdown — back in the queue", job_id)
+
+
+async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> bool:
+    """Run a claimed forge job. Returns True, as it was claimed."""
+    from app.core.forge import (
+        load_forge_job_data,
+        build_add_ac3_command, build_undo_command,
+        run_forge_command, ForgeProgress,
+        update_forge_progress, finish_forge_job, load_forge_final_state,
+        probe_tracks_after_forge,
+    )
 
     logger.info("Forge worker picked up job %d", job_id)
     await ws_manager.broadcast_json({"event": "forge_job_started", "job_id": job_id})
@@ -2719,9 +2966,10 @@ async def _process_next_forge(ws_manager) -> bool:
     job_data = await loop.run_in_executor(None, load_forge_job_data, job_id)
     if job_data is None:
         # The job reached a terminal state inside load_forge_job_data
-        # itself (file missing, probe failure, AC3 already absent →
-        # undone, or a layout mismatch → failed) — broadcast that final
-        # state now, same as the post-execution path below does.
+        # itself (file missing, probe failure, no AAC 5.1 left to add
+        # from, AC3 already absent → undone, or a layout mismatch →
+        # failed) — broadcast that final state now, same as the
+        # post-execution path below does.
         # Previously this returned silently, so a job settled at load
         # time looked stuck in the UI until the next poll happened by.
         final = await loop.run_in_executor(None, load_forge_final_state, job_id)
@@ -2845,6 +3093,13 @@ async def _process_next_forge(ws_manager) -> bool:
             timeout_seconds   = timeout_seconds,
             before_staging    = on_before_staging,
         )
+    except asyncio.CancelledError:
+        # Stopped before the file was replaced: run_staged_subprocess swaps
+        # and returns with no await in between. A revert point captured
+        # for the output describes a write that never happened.
+        for stale in captured:
+            delete_sidecar(stale.sidecar_path)
+        raise
     except Exception as exc:
         logger.exception("Forge job %d raised an exception", job_id)
         for stale in captured:
@@ -2853,21 +3108,39 @@ async def _process_next_forge(ws_manager) -> bool:
             None, finish_forge_job, job_id, False, None, str(exc)
         )
     else:
-        if result.success:
-            # Before the job is marked finished, for the reason _run_job
-            # gives: a crash in between leaves a usable point.
-            if captured:
-                await loop.run_in_executor(
-                    None, _record_revert_point,
-                    job_data["file_id"], captured[0], input_path,
-                )
-        else:
-            for stale in captured:
-                delete_sidecar(stale.sidecar_path)
-        await loop.run_in_executor(
-            None, finish_forge_job,
-            job_id, result.success, result.output_size, result.error
-        )
+        def complete() -> None:
+            fresh_tracks = None
+            if result.success:
+                # Before the job is marked finished, for the reason _run_job
+                # gives: a crash in between leaves a usable point.
+                if captured:
+                    _record_revert_point(
+                        job_data["file_id"], captured[0], input_path,
+                    )
+                # For the Track refresh finish_forge_job does with the status.
+                fresh_tracks = probe_tracks_after_forge(input_path)
+            else:
+                for stale in captured:
+                    delete_sidecar(stale.sidecar_path)
+            finish_forge_job(
+                job_id, result.success, result.output_size, result.error,
+                fresh_tracks=fresh_tracks,
+            )
+
+        # One executor call that a cancellation does not interrupt, as in
+        # _run_job. The run is over and its outcome known, and after a
+        # success the file has already been rewritten: cut off here, the
+        # row would stay at "processing" and be put back in the queue, and
+        # an add run again appends a second AC3. On cancellation the
+        # bookkeeping is waited for and the cancellation then let through.
+        # The completion broadcast and the Plex refresh below are skipped,
+        # as the app is stopping.
+        tail = asyncio.ensure_future(loop.run_in_executor(None, complete))
+        try:
+            await asyncio.shield(tail)
+        except asyncio.CancelledError:
+            await tail
+            raise
 
     final = await loop.run_in_executor(None, load_forge_final_state, job_id)
     if final:

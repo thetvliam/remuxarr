@@ -702,6 +702,9 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     skipped — the running job will fail naturally when it tries to open the
     missing file, which produces a cleaner error than deleting mid-job.
 
+    A missing file is also kept when the nearest folder still on disk above
+    it is empty: see _deletion_is_shown for why that proves nothing.
+
     Returns the number of MediaFile rows removed.
     """
     if not scan_paths:
@@ -721,6 +724,8 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
     candidates = [m for m in all_media if any(m.path.startswith(p) for p in prefixes)]
 
     removed = 0
+    listed: dict[str, bool] = {}
+    kept_in: dict[str, int] = {}
     for media in candidates:
         if os.path.exists(media.path):
             continue   # still on disk — leave it alone
@@ -738,6 +743,12 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
         except InvalidRequestError:
             continue   # gone already — deleted by someone else meanwhile
         if os.path.exists(media.path):
+            continue
+
+        root = next(p for p in prefixes if media.path.startswith(p))
+        shown, folder = _deletion_is_shown(media.path, root, listed)
+        if not shown:
+            kept_in[folder] = kept_in.get(folder, 0) + 1
             continue
 
         # Skip files whose job is currently running — deleting mid-job would
@@ -761,11 +772,59 @@ def cleanup_deleted_files(db: Session, scan_paths: list[str]) -> int:
         _delete_media_file_and_related(db, media)
         removed += 1
 
+    for folder, count in kept_in.items():
+        logger.warning(
+            "Cleanup: kept %d missing file(s) under %s: the folder is empty or "
+            "cannot be read, which is also what an unmounted share looks like. "
+            "If it is a share, check that it is mounted.", count, folder,
+        )
+
     if removed:
         db.commit()
         logger.info("Cleanup: removed %d deleted file(s) from database", removed)
 
     return removed
+
+
+def _deletion_is_shown(path: str, root: str, listed: dict[str, bool]) -> tuple[bool, str]:
+    """
+    Whether the disk shows that the missing file at `path` was deleted,
+    rather than out of reach. Returns (shown, the folder that decided it).
+
+    An unmounted share is still there as an empty folder: the mount point
+    stays, only what was mounted on it goes. The scan path can be that
+    mount point, or a folder below it can be (a scan path of /media holding
+    /media/tv and /media/movies as two shares). Either way every file under
+    it is missing, and removing their records threw away the user's answers,
+    ignores and history, and the forge jobs, so a forged file was offered
+    for forging again after the share came back.
+
+    So the decision is made by the nearest folder that still exists on the
+    way from the file up to `root` (its scan path, with a trailing
+    separator). Anything in it means the disk is there and the file is not:
+    a deleted episode beside others, a deleted show beside other shows. An
+    empty folder, or one that cannot be listed, could be a share that is not
+    mounted, and the record is kept. The cost is a record that stays when the
+    last file in a folder is deleted and the empty folder left behind, until
+    the folder goes or something new appears in it.
+
+    The walk never goes above `root`. A scan path that is not there at all
+    (Run Cleanup Now hands over every configured path, mounted or not)
+    stops at the scan path itself, which cannot be listed, so its records
+    are kept too.
+
+    `listed` caches each folder's answer for one cleanup pass.
+    """
+    root = root.rstrip(os.sep)
+    folder = os.path.dirname(path)
+    while not os.path.isdir(folder) and len(folder) > len(root):
+        folder = os.path.dirname(folder)
+    if folder not in listed:
+        try:
+            listed[folder] = bool(os.listdir(folder))
+        except OSError:
+            listed[folder] = False
+    return listed[folder], folder
 
 
 def find_orphaned_media_files(db: Session, scan_paths: list[str]) -> list[MediaFile]:
@@ -952,11 +1011,25 @@ def _process_file(
     # used by the post-job Plex notification to choose refresh vs analyze.
     is_new_file = existing is None
 
+    # An answer that landed while this file's job was running (see
+    # MediaFile.reevaluate_after_job). Honoured, and cleared below, only
+    # once no job is running for the file: a scan during the job would
+    # otherwise use the mark up and reach the in-progress check further
+    # down, which returns without queueing, and the answer would be lost
+    # again when the job ended.
+    reevaluate = bool(
+        existing is not None and existing.reevaluate_after_job
+        and not db.query(QueueItem.id).filter(
+            QueueItem.file_id == existing.id,
+            QueueItem.status == "processing",
+        ).first()
+    )
+
     if existing and not force_probe:
         size_match  = existing.size == current_size
         mtime_match = abs(existing.mtime - current_mtime) < 1.0
 
-        if size_match and mtime_match:
+        if size_match and mtime_match and not reevaluate:
             # File is identical on disk. media_file.status == "queued" is
             # set in TWO different situations that look identical from
             # this field alone: (a) the file is simply still pending its
@@ -1018,8 +1091,6 @@ def _process_file(
     )
 
     if existing:
-        # Drop old tracks — we'll re-insert them fresh
-        db.query(Track).filter(Track.file_id == existing.id).delete()
         existing.size          = current_size
         existing.mtime         = current_mtime
         existing.container     = fmt_info.get("container")
@@ -1027,6 +1098,8 @@ def _process_file(
         existing.video_codec   = primary_video_codec
         existing.font_attachments = fmt_info.get("font_attachments")
         existing.last_scanned  = utcnow()
+        if reevaluate:
+            existing.reevaluate_after_job = False
         media_file = existing
     else:
         media_file = MediaFile(
@@ -1045,28 +1118,8 @@ def _process_file(
 
     db.flush()  # ensure media_file.id is populated
 
-    # ── Insert tracks ──────────────────────────────────────────────────────
-    for td in track_list:
-        db.add(Track(
-            file_id        = media_file.id,
-            stream_index   = td["stream_index"],
-            track_type     = td["track_type"],
-            codec          = td["codec"],
-            language       = td["language"],
-            channels       = td.get("channels"),
-            channel_layout = td.get("channel_layout"),
-            is_default          = td.get("is_default", False),
-            is_forced           = td.get("is_forced", False),
-            is_hearing_impaired = td.get("is_hearing_impaired", False),
-            is_dub              = td.get("is_dub", False),
-            title          = td.get("title"),
-            # codec_long/raw_ffprobe/sample_rate/bit_rate deliberately NOT
-            # populated — confirmed genuinely write-only (nothing in the
-            # codebase ever reads them). Columns kept in the schema in
-            # case a future feature wants them (raw_ffprobe especially,
-            # for debugging), but there's no reason to spend the write
-            # cost until something actually consumes them.
-        ))
+    # ── Replace tracks ─────────────────────────────────────────────────────
+    replace_track_rows(db, media_file.id, track_list)
 
     db.flush()
 
@@ -1351,12 +1404,21 @@ def _process_file(
 # throw away a Keep answer the moment the same file's language was fixed.
 #
 # The ordinal is what tells identical tracks apart — two untitled ASS tracks,
-# or the several undefined audio tracks the threshold exists for. It holds
-# because the remux pipeline copies kept streams in source order and never
-# reorders them, which forge.py's undo resolver relies on for the same
-# reason. An answer whose descriptor matches no current track, or whose
-# ordinal is not there any more, is dropped: the question comes back rather
-# than being applied to a track nobody answered for.
+# or the several undefined audio tracks the threshold exists for. It is also
+# the one part of a descriptor that can change while the track itself does
+# not. A job that drops the first of two identical tracks renumbers the
+# second from 2 to 1, and the answer given for the dropped one then matched
+# the survivor: Remove English, Keep Spanish on two untitled PGS tracks
+# became Remove on the Spanish one at the next full scan. So whenever
+# Remuxarr rewrites a file itself, the answers are carried across with it
+# (rekey_track_answers): a job moves each one to the track it was given for,
+# and a revert moves it back. The forge needs neither. It appends its track
+# after every existing one of the same shape and its undo removes that last
+# one again, so no other track's ordinal moves.
+#
+# An answer whose descriptor matches no current track, or whose ordinal is
+# not there any more, is dropped: the question comes back rather than being
+# applied to a track nobody answered for.
 
 
 def _descriptor_fields(track: dict) -> list:
@@ -1405,6 +1467,116 @@ def resolve_track_answers(stored: dict[str, str], tracks: list[dict]) -> dict[in
     stream_for = {key: si for si, key in descriptors_by_stream(tracks).items()}
     return {stream_for[key]: answer
             for key, answer in stored.items() if key in stream_for}
+
+
+ANSWER_COLUMNS = (
+    "subtitle_overrides",
+    "audio_language_overrides",
+    "subtitle_language_overrides",
+)
+
+
+def job_stream_mapping(
+    before:  list[dict],
+    after:   list[dict],
+    removed: set[int],
+    path:    str,
+) -> dict[int, int]:
+    """
+    Where each track a job kept now sits: before stream_index -> after.
+
+    Paired by position within each track type, because that is how
+    build_ffmpeg_command writes the output: every video track, then the kept
+    audio, then the kept subtitles, each type in source order. Interleaved
+    sources come out grouped by type, so counting across types would pair a
+    subtitle with an audio track.
+
+    A type whose kept count does not match what the output holds is left
+    out entirely and its answers dropped. Some step this does not know about
+    added or lost a track, and guessing the pairing is exactly the failure
+    being fixed here.
+    """
+    mapping: dict[int, int] = {}
+    for track_type in sorted({t["track_type"] for t in before + after}):
+        kept = sorted(
+            (t for t in before
+             if t["track_type"] == track_type and t["stream_index"] not in removed),
+            key=lambda t: t["stream_index"],
+        )
+        out = sorted((t for t in after if t["track_type"] == track_type),
+                     key=lambda t: t["stream_index"])
+        if len(kept) != len(out):
+            logger.warning(
+                "Stored answers for %s tracks of %s dropped: the job kept %d "
+                "but the output has %d, so which is which cannot be told",
+                track_type, path, len(kept), len(out),
+            )
+            continue
+        for src, dst in zip(kept, out):
+            mapping[src["stream_index"]] = dst["stream_index"]
+    return mapping
+
+
+def rekey_track_answers(
+    stored:  dict[str, str],
+    before:  list[dict],
+    after:   list[dict],
+    mapping: dict[int, int],
+) -> dict[str, str]:
+    """
+    Stored answers, carried from the file as it was to the file as it is.
+
+    `stored` is keyed against `before`; the result is keyed against `after`.
+    Each answer is resolved to the track it was given for, followed through
+    `mapping` (before stream_index -> after stream_index), and stored under
+    that track's descriptor in the new file. The new descriptor is read from
+    `after` rather than carried over: a re-encode changes the codec, and a
+    dropped neighbour changes the ordinal, both without changing which track
+    it is.
+
+    Dropped, so the question is asked again: an answer for a track that is
+    gone, one whose key matched nothing in `before`, and one the mapping
+    would put on a track of another type.
+    """
+    type_before = {t["stream_index"]: t["track_type"] for t in before}
+    type_after = {t["stream_index"]: t["track_type"] for t in after}
+    key_after = descriptors_by_stream(after)
+    carried: dict[str, str] = {}
+    for si, answer in resolve_track_answers(stored, before).items():
+        new_si = mapping.get(si)
+        if new_si is None or type_after.get(new_si) != type_before[si]:
+            continue
+        carried[key_after[new_si]] = answer
+    return carried
+
+
+def rekey_media_answers(
+    media:   MediaFile,
+    before:  list[dict],
+    after:   list[dict],
+    mapping: dict[int, int],
+) -> None:
+    """rekey_track_answers applied to all three of a file's answer columns."""
+    for attr in ANSWER_COLUMNS:
+        stored = _load_track_answers(media, attr)
+        if not stored:
+            continue
+        carried = rekey_track_answers(stored, before, after, mapping)
+        setattr(media, attr, json.dumps(carried) if carried else None)
+
+
+def clear_media_answers(media: MediaFile, why: str) -> None:
+    """
+    Forget a file's answers when it was rewritten and its new tracks could
+    not be read, so they cannot be carried across. Left in place they are
+    keyed to a layout the file no longer has, and the next full scan would
+    resolve them against whatever now matches; cleared, the questions come
+    back.
+    """
+    if any(getattr(media, attr) for attr in ANSWER_COLUMNS):
+        logger.warning("Stored answers for %s cleared: %s", media.path, why)
+    for attr in ANSWER_COLUMNS:
+        setattr(media, attr, None)
 
 
 def _load_track_answers(media_file: MediaFile, attr: str) -> dict[str, str]:
@@ -1466,6 +1638,12 @@ def _file_info_for(media_file: MediaFile) -> dict:
     From the row rather than a probe because two of the three callers have
     only the row. The scanner writes the row from its probe first, so all
     three see the same values.
+
+    folder_entries is the one key read from disk: what is beside the file
+    now, so a subtitle is never extracted onto a name that already holds
+    one (existing_srt_handling). Read at each decision rather than stored,
+    because Bazarr can add a file at any time and the decision a job runs
+    is the one made at pickup.
     """
     return {
         "path":             media_file.path,
@@ -1474,7 +1652,20 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "font_attachments": media_file.font_attachments,
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
+        "folder_entries":   _folder_entries(media_file.path),
     }
+
+
+def _folder_entries(path: str) -> list[str]:
+    """
+    Every name in the folder holding `path`, as full paths. A folder that
+    cannot be listed gives none, and is decided as though it were empty.
+    """
+    folder = os.path.dirname(path)
+    try:
+        return [os.path.join(folder, name) for name in os.listdir(folder)]
+    except OSError:
+        return []
 
 
 def _track_to_dict(t: Track) -> dict:
@@ -1500,6 +1691,41 @@ def _track_to_dict(t: Track) -> dict:
         "is_dub":              t.is_dub,
         "title":               t.title,
     }
+
+
+def replace_track_rows(db: Session, file_id: int, track_list: list[dict]) -> None:
+    """
+    Replace a file's stored Track rows with a freshly probed track list
+    (probe.extract_tracks output). Does not commit.
+
+    The one place they are written: by the scan (_process_file above), after
+    a job (worker._finish_job), after a revert (revert_restore._apply) and
+    after the AC3 forge rewrites a file in place (forge.finish_forge_job).
+    The first three wrote the same columns out inline, so a column added to
+    one had to be remembered in the others.
+    """
+    db.query(Track).filter(Track.file_id == file_id).delete()
+    for td in track_list:
+        db.add(Track(
+            file_id        = file_id,
+            stream_index   = td["stream_index"],
+            track_type     = td["track_type"],
+            codec          = td["codec"],
+            language       = td["language"],
+            channels       = td.get("channels"),
+            channel_layout = td.get("channel_layout"),
+            is_default          = td.get("is_default", False),
+            is_forced           = td.get("is_forced", False),
+            is_hearing_impaired = td.get("is_hearing_impaired", False),
+            is_dub              = td.get("is_dub", False),
+            title          = td.get("title"),
+            # codec_long/raw_ffprobe/sample_rate/bit_rate deliberately NOT
+            # populated — confirmed genuinely write-only (nothing in the
+            # codebase ever reads them). Columns kept in the schema in
+            # case a future feature wants them (raw_ffprobe especially,
+            # for debugging), but there's no reason to spend the write
+            # cost until something actually consumes them.
+        ))
 
 
 def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:

@@ -8,8 +8,15 @@
 FROM node:24-slim AS ui-builder
 
 WORKDIR /ui
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --frozen-lockfile 2>/dev/null || npm install
+# npm ci installs exactly what package-lock.json records, and stops if the
+# lock does not match package.json. This used to be `npm install
+# --frozen-lockfile 2>/dev/null || npm install`: --frozen-lockfile is Yarn's,
+# npm has no such option, so every build resolved fresh from the ranges in
+# package.json, and the fallback would have hidden a failure anyway. The
+# lock went unused and fell far out of step with package.json. CI installs
+# the same way, so the suite tests the tree that ships.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build          # outputs to /ui/dist

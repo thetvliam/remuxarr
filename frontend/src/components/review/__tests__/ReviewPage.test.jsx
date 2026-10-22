@@ -1327,6 +1327,83 @@ describe("answering file by file", () => {
 });
 
 /**
+ * The outcome line for answers set on the files themselves.
+ *
+ * The line counted only the card's own row. Apply sends each file's own
+ * answer where it has one, so a card answered file by file said nothing of
+ * its answers, and a track kept on the card but deleted on every file was
+ * still called kept, with advice to delete it. It now counts each track
+ * once, from what every file will be sent; a track the files answer
+ * differently is counted as differing.
+ *
+ * Mutation, 5 applied, 5 killed, each surviving the suite as it stood
+ * (743 tests) first:
+ *
+ *   • only the card's row counted, as before          → all three
+ *   • the hint judged from the card's row only        → all three
+ *   • a file's own answer ignored where the card
+ *     has one                                         → kept on the card only
+ *   • a track answered differently counted under
+ *     the first file's answer                         → differing
+ *   • a keep among differing answers not offered
+ *     the hint                                        → differing
+ */
+describe("the outcome line for answers set on files", () => {
+  async function showFiles(user) {
+    await screen.findByText(GROUP.heading);
+    await user.click(screen.getByRole("button", { name: /Show files/ }));
+  }
+
+  it("counts a card answered file by file", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+    await showFiles(user);
+
+    for (const file of ["ep01.mkv", "ep02.mkv"]) {
+      await chooseForFile(user, GROUP.heading, file, "Signs", "Keep");
+      await chooseForFile(user, GROUP.heading, file, "Track 2", "Delete");
+    }
+
+    expect(await screen.findByText(
+      "Stays MKV, 1 kept, 1 deleted — delete the kept tracks and it converts to MP4",
+    )).toBeInTheDocument();
+  });
+
+  it("does not call a track kept when every file deletes it", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+    await showFiles(user);
+
+    await choose(user, GROUP.heading, "Signs", "Keep");
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    for (const file of ["ep01.mkv", "ep02.mkv"]) {
+      await chooseForFile(user, GROUP.heading, file, "Signs", "Delete");
+    }
+
+    expect(await screen.findByText("Stays MKV, 2 deleted")).toBeInTheDocument();
+  });
+
+  it("says a track differs when the files answer it differently", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewContainer: "mkv" });
+    show();
+    await showFiles(user);
+
+    await choose(user, GROUP.heading, "Track 2", "Delete");
+    await chooseForFile(user, GROUP.heading, "ep01.mkv", "Signs", "Keep");
+    await chooseForFile(user, GROUP.heading, "ep02.mkv", "Signs", "Delete");
+
+    // ep01 keeps a track, so deleting it is still what would convert it.
+    expect(await screen.findByText(
+      "Stays MKV, 1 deleted, 1 differs by file — delete the kept tracks and it "
+      + "converts to MP4",
+    )).toBeInTheDocument();
+  });
+});
+
+/**
  * Files the preview refused.
  *
  * The preview checks each answer the way Apply will and reports the ones it

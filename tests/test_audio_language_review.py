@@ -607,8 +607,9 @@ def test_a_file_whose_job_is_running_is_reported_not_requeued(
     and overwrite the corrected file.
 
     The choice is still saved: the override is committed before this point,
-    the running job rewrites the file, and the next delta scan picks it up.
-    So the file is reported rather than counted, and nothing is queued.
+    and the file is marked to be looked at again once the job is over (see
+    test_language_answer_during_job). So the file is reported as deferred,
+    neither counted nor an error, and nothing is queued.
     """
     from app.api.routes._language_review import ApplyRequest
     from app.api.routes.audio_language import apply_language
@@ -630,7 +631,8 @@ def test_a_file_whose_job_is_running_is_reported_not_requeued(
 
     db.expire_all()
     assert result["applied"] == 0
-    assert [e["file_id"] for e in result["errors"]] == [file.id]
+    assert result["deferred"] == [file.id]
+    assert result["errors"] == [], "a saved choice was reported as an error"
     assert called == [], "the file was re-queued while its job was running"
     assert [i.status for i in db.query(QueueItem).all()] == ["processing"], (
         "the running job's row was cleared"

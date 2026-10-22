@@ -4,6 +4,7 @@ Database session management and settings helpers.
 import json
 from copy import deepcopy
 import logging
+import os
 from pathlib import Path
 from typing import Any, Generator
 
@@ -11,6 +12,7 @@ from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.core.timeutil import utcnow
 from app.database.models import AppSetting, Base, MediaFile, QueueItem
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,16 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # image-based subtitles (PGS, VOBSUB, DVD/DVB) can't be converted —
     # see image_subtitle_handling below for how that's resolved.
     "extract_text_subtitles_to_srt": True,
+    # What to do when the .srt a subtitle would be extracted to already
+    # exists beside the media — one Bazarr downloaded, or one the user
+    # edited. Extraction used to overwrite it silently, and the revert point
+    # never held a copy, so it was gone for good.
+    #   "keep_both" — the extracted one takes the next free number
+    #                 (Movie.en.2.srt); the existing file is not touched
+    #   "replace"   — the extracted one overwrites it, as before
+    #   "embedded_first" — the extracted one takes the name and the existing
+    #                 file moves to the next free number (worker._move_aside)
+    "existing_srt_handling": "keep_both",
     # What to do with a KEPT image-based subtitle track (PGS, VOBSUB,
     # DVD/DVB) when extraction above is enabled and it can't be converted:
     #   "always_ask"    — flag for manual review (the original, and still
@@ -262,8 +274,60 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # ── Initialization ─────────────────────────────────────────────────────────
+def pending_import_path(live_path: str) -> str:
+    """Where an imported backup waits for the next start (see apply_pending_import)."""
+    return live_path + ".pending-import"
+
+
+def apply_pending_import() -> bool:
+    """
+    Put a backup imported before this start in place of the database.
+
+    The import used to replace the file while the running process held
+    pooled connections to it: until the restart, a write landed in the old
+    file or the new one depending on which connection it got, and those in
+    the old one were gone after it. The import now only stages the file
+    (backup.import_backup), and it is swapped here, before anything has
+    connected.
+
+    The database it replaces is kept beside it, as <name>.replaced- and the
+    time of this start (UTC), with its -wal and -shm under the same name so
+    SQLite still pairs them. It was deleted, and with it whatever changed
+    between the import and the restart: the import's own backup is of the
+    database as it was when the import was made, and a restart can come long
+    after that.
+
+    The journal goes first. Left beside the new file, SQLite would replay
+    the old journal over it. Every move comes before the rename, so a start
+    that dies partway still has the import waiting, and the next start moves
+    whatever is left before putting it in place; what each start moved
+    carries that start's time. True when an import was applied.
+    """
+    live = settings.DATABASE_PATH
+    pending = pending_import_path(live)
+    if not os.path.exists(pending):
+        return False
+    engine.dispose()
+    kept = f"{live}.replaced-{utcnow().strftime('%Y%m%d-%H%M%S')}"
+    moved = False
+    for suffix in ("-wal", "-shm", ""):
+        try:
+            os.replace(live + suffix, kept + suffix)
+            moved = True
+        except FileNotFoundError:
+            pass
+    os.replace(pending, live)
+    logger.warning("Applied the database backup imported before this start: %s", live)
+    if moved:
+        logger.warning("The database it replaced is kept as %s", kept)
+    return True
+
+
 def init_db() -> None:
     """Create all tables, run lightweight migrations, and seed default settings."""
+    # First, before anything connects: an imported backup is migrated below
+    # like any other database.
+    apply_pending_import()
     Base.metadata.create_all(bind=engine)
     _relax_revert_point_file_id()
     # Runs BEFORE _migrate_schema, like the rebuild above: a rebuilt table
@@ -694,6 +758,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN subtitle_language_ignored BOOLEAN DEFAULT 0"),
         ("media_files", "und_audio_threshold_acknowledged",
          "ALTER TABLE media_files ADD COLUMN und_audio_threshold_acknowledged BOOLEAN DEFAULT 0"),
+        ("media_files", "reevaluate_after_job",
+         "ALTER TABLE media_files ADD COLUMN reevaluate_after_job BOOLEAN DEFAULT 0"),
         # No DEFAULT, deliberately: existing rows must come out null, which
         # is what tells the worker their fonts were never counted. A
         # default of 0 would record every existing file as probed and
@@ -714,6 +780,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE planned_actions ADD COLUMN target_language TEXT"),
         ("plex_analyze_backlog", "expected_language",
          "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_language TEXT"),
+        ("plex_analyze_backlog", "expected_audio_languages",
+         "ALTER TABLE plex_analyze_backlog ADD COLUMN expected_audio_languages TEXT"),
         ("revert_points", "detached_at",
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
         ("subtitle_language_flags", "extracted_path",

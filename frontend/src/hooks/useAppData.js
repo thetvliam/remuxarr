@@ -481,15 +481,15 @@ export function useAppData() {
       const pendingQueue = queue.filter(i => i.status !== "processing");
 
       /* What the Review tab badge shows. Derived here rather than in App.jsx
-       * so it can be tested: App.jsx has no test file, and this sum is the
-       * whole point of fetching the stats.
+       * so the hook's own tests can pin it without rendering the whole app,
+       * as this sum is the whole point of fetching the stats. App.test.jsx
+       * checks that it reaches the tab.
        *
-       * The two terms cannot double-count a file. Every is_manual_review
-       * decision returns early without an audio_language_mismatch or
-       * subtitle_language_mismatches, and _upsert_language_flags clears any
-       * existing rows when those are empty, so a file is either in manual
-       * review or carrying language flags — never both. See queue_stats'
-       * docstring. */
+       * It is the sum of the Review page's section counts, so the number on
+       * the tab is the number of things waiting there. It is not a count of
+       * files: language flags are per track, and a file in manual review
+       * keeps the language flags it already had, so one file can add to
+       * both terms. See queue_stats' docstring. */
       const reviewBadgeCount = manualReviewCount + languageReviewCount;
 
       return {

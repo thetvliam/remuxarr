@@ -351,6 +351,9 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     are correct; a bookkeeping failure is fixed by the next full rescan
     and must not be reported to the user as a failed revert.
     """
+    from app.core.scanner import (ANSWER_COLUMNS, _delete_media_file_and_related,
+                                  _track_to_dict, clear_media_answers,
+                                  rekey_media_answers, replace_track_rows)
     from app.database.models import MediaFile, RevertPoint, Track
 
     media = db.get(MediaFile, plan.file_id)
@@ -367,8 +370,12 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             .first()
         )
         if stale:
+            # With everything that refers to it, as _finish_job removes one.
+            # A bare delete failed on a stale row that still had a language
+            # flag or a forge job (their file_id is NOT NULL), and the whole
+            # update below went with it.
             logger.info("Removing stale MediaFile row for %s", restored_path)
-            db.delete(stale)
+            _delete_media_file_and_related(db, stale)
             db.flush()
 
         media.path = restored_path
@@ -418,22 +425,24 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         fmt_info = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)
 
-        db.query(Track).filter(Track.file_id == media.id).delete()
-        for td in track_list:
-            db.add(Track(
-                file_id             = media.id,
-                stream_index        = td["stream_index"],
-                track_type          = td["track_type"],
-                codec               = td["codec"],
-                language            = td["language"],
-                channels            = td.get("channels"),
-                channel_layout      = td.get("channel_layout"),
-                is_default          = td.get("is_default", False),
-                is_forced           = td.get("is_forced", False),
-                is_hearing_impaired = td.get("is_hearing_impaired", False),
-                is_dub              = td.get("is_dub", False),
-                title               = td.get("title"),
-            ))
+        # Carried back before the rows below are replaced, for the reason a
+        # job carries them forward (see rekey_track_answers). The manifest
+        # already says where each original stream sat in the processed file:
+        # processed_index is kept current across every job a point is
+        # extended over, and the restore writes the streams back in manifest
+        # order, so each one's own index is where it now sits. A stream the
+        # revert brought back from the sidecar had no track to answer for in
+        # the processed file, so its question is asked again.
+        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+            before = [_track_to_dict(t) for t in
+                      db.query(Track).filter(Track.file_id == media.id)]
+            rekey_media_answers(media, before, track_list, {
+                stream["processed_index"]: stream["index"]
+                for stream in plan.manifest.get("streams", [])
+                if stream.get("processed_index") is not None
+            })
+
+        replace_track_rows(db, media.id, track_list)
 
         media.duration = fmt_info.get("duration")
         media.font_attachments = fmt_info.get("font_attachments")
@@ -448,6 +457,7 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             "Post-revert track refresh failed for %s: %s — Track rows may be "
             "stale until the next full rescan", restored_path, exc,
         )
+        clear_media_answers(media, "the restored file could not be probed")
 
     # The point has been spent: the file is back to the original it
     # described, so there is nothing left to restore. Deleting by file_id
@@ -493,6 +503,29 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))
 
+    # What the revert starts from, as _run_job keeps it: the processed file,
+    # and the destination when that is another name. Checked again just
+    # before the restored file is swapped in. Sonarr or Radarr importing an
+    # upgrade meanwhile used to be overwritten by the restored original, or,
+    # after a container change, deleted below as the processed copy.
+    from app.core.worker import _fingerprint
+    source_print = _fingerprint(plan.current_path)
+    target_print = (_fingerprint(plan.destination)
+                    if plan.destination != plan.current_path else None)
+
+    async def unchanged() -> str | None:
+        if _fingerprint(plan.current_path) != source_print:
+            detail = (f"{os.path.basename(plan.current_path)} was replaced, "
+                      f"modified or removed while it was being reverted")
+        elif (plan.destination != plan.current_path
+              and _fingerprint(plan.destination) != target_print):
+            detail = (f"{os.path.basename(plan.destination)} appeared at the "
+                      f"name the revert writes to while it ran")
+        else:
+            return None
+        logger.warning("Revert point %d stopped: %s", point_id, detail)
+        return f"{detail}. Nothing was changed."
+
     logger.info(
         "Reverting %s → %s", plan.current_path, plan.destination,
     )
@@ -503,6 +536,7 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         timeout_label="Revert",
+        before_swap=unchanged,
     )
 
     if not result.success:
@@ -510,15 +544,23 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
 
     # A container change during processing means the file lived under a
     # different extension; the restored original is now beside it and the
-    # processed copy is dead weight.
+    # processed copy is dead weight. Only if it is still the file the revert
+    # read: something can replace it in the moment after the swap, and that
+    # file is not the revert's to delete.
     if plan.destination != plan.current_path and os.path.exists(plan.current_path):
-        try:
-            os.remove(plan.current_path)
-        except OSError as exc:
+        if _fingerprint(plan.current_path) != source_print:
             logger.warning(
-                "Could not remove the processed file %s after reverting: %s",
-                plan.current_path, exc,
+                "Not removing %s after reverting: it changed while the revert "
+                "ran and is not the file the revert read", plan.current_path,
             )
+        else:
+            try:
+                os.remove(plan.current_path)
+            except OSError as exc:
+                logger.warning(
+                    "Could not remove the processed file %s after reverting: %s",
+                    plan.current_path, exc,
+                )
 
     # After the swap, so a failed restore leaves the extracted files where
     # they are — they are the user's only copy of those subtitles while

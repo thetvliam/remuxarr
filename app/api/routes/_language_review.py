@@ -287,8 +287,8 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # depends on it, and the "n of m" on the select-all row is built from
         # it. The section heading's badge was reading the same number, so
         # typing a show name took the badge from 57 to 2 and the overall
-        # figure was then nowhere on the page — the nav tab's count is
-        # manual-review QUEUE items, which is a different thing.
+        # figure was then nowhere on the page. The nav tab's count does not
+        # give it either: it adds this backlog to the other two sections'.
         #
         # The facets cannot stand in for this. They honour `search` on
         # purpose, so the dropdown only offers tags the current search has,
@@ -438,7 +438,11 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # happens under dry run except the two steps that touch the disk or
         # discard the question, which leaves an apply that looks from the
         # response alone exactly like a real one.
-        results = {"applied": 0, "errors": [], "dry_run": dry_run}
+        # "deferred" lists files whose job is running: the choice is saved
+        # and applied once the job finishes, so they are neither applied now
+        # nor an error. They were reported as errors, and the Review page
+        # turned that into a red "not updated" toast.
+        results = {"applied": 0, "errors": [], "deferred": [], "dry_run": dry_run}
         # Files this leaves with nothing to change them, for Plex once
         # everything is committed. See queue.left_alone_after_review.
         left_alone: list[str] = []
@@ -609,10 +613,14 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # version of this code deleted "processing" rows here and
             # presented that as deliberate and safe — it was neither.
             #
-            # Skipping is safe because the override was already committed
-            # above: the running job rewrites the file (new mtime), so the
-            # next delta scan re-evaluates it and picks the override up
-            # automatically.
+            # Skipping alone loses the answer, though. The override is
+            # committed above, but the running job decided before it existed,
+            # and when the job ends it records the file's new size and mtime:
+            # a delta scan then sees the file as unchanged, and only a Full
+            # Scan used to pick the override up. So the file is marked, and
+            # looked at again once nothing is running for it: straight after
+            # a successful job by the worker, otherwise by the next scan. See
+            # MediaFile.reevaluate_after_job.
             processing = (
                 db.query(QueueItem)
                 .filter(QueueItem.file_id == file_id,
@@ -620,12 +628,9 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 .first()
             )
             if processing:
-                results["errors"].append({
-                    "file_id": file_id,
-                    "error": "File is currently being processed — the language "
-                             "choice is saved and will apply automatically after "
-                             "the running job finishes (next scan).",
-                })
+                media.reevaluate_after_job = True
+                db.commit()
+                results["deferred"].append(file_id)
                 continue
 
             # Clear any existing WAITING QueueItem(s) so _process_file starts

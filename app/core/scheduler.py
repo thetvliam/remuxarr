@@ -8,28 +8,32 @@ times in the `scheduled_scan_times` setting (HH:MM, 24-hour format).
 Uses the system's local time, which respects the TZ environment variable
 on the container — the standard way Docker handles timezone configuration.
 
-A module-level dedup guard (_last_triggered_minute) prevents the scan from
-being triggered twice if the loop fires more than once within the same
-minute (e.g. on startup near a scheduled time).  The guard resets on a
-container restart, which is acceptable — a redundant scan on restart is
-harmless.
+A scheduled time fires when it came round since the previous check
+(_last_checked), not only when the check lands on its exact minute. Each
+cycle is the tick, the retention sweep and a 60-second sleep, so a cycle
+runs a little over a minute and the checked minute skipped one every so
+often: 12 times a day at half a second per cycle, 102 at five, and a scan
+due in a skipped minute did not run that day. Remembering the last check
+also keeps a time from firing twice. The reference resets on a container
+restart, after which only the current minute counts, as before.
 """
 
 import asyncio
+import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from app.core.plex import notify_plex_reprocessed_file
+from app.core.plex import notify_plex_reprocessed_file, plex_connection
 from app.core.recycle import sweep_retention
 from app.database.models import PlexAnalyzeBacklog
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
 
-# Minute string ("HH:MM") of the most recently triggered scheduled scan.
-# Resets on restart — intentional.
-_last_triggered_minute: str = ""
+# When _tick last looked at the clock. None until the first tick after a
+# start — intentional, see _due_time.
+_last_checked: datetime | None = None
 
 # Seconds between each backlog item processed during the analyze window,
 # when that item actually triggers a real Analyze call — the genuinely
@@ -49,6 +53,11 @@ PLEX_BACKLOG_DRAIN_INTERVAL_SECONDS = 8
 # request to Plex, and a back-to-back flood of even lightweight requests
 # is worth avoiding on principle.
 PLEX_BACKLOG_SKIP_INTERVAL_SECONDS = 1
+
+# Whether the drain has said that the Plex settings are incomplete. It asks
+# every second through its window, so it warns once and then again only after
+# the settings have worked in between. Resets on restart — intentional.
+_warned_incomplete_plex: bool = False
 
 
 async def run_scheduler(ws_manager) -> None:
@@ -194,23 +203,38 @@ async def _drain_tick() -> bool:
         if not entry:
             return False
 
+        # Before the entry is taken. It used to be deleted first and the
+        # settings checked after, silently, so with the URL, token or path
+        # mappings missing every tick threw one away: the backlog emptied
+        # itself in seconds, and those files kept Plex's stale data. Now it
+        # waits for the settings, and says once why.
+        global _warned_incomplete_plex
+        connection = plex_connection(cfg, "the Plex Analyze backlog", warn=False)
+        if connection is None:
+            if not _warned_incomplete_plex:
+                logger.warning(
+                    "Plex Analyze backlog: waiting, nothing analyzed: Plex is "
+                    "on but its URL, token or path mappings are not set")
+                _warned_incomplete_plex = True
+            return False
+        _warned_incomplete_plex = False
+        url, token, mappings = connection
+
         media = entry.media_file
         # Capture everything needed for the network call before deleting
         # the row — deletion happens regardless of outcome (best-effort,
         # matching the rest of the Plex integration's philosophy).
         local_path        = media.path if media else None
-        expected_language = entry.expected_language
+        # A row from before expected_audio_languages has only the old
+        # single expected_language, whose check passed too easily; it is
+        # analyzed without one. See PlexAnalyzeBacklog.
+        expected_audio = (json.loads(entry.expected_audio_languages)
+                          if entry.expected_audio_languages else None)
         db.delete(entry)
         db.commit()
 
         if not media or not local_path or not os.path.exists(local_path):
             logger.debug("Plex backlog: skipping missing/deleted file (entry %d)", entry.id)
-            return False
-
-        url      = (cfg.get("plex_url") or "").rstrip("/")
-        token    = cfg.get("plex_token") or ""
-        mappings = cfg.get("plex_path_mappings", [])
-        if not url or not token or not mappings:
             return False
     finally:
         db.close()
@@ -219,7 +243,7 @@ async def _drain_tick() -> bool:
     try:
         analyzed = await loop.run_in_executor(
             None, notify_plex_reprocessed_file,
-            url, token, mappings, local_path, expected_language,
+            url, token, mappings, local_path, expected_audio,
         )
         return bool(analyzed)
     except Exception:
@@ -230,11 +254,51 @@ async def _drain_tick() -> bool:
         return False
 
 
+def _due_time(scan_times: list[str], since: datetime | None,
+              now: datetime) -> str | None:
+    """
+    A scheduled "HH:MM" that came round after `since` and at or before
+    `now`, or None. At most one: a gap covering several times gives one
+    scan, which covers them all.
+
+    With no `since`, the first tick after a start, only the current minute
+    counts, so a restart does not fire for times earlier in the day. A clock
+    that went back fires nothing and the next tick measures from here. A gap
+    of a day or more, the host asleep for one, has passed every time, and
+    the scan runs once on waking, as a missed one should.
+    """
+    if since is None:
+        current = now.strftime("%H:%M")
+        return current if current in scan_times else None
+    if now <= since:
+        return None
+    for scheduled in scan_times:
+        try:
+            hour, minute = (int(part) for part in scheduled.split(":"))
+            # Today's and the previous check's day: a gap over midnight.
+            occurrences = [day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                           for day in (since, now)]
+        except ValueError:
+            continue
+        if now - since >= timedelta(days=1):
+            return scheduled
+        if any(since < when <= now for when in occurrences):
+            return scheduled
+    return None
+
+
 async def _tick(ws_manager) -> None:
     """
-    Called once per minute.  Checks settings and fires a scan if needed.
+    Called about once a minute. Checks settings and fires a scan if a
+    scheduled time came round since the previous call.
     """
-    global _last_triggered_minute
+    global _last_checked
+
+    # Moved on every call, including the early returns below: switching
+    # scheduled scans on must not fire for times that passed while they
+    # were off.
+    now = datetime.now()   # respects TZ env var
+    since, _last_checked = _last_checked, now
 
     db = SessionLocal()
     try:
@@ -249,18 +313,13 @@ async def _tick(ws_manager) -> None:
     if not scan_times:
         return
 
-    current_minute = datetime.now().strftime("%H:%M")   # respects TZ env var
-
-    # Dedup: don't trigger twice in the same minute window
-    if current_minute == _last_triggered_minute:
+    due = _due_time(scan_times, since, now)
+    if due is None:
         return
 
-    if current_minute not in scan_times:
-        return
-
-    # Time matches — dispatch the scan
-    _last_triggered_minute = current_minute
-    logger.info("Scheduler: triggering scheduled scan at %s", current_minute)
+    # Time matches — dispatch the scan. The time is used up even if a scan
+    # is already running (below): one running then satisfies it.
+    logger.info("Scheduler: triggering scheduled scan for %s", due)
 
     # Deferred (in-function) import to avoid circular imports: scan.py
     # imports scanner.py; scheduler.py is imported by main.py, which also

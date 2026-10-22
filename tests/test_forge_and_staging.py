@@ -602,6 +602,14 @@ def test_load_forge_job_data_reads_the_faststart_setting(
         job_id = job.id
 
     monkeypatch.setattr(forge_mod, "SessionLocal", Session)
+    # An add re-probes the file to find its AAC 5.1 track. The file here is
+    # not a real MP4, so the probe answers with the layout the job stored.
+    monkeypatch.setattr(forge_mod, "probe_file", lambda path, ffprobe: {})
+    monkeypatch.setattr(forge_mod, "extract_tracks", lambda _data: [
+        {"stream_index": 0, "track_type": "video", "codec": "h264"},
+        {"stream_index": 1, "track_type": "audio", "codec": "aac", "channels": 6},
+        {"stream_index": 2, "track_type": "audio", "codec": "aac", "channels": 2},
+    ])
 
     data = forge_mod.load_forge_job_data(job_id)
 

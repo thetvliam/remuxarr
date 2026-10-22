@@ -140,6 +140,34 @@ describe("App — the header at each width", () => {
   });
 });
 
+/* The Review tab's count. useAppData adds the manual-review items to the
+ * language questions waiting, and its own tests pin that sum; nothing
+ * checked that it reaches the tab. App passing a zero in its place, or the
+ * header's label leaving the count out, each passed every test, and the
+ * badge going blank is the regression App's comment at that prop records.
+ * Rendered at the full header's width, where the tab is in the nav, with
+ * each of the three counts different so that one left out shows.
+ *
+ * Verified by mutation: those two survived the suite without this test and
+ * are killed by it. The sum losing its language half was already killed in
+ * useAppData's tests, and the label showing a count of 0 by the scrollbar
+ * test below, which finds the tab by its exact name; neither is claimed. */
+describe("App — the Review tab's count", () => {
+  it("shows the number of things waiting on the Review page", async () => {
+    stubViewport(1140);
+    vi.stubGlobal("fetch", vi.fn(async (url) => ({
+      ok: true, status: 200,
+      json: async () => String(url).includes("/api/queue/stats")
+        ? { manual_review: 2, language_review: { audio: 3, subtitle: 1 } }
+        : emptyAnswer(url),
+    })));
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+
+    expect(await screen.findByRole("button", { name: "REVIEW (6)" })).toBeTruthy();
+  });
+});
+
 /* Clear Database and the orphaned-file removal delete rows the dashboard is
  * still showing, and neither endpoint broadcasts. App hands SettingsPage
  * refreshAllPanels as onRecordsRemoved for exactly this, in two places: the

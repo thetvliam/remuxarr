@@ -104,7 +104,7 @@ def build_add_ac3_command(
     # story). Note this map is even narrower than that one (no "mov"
     # entry), so without this a forge job on a .mov would have written
     # Matroska bytes into the .mov in place. Raising here is caught by
-    # _process_next_forge's job-level exception handler and becomes a
+    # worker._run_forge_job's job-level exception handler and becomes a
     # visible failed forge job, before FFmpeg ever starts.
     if container not in _FORMAT_MAP:
         raise ValueError(
@@ -281,7 +281,13 @@ async def run_forge_command(
     )
 
     if not result.success:
-        if result.returncode is not None and result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("Forge FFmpeg failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error(
                 "Forge FFmpeg failed (rc=%d):\n%s", result.returncode, result.error
             )
@@ -614,17 +620,51 @@ def resolve_forge_ac3_for_undo(tracks: list[dict]) -> tuple[str, int | None]:
     return ("mismatch", None)
 
 
+def resolve_forge_aac_for_add(tracks: list[dict]) -> tuple[int, int] | None:
+    """
+    Find the AAC 5.1 track a forge add works from, in a FRESHLY probed track
+    list. Pure function: takes probe.extract_tracks() output, touches
+    nothing.
+
+    Returns (aac_stream_index, audio_track_count): the global stream index
+    of the first AAC 5.1 track by stream index, the rule queue_forge_job
+    and get_candidates apply to the stored rows, and the number of audio
+    tracks, which is the output audio index the appended AC3 takes. None
+    when the file has no AAC 5.1 track.
+
+    The add used to run on the values stored when it was queued. A job
+    that removed an audio track in between shifted the streams, and the
+    stored index then named a different track: on a file whose French
+    stereo track was dropped, the forge copied the Commentary track in
+    place of building an AC3, and reported success.
+    """
+    audio = [t for t in tracks if t.get("track_type") == "audio"]
+    aac = sorted(
+        (t for t in audio if t.get("codec") == "aac" and t.get("channels") == 6),
+        key=lambda t: t["stream_index"],
+    )
+    if not aac:
+        return None
+    return aac[0]["stream_index"], len(audio)
+
+
 def load_forge_job_data(job_id: int) -> dict | None:
     """
     Return everything the worker needs to execute a forge job.
 
-    For UNDO jobs this additionally re-probes the file and resolves the
-    forge AC3's CURRENT position via resolve_forge_ac3_for_undo (see its
-    docstring for why the stored add-time index cannot be trusted),
-    returning it as "undo_audio_output_index". Terminal outcomes are
-    settled here, following the existing file-missing pattern (finish +
-    return None):
-      • probe failure        → job failed, file untouched;
+    Both kinds re-probe the file first; a probe failure fails the job with
+    the file untouched.
+
+    An ADD resolves the AAC 5.1 track and the audio count from the probe
+    via resolve_forge_aac_for_add, and stores them on the job in place of
+    the values recorded when it was queued. No AAC 5.1 track left fails
+    the job, file untouched.
+
+    For UNDO jobs it resolves the forge AC3's CURRENT position via
+    resolve_forge_ac3_for_undo (see its docstring for why the stored
+    add-time index cannot be trusted), returning it as
+    "undo_audio_output_index". Terminal outcomes are settled here,
+    following the existing file-missing pattern (finish + return None):
       • AC3 already absent   → job marked "undone" WITHOUT running
                                 FFmpeg — the desired end state already
                                 holds (the main pipeline removed the
@@ -654,17 +694,38 @@ def load_forge_job_data(job_id: int) -> dict | None:
             return None
 
         undo_audio_output_index: int | None = None
-        if job.is_undo:
-            try:
-                probe_data   = probe_file(media.path, app_settings.FFPROBE_PATH)
-                fresh_tracks = extract_tracks(probe_data)
-            except ProbeError as exc:
+        try:
+            probe_data   = probe_file(media.path, app_settings.FFPROBE_PATH)
+            fresh_tracks = extract_tracks(probe_data)
+        except ProbeError as exc:
+            what = ("locate the AC3 track for undo" if job.is_undo
+                    else "find the AAC 5.1 track to build the AC3 from")
+            finish_forge_job(job_id, False, None, f"Could not probe file to {what}: {exc}")
+            return None
+
+        if not job.is_undo:
+            found = resolve_forge_aac_for_add(fresh_tracks)
+            if found is None:
                 finish_forge_job(
                     job_id, False, None,
-                    f"Could not probe file to locate the AC3 track for undo: {exc}",
+                    "The file no longer has an AAC 5.1 track to build the AC3 "
+                    "from; it was removed after this forge job was queued. "
+                    "The file was not changed.",
                 )
                 return None
+            if found != (job.aac_stream_index, job.audio_track_count):
+                logger.info(
+                    "Forge add %d: the AAC 5.1 track is now stream %d with %d "
+                    "audio tracks (queued as stream %s with %s); the file "
+                    "changed since it was queued. Using the current layout.",
+                    job_id, found[0], found[1],
+                    job.aac_stream_index, job.audio_track_count,
+                )
+            # Stored, so the row describes the run that actually happens.
+            job.aac_stream_index, job.audio_track_count = found
+            db.commit()
 
+        if job.is_undo:
             outcome, undo_audio_output_index = resolve_forge_ac3_for_undo(fresh_tracks)
 
             if outcome == "absent":
@@ -709,7 +770,13 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "is_undo":            job.is_undo,
             "file_path":          media.path,
             "filename":           media.filename,
-            "container":          media.container or "mkv",
+            # As stored, with no fallback. This was `or "mkv"`, so an empty
+            # value had the forge write Matroska into the file whatever it
+            # was, an .mp4 included. The scanner stores one only when
+            # ffprobe reports no format name. The command builders refuse a
+            # container they do not know, empty included, so the job fails
+            # with the file untouched.
+            "container":          media.container,
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,
@@ -743,14 +810,42 @@ def update_forge_progress(job_id: int, percent: float, current_action: str) -> N
         db.close()
 
 
+def probe_tracks_after_forge(path: str) -> list[dict] | None:
+    """
+    Probe a file the forge has just rewritten, for finish_forge_job's
+    Track refresh.
+
+    None when the probe fails. The rewrite itself succeeded, so the job is
+    still a success and the stored rows are left as they were; the next
+    scan re-probes the file regardless, because the rewrite changed its
+    size and mtime and the stored ones are not updated here.
+    """
+    try:
+        return extract_tracks(probe_file(path, app_settings.FFPROBE_PATH))
+    except ProbeError as exc:
+        logger.warning(
+            "Could not probe %s after the forge rewrote it: %s. Its stored "
+            "tracks are out of date until the next scan.", path, exc,
+        )
+        return None
+
+
 def finish_forge_job(
     job_id:      int,
     success:     bool,
     output_size: int | None,
     error:       str | None,
+    *,
+    fresh_tracks: list[dict] | None = None,
 ) -> None:
     """
     Record a forge job's terminal state.
+
+    fresh_tracks, on a successful run, is the rewritten file's probed track
+    list (probe_tracks_after_forge), and replaces the stored Track rows in
+    the same commit as the status change. See the comment at that write.
+    Keyword-only, so a stale positional call with a fifth argument still
+    raises rather than landing in it.
 
     Deliberately takes no output_path. Forge rewrites the media file in place
     (worker.py passes output_path=input_path to run_forge_command), so the
@@ -776,6 +871,18 @@ def finish_forge_job(
             job.status = "undone"    if success else "undo_failed"
         else:
             job.status = "success"   if success else "failed"
+
+        # An add or undo rewrites the file in place, which leaves the stored
+        # Track rows describing a file that is gone. A queued job for this
+        # file decides from those rows when it starts (worker._load_job_data):
+        # after an add it would strip the new AC3, after an undo it would map
+        # the removed one and fail. Same commit as the status change, because
+        # the worker holds a queued job back only while this forge job is
+        # "processing": rows written after that would leave a window for a
+        # job to start on the old ones.
+        if success and fresh_tracks is not None:
+            from app.core.scanner import replace_track_rows
+            replace_track_rows(db, job.file_id, fresh_tracks)
 
         db.commit()
         logger.info(

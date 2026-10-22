@@ -337,6 +337,7 @@ KNOWN_KEYS = {
     "include_patterns",
     "und_audio_threshold",
     "extract_text_subtitles_to_srt",
+    "existing_srt_handling",
     "image_subtitle_handling",
     "font_attachment_handling",
     "add_faststart_to_mp4",
@@ -690,6 +691,34 @@ SETTINGS_SCHEMA = [
                        "play compatibility. Kept image-based subtitles (PGS, "
                        "VOBSUB, DVD/DVB) can't be converted — see Image-Based "
                        "Subtitle Handling below for how that's resolved.",
+    },
+    {
+        "key":     "existing_srt_handling",
+        "group":   "Subtitles",
+        "label":   "Existing Subtitle Files",
+        "type":    "select",
+        "options": [
+            {
+                "value": "keep_both",
+                "label": "Keep both (save the extracted one as Movie.en.2.srt)",
+            },
+            {
+                "value": "replace",
+                "label": "Replace (the extracted one overwrites the existing file)",
+            },
+            {
+                "value": "embedded_first",
+                "label": "Embedded first (the extracted one takes the name, the existing file moves to Movie.en.2.srt)",
+            },
+        ],
+        "description": "What to do when extracting a subtitle would use a "
+                       "name that already holds a file, such as one Bazarr "
+                       "downloaded. Replace cannot be undone: a revert puts "
+                       "the subtitle back inside the video but cannot bring "
+                       "back the file it replaced. With Embedded first, a "
+                       "revert removes the extracted file but leaves the "
+                       "earlier one under its new number; rename it back if "
+                       "you want it at its original name.",
     },
     {
         "key":     "image_subtitle_handling",

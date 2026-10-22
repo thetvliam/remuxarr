@@ -257,8 +257,8 @@ export default function App() {
         ╚══════════════════════════════════════════════╝ */}
         <AppHeader
         page={page} setPage={requestPage}
-        /* Manual-review items plus outstanding language flags — see
-         * useAppData's reviewBadgeCount for why the two cannot overlap.
+        /* Manual-review items plus outstanding language flags: the Review
+         * page's section counts added up. See useAppData's reviewBadgeCount.
          * review.length alone left this blank while the language sections
          * below had rows. */
         reviewCount={reviewBadgeCount}

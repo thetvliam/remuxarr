@@ -32,6 +32,21 @@ ORPHANED FILE SWEEP
   accumulate were both unswept. These tests already called
   _cleanup_orphaned_temp_files directly and were not part of the mutation run
   above, which targeted the recovery function only.
+
+  The library sweep then matched every ".part", a rule from when a staged
+  copy was named after its destination, and so deleted other programs'
+  partial files at startup: a download in progress, a yt-dlp fragment
+  (reproduced). It now matches only Remuxarr's temp names, each with or
+  without ".part"; the recycle volume keeps the broad match. Three tests
+  here used the old staged name, which the sweep must now leave alone:
+  the two that remove a library .part were moved to the current name, and
+  the age-guard test, which stopped testing anything once its file no
+  longer matched, was too. With those changes as the baseline (1976 tests),
+  seven mutations: matching every ".part" in the library again, and
+  dropping .forge_tmp.part or .forge_tmp, survived and are killed by the
+  three tests at the end. Dropping .remuxarr_tmp.part or .remuxarr_tmp, the
+  recycle volume losing ".part", and removing the age guard were already
+  killed by the tests above. 7 applied, 7 killed.
 """
 import os
 import time
@@ -420,13 +435,13 @@ def test_part_file_in_the_library_is_removed(sweep):
     an interrupted staging copy. The scanner ignores it (.part is not a
     media extension) so nothing else would ever surface it.
 
-    The name here is the one staging used to produce. What the sweep
-    matches is the suffix, so the file it collects is the same either way;
-    a staged copy is named after the temp file now — see
-    subprocess_runner.staged_part_path.
+    Named the way staging names it, after the temp file — see
+    subprocess_runner.staged_part_path. This used Episode.mkv.part, the name
+    staging produced before v1.9.8, which the sweep now leaves alone: in a
+    library a .part that is not Remuxarr's is someone else's download.
     """
     _temp, library, run = sweep
-    orphan = library / "Show" / "S01" / "Episode.mkv.part"
+    orphan = library / "Show" / "S01" / "job_35106.remuxarr_tmp.part"
     orphan.write_bytes(b"x" * 4096)
     _age(orphan, 3600)
 
@@ -506,7 +521,7 @@ def test_sweep_survives_an_unmounted_recycle_volume(sweep, tmp_path, monkeypatch
     monkeypatch.setattr(m.settings, "RECYCLE_DIR", str(tmp_path / "gone"),
                         raising=False)
 
-    orphan = library / "Show" / "S01" / "Episode.mkv.part"
+    orphan = library / "Show" / "S01" / "job_8.remuxarr_tmp.part"
     orphan.write_bytes(b"x" * 128)
     _age(orphan, 3600)
 
@@ -538,7 +553,9 @@ def test_recently_modified_orphan_is_skipped(sweep):
     someone else's.
     """
     _temp, library, run = sweep
-    fresh = library / "Show" / "InFlight.mkv.part"
+    # A name the sweep would otherwise remove. InFlight.mkv.part stood here,
+    # which the sweep no longer matches at all, so the guard went untested.
+    fresh = library / "Show" / "job_9.remuxarr_tmp.part"
     fresh.write_bytes(b"w" * 128)          # mtime = now
 
     run()
@@ -554,3 +571,43 @@ def test_missing_scan_path_does_not_raise(sweep, tmp_path, monkeypatch):
         raising=False,
     )
     run()          # must not raise
+
+
+def test_other_programs_part_files_in_the_library_are_left_alone(sweep):
+    """
+    Every .part under the scan paths was deleted at startup once it was five
+    minutes old: a download still in progress, a browser's or yt-dlp's
+    partial file, anything sharing the suffix. Reproduced before this test
+    existed. Only Remuxarr's own names are its to remove.
+    """
+    _temp, library, run = sweep
+    theirs = [library / "Show" / "Some.Download.mkv.part",
+              library / "Show" / "S01" / "video.f137.mp4.part"]
+    for f in theirs:
+        f.write_bytes(b"not ours")
+        _age(f, 3600)
+
+    run()
+    for f in theirs:
+        assert f.exists(), f"the sweep deleted another program's file: {f.name}"
+
+
+def test_a_forge_staged_copy_in_the_library_is_removed(sweep):
+    _temp, library, run = sweep
+    orphan = library / "Show" / "forge_12.forge_tmp.part"
+    orphan.write_bytes(b"x" * 1024)
+    _age(orphan, 3600)
+
+    run()
+    assert not orphan.exists()
+
+
+def test_a_forge_temp_in_the_library_is_removed(sweep):
+    """The forge's temp falls back to the media directory like a job's."""
+    _temp, library, run = sweep
+    orphan = library / "Show" / "forge_12.forge_tmp"
+    orphan.write_bytes(b"x" * 1024)
+    _age(orphan, 3600)
+
+    run()
+    assert not orphan.exists()

@@ -8,7 +8,7 @@ _scan_running flag left set, which wedges ALL scanning — manual and scheduled
 
 Time is faked by swapping scheduler.datetime for a stub whose now() is fixed
 and whose strptime delegates to the real class, so the window arithmetic is
-exercised for real. The module-level dedup guard is reset around every test;
+exercised for real. The module-level last-checked time is reset around every test;
 leaving it set leaks into whatever runs next.
 
 Verified by mutation: 29 mutations of scheduler.py, of which 28 are killed by
@@ -24,9 +24,26 @@ the next check returns anyway. Removing BOTH guards together does fail
 test_no_configured_times_never_scans, which is the evidence that the test
 pins the contract rather than nothing at all. The first guard is a readability
 early-exit, and no test can distinguish its presence.
+
+Firing every time that came round since the previous check came later.
+Six mutants. Four survived the suite as it stood and are killed by the tests
+under "a time that came round between two checks": the exact-minute match
+put back (also the real loop), the reference not moved while scheduling is
+off, only the later check's day considered (just before midnight), and a gap
+of a day or more not counted (the host asleep). Two were already killed
+here: the reference never moved (the same-minute and already-running tests)
+and the first check after a start counting from midnight (a non-matching
+minute).
+
+The backlog drain checking the Plex settings before taking an entry came
+after that. Five mutants, all surviving the suite as it stood, all killed by
+the incomplete-settings tests: the entry deleted before the check again,
+the drain's own check put back in place of plex_connection (without the
+token), a warning every tick, the warning never reset once the settings
+work, and plex_connection warning although asked not to.
 """
 import asyncio
-from datetime import datetime as _real_datetime
+from datetime import datetime as _real_datetime, timedelta
 
 import pytest
 
@@ -51,13 +68,14 @@ def _fake_datetime(hh_mm):
 
 @pytest.fixture(autouse=True)
 def _reset_guard():
-    """The dedup guard is module state — isolate it."""
+    """The last-checked time is module state — isolate it."""
     import app.core.scheduler as sched
 
-    before = sched._last_triggered_minute
-    sched._last_triggered_minute = ""
+    before = sched._last_checked, sched._warned_incomplete_plex
+    sched._last_checked = None
+    sched._warned_incomplete_plex = False
     yield
-    sched._last_triggered_minute = before
+    sched._last_checked, sched._warned_incomplete_plex = before
 
 
 @pytest.fixture
@@ -302,8 +320,9 @@ def test_a_dispatched_scan_keeps_the_flag_set(sched, monkeypatch):
 
 def test_an_already_running_scan_still_consumes_the_scheduled_minute(sched, monkeypatch):
     """
-    _last_triggered_minute is set BEFORE the _scan_running check, so a trigger
-    skipped because a scan is already in flight still burns that minute.
+    The time is used up BEFORE the _scan_running check (the next tick
+    measures from this one), so a trigger skipped because a scan is already
+    in flight still burns that minute.
 
     That ordering is deliberate rather than an oversight. The scheduled scan's
     intent is "the library gets scanned around 03:00", and a scan running at
@@ -319,7 +338,6 @@ def test_an_already_running_scan_still_consumes_the_scheduled_minute(sched, monk
                   "scan_paths": ["/media"]}
 
     asyncio.run(sched._tick(None))
-    assert sched._last_triggered_minute == "03:00"
 
     scan_route._scan_running = False      # the manual scan finishes
     asyncio.run(sched._tick(None))
@@ -330,9 +348,10 @@ def test_an_already_running_scan_still_consumes_the_scheduled_minute(sched, monk
 # ── _drain_tick: the guards ──────────────────────────────────────────────────
 
 class _Entry:
-    def __init__(self, path="/media/ep.mkv", language="eng"):
+    def __init__(self, path="/media/ep.mkv", audio='["eng"]', legacy=None):
         self.id = 1
-        self.expected_language = language
+        self.expected_audio_languages = audio
+        self.expected_language = legacy
         self.media_file = type("MF", (), {"path": path})() if path else None
 
 
@@ -421,11 +440,17 @@ def test_an_empty_backlog_is_a_quiet_no_op(sched, monkeypatch):
     assert asyncio.run(sched._drain_tick()) is False
 
 
-def test_incomplete_plex_config_sends_nothing(sched, monkeypatch):
-    """URL, token and mappings are all required to address an item."""
+@pytest.mark.parametrize("missing", ["plex_url", "plex_token", "plex_path_mappings"])
+def test_incomplete_plex_config_sends_nothing_and_keeps_the_entry(sched, monkeypatch, missing):
+    """
+    URL, token and mappings are all required to address an item. The entry
+    used to be deleted before they were checked, so with one missing every
+    tick threw one away (reproduced: three ticks, three entries gone,
+    nothing sent, nothing logged). It now waits for the settings.
+    """
     _at(monkeypatch, sched, "04:00")
-    _drain_stub(monkeypatch, sched, entry=_Entry())
-    sched._cfg = _full_cfg(plex_path_mappings=[])
+    deleted = _drain_stub(monkeypatch, sched, entry=_Entry())
+    sched._cfg = _full_cfg(**{missing: [] if missing == "plex_path_mappings" else ""})
 
     sent = []
     monkeypatch.setattr(sched, "notify_plex_reprocessed_file",
@@ -433,6 +458,46 @@ def test_incomplete_plex_config_sends_nothing(sched, monkeypatch):
 
     assert asyncio.run(sched._drain_tick()) is False
     assert sent == []
+    assert deleted == [], "the entry was thrown away"
+
+
+def _incomplete_warnings(caplog):
+    return [r for r in caplog.records if "Analyze backlog: waiting" in r.getMessage()]
+
+
+def test_incomplete_settings_are_reported_once_not_every_tick(sched, monkeypatch, caplog):
+    """The drain ticks every second while it cannot send anything."""
+    import logging
+
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry())
+    sched._cfg = _full_cfg(plex_path_mappings=[])
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            asyncio.run(sched._drain_tick())
+
+    assert len(_incomplete_warnings(caplog)) == 1
+    assert not [r for r in caplog.records if "Plex notification skipped" in r.getMessage()], (
+        "plex_connection's own warning, every tick")
+
+
+def test_settings_broken_again_after_working_are_reported_again(sched, monkeypatch, caplog):
+    import logging
+
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry())
+    monkeypatch.setattr(sched, "notify_plex_reprocessed_file", lambda *a: False)
+
+    with caplog.at_level(logging.WARNING):
+        sched._cfg = _full_cfg(plex_path_mappings=[])
+        asyncio.run(sched._drain_tick())
+        sched._cfg = _full_cfg()
+        asyncio.run(sched._drain_tick())
+        sched._cfg = _full_cfg(plex_token="")
+        asyncio.run(sched._drain_tick())
+
+    assert len(_incomplete_warnings(caplog)) == 2
 
 
 # ── _drain_tick: processing one entry ────────────────────────────────────────
@@ -453,11 +518,27 @@ def test_a_drained_entry_reports_a_real_analyze(sched, monkeypatch):
     assert asyncio.run(sched._drain_tick()) is True
     assert len(deleted) == 1
 
-    url, token, mappings, path, lang = sent[0]
+    url, token, mappings, path, audio = sent[0]
     assert url == "http://plex:32400", "trailing slash not stripped"
     assert token == "tok"
     assert path == "/media/ep.mkv"
-    assert lang == "eng"
+    assert audio == ["eng"]
+
+
+def test_an_entry_from_before_the_audio_list_is_analyzed_without_a_check(sched, monkeypatch):
+    """Its single expected_language passed too easily (any audio stream with
+    it), so it is not used: the drain asks for the Analyze outright."""
+    _at(monkeypatch, sched, "04:00")
+    _drain_stub(monkeypatch, sched, entry=_Entry(audio=None, legacy="eng"))
+    sched._cfg = _full_cfg()
+
+    sent = []
+    monkeypatch.setattr(sched, "notify_plex_reprocessed_file",
+                        lambda *a: sent.append(a) or True)
+
+    asyncio.run(sched._drain_tick())
+
+    assert sent[0][4] is None
 
 
 def test_a_skipped_analyze_reports_false(sched, monkeypatch):
@@ -522,6 +603,142 @@ def test_a_failing_analyze_does_not_take_the_loop_down(sched, monkeypatch):
 
     assert asyncio.run(sched._drain_tick()) is False
     assert len(deleted) == 1, "entry re-queued after a failure — will retry forever"
+
+
+# ── _tick: a time that came round between two checks ─────────────────────────
+#
+# Each cycle is the tick, the retention sweep and a 60-second sleep, so it
+# runs a little over a minute and the checked minute skipped one every so
+# often (12 a day at half a second per cycle, 102 at five, measured with the
+# real loop below). A scan due in a skipped minute did not run that day. A
+# time now fires when it came round since the previous check.
+
+class _Clock:
+    """A datetime stand-in whose now() the test moves; strptime stays real."""
+
+    def __init__(self, when):
+        self.when = when
+
+    def now(self):
+        return self.when
+
+    @staticmethod
+    def strptime(s, fmt):
+        return _real_datetime.strptime(s, fmt)
+
+
+def _clock(monkeypatch, sched, *args):
+    clock = _Clock(_real_datetime(*args))
+    monkeypatch.setattr(sched, "datetime", clock)
+    return clock
+
+
+def _scheduled(sched, *times, enabled=True):
+    sched._cfg = {"scheduled_scan_enabled": enabled,
+                  "scheduled_scan_times": list(times),
+                  "scan_paths": ["/media"]}
+
+
+def test_a_scheduled_minute_between_two_checks_still_scans(sched, monkeypatch):
+    clock = _clock(monkeypatch, sched, 2026, 10, 19, 2, 59, 58)
+    scan_route, started = _scan_stub(monkeypatch, sched)
+    _scheduled(sched, "03:00")
+
+    asyncio.run(sched._tick(None))
+    clock.when = _real_datetime(2026, 10, 19, 3, 1, 2)      # 03:00 never checked
+    asyncio.run(sched._tick(None))
+
+    assert len(started) == 1, "the scan due in the skipped minute did not run"
+
+    scan_route._scan_running = False
+    clock.when = _real_datetime(2026, 10, 19, 3, 2, 5)
+    asyncio.run(sched._tick(None))
+    assert len(started) == 1, "the same scheduled time ran twice"
+
+
+def test_a_time_skipped_just_before_midnight_scans(sched, monkeypatch):
+    """23:59 falls between a check on one day and the next check, on the
+    next: it is the earlier day's 23:59 that came round."""
+    clock = _clock(monkeypatch, sched, 2026, 10, 19, 23, 58, 30)
+    _, started = _scan_stub(monkeypatch, sched)
+    _scheduled(sched, "23:59")
+
+    asyncio.run(sched._tick(None))
+    clock.when = _real_datetime(2026, 10, 20, 0, 0, 35)
+    asyncio.run(sched._tick(None))
+
+    assert len(started) == 1
+
+
+def test_a_host_asleep_over_a_scheduled_time_scans_once_on_waking(sched, monkeypatch):
+    """Asleep from 05:00 to 02:00 two days later: neither day's 03:00 that the
+    two checks share came round, but the one in between did."""
+    clock = _clock(monkeypatch, sched, 2026, 10, 19, 5, 0, 0)
+    _, started = _scan_stub(monkeypatch, sched)
+    _scheduled(sched, "03:00")
+
+    asyncio.run(sched._tick(None))
+    clock.when = _real_datetime(2026, 10, 21, 2, 0, 0)
+    asyncio.run(sched._tick(None))
+
+    assert len(started) == 1
+
+
+def test_times_that_passed_while_scheduling_was_off_do_not_scan(sched, monkeypatch):
+    clock = _clock(monkeypatch, sched, 2026, 10, 19, 2, 58, 0)
+    _, started = _scan_stub(monkeypatch, sched)
+    _scheduled(sched, "03:00")
+    asyncio.run(sched._tick(None))                        # on, nothing due
+
+    _scheduled(sched, "03:00", enabled=False)
+    clock.when = _real_datetime(2026, 10, 19, 2, 59, 0)
+    asyncio.run(sched._tick(None))
+    clock.when = _real_datetime(2026, 10, 19, 3, 1, 0)
+    asyncio.run(sched._tick(None))
+    _scheduled(sched, "03:00")                             # switched on now
+    clock.when = _real_datetime(2026, 10, 19, 3, 2, 0)
+    asyncio.run(sched._tick(None))
+
+    assert started == []
+
+
+def test_the_real_loop_runs_a_scan_due_in_a_minute_it_skips(sched, monkeypatch):
+    """
+    run_scheduler itself, on a fake clock, with five seconds of work per
+    cycle. Starting at 00:00:30 the checked minute first skips 02:03.
+    """
+    import app.api.routes.scan as scan_route
+
+    clock = _clock(monkeypatch, sched, 2026, 10, 19, 0, 0, 30)
+    # Not _scan_stub: its Thread stand-in never starts a thread, and the loop
+    # runs the retention sweep on an executor thread. A real thread runs the
+    # recording stand-in for the scan instead.
+    started = []
+    monkeypatch.setattr(scan_route, "_scan_running", False, raising=False)
+    monkeypatch.setattr(scan_route, "_run_scan", lambda *a, **k: started.append(a))
+    _scheduled(sched, "02:03")
+
+    def sweep():
+        clock.when += timedelta(seconds=5)
+    monkeypatch.setattr(sched, "sweep_retention", sweep)
+
+    class _Stop(Exception):
+        pass
+
+    async def sleep(seconds):
+        clock.when += timedelta(seconds=seconds)
+        if clock.when > _real_datetime(2026, 10, 19, 2, 10):
+            raise _Stop
+    monkeypatch.setattr(sched.asyncio, "sleep", sleep)
+
+    with pytest.raises(_Stop):
+        asyncio.run(sched.run_scheduler(None))
+    import threading
+    for thread in threading.enumerate():
+        if thread.name == "remuxarr-scheduled-scanner":
+            thread.join(5)
+
+    assert len(started) == 1, "the scheduled scan in the skipped minute never ran"
 
 
 # ── Loop resilience ──────────────────────────────────────────────────────────

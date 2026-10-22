@@ -59,6 +59,12 @@ The harness's fake extraction gained a timeout_seconds parameter in the
 same change. It names its keywords exactly, so the new keyword would have
 raised TypeError in every test here; that mechanical fix was part of the
 baseline the three mutations ran against.
+
+It gained before_swap the same way, when this path learned to move an
+existing subtitle aside under existing_srt_handling="embedded_first". The
+two tests after that cover it here, and the last one covers a subtitle
+arriving at an extraction's name under keep_both, which cancels the job.
+Their mutants are recorded in test_existing_subtitle_files.py.
 """
 import asyncio
 import threading
@@ -141,7 +147,7 @@ def rig(monkeypatch, tmp_path):
         )
 
     async def fake_extraction(*, input_path, stream_index, output_srt_path,
-                              job_id, timeout_seconds):
+                              job_id, timeout_seconds, before_swap=None):
         rig.extraction_calls.append((stream_index, output_srt_path))
         rig.extraction_timeouts.append(timeout_seconds)
         success, error = rig.results.get(stream_index, (True, None))
@@ -420,3 +426,109 @@ def test_a_hung_extraction_is_killed_at_the_job_timeout(rig, monkeypatch, tmp_pa
     assert rig.ffmpeg_calls == []
     assert not srt.exists()
     assert elapsed < 4
+
+
+# ── Embedded first, on this path ─────────────────────────────────────────────
+# Under existing_srt_handling="embedded_first" a file already at an
+# extraction's name is moved to the next free number just before that
+# extraction is swapped in (worker._move_aside). The real extraction and
+# runner, with the FFmpeg command replaced by one that writes the temp file,
+# so the swap hook is the runner's own. The remux after it is faked and
+# calls its own hook, which must leave the subtitle this job just wrote.
+
+def _real_extraction_writing(monkeypatch, tmp_path, text):
+    import app.core.ffmpeg as ffmpeg
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(worker, "execute_subtitle_extraction",
+                        ffmpeg.execute_subtitle_extraction)
+    monkeypatch.setattr(ffmpeg, "build_extract_subtitle_command",
+                        lambda _input, _stream, temp: ["sh", "-c", f"printf '{text}' > '{temp}'"])
+    monkeypatch.setattr(app_settings, "TEMP_DIR", str(tmp_path / "tmp"))
+
+
+def _remux_calling_its_hook(rig, monkeypatch, *, change_source=False):
+    async def fake_ffmpeg(**kwargs):
+        rig.ffmpeg_calls.append(kwargs)
+        if change_source:
+            with open(rig.path, "ab") as f:
+                f.write(b"replaced by an upgrade")
+        refused = await kwargs["before_swap"]()
+        return SimpleNamespace(success=refused is None, output_path=rig.path,
+                               output_size=123, error=refused)
+    monkeypatch.setattr(worker, "execute_ffmpeg", fake_ffmpeg)
+
+
+def test_embedded_first_moves_the_old_file_on_this_path_too(rig, monkeypatch, tmp_path):
+    _real_extraction_writing(monkeypatch, tmp_path, "EXTRACTED")
+    _remux_calling_its_hook(rig, monkeypatch)
+    srt = tmp_path / "Show.en.srt"
+    srt.write_text("FROM BAZARR")
+    rig.app_cfg = {"existing_srt_handling": "embedded_first"}
+    rig.actions = [extraction(2, str(srt))]
+
+    run(rig)
+
+    assert rig.finish_calls[0][1] is True, rig.finish_calls
+    assert srt.read_text() == "EXTRACTED"
+    assert (tmp_path / "Show.en.2.srt").read_text() == "FROM BAZARR"
+    assert not (tmp_path / "Show.en.3.srt").exists(), (
+        "the remux moved the subtitle this job had just extracted")
+
+
+def test_a_cancelled_job_puts_the_old_file_back(rig, monkeypatch, tmp_path):
+    """
+    The source is replaced while the remux runs, so the job is cancelled
+    and what it extracted is removed. The file it moved aside for that
+    extraction goes back to its name: left at .2, the user would find
+    their subtitle renamed by a job that did nothing.
+    """
+    _real_extraction_writing(monkeypatch, tmp_path, "EXTRACTED")
+    _remux_calling_its_hook(rig, monkeypatch, change_source=True)
+    cancelled = []
+    monkeypatch.setattr(worker, "_cancel_for_changed_source",
+                        lambda job_id, reason: cancelled.append(reason))
+    srt = tmp_path / "Show.en.srt"
+    srt.write_text("FROM BAZARR")
+    rig.app_cfg = {"existing_srt_handling": "embedded_first"}
+    rig.actions = [extraction(2, str(srt))]
+
+    run(rig)
+
+    assert cancelled, "the change was not noticed"
+    assert srt.read_text() == "FROM BAZARR"
+    assert not (tmp_path / "Show.en.2.srt").exists()
+
+
+# ── A subtitle arriving during an extraction (keep_both) ─────────────────────
+
+def test_a_subtitle_arriving_during_an_extraction_cancels_the_job(rig, monkeypatch, tmp_path):
+    """
+    Under the default keep_both, a file appearing at the extraction's name
+    before its swap stops the job, the way a changed source does: the
+    extraction is refused, nothing is overwritten, and the job is cancelled
+    and decided again rather than failed.
+    """
+    import app.core.ffmpeg as ffmpeg
+    from app.config import settings as app_settings
+
+    srt = tmp_path / "Show.en.srt"
+    monkeypatch.setattr(worker, "execute_subtitle_extraction",
+                        ffmpeg.execute_subtitle_extraction)
+    monkeypatch.setattr(ffmpeg, "build_extract_subtitle_command",
+                        lambda _input, _stream, temp: [
+                            "sh", "-c", f"printf EXTRACTED > '{temp}'; printf BAZARR > '{srt}'"])
+    monkeypatch.setattr(app_settings, "TEMP_DIR", str(tmp_path / "tmp"))
+    _remux_calling_its_hook(rig, monkeypatch)
+    cancelled = []
+    monkeypatch.setattr(worker, "_cancel_for_changed_source",
+                        lambda job_id, reason: cancelled.append(reason))
+    rig.actions = [extraction(2, str(srt))]
+
+    run(rig)
+
+    assert cancelled and "Show.en.srt appeared" in cancelled[0], cancelled
+    assert srt.read_text() == "BAZARR"
+    assert rig.ffmpeg_calls == [], "the remux ran after the extraction was refused"
+    assert rig.finish_calls == [], "the job was finished as a failure, not cancelled"
+

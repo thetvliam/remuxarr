@@ -83,9 +83,11 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
       RESTART REQUIRED
       </div>
       <div style={{ color: palette.text, fontSize: type.size.base, lineHeight: type.leading.loose }}>
-      The database has been replaced on disk, but this running instance
-      is still using the old one — nothing changes here until you
-      restart the container.
+      The backup is ready and replaces this database when you restart the
+      container. Until then this instance keeps using the current one.
+      Changes made before the restart are not carried over, but this
+      database is kept at the restart, in the same folder as the copy below
+      and with the date and time in its name.
       </div>
       <div style={{ color: palette.muted, fontSize: type.size.md, marginTop: space.lg, lineHeight: type.leading.loose }}>
       Your previous database was saved to:
@@ -131,8 +133,8 @@ export const FullBackupSection = ({ api, toast, first = false }) => {
     <div style={{ color: palette.red, fontSize: type.size.md, lineHeight: type.leading.relaxed, marginBottom: space.lg }}>
     Replaces this instance's entire database. The current database is
     backed up first, but everything currently here — scanned files,
-    history, queue — will otherwise be gone. Requires a manual
-    container restart to actually take effect.
+    history, queue — will otherwise be gone. Takes effect when you
+    restart the container.
     </div>
 
     {/* The file input is hidden behind the page's own button, as the

@@ -1096,8 +1096,9 @@ describe("useAppData — revert_complete", () => {
 // engine, which returns is_manual_review=False with the mismatch set in
 // both cases.
 //
-// The sum lives in the hook rather than App.jsx so it can be tested at all;
-// App.jsx has no test file.
+// The sum lives in the hook rather than App.jsx so it can be tested here,
+// without rendering the whole app. App.test.jsx checks that it reaches the
+// tab.
 
 /** fetch stub that answers each endpoint separately. */
 function stubEndpoints({ stats = {} } = {}) {

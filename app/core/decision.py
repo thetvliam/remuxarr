@@ -996,7 +996,18 @@ def analyze_file(
     #     reach here when extraction is on, see gate
     #     above)                                      → kept_subs (copied)
     kept_subs: list[dict] = []
-    used_srt_paths: set[str] = set()
+    # Seeded with what is already in the folder under keep_both, so a
+    # sidecar that is there — one Bazarr downloaded, or one the user edited
+    # — is numbered past like a second track of the same language would be,
+    # rather than overwritten. Under replace and embedded_first the name is
+    # used anyway: replace overwrites the file, as it always did, and
+    # embedded_first moves it to the next free number just before the swap
+    # (worker._move_aside).
+    used_srt_paths: set[str] = (
+        set(file_info.get("folder_entries") or ())
+        if settings.get("existing_srt_handling", "keep_both") == "keep_both"
+        else set()
+    )
 
     for track in sub_tracks:
         lang      = track["language"] or "und"
@@ -1705,8 +1716,9 @@ def _build_srt_path(
     rather than falling back to numeric disambiguation.
 
     If the resulting path is still in use after applying all flags
-    (e.g. two plain English subtitle tracks with no distinguishing flags),
-    a numeric suffix is appended: Movie.en.2.srt, Movie.en.3.srt, ...
+    (e.g. two plain English subtitle tracks with no distinguishing flags,
+    or, under existing_srt_handling="keep_both", a file already in the
+    folder), a numeric suffix is appended: Movie.en.2.srt, Movie.en.3.srt, ...
     """
     p = Path(media_path)
     lang_tag = ISO_639_2_TO_1.get(language, language)
@@ -1727,13 +1739,18 @@ def _build_srt_path(
             parts.append(suffix)
         return str(p.parent / (".".join(parts) + ".srt"))
 
+    # Compared without case: on a share that ignores it, Movie.EN.srt is the
+    # file Movie.en.srt would overwrite. Where case does count this only ever
+    # numbers past a name that differed by case alone, which costs nothing.
+    taken = {p.casefold() for p in used_paths}
+
     candidate = _candidate(None)
-    if candidate not in used_paths:
+    if candidate.casefold() not in taken:
         return candidate
 
     i = 2
     while True:
         candidate = _candidate(str(i))
-        if candidate not in used_paths:
+        if candidate.casefold() not in taken:
             return candidate
         i += 1

@@ -359,6 +359,10 @@ def test_files_gone_from_disk_are_removed(db, tmp_path):
 
     media = _media(db, str(tmp_path / "gone.mkv"))
     _fully_populate(db, media)
+    # Something else in the folder: a file missing from an empty one could
+    # be on a share that is not mounted, and is kept (see
+    # test_cleanup_keeps_unmounted_shares).
+    (tmp_path / "still-here.mkv").write_bytes(b"x")
 
     assert cleanup_deleted_files(db, [str(tmp_path)]) == 1
     assert db.query(MediaFile).count() == 0
@@ -442,6 +446,10 @@ def test_only_a_processing_job_defers_cleanup(db, tmp_path, status):
     media = _media(db, str(tmp_path / "gone.mkv"))
     db.add(QueueItem(file_id=media.id, status=status))
     db.commit()
+    # Something else in the folder: a file missing from an empty one could
+    # be on a share that is not mounted, and is kept (see
+    # test_cleanup_keeps_unmounted_shares).
+    (tmp_path / "still-here.mkv").write_bytes(b"x")
 
     assert cleanup_deleted_files(db, [str(tmp_path)]) == 1
     assert db.query(MediaFile).count() == 0

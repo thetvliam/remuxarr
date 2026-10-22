@@ -86,6 +86,16 @@ existed, and all three survived:
   • the re-keying never run                    → killed
   • answers it could not match kept anyway     → killed
   • writing and logging on every startup       → killed
+
+One for media_files.reevaluate_after_job, run against the full suite first
+and surviving it, because the live-schema test creates media_files whole:
+
+  • its ADD COLUMN missing                     → killed
+
+One for a backup imported before the restart, which init_db puts in place
+first (session.apply_pending_import), surviving the suite first:
+
+  • the swap made after the migrations         → killed
 """
 import importlib
 import json
@@ -691,6 +701,129 @@ def test_existing_files_come_out_uncounted_not_font_free(uncounted):
 
     assert "font_attachments" in columns
     assert value == (None,)
+
+
+# ── media_files.reevaluate_after_job ─────────────────────────────────────────
+
+def test_existing_files_gain_the_reevaluate_mark_unset(tmp_path, monkeypatch):
+    """
+    The live-schema test above cannot see a column missing from media_files:
+    its database starts without the table, so create_all makes it whole. A
+    file on an install from before the mark must gain it, unset, or every
+    scan and every finished job fails reading it.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE media_files DROP COLUMN reevaluate_after_job")
+    conn.execute(
+        "INSERT INTO media_files (path, filename, directory, size, mtime, status) "
+        "VALUES ('/m/Show.mkv', 'Show.mkv', '/m', 1, 1.0, 'processed')"
+    )
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(media_files)")}
+        value = conn.execute(
+            "SELECT reevaluate_after_job FROM media_files WHERE path = '/m/Show.mkv'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "reevaluate_after_job" in columns
+    assert not value[0], "a file nobody answered anything for is marked"
+
+
+# ── plex_analyze_backlog.expected_audio_languages ────────────────────────────
+
+def test_backlog_entries_gain_the_audio_language_list_empty(tmp_path, monkeypatch):
+    """
+    The live-schema test creates plex_analyze_backlog whole, so it cannot see
+    this column missing. An entry from before it must gain it empty, which
+    the drain reads as "no check": an Analyze, as the old single language
+    check passed too easily to trust.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    Base.metadata.tables["plex_analyze_backlog"].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE plex_analyze_backlog DROP COLUMN expected_audio_languages")
+    conn.execute("INSERT INTO plex_analyze_backlog (file_id, expected_language) VALUES (1, 'eng')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            "SELECT expected_language, expected_audio_languages FROM plex_analyze_backlog"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("eng", None)
+
+
+# ── A backup imported before the restart ─────────────────────────────────────
+
+def test_an_imported_backup_is_put_in_place_before_it_is_migrated(tmp_path, monkeypatch):
+    """
+    The import stages the backup and the next start puts it in place
+    (session.apply_pending_import). It has to come first in init_db: a backup
+    from an older version is then brought up to date like any other database,
+    where swapped in after the migrations it would start without the tables
+    and columns the code expects.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE marker (name TEXT)")
+    conn.execute("INSERT INTO marker VALUES ('in use')")
+    conn.commit()
+    conn.close()
+    conn = sqlite3.connect(str(path) + ".pending-import")
+    conn.execute("CREATE TABLE marker (name TEXT)")
+    conn.execute("INSERT INTO marker VALUES ('imported')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        marker = conn.execute("SELECT name FROM marker").fetchone()
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+    assert marker == ("imported",)
+    assert set(Base.metadata.tables) <= tables, "the imported database was not migrated"
 
 
 # ── Subtitle-encoding reviews written unlabelled ─────────────────────────────

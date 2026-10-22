@@ -333,6 +333,32 @@ describe("applying", () => {
     expect(tone).toBe("neutral");
   });
 
+  it("says a choice for a file being processed is saved, not that it failed", async () => {
+    /* The backend saves the choice and applies it once the file's job
+     * finishes. It used to report the file among the errors, which turned
+     * into a red "not updated" toast for a choice that had been kept. Nor is
+     * it "already answered": that message is for a click that found nothing. */
+    setup(ITEMS, 0, { applied: 0, errors: [], deferred: [7] });
+
+    await applyOne();
+
+    expect(toasts).toHaveLength(1);
+    const [message, tone] = toasts[0];
+    expect(message).toBe("ENG saved for 1 file being processed — applied once its job finishes");
+    expect(tone).toBe("neutral");
+  });
+
+  it("reports applied and deferred files side by side", async () => {
+    setup(ITEMS, 0, { applied: 2, errors: [], deferred: [7, 8] });
+
+    await applyOne();
+
+    expect(toasts).toEqual([
+      ["Set subtitle language to ENG on 2 files", "success"],
+      ["ENG saved for 2 files being processed — applied once their jobs finish", "neutral"],
+    ]);
+  });
+
   it("does not add the nothing-to-do message when something failed", async () => {
     /* applied 0 with errors is a different story and already has its own
      * toast. Two messages for one click would be worse than the silence. */

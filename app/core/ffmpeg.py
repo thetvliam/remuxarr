@@ -829,7 +829,13 @@ async def execute_ffmpeg(
         # exit), not the "temp file missing after a clean exit" edge case
         # — preserve that distinction. A clean exit (rc=0) combined with
         # success=False uniquely identifies the missing-temp-file case.
-        if result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("FFmpeg failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error("FFmpeg failed (rc=%d):\n%s", result.returncode, result.error)
         return FFmpegResult(
             success=False, output_path=None, error=result.error, output_size=None
@@ -853,6 +859,7 @@ async def execute_subtitle_extraction(
     output_srt_path: str,
     job_id: int,
     timeout_seconds: float | None = None,
+    before_swap: Callable[[], Awaitable[str | None]] | None = None,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -877,6 +884,10 @@ async def execute_subtitle_extraction(
     pass but not this: an extraction FFmpeg that hung held its worker slot
     until Abort or a restart. It reads the same source file the remux does,
     so whatever can hang one can hang the other.
+
+    before_swap is awaited once the .srt has been copied beside its
+    destination and before it replaces anything, as for the remux; an error
+    string from it fails the extraction with nothing written.
     """
     # See execute_ffmpeg's docstring for why the temp name is derived from
     # job_id rather than the destination filename. stream_index (already
@@ -899,13 +910,21 @@ async def execute_subtitle_extraction(
             on_progress_line=None,
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
+            before_swap=before_swap,
         )
 
         if not result.success:
             # Only log for genuine FFmpeg failures (rc != 0), not for the
             # "temp file missing after a clean exit" edge case — matches the
             # original asymmetric logging behaviour.
-            if result.returncode is not None and result.returncode != 0:
+            # No exit code means the run was stopped at its time limit: that is
+            # the only result run_staged_subprocess returns without one. Logged
+            # with its reason; it used to be either skipped or formatted with
+            # %d, which raised inside logging and left a traceback instead.
+            if result.returncode is None:
+                logger.error("Subtitle extraction failed (stream %d): %s",
+                             stream_index, result.error)
+            elif result.returncode != 0:
                 logger.error(
                     "Subtitle extraction failed (stream %d, rc=%d): %s",
                     stream_index, result.returncode, result.error,
@@ -1147,7 +1166,13 @@ async def execute_ffmpeg_combined(
     if not result.success:
         # Log only for genuine FFmpeg failures (rc != 0), not for the
         # missing-temp edge case — matches original asymmetric logging.
-        if result.returncode is not None and result.returncode != 0:
+        # No exit code means the run was stopped at its time limit: that is
+        # the only result run_staged_subprocess returns without one. Logged
+        # with its reason; it used to be either skipped or formatted with
+        # %d, which raised inside logging and left a traceback instead.
+        if result.returncode is None:
+            logger.error("FFmpeg (combined) failed: %s", result.error)
+        elif result.returncode != 0:
             logger.error(
                 "FFmpeg (combined) failed (rc=%d):\n%s", result.returncode, result.error
             )

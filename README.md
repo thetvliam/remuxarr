@@ -332,9 +332,13 @@ folder. A revert will not overwrite another file: if one already has the name
 it would write, the entry says so and does not offer to revert.
 
 **Extracted subtitle files** are removed again when you revert, since their
-content goes back inside the file - but only the ones that job created. If you
-already had a `.srt` there (from Bazarr, say) it is left alone, as is one you
-have edited since.
+content goes back inside the file - but only the ones that job created, and not
+one you have edited since. A `.srt` that was already there (from Bazarr, say),
+or that arrives while the job runs, is not overwritten in the first place: the
+extracted one is saved under the next free number, such as `Movie.en.2.srt`.
+The **Existing Subtitle Files** setting can make extraction replace it instead,
+which a revert cannot undo, or give the extracted subtitle the name and move
+the existing file to the next free number, where a revert leaves it.
 
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
@@ -361,7 +365,7 @@ developer theme editor's preview isolation, control coverage and export, and
 the invariants every shipped theme must satisfy:
 
 ```bash
-cd frontend && npm install && npm test
+cd frontend && npm ci && npm test
 ```
 
 Both run in CI on every push, alongside pyflakes and eslint. A few backend

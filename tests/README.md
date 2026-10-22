@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-1937 tests across 84 test files, plus 740 frontend tests under
+2048 tests across 93 test files, plus 747 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -23,7 +23,8 @@ see each docstring.
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`,
-`test_exclude_rules.py`, `test_exclude_scan.py`. Real SQLite, real
+`test_exclude_rules.py`, `test_exclude_scan.py`,
+`test_cleanup_keeps_unmounted_shares.py`. Real SQLite, real
 temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
@@ -34,9 +35,12 @@ whether a setting is reachable at all — default, accepted key, schema entry an
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
 `test_scan_library.py` covers the walk itself, and mostly one line of it: the
-cleanup pass is scoped to the scan paths that are directories right now, which
-is the only thing standing between a share that has not mounted and every row
-under it being deleted.
+cleanup pass is scoped to the scan paths that are directories right now, so a
+scan path that is not there at all keeps every row under it.
+`test_cleanup_keeps_unmounted_shares.py` covers the case that line cannot
+see: an unmounted share is still there as an empty folder, at the scan path or
+below it, and cleanup removed every record under it. It now keeps a missing
+file's record when the nearest folder still there on its way up is empty.
 `test_scan_routes.py` covers the wiring around that walk: the module-level flag
 that allows one scan at a time, whose documented contract is that whoever sets
 it either hands ownership to a thread that started or rolls it back themselves.
@@ -59,7 +63,10 @@ and the endpoint that lists excluded files, which a scan only counts.
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
-`test_clean_shutdown.py`, `test_background_tasks.py`. Four more follow one job through `worker.py` in
+`test_clean_shutdown.py`, `test_background_tasks.py`,
+`test_retry_unreadable_file.py`. The last retries failed items whose file
+ffprobe cannot read, through Retry All and the item's own Retry: both deleted
+the failed row and reported nothing wrong. Four more follow one job through `worker.py` in
 order: `test_worker_loop.py` on the pool that claims it and the three places a
 running job is tracked at once, `test_job_preflight.py` on the re-decision
 against current settings between queueing and execution,
@@ -74,7 +81,8 @@ acts on it.
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
-`test_source_changed_mid_job.py`, `test_output_name_taken.py`. Some run a
+`test_source_changed_mid_job.py`, `test_output_name_taken.py`,
+`test_existing_subtitle_files.py`, `test_timeout_logging.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -86,9 +94,31 @@ stream-copied, in both execution branches — the same guard twice over, so
 killing it in one says nothing about the other. The last two are the two-pass
 and combined-pass halves of one question: which failed extraction is a decision
 for a human, and so goes to manual review, rather than a plain failure.
+`test_existing_subtitle_files.py` covers extracting a subtitle onto a name
+that already holds one: a `.srt` Bazarr downloaded was overwritten, and the
+revert point held no copy of it. The Existing Subtitle Files setting now
+decides, and the default numbers past the file instead. It also covers a job
+that stops short of success after extracting some subtitles: numbering past
+its own leftovers gave every failed attempt another `Movie.en.N.srt`, so the
+job now removes them.
+`test_timeout_logging.py` covers what the container log says when a run hits
+the job time limit: the remux's log line raised instead and left a
+traceback, and the other three left the reason out.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
-`test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`.
+`test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
+`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`.
+`test_forge_keeps_tracks_current.py` runs a real forge add and undo
+with a job waiting for the same file: the stored track list stayed as it was
+before the rewrite, so the job left out a just-added AC3, or mapped a removed
+one and failed. It also runs an add queued before a job shifted the file's
+tracks, which used to copy the wrong track instead of building an AC3, and
+an add for a file whose stored container is empty, which was forged as
+Matroska whatever the file was.
+`test_forge_shutdown.py` stops the real worker loop while a forge run is in
+progress. A stop used to leave the run going until the event loop was torn
+down, and the next start failed it as a crash, though the file was
+untouched.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
 `test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,
@@ -132,7 +162,9 @@ nothing.
 **Language review** — `test_audio_language_review.py`,
 `test_subtitle_language_review.py`, `test_language_review_isolation.py`,
 `test_subtitle_rename.py`, `test_font_attachment_review.py`,
-`test_font_attachment_pipeline.py`, `test_review_reason.py`.
+`test_font_attachment_pipeline.py`, `test_review_reason.py`,
+`test_answers_follow_tracks.py`, `test_language_answer_during_job.py`,
+`test_review_keeps_language_flags.py`.
 `test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
@@ -153,6 +185,22 @@ The font gate is that trigger, and nothing about it fails. The same module
 covers the scanner and the worker recording that field, which they did not at
 first: every review they raised came out unlabelled, and both bulk endpoints
 read an unlabelled review with flagged tracks as an image-subtitle one.
+`test_answers_follow_tracks.py` covers what happens to the answers given in
+review when Remuxarr rewrites the file. They are keyed by what a track is plus
+which one it is among identical tracks, and a job that drops the first of two
+identical tracks renumbers the second: at the next full scan the dropped
+track's Remove landed on the subtitle the user had kept, and a language answer
+moved to the other audio track. A job now carries each answer to the track it
+was given for and a revert carries it back. `test_job_finalisation.py` and
+`test_revert_multiple_jobs.py` pin the two places that do it.
+`test_language_answer_during_job.py` covers a language answered while the
+file's job runs. The job had already decided, and when it ended it recorded the
+file's new size and mtime, so no delta scan looked again: the question was gone
+and only a Full Scan applied the answer. It runs the real worker and scanner.
+`test_review_keeps_language_flags.py` covers a file sent to manual review
+while it has language questions. The review decision carries no language
+findings, so the scan and the review answer leave the questions alone, and
+the file is then in two sections of the Review page at once.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,
@@ -170,6 +218,10 @@ playable files and argv-level assertions saw nothing amiss.
 revert re-embeds the subtitles extraction wrote beside the media, so leaving
 those files gives every subtitle twice, while deleting every `.srt` next to the
 media would take out the ones that predate Remuxarr.
+`test_deployment_config.py` also checks the build beyond the recycle volume.
+Among other things, CI and the image install the frontend with `npm ci`, from
+a lockfile that matches `package.json`: both ran `npm install`, which ignored
+the lock, and it fell so far behind that `npm ci` refused it.
 
 **Sample library** — `test_sample_library.py` runs the real pipeline against a
 fixed set of probed media files (`tests/sample_library/`) and compares against
@@ -247,7 +299,7 @@ picked. It is the target that is wrong, not the tool.
 pip install -r requirements.txt -r tests/requirements-test.txt
 pytest
 
-cd frontend && npm install && npm test
+cd frontend && npm ci && npm test
 ```
 
 **Option B — inside the deployed container**, against the real production

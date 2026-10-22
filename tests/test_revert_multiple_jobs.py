@@ -128,6 +128,13 @@ retry sites passing nothing are killed in test_audio_transcode_retry.
 The marker test first kept a French track beside the English, and the
 look-alike rule from revert._pair_pass then stored both anyway, so the
 marker mutants survived it; it now has one audio track, paired one to one.
+
+test_answers_go_back_to_the_tracks_they_were_given_for came with carrying
+stored answers through a revert. Its three mutants, recorded in
+test_answers_follow_tracks.py, survived the suite as it stood first: the
+re-key not called, resolved against the restored tracks, and the manifest's
+processed_index ignored. This test and that module's own revert test kill
+all three.
 """
 import asyncio
 import json
@@ -682,11 +689,12 @@ def test_extracted_subtitles_are_removed_when_the_subtitle_comes_back(lib):
     which players list as duplicate tracks.
 
     Only the file the job created is removed. The other .srt here stands
-    in for one Bazarr put there first, which the job overwrote rather than
-    created: deleting that would destroy something Remuxarr never made.
+    in for one Bazarr put there first, which a job under
+    existing_srt_handling="replace" overwrites rather than creates:
+    deleting that would destroy something Remuxarr never made.
     """
     mine = lib["path"].with_suffix(".ger.srt")      # the job will create this
-    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten
+    theirs = lib["path"].with_suffix(".eng.srt")    # already there; overwritten (replace)
     theirs.write_text("downloaded by Bazarr")
 
     _run_job(lib, ["-map", "0:0", "-map", "0:1", "-map", "0:2", "-c", "copy"],
@@ -1435,12 +1443,13 @@ def _forge(lib, *, undo=False):
     from app.database.models import Ac3ForgeJob
     import app.core.worker as worker_mod
 
+    # The first AAC 5.1, as queue_forge_job picks it: an add works from that
+    # one whatever the row says, because it re-reads the file when it starts.
     audio = [s for s in _probe(lib["path"])["streams"] if s["codec_type"] == "audio"]
-    english = next(s for s in audio if s["codec_name"] == "aac"
-                   and (s.get("tags") or {}).get("language") == "eng")
+    first = next(s for s in audio if s["codec_name"] == "aac" and s.get("channels") == 6)
     job = Ac3ForgeJob(file_id=lib["media"].id, is_undo=undo,
                       status="undo_pending" if undo else "pending",
-                      aac_stream_index=english["index"],
+                      aac_stream_index=first["index"],
                       audio_track_count=len(audio))
     lib["db"].add(job)
     lib["db"].commit()
@@ -1496,13 +1505,13 @@ def test_undoing_a_forged_track_the_original_had_keeps_it_restorable(forge_lib):
     lib = forge_lib
     assert _forge(lib).status == "success"
     before_the_job = _codecs(lib["path"])
-    assert ("audio", "ac3", "eng") in before_the_job
+    assert ("audio", "ac3", "jpn") in before_the_job
 
     # The job drops the Japanese audio and keeps everything else.
     _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
 
     assert _forge(lib, undo=True).status == "undone"
-    assert ("audio", "ac3", "eng") not in _codecs(lib["path"])
+    assert ("audio", "ac3", "jpn") not in _codecs(lib["path"])
 
     assert lib["db"].query(RevertPoint).count() == 1
     outcome = _revert(lib)
@@ -1584,7 +1593,7 @@ def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
 
     outcome = _revert(lib)
     assert outcome.success is True, outcome.error
-    assert ("audio", "ac3", "eng") in _codecs(outcome.restored_path)
+    assert ("audio", "ac3", "jpn") in _codecs(outcome.restored_path)
 
     lib["db"].expire_all()
     assert lib["db"].get(Ac3ForgeJob, forged.id).status == "success"
@@ -1761,3 +1770,48 @@ def test_a_re_encode_in_a_later_job_finds_its_track_by_the_files_index(tmp_path,
     assert outcome.success is True, outcome.error
     assert _packets(outcome.restored_path, "a") == lib["audio"]
 
+
+
+def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
+    """
+    Answers stored while the file was processed are keyed to the processed
+    layout. A revert puts the dropped English audio back in front of the
+    French, so left as they were, the French track's answer would land on
+    the English one. _apply carries them back through the manifest instead:
+    processed_index is where each original stream sat in the processed file,
+    and the restore writes the streams back in manifest order, so each one's
+    own index is where it is now.
+
+    Real capture, restore and probe, so the manifest indices are the ones a
+    real job records. The Track rows a job's _finish_job would have written
+    are taken from a probe of the processed file.
+    """
+    import json
+
+    from app.core.probe import extract_tracks, probe_file
+    from app.core.scanner import _track_to_dict, descriptors_by_stream, resolve_track_answers
+    from app.database.models import MediaFile, Track
+
+    # Drop the English audio: the processed file is video, fre, ger subtitle.
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3", "-c", "copy"], job_id=1)
+
+    db = lib["db"]
+    processed = extract_tracks(probe_file(str(lib["path"])))
+    assert [(td["stream_index"], td["language"]) for td in processed][1:] == [(1, "fre"), (2, "ger")]
+    keys = descriptors_by_stream(processed)
+    media = db.get(MediaFile, lib["media"].id)
+    for td in processed:
+        db.add(Track(file_id=media.id, **td))
+    media.audio_language_overrides = json.dumps({keys[1]: "ita"})
+    media.subtitle_overrides = json.dumps({keys[2]: "keep"})
+    db.commit()
+
+    outcome = _revert(lib)
+    assert outcome.success is True, outcome.error
+
+    db.expire_all()
+    media = db.get(MediaFile, lib["media"].id)
+    restored = [_track_to_dict(t) for t in db.query(Track).filter(Track.file_id == media.id)]
+    assert resolve_track_answers(json.loads(media.audio_language_overrides), restored) == {2: "ita"}, (
+        "the French track's answer is on another track after the revert")
+    assert resolve_track_answers(json.loads(media.subtitle_overrides), restored) == {3: "keep"}

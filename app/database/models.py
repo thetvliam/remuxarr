@@ -123,6 +123,14 @@ class MediaFile(Base):
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 
+    # Set when a language answer lands while this file's job is running.
+    # That job decided before the answer existed, and when it ends it
+    # records the file's new size and mtime, so a delta scan finds nothing
+    # to look at. The worker re-checks the file straight after a successful
+    # job (worker._reevaluate_after_job); otherwise a scan does, once no job
+    # is running for it (scanner._process_file), which also clears it.
+    reevaluate_after_job = Column(Boolean, default=False)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -360,11 +368,13 @@ class Ac3ForgeJob(Base):
     # True while this row represents an undo operation
     is_undo = Column(Boolean, default=False)
 
-    # Stream metadata captured at job-creation time.
+    # Stream metadata recorded when an add is queued, and replaced from a
+    # fresh probe when it starts (forge.load_forge_job_data).
     # aac_stream_index  → global ffprobe index of the AAC 5.1 track
     # audio_track_count → number of audio tracks BEFORE adding AC3
-    #   The AC3 is always appended as output audio stream [audio_track_count],
-    #   so undo can always use: -map -0:a:{audio_track_count}
+    #   The AC3 is appended as output audio stream [audio_track_count].
+    #   Undo does not find the track by it: later jobs can shift the track,
+    #   so undo locates it from a fresh probe (forge.resolve_forge_ac3_for_undo).
     aac_stream_index  = Column(Integer)
     audio_track_count = Column(Integer)
 
@@ -417,7 +427,20 @@ class PlexAnalyzeBacklog(Base):
     # maintenance has already picked up the change (confirmed to happen
     # for most files, just not reliably every time), the Analyze call is
     # skipped entirely as unnecessary.
+    #
+    # No longer written: rows from before expected_audio_languages carry
+    # it, and the drain analyzes those without a check (see below).
     expected_language = Column(String, nullable=True)
+
+    # What replaced it: every audio track's language in the file the job
+    # wrote, in stream order, as JSON (["eng", "und"]). Set only when the
+    # job changed an AUDIO track's language. The single expected_language
+    # passed if ANY audio stream in Plex had it, so a file that already had
+    # an English track skipped the Analyze while the track the job retagged
+    # still showed the old tag; and it was taken from the first action with
+    # a target language, which could be a subtitle's. Plex now has to show
+    # this exact list for the Analyze to be skipped.
+    expected_audio_languages = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=utcnow)
 

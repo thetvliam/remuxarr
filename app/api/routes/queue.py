@@ -141,7 +141,20 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         db.rollback()
         raise HTTPException(400, f"Retry failed: {exc}") from exc
 
-    db.commit()  # ensure the deletion above is persisted even on early-return paths
+    # A file it cannot stat or probe is logged and returned from, before
+    # anything is written. The item deleted above was then committed below,
+    # and the reply said the file needed no further action: the failure was
+    # gone from Failed with nothing in its place. Kept instead, as the
+    # exception above keeps it, and the reason is in the log.
+    if stats.errors:
+        db.rollback()
+        raise HTTPException(
+            400, "Retry failed: could not re-read the file — see the log for details")
+
+    # Every other way _process_file returns has committed already, so this
+    # changes nothing today. It is what makes the deletion above stick on a
+    # path added later without a commit of its own.
+    db.commit()
 
     new_item = (
         db.query(QueueItem)
@@ -769,14 +782,16 @@ def queue_stats(db: Session = Depends(get_db)):
     QueueItems: a caller walking this dict as a status map must not pick
     them up as though they were statuses.
 
-    Those figures may be added to the manual_review count without double
-    counting a file. Every is_manual_review decision returns early (see the
-    three gates in decision.py) and constructs its ProcessingDecision
-    without audio_language_mismatch or subtitle_language_mismatches, so
-    both default to empty — and _upsert_language_flags deletes any existing
-    rows when they are. A file is therefore either in manual review or
-    carrying language flags, never both. That is what makes the sum the UI
-    does a count of files rather than an overcount.
+    The UI adds the three together for the Review tab's badge, which makes
+    it the sum of the Review page's three section counts: manual-review
+    files, audio tracks and subtitle tracks still to answer. It is not a
+    count of files. A file with two flagged tracks counts twice, and a
+    file can be in manual review and carry language flags at once: a
+    review decision is made before language detection runs, so the scan,
+    the worker and the review answer all leave the file's flags alone
+    rather than clear questions that still stand
+    (tests/test_review_keeps_language_flags.py, and test_job_preflight for
+    the worker).
 
     Counted in SQL rather than by loading rows: the caller wants a number,
     and the list endpoints that return the rows themselves are paginated,
@@ -1119,6 +1134,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
         db.delete(item)
         db.flush()
 
+        errors_before = stats.errors
         try:
             _process_file(
                 db, file_path, app_cfg,
@@ -1143,6 +1159,19 @@ def retry_all_failed(db: Session = Depends(get_db)):
             # already committed internally inside _process_file, so their
             # results are unaffected.
             db.rollback()
+            continue
+
+        # A file it cannot stat or probe is logged and returned from, without
+        # a commit or an exception. The delete above stayed pending, and the
+        # next item's commit made it permanent: the failure left Failed with
+        # nothing re-queued and nothing reported. The same rollback as above
+        # puts it back, and it is reported the way the exception is.
+        if stats.errors > errors_before:
+            db.rollback()
+            errors.append({
+                "path":  file_path,
+                "error": "Could not re-read the file — see the log for details",
+            })
 
     return {
         # Only items that actually became pending work.

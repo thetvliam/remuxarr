@@ -42,6 +42,7 @@ instead), env_file by the dotenv test. The dotenv test also fails under
 the env_prefix mutant, but with a pydantic extra_forbidden error rather
 than its own assertion — it is the prefix tests that pin that one.
 """
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -575,6 +576,52 @@ def test_ci_and_the_image_build_the_frontend_on_the_same_node_major():
         f"it on Node {ci_major}. Bring them together, or the suite is not "
         f"testing what ships."
     )
+
+
+def test_ci_and_the_image_install_the_frontend_from_the_lockfile():
+    """
+    The image ran `npm install --frozen-lockfile 2>/dev/null || npm
+    install`, and CI ran `npm install`. --frozen-lockfile is Yarn's; npm
+    has no such option, so both resolved fresh from package.json's ranges on
+    every run and rewrote the lock as they went. The committed lock fell so
+    far behind that npm ci refused it: the test tooling, the fonts and two
+    @babel versions were missing or too old. npm ci installs what the lock
+    records and fails when it does not match package.json.
+
+    Verified by mutation with the lock test below, 4 applied, 4 killed, each
+    surviving the suite as it stood (2042 tests) first: the Dockerfile's old
+    install line and ci.yml's npm install, here; a dependency missing from
+    the lock's root entry and a stale range in it, there.
+    """
+    import re
+
+    installs = {
+        "Dockerfile": re.findall(r"^RUN .*\bnpm (\w+)", _read("Dockerfile"), re.M),
+        ".github/workflows/ci.yml": re.findall(
+            r"^\s*run: .*\bnpm (\w+)", _read(".github/workflows/ci.yml"), re.M),
+    }
+    for name, commands in installs.items():
+        assert "ci" in commands, f"{name} no longer installs the frontend with npm ci"
+        assert "install" not in commands, (
+            f"{name} runs npm install, which ignores the lock and rewrites it")
+
+
+def test_the_frontend_lockfile_matches_package_json():
+    """
+    The drift npm ci now fails on, caught before a push: package.json edited
+    and the lock not regenerated with it. Compared at the lock's root entry,
+    where npm records package.json's own ranges, so this needs no network
+    and no install. The rest of the tree is npm ci's to check in CI.
+    """
+    package = json.loads(_read("frontend/package.json"))
+    lock = json.loads(_read("frontend/package-lock.json"))
+    root = lock["packages"][""]
+
+    for field in ("dependencies", "devDependencies"):
+        assert root.get(field, {}) == package.get(field, {}), (
+            f"frontend/package-lock.json's {field} do not match package.json. "
+            f"Run `npm install` in frontend/ and commit the lock with the "
+            f"package.json change.")
 
 
 def test_the_release_notes_file_is_shipped_in_the_image():

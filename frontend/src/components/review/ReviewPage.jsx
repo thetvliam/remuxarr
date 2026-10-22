@@ -112,12 +112,26 @@ export const outcomeLine = (group, staged, previewed) => {
     const stuck = staying.length > 0
         && staying.every(o => o.blocked_beyond_subtitles);
 
-    const answers = staged?.answers || {};
-    const count = choice => Object.values(answers).filter(c => c === choice).length;
+    /* Each of the card's tracks counted once, from what each file will
+     * actually be sent: its own answer, or the card's where it has none, as
+     * answersForFile builds it. Only the card's row used to count, so a card
+     * answered file by file said nothing of its answers, and a track kept on
+     * the card but deleted on every file was still called kept, with advice
+     * to delete it. A track the files answer differently is counted as such,
+     * so the counts never add up to more tracks than the card has. */
+    const chosen = (group.tracks || []).map((_t, slot) => new Set(
+        (group.files || [])
+            .map(f => staged?.files?.[f.file_id]?.[slot] ?? staged?.answers?.[slot])
+            .filter(choice => choice !== undefined)));
+    const count = choice => chosen.filter(
+        set => set.size === 1 && set.has(choice)).length;
+    const differs = chosen.filter(set => set.size > 1).length;
+    const keeps = chosen.some(set => set.has("keep"));
     const parts = [
         count("keep")    && `${count("keep")} kept`,
         count("extract") && `${count("extract")} to SRT`,
         count("remove")  && `${count("remove")} deleted`,
+        differs          && `${differs} ${differs === 1 ? "differs" : "differ"} by file`,
     ].filter(Boolean);
     const tail = parts.length ? `, ${parts.join(", ")}` : "";
 
@@ -129,8 +143,9 @@ export const outcomeLine = (group, staged, previewed) => {
         if (stuck) return `${held} — it stays MKV whatever you choose here`;
         /* Only a kept track can be the thing holding it, so with nothing kept
          * there is no "delete this and it converts" to offer: the file is not
-         * converting for a reason this card cannot change. */
-        return count("keep")
+         * converting for a reason this card cannot change. Any file keeping
+         * one counts, including where the others delete it. */
+        return keeps
             ? `${held} — delete the kept tracks and it converts to MP4`
             : held;
     }
