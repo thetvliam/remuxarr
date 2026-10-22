@@ -39,9 +39,19 @@ here or in test_schema_migration: swapping at the import again, the start
 never applying what is waiting, the swap leaving the old -wal and -shm, and
 the swap running after the migrations. The fifth, the backup copied straight
 to its waiting name, was already killed by the never-written-incrementally
-test. Removing the old journal after the rename rather than before is not
+test. Moving the old journal after the rename rather than before is not
 tested: it differs only if the process dies between the two, and the
 comment at apply_pending_import says why the order matters.
+
+Keeping the database the import replaces came after that. The swap deleted
+it, and with it whatever changed between the import and the restart, which
+the pre-import backup is too early to hold. Five mutants were run against
+the suite as it stood. Leaving the journal under the live name was already
+killed by the two journal tests and is not claimed. The other four survived
+it and are killed here: deleting the database instead of keeping it, keeping
+it but deleting its journal, keeping the journal under a name SQLite does not
+pair with it, and one name for every kept copy, so that a second restart
+overwrote the first one's.
 """
 import io
 import json
@@ -454,7 +464,7 @@ def test_stale_wal_and_shm_sidecars_are_removed_at_the_swap(
     the restore and silently reinstates the old state — a restore that
     reports success and then quietly undoes itself. The import leaves them
     alone, as they belong to the database still in use; the swap at the next
-    start removes them.
+    start moves them, with that database, to the name it is kept under.
     """
     for suffix in ("-wal", "-shm"):
         with open(live.path + suffix, "wb") as f:
@@ -489,6 +499,100 @@ def test_a_real_journal_of_the_old_database_does_not_replay_over_the_restore(
     _start(live, monkeypatch)
 
     assert _read_marker(live.path) == "restored"
+
+
+def _kept(live):
+    """
+    The databases the swap kept, oldest first. Told from their journals by
+    SQLite's header rather than by name, so a journal kept under a name
+    SQLite does not pair with a database is not counted as one.
+    """
+    import glob
+
+    def is_database(path):
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+
+    return sorted(p for p in glob.glob(glob.escape(live.path) + ".replaced-*")
+                  if is_database(p))
+
+
+def test_the_database_an_import_replaces_is_kept_beside_it(
+        client, live, good_upload, monkeypatch):
+    """
+    A restart can come long after the import, and the pre-import backup is of
+    the database as it was when the import was made. Whatever changed in
+    between went with the replaced file when the swap deleted it.
+    """
+    _upload(client, good_upload)
+    held = sqlite3.connect(live.path)
+    held.execute("INSERT INTO app_settings VALUES ('written_after_import', 'x')")
+    held.commit()
+    held.close()
+
+    _start(live, monkeypatch)
+
+    assert _read_marker(live.path) == "restored"
+    kept = _kept(live)
+    assert len(kept) == 1, f"expected one kept database, found {kept}"
+    assert _read_marker(kept[0]) == "live"
+    assert _settings_of(kept[0]).get("written_after_import") == "x"
+
+
+def test_a_change_still_in_the_journal_is_kept_with_it(
+        client, live, good_upload, tmp_path, monkeypatch):
+    """
+    A database in WAL mode holds its latest writes in its -wal until a
+    checkpoint, and one stopped without closing cleanly keeps them there.
+    Kept under the same name as the file, the journal is still paired with
+    it and the writes are in the kept copy. Deleted, or kept under a name
+    SQLite does not look for, they are gone.
+    """
+    import shutil
+
+    _upload(client, good_upload)
+    conn = sqlite3.connect(live.path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("INSERT INTO app_settings VALUES ('only_in_the_journal', 'x')")
+    conn.commit()
+    shutil.copy(live.path, tmp_path / "file-without-it")
+    shutil.copy(live.path + "-wal", tmp_path / "journal-with-it")
+    conn.close()                      # checkpoints and removes its -wal
+    shutil.copy(tmp_path / "file-without-it", live.path)
+    shutil.copy(tmp_path / "journal-with-it", live.path + "-wal")
+    assert "only_in_the_journal" not in _settings_of(str(tmp_path / "file-without-it"))
+
+    _start(live, monkeypatch)
+
+    assert _read_marker(live.path) == "restored"
+    kept = _kept(live)
+    assert len(kept) == 1, f"expected one kept database, found {kept}"
+    assert _settings_of(kept[0]).get("only_in_the_journal") == "x"
+
+
+def test_each_restart_keeps_the_database_it_replaced(
+        client, live, good_upload, tmp_path, monkeypatch):
+    """
+    Each kept copy carries the time of the start that replaced it, so a
+    second import and restart keep their own rather than overwriting the
+    first one's.
+    """
+    import datetime
+
+    import app.database.session as session_mod
+
+    later = _make_db(str(tmp_path / "later.db"), {"scan_paths": "/later"}, marker="later")
+    with open(later, "rb") as f:
+        second = _zip({"manifest.json": _good_manifest(), "database.db": f.read()})
+
+    for upload, hour in ((good_upload, 1), (second, 2)):
+        _upload(client, upload)
+        monkeypatch.setattr(session_mod, "utcnow",
+                            lambda hour=hour: datetime.datetime(2026, 10, 22, hour))
+        _start(live, monkeypatch)
+
+    assert [_read_marker(p) for p in _kept(live)] == ["live", "restored"]
+    assert _read_marker(live.path) == "later"
 
 
 def test_a_missing_sidecar_is_not_an_error(client, live, good_upload):

@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.core.timeutil import utcnow
 from app.database.models import AppSetting, Base, MediaFile, QueueItem
 
 logger = logging.getLogger(__name__)
@@ -286,27 +287,39 @@ def apply_pending_import() -> bool:
     pooled connections to it: until the restart, a write landed in the old
     file or the new one depending on which connection it got, and those in
     the old one were gone after it. The import now only stages the file
-    (backup.import_full_backup), and it is swapped here, before anything has
+    (backup.import_backup), and it is swapped here, before anything has
     connected.
 
-    The old database's -wal and -shm go first. Left beside the new file,
-    SQLite would replay the old journal over it; removed before the rename,
-    a crash in between leaves the old file without its journal, which is
-    about to be replaced anyway, and the import still pending. True when an
-    import was applied.
+    The database it replaces is kept beside it, as <name>.replaced- and the
+    time of this start (UTC), with its -wal and -shm under the same name so
+    SQLite still pairs them. It was deleted, and with it whatever changed
+    between the import and the restart: the import's own backup is of the
+    database as it was when the import was made, and a restart can come long
+    after that.
+
+    The journal goes first. Left beside the new file, SQLite would replay
+    the old journal over it. Every move comes before the rename, so a start
+    that dies partway still has the import waiting, and the next start moves
+    whatever is left before putting it in place; what each start moved
+    carries that start's time. True when an import was applied.
     """
     live = settings.DATABASE_PATH
     pending = pending_import_path(live)
     if not os.path.exists(pending):
         return False
     engine.dispose()
-    for suffix in ("-wal", "-shm"):
+    kept = f"{live}.replaced-{utcnow().strftime('%Y%m%d-%H%M%S')}"
+    moved = False
+    for suffix in ("-wal", "-shm", ""):
         try:
-            os.remove(live + suffix)
+            os.replace(live + suffix, kept + suffix)
+            moved = True
         except FileNotFoundError:
             pass
     os.replace(pending, live)
     logger.warning("Applied the database backup imported before this start: %s", live)
+    if moved:
+        logger.warning("The database it replaced is kept as %s", kept)
     return True
 
 
