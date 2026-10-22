@@ -95,9 +95,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "add_faststart_to_mp4": True,
     # Maximum number of files processed simultaneously.
     "max_concurrent_jobs": 1,
-    # When True (default), queued files are processed immediately after a scan.
-    # When False, jobs queue up but the worker starts paused — the user must
-    # click Resume on the dashboard to begin processing.
+    # When True (default), queued files are processed as they are queued.
+    # When False, the worker is paused — at start-up, when a scan begins,
+    # and when the setting is turned off — and a Resume processes the queue
+    # and pauses again once it is empty (worker._loop).
     "auto_start_jobs":          True,
     "job_timeout_minutes":      120,
     # ── Metadata ───────────────────────────────────────────────────────────

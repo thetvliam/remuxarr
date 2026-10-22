@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 _worker_task: asyncio.Task | None = None
 _running      = False
 _paused       = False          # set by pause_worker() / resume_worker()
+# The auto_start_jobs value _loop() last saw. The loop acts on the setting
+# changing to off, not on it being off: with auto-start off, Resume is how a
+# user processes the queue by hand, and a check of the level would pause
+# that run again on the next pass. start_worker() seeds it with the value
+# the worker starts from, so the first pass compares against that rather
+# than whatever an earlier start in the same process left here.
+_auto_start_seen = True
 _active_jobs: set[int] = set() # job IDs currently being processed
 # Mirrors _loop()'s local active_tasks dict — updated in lockstep — so
 # abort_job() (called from the API route) can find and cancel a specific
@@ -88,12 +95,12 @@ def abort_job(job_id: int) -> bool:
     alone doesn't help if the worker just claims the next item on its very
     next loop tick. Calling pause_worker() here sets the actual in-memory
     flag the live loop checks (_paused), which is distinct from the
-    auto_start_jobs database setting the API route also updates — that
-    setting is only ever read at container startup and before a new scan
-    begins, so writing it alone has no effect on a worker loop that's
-    already running. Both are needed: pause_worker() stops the current
-    session immediately, auto_start_jobs prevents auto-resuming on a
-    future restart or scan.
+    auto_start_jobs database setting the API route also updates. The loop
+    does pause itself when it sees that setting turn off, but only on its
+    next pass, up to a second later, and the next job could be claimed in
+    between. Both are needed: pause_worker() stops the current
+    session immediately, auto_start_jobs keeps it paused through a
+    restart, and has every later scan pause it again.
 
     Marks the DB row "cancelled" (reusing the existing status rather than
     inventing a new one, so every existing filter/tab/badge that already
@@ -231,7 +238,7 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
 
 
 async def start_worker() -> None:
-    global _worker_task, _running, _paused
+    global _worker_task, _running, _paused, _auto_start_seen
     _running = True
 
     # Initialise the pause state from the auto_start_jobs setting.
@@ -239,7 +246,8 @@ async def start_worker() -> None:
     # auto_start_jobs = False → start paused (user must click Resume)
     with SessionLocal() as db:
         cfg = get_app_settings(db)
-        _paused = not cfg.get("auto_start_jobs", True)
+        _auto_start_seen = bool(cfg.get("auto_start_jobs", True))
+        _paused = not _auto_start_seen
 
         recover_interrupted_jobs(db)
 
@@ -315,12 +323,15 @@ async def _loop() -> None:
 
     Each iteration:
       1. Prune completed tasks from the active set.
-      2. Read max_concurrent_jobs from settings.
+      2. Read max_concurrent_jobs and auto_start_jobs from settings, and
+         pause if auto-start has just been turned off.
       3. While not paused and active < max, claim and launch a new job.
+         With auto-start off, pause once nothing is running and nothing
+         is left to claim.
       4. Sleep briefly before the next iteration.
     """
     from app.api.ws_manager import ws_manager   # avoid circular import
-    global _forge_task
+    global _forge_task, _auto_start_seen
 
     loop         = asyncio.get_running_loop()
     active_tasks: dict[int, asyncio.Task] = {}  # job_id → Task
@@ -342,6 +353,23 @@ async def _loop() -> None:
             with SessionLocal() as db:
                 cfg = get_app_settings(db)
             max_jobs = max(1, int(cfg.get("max_concurrent_jobs", 1)))
+
+            # ── Auto-start turned off ──────────────────────────────────────
+            # Read here, on every pass, rather than where the setting is
+            # written, because four places write it: the header toggle, a
+            # Settings save, a settings import, and abort. The setting used
+            # to be read only at start-up and when a scan began, so turning
+            # it off while the worker ran stopped nothing, and every
+            # Sonarr/Radarr import after that was processed as it arrived.
+            #
+            # Turning it on does not resume. A paused worker stays paused
+            # until the user presses Resume, whichever way it was paused.
+            auto_start = bool(cfg.get("auto_start_jobs", True))
+            turned_off = _auto_start_seen and not auto_start
+            _auto_start_seen = auto_start
+            if turned_off:
+                pause_worker()
+                await ws_manager.broadcast_json({"event": "worker_paused"})
 
             if not _paused:
                 total_active = len(active_tasks) + (1 if forge_task is not None else 0)
@@ -392,6 +420,19 @@ async def _loop() -> None:
                     active_tasks[job_id] = task
                     _active_task_registry[job_id] = task
                     total_active += 1
+
+                # ── A manual run has finished ──────────────────────────────
+                # With auto-start off, Resume processes what is in the queue
+                # and stops there: anything queued later waits for the next
+                # Resume. Nothing running at this point means the forge
+                # check and the claim above both ran this pass and found
+                # nothing, so the queue is empty, except for a job the claim
+                # skips because a revert is rewriting its file. That one
+                # stays pending until the next Resume.
+                if not auto_start and total_active == 0:
+                    logger.info("Queue finished with auto-start off")
+                    pause_worker()
+                    await ws_manager.broadcast_json({"event": "worker_paused"})
 
         except asyncio.CancelledError:
             break

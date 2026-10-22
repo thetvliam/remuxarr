@@ -437,6 +437,10 @@ def _run_scan(
         # If auto_start_jobs is disabled, pause the worker BEFORE scanning so
         # jobs that get queued won't be picked up automatically.  The user
         # must click Resume on the dashboard when they're ready to process.
+        # That includes a scan that starts during a run the user began with
+        # Resume: the run stops after its current job, and the scan's files
+        # wait. Decided that way on purpose, so a scheduled scan never
+        # processes anything while auto-start is off.
         auto_start = app_cfg.get("auto_start_jobs", True)
         if not auto_start:
             pause_worker()

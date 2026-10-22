@@ -841,13 +841,15 @@ SETTINGS_SCHEMA = [
     {
         "key":         "auto_start_jobs",
         "group":       "Worker",
-        "label":       "Auto-Start Processing After Scan",
+        "label":       "Auto-Start Processing",
         "type":        "boolean",
-        "description": "When enabled (default), queued files begin processing "
-                       "immediately after a scan completes. When disabled, "
-                       "files are queued but the worker starts paused — use "
-                       "the Resume button on the dashboard when you are ready "
-                       "to begin processing.",
+        "description": "When enabled (default), files are processed as soon "
+                       "as they are queued, by a scan or by a Sonarr or "
+                       "Radarr import. When disabled, processing pauses and "
+                       "files wait in the queue until you press Resume, "
+                       "which processes the queue and then pauses again. "
+                       "Enabling it does not resume a paused queue; press "
+                       "Resume.",
     },
     {
         "key":         "job_timeout_minutes",
