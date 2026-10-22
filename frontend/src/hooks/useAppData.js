@@ -481,8 +481,9 @@ export function useAppData() {
       const pendingQueue = queue.filter(i => i.status !== "processing");
 
       /* What the Review tab badge shows. Derived here rather than in App.jsx
-       * so it can be tested: App.jsx has no test file, and this sum is the
-       * whole point of fetching the stats.
+       * so the hook's own tests can pin it without rendering the whole app,
+       * as this sum is the whole point of fetching the stats. App.test.jsx
+       * checks that it reaches the tab.
        *
        * It is the sum of the Review page's section counts, so the number on
        * the tab is the number of things waiting there. It is not a count of
