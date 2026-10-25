@@ -270,7 +270,7 @@ Remuxarr can process a file as soon as Sonarr or Radarr imports it, rather than 
 
 Radarr is the same, with `http://<address>:9191/api/webhooks/radarr` as the URL. The **Test** button should report success.
 
-**If Sonarr or Radarr sees your files at different paths** from Remuxarr - Sonarr reports `/data/TV/...` where Remuxarr sees `/media/tv/...`, say - set the two Container Paths under **Settings → Integrations → Sonarr** (or Radarr): `/data/TV` as **Sonarr's Container Path** and `/media/tv` as **Remuxarr's Container Path for TV**.
+**If Sonarr or Radarr sees your files at different paths** from Remuxarr - Sonarr reports `/data/TV/...` where Remuxarr sees `/media/tv/...`, say - set the two Container Paths under **Settings → Integrations → Sonarr** (or Radarr): `/data/TV` as **Sonarr's Container Path** and `/media/tv` as **Remuxarr's Container Path for TV**. The same two paths are how Remuxarr finds which series or movie a file belongs to when a scan, rather than a webhook, found it.
 
 **Enable Sonarr Integration** (with Sonarr's URL and API key) is separate: after each job, Remuxarr asks Sonarr to rescan the series, so Sonarr picks up a file whose name or extension changed. Webhooks are accepted whether it is on or not. Radarr's works the same way.
 

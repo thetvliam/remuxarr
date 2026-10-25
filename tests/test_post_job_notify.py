@@ -74,6 +74,20 @@ those four are retired, not survivors. Four of the six were re-aimed at the
 unguarded lines afterwards and re-run against the final code; that run
 shows the code is pinned now, and the baseline above is what shows it was
 not before.
+
+Files that carry no ID at all, at the very end, came last: a file a scan
+found was never announced, and is now looked up by its folder. Ten
+mutations, each run against the whole 2061-test suite before these tests
+existed. Nine survived: the job's lookup not dispatched and the revert's
+not dispatched (one each, since they are separate call sites), the path
+left untranslated, a look-alike folder taken for the file's own, Radarr
+never asked, the ID not stored for a job and not stored for a revert
+(separate lines again), a lookup made for a job that already carries an
+ID, and an entry with no folder matching every file. Eight are killed
+here; the job's dispatch is killed in test_post_job_broadcast.py. The
+tenth, the enabled check removed, was already killed by
+test_a_service_switched_off_is_not_notified, since the lookup shares that
+check with the notifications, and is not claimed.
 """
 import asyncio
 import json
@@ -319,9 +333,10 @@ def test_a_service_switched_off_is_not_notified(db):
 
 def test_a_job_carrying_no_arr_id_is_not_notified(db):
     """
-    Only webhook-originated jobs carry these ids. A manually queued file
-    has neither, and notifying on one would send an id of None to an *arr
-    that has no idea what it refers to.
+    The ids come from a webhook, or from a lookup by folder made after the
+    job (_find_then_notify), never from here. A job with neither gets no
+    target, since notifying on one would send an id of None to an *arr that
+    has no idea what it refers to.
     """
     settings(db, **ARR_ON)
     job(db, 1)
@@ -747,7 +762,7 @@ def test_after_a_revert_each_service_gets_its_own_notifier(db, monkeypatch):
     monkeypatch.setattr(worker, "_trigger_plex_notify", plex)
     monkeypatch.setattr(worker, "_load_revert_notify_data", lambda _f, _p: {
         "sonarr": {"entity_id": 11}, "radarr": {"entity_id": 22},
-        "plex": {"local_path": "/media/Show.mkv"},
+        "lookup": [], "plex": {"local_path": "/media/Show.mkv"},
     })
 
     async def driver():
@@ -897,3 +912,228 @@ def test_a_later_scan_never_clears_an_id(db, episode, service, column,
     [row] = _rows(db)
     assert row.status == status
     assert getattr(row, column) == 42
+
+
+# ── Files that carry no Sonarr or Radarr ID ──────────────────────────────────
+#
+# The IDs came only from each service's webhook, so a file a scan found was
+# never announced to Sonarr or Radarr. Reproduced against a real server
+# with a fake Sonarr recording every request: a scanned file converted from
+# MKV to MP4 sent nothing, where a webhook file got RescanSeries. It is now
+# looked up by the folder it sits in, and the ID found is stored so the
+# file's later jobs and reverts reuse it.
+
+TRANSLATED = ARR_ON | {
+    "sonarr_path_prefix_local": "/media", "sonarr_path_prefix_remote": "/tv",
+    "radarr_path_prefix_local": "/media", "radarr_path_prefix_remote": "/movies",
+}
+
+
+def test_a_job_with_no_id_asks_sonarr_then_radarr(db):
+    """
+    Each candidate carries its own service's connection, with the path
+    already in that service's terms, since the folders it lists are.
+    """
+    settings(db, **TRANSLATED)
+    job(db, 1, output_path="/media/Show/ep.mp4")
+
+    lookup = worker._load_post_job_data(1)["lookup"]
+
+    assert lookup == [
+        {"service": "sonarr", "url": "http://sonarr:8989", "api_key": "SONARR-KEY",
+         "output_path": "/tv/Show/ep.mp4"},
+        {"service": "radarr", "url": "http://radarr:7878", "api_key": "RADARR-KEY",
+         "output_path": "/movies/Show/ep.mp4"},
+    ]
+
+
+def test_a_job_carrying_an_id_looks_nothing_up(db):
+    """The webhook already said which service it belongs to."""
+    settings(db, **ARR_ON)
+    job(db, 1, sonarr_series_id=11)
+
+    assert worker._load_post_job_data(1)["lookup"] == []
+
+
+def test_a_service_switched_off_is_not_asked(db):
+    settings(db, **(ARR_ON | {"sonarr_enabled": False}))
+    job(db, 1)
+
+    assert [c["service"] for c in worker._load_post_job_data(1)["lookup"]] == ["radarr"]
+
+
+@pytest.fixture
+def listing(monkeypatch):
+    """find_arr_id's request, answered from a fixed list per resource."""
+    import app.core.arr_lookup as arr_lookup
+
+    state = {"lists": {}, "asked": []}
+
+    def fake_get(base_url, api_key, path, params=None):
+        state["asked"].append((base_url, api_key, path))
+        return state["lists"].get(path, [])
+
+    monkeypatch.setattr(arr_lookup, "arr_get", fake_get)
+    return state
+
+
+def test_the_series_whose_folder_holds_the_file_is_found(listing):
+    from app.core.arr_lookup import find_arr_id
+
+    listing["lists"]["/api/v3/series"] = [
+        {"id": 3, "path": "/tv/Other Show"},
+        {"id": 7, "path": "/tv/Show/"},
+    ]
+
+    assert find_arr_id("sonarr", "http://s", "K", "/tv/Show/Season 1/ep.mkv") == 7
+    assert listing["asked"] == [("http://s", "K", "/api/v3/series")]
+
+
+def test_a_movie_is_found_in_radarrs_list(listing):
+    from app.core.arr_lookup import find_arr_id
+
+    listing["lists"]["/api/v3/movie"] = [{"id": 22, "path": "/movies/Film (2020)"}]
+
+    assert find_arr_id("radarr", "http://r", "K", "/movies/Film (2020)/Film.mp4") == 22
+
+
+def test_a_folder_that_only_starts_the_same_is_not_a_match(listing):
+    """
+    /tv/Show 2 is another series. Taking it for /tv/Show would rescan the
+    wrong series, and the quality restore would then look for the file in
+    a series that does not hold it.
+    """
+    from app.core.arr_lookup import find_arr_id
+
+    listing["lists"]["/api/v3/series"] = [{"id": 7, "path": "/tv/Show"}]
+
+    assert find_arr_id("sonarr", "http://s", "K", "/tv/Show 2/ep.mkv") is None
+
+
+def test_an_entry_with_no_folder_matches_nothing(listing):
+    """An empty prefix is the root to the matcher, which every path is under."""
+    from app.core.arr_lookup import find_arr_id
+
+    listing["lists"]["/api/v3/series"] = [
+        {"id": 9, "path": ""},
+        {"id": 7, "path": "/tv/Show"},
+    ]
+
+    assert find_arr_id("sonarr", "http://s", "K", "/tv/Show/ep.mkv") == 7
+
+
+SONARR_CANDIDATE = {"service": "sonarr", "url": "http://sonarr:8989",
+                    "api_key": "S", "output_path": "/tv/Film (2020)/Film.mp4"}
+RADARR_CANDIDATE = {"service": "radarr", "url": "http://radarr:7878",
+                    "api_key": "R", "output_path": "/movies/Film (2020)/Film.mp4"}
+
+
+def _drive_find(monkeypatch, answers):
+    """
+    _find_then_notify with the lookup answered per service (an ID, None, or
+    an exception to raise) and the trigger and the store recorded.
+    """
+    asked, notified, stored = [], [], []
+
+    def fake_find(service, url, api_key, path):
+        asked.append((service, path))
+        answer = answers[service]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    async def fake_trigger(data, _loop, notify_fn, restore_fn, name):
+        notified.append((name, data, notify_fn, restore_fn))
+
+    monkeypatch.setattr(worker, "find_arr_id", fake_find)
+    monkeypatch.setattr(worker, "_trigger_arr_notify", fake_trigger)
+    run(lambda loop: worker._find_then_notify(
+        [SONARR_CANDIDATE, RADARR_CANDIDATE], loop,
+        lambda service, entity_id: stored.append((service, entity_id)), "job 1"))
+    return asked, notified, stored
+
+
+def test_a_scanned_movie_falls_through_to_radarr(monkeypatch):
+    asked, notified, stored = _drive_find(monkeypatch, {"sonarr": None, "radarr": 22})
+
+    assert [service for service, _ in asked] == ["sonarr", "radarr"]
+    assert stored == [("radarr", 22)]
+    assert notified == [("Radarr",
+                         {"entity_id": 22, "url": "http://radarr:7878", "api_key": "R",
+                          "output_path": "/movies/Film (2020)/Film.mp4"},
+                         worker.notify_radarr, worker.restore_movie_quality)]
+
+
+def test_a_file_sonarr_holds_is_not_looked_up_in_radarr(monkeypatch):
+    asked, notified, stored = _drive_find(monkeypatch, {"sonarr": 7, "radarr": 22})
+
+    assert [service for service, _ in asked] == ["sonarr"]
+    assert stored == [("sonarr", 7)]
+    assert [n[0] for n in notified] == ["Sonarr"]
+
+
+def test_a_failed_sonarr_lookup_still_asks_radarr(monkeypatch):
+    """A Sonarr that is down costs Sonarr's notification, not Radarr's."""
+    asked, notified, _ = _drive_find(
+        monkeypatch, {"sonarr": OSError("connection refused"), "radarr": 22})
+
+    assert [service for service, _ in asked] == ["sonarr", "radarr"]
+    assert [n[0] for n in notified] == ["Radarr"]
+
+
+def test_a_file_neither_service_holds_tells_neither(monkeypatch):
+    _, notified, stored = _drive_find(monkeypatch, {"sonarr": None, "radarr": None})
+
+    assert notified == [] and stored == []
+
+
+def test_the_found_id_is_kept_on_the_job_for_the_files_later_jobs(db):
+    """
+    Stored on the job's row, newest_arr_ids gives it to the next job a scan
+    queues for the file and to a revert, so the lookup is made once.
+    """
+    from app.core.scanner import newest_arr_ids
+
+    job(db, 1)
+
+    worker._remember_arr_id_on_job(1, "sonarr", 7)
+
+    assert newest_arr_ids(db, 1) == (7, None)
+
+
+def test_a_revert_keeps_the_found_id_on_the_files_newest_item(db):
+    from app.core.scanner import newest_arr_ids
+
+    job(db, 1)
+    job(db, 2, with_media=False)
+
+    worker._remember_arr_id_on_file(1, "radarr", 22)
+
+    assert db.get(QueueItem, 2).radarr_movie_id == 22
+    assert db.get(QueueItem, 1).radarr_movie_id is None
+    assert newest_arr_ids(db, 1) == (None, 22)
+
+
+def test_a_revert_of_a_file_with_no_id_is_looked_up(db, monkeypatch):
+    """The revert's dispatcher hands the lookup on, storing on the file."""
+    found = []
+
+    async def fake_find(candidates, _loop, remember, context):
+        found.append((candidates, remember, context))
+
+    monkeypatch.setattr(worker, "_find_then_notify", fake_find)
+    monkeypatch.setattr(worker, "_load_revert_notify_data", lambda _f, _p: {
+        "sonarr": None, "radarr": None, "lookup": [SONARR_CANDIDATE], "plex": None,
+    })
+
+    async def driver():
+        await worker.notify_after_revert(5, "/media/Show.mkv")
+        await asyncio.sleep(0)
+
+    asyncio.run(driver())
+
+    assert len(found) == 1
+    candidates, remember, context = found[0]
+    assert candidates == [SONARR_CANDIDATE]
+    assert remember.func is worker._remember_arr_id_on_file
+    assert remember.args == (5,)

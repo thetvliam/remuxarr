@@ -42,12 +42,17 @@ Nine of the ten are killed here. The tenth — deleting the `final =
 final.copy()` before the forced-failure substitution — survives and is
 recorded as equivalent rather than left open. post_job["final"] is read
 exactly once, on the line above the safety net, and neither it nor
-post_job is read again except for the "sonarr" and "radarr" keys; the dict
-itself is a fresh literal built per call inside _load_post_job_data, so
-nothing outside this function can observe it being written through. The
+post_job is read again except for the "sonarr", "radarr" and "lookup" keys;
+the dict itself is a fresh literal built per call inside _load_post_job_data,
+so nothing outside this function can observe it being written through. The
 copy is defensive against a future caller that reuses the dict, and no
 assertion available here can distinguish it from its absence without
 pinning the identity of an object the function is free to replace.
+
+The lookup for a job that carries no Sonarr or Radarr ID came later. Its
+dispatch dropped survived the whole 2061-test suite and is killed by
+test_a_successful_job_with_no_id_is_looked_up; the rest of that change is
+recorded in test_post_job_notify.py.
 """
 import asyncio
 from types import SimpleNamespace
@@ -166,8 +171,9 @@ def rig(monkeypatch):
 
 
 def post_job(status="success", *, filename="Show.mkv", error=None,
-             sonarr=None, radarr=None):
-    """The shape _load_post_job_data returns."""
+             sonarr=None, radarr=None, lookup=()):
+    """The shape _load_post_job_data returns. lookup is empty unless the job
+    carries neither ID, which none of these jobs is about."""
     return {
         "final": {
             "status":      status,
@@ -178,6 +184,7 @@ def post_job(status="success", *, filename="Show.mkv", error=None,
         },
         "sonarr": sonarr,
         "radarr": radarr,
+        "lookup": list(lookup),
     }
 
 
@@ -437,3 +444,40 @@ def test_a_cancelled_job_sends_no_email(rig):
     run(rig)
 
     assert rig.email == []
+
+
+# ── A job that carries no Sonarr or Radarr ID ────────────────────────────────
+
+LOOKUP = [{"service": "sonarr", "url": "http://sonarr:8989", "api_key": "S-KEY",
+           "output_path": "/tv/Show/ep.mkv"}]
+
+
+def test_a_successful_job_with_no_id_is_looked_up(rig, monkeypatch):
+    """
+    A file a scan found carries no ID, and used to be announced to neither
+    service. The candidates the loader returns are handed on as they are,
+    with the ID found stored on this job's own row.
+    """
+    found = []
+    monkeypatch.setattr(worker, "_find_then_notify", _recorder(found))
+    rig.post_job = post_job("success", lookup=LOOKUP)
+
+    run(rig, job_id=7)
+
+    assert len(found) == 1
+    candidates, _loop, remember, context = found[0]
+    assert candidates == LOOKUP
+    assert remember.func is worker._remember_arr_id_on_job
+    assert remember.args == (7,)
+    assert context == "job 7"
+
+
+def test_a_failed_job_is_not_looked_up(rig, monkeypatch):
+    """Only a success changed the file, as for the jobs that carry an ID."""
+    found = []
+    monkeypatch.setattr(worker, "_find_then_notify", _recorder(found))
+    rig.post_job = post_job("failed", lookup=LOOKUP)
+
+    run(rig)
+
+    assert found == []

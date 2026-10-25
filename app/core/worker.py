@@ -10,6 +10,7 @@ Key controls (set at runtime, no restart needed):
   get_active_job_count()             — how many jobs are running right now
 """
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
+from app.core.arr_lookup import find_arr_id
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
@@ -532,6 +534,15 @@ async def _run_and_broadcast(
                         _trigger_arr_notify(
                             post_job["radarr"], loop, notify_radarr,
                             restore_movie_quality, "Radarr",
+                        )
+                    )
+                # A file that came with neither ID: a scan found it.
+                if post_job["lookup"]:
+                    asyncio.create_task(
+                        _find_then_notify(
+                            post_job["lookup"], loop,
+                            functools.partial(_remember_arr_id_on_job, job_id),
+                            f"job {job_id}",
                         )
                     )
 
@@ -2457,24 +2468,42 @@ def _load_post_job_data(job_id: int) -> dict | None:
                                     job.output_path, f"job {job_id}")
         radarr = _arr_notify_target(cfg, "radarr", job.radarr_movie_id,
                                     job.output_path, f"job {job_id}")
-        return {"final": final, "sonarr": sonarr, "radarr": radarr}
+        lookup = _arr_lookup_candidates(cfg, job.sonarr_series_id,
+                                        job.radarr_movie_id, job.output_path,
+                                        f"job {job_id}")
+        return {"final": final, "sonarr": sonarr, "radarr": radarr,
+                "lookup": lookup}
 
 
 def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
                        local_path: str | None, context: str) -> dict | None:
     """
     What _trigger_arr_notify needs to tell Sonarr or Radarr about a file,
-    or None when there is no one to tell: no series/movie id (the file did
-    not come from that service's webhook), the service off, or its url or
-    key missing.
+    or None when there is no one to tell: no series/movie id (neither the
+    service's webhook nor a lookup has given the file one), the service
+    off, or its url or key missing.
 
     service is "sonarr" or "radarr", which is also the prefix of each of
     its settings. Shared by jobs and reverts; context names which, for the
     log line.
     """
-    name = "Sonarr" if service == "sonarr" else "Radarr"
     if not entity_id:
         return None
+    connection = _arr_connection(cfg, service, local_path, context)
+    if connection is None:
+        return None
+    return {"entity_id": entity_id, **connection}
+
+
+def _arr_connection(cfg: dict, service: str, local_path: str | None,
+                    context: str) -> dict | None:
+    """
+    The url, key and translated path for talking to Sonarr or Radarr about a
+    file, or None when the service is off or its url or key is missing.
+    _arr_notify_target adds the ID; _arr_lookup_candidates uses it to find
+    one.
+    """
+    name = "Sonarr" if service == "sonarr" else "Radarr"
     if not cfg.get(f"{service}_enabled", False):
         return None
     url     = (cfg.get(f"{service}_url") or "").rstrip("/")
@@ -2491,7 +2520,6 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
     # report, using the same prefixes the webhook uses in the opposite
     # direction.
     return {
-        "entity_id":   entity_id,
         "url":         url,
         "api_key":     api_key,
         "output_path": translate_path(
@@ -2500,6 +2528,111 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
             cfg.get(f"{service}_path_prefix_remote", "") or "",
         ) or None,
     }
+
+
+def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
+                           radarr_id: int | None, local_path: str | None,
+                           context: str) -> list[dict]:
+    """
+    The services to ask which series or movie a file belongs to, in the
+    order to ask them, when it carries no ID from either.
+
+    The IDs used to come only from a webhook, so a file a scan found was
+    never announced to Sonarr or Radarr at all. A file that carries one
+    service's ID belongs to that service and asks nobody. Sonarr comes
+    first; Radarr is asked only when Sonarr has no match (_find_then_notify).
+    Each entry is _arr_connection's, with the service named, so the path is
+    already in that service's terms.
+    """
+    if sonarr_id or radarr_id or not local_path:
+        return []
+    candidates = []
+    for service in ("sonarr", "radarr"):
+        connection = _arr_connection(cfg, service, local_path, context)
+        if connection is not None:
+            candidates.append({"service": service, **connection})
+    return candidates
+
+
+def _remember_arr_id_on_job(job_id: int, service: str, entity_id: int) -> None:
+    """
+    Store an ID found by lookup on the job's own row, where newest_arr_ids
+    reads it back for the file's later jobs and reverts, so the lookup is
+    made once per file rather than once per job.
+    """
+    column = "sonarr_series_id" if service == "sonarr" else "radarr_movie_id"
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is not None:
+            setattr(job, column, entity_id)
+            db.commit()
+
+
+def _remember_arr_id_on_file(file_id: int, service: str, entity_id: int) -> None:
+    """
+    The same for a revert, which has no row of its own: the file's newest
+    queue item takes the ID, which is the row newest_arr_ids reads first.
+    """
+    column = "sonarr_series_id" if service == "sonarr" else "radarr_movie_id"
+    with SessionLocal() as db:
+        item = (db.query(QueueItem)
+                  .filter(QueueItem.file_id == file_id)
+                  .order_by(QueueItem.id.desc())
+                  .first())
+        if item is not None:
+            setattr(item, column, entity_id)
+            db.commit()
+
+
+async def _find_then_notify(candidates: list[dict], loop: asyncio.AbstractEventLoop,
+                            remember, context: str) -> None:
+    """
+    Fire-and-forget task: find the file's series or movie, store the ID,
+    then rescan and restore quality as for a file that came with one.
+
+    Runs here rather than in the loaders, which hold a database session:
+    the lookup is an HTTP request, and a slow Sonarr would hold the
+    connection with it. A failed request is logged and the next service is
+    asked, as a failed rescan is logged and costs a delayed refresh.
+    """
+    def _find():
+        for candidate in candidates:
+            try:
+                entity_id = find_arr_id(candidate["service"], candidate["url"],
+                                        candidate["api_key"], candidate["output_path"])
+            except Exception as exc:
+                logger.warning("Could not look up %s in %s for %s: %s",
+                               candidate["output_path"], candidate["service"],
+                               context, exc)
+                continue
+            if entity_id:
+                return candidate, entity_id
+        return None, None
+
+    try:
+        candidate, entity_id = await loop.run_in_executor(None, _find)
+    except Exception:
+        logger.exception("Sonarr/Radarr lookup failed for %s", context)
+        return
+    if not entity_id:
+        logger.info("%s is not in Sonarr or Radarr, so neither is told about %s",
+                    candidates[0]["output_path"], context)
+        return
+
+    try:
+        await loop.run_in_executor(None, remember, candidate["service"], entity_id)
+    except Exception:
+        logger.exception("Could not store the %s ID found for %s",
+                         candidate["service"], context)
+
+    data = {"entity_id": entity_id, "url": candidate["url"],
+            "api_key": candidate["api_key"], "output_path": candidate["output_path"]}
+    if candidate["service"] == "sonarr":
+        await _trigger_arr_notify(data, loop, notify_sonarr,
+                                  restore_episode_quality, "Sonarr")
+    else:
+        await _trigger_arr_notify(data, loop, notify_radarr,
+                                  restore_movie_quality, "Radarr")
 
 
 async def _trigger_arr_notify(
@@ -2556,10 +2689,10 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
     see the inline comment below for why that classification can diverge
     from Plex's actual indexed state.
 
-    Unlike Sonarr/Radarr (which only fire for webhook-triggered jobs), Plex
-    notification is considered for EVERY successful job when enabled — Plex
-    needs to know about every file Remuxarr touches, not just *arr-originated
-    ones.
+    Plex notification is considered for EVERY successful job when enabled,
+    and needs no ID: Plex is told by path. Sonarr and Radarr are told by
+    series or movie ID, which a scanned file has to have looked up first
+    (_arr_lookup_candidates).
     """
     with SessionLocal() as db:
         job = db.get(QueueItem, job_id)
@@ -2779,9 +2912,9 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
     extension, so the services' view of the file is as stale as after one.
 
     The series/movie id comes from the newest queue item for the file that
-    carries one, which is how the file reached Remuxarr from that service's
-    webhook. A file only ever processed from a scan has none, and is not
-    announced to Sonarr or Radarr — as for its jobs.
+    carries one: from the service's webhook, or from an earlier lookup by
+    folder. A file with neither is looked up as a job's is
+    (_arr_lookup_candidates), and the ID found goes on its newest queue item.
 
     restored_path, not MediaFile.path: the revert's own bookkeeping can fail
     after the file is written, leaving the row on the old path, and it is
@@ -2796,6 +2929,8 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
                                     restored_path, context)
         radarr = _arr_notify_target(cfg, "radarr", radarr_id,
                                     restored_path, context)
+        lookup = _arr_lookup_candidates(cfg, sonarr_id, radarr_id,
+                                        restored_path, context)
 
         plex = None
         media = db.get(MediaFile, file_id)
@@ -2804,7 +2939,8 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
             if plex is not None:
                 plex["local_path"] = restored_path
 
-        return {"sonarr": sonarr, "radarr": radarr, "plex": plex}
+        return {"sonarr": sonarr, "radarr": radarr, "lookup": lookup,
+                "plex": plex}
 
 
 async def notify_after_revert(file_id: int, restored_path: str) -> None:
@@ -2834,6 +2970,12 @@ async def notify_after_revert(file_id: int, restored_path: str) -> None:
         asyncio.create_task(_trigger_arr_notify(
             data["radarr"], loop, notify_radarr, restore_movie_quality,
             "Radarr",
+        ))
+    if data["lookup"]:
+        asyncio.create_task(_find_then_notify(
+            data["lookup"], loop,
+            functools.partial(_remember_arr_id_on_file, file_id),
+            f"the revert of {restored_path}",
         ))
     if data["plex"]:
         asyncio.create_task(_trigger_plex_notify(data["plex"], loop))
