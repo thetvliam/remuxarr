@@ -21,6 +21,7 @@ from app.core.timeutil import utcnow
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
+from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core import revert_lock
@@ -1670,6 +1671,38 @@ def _load_job_data(job_id: int):
                 )
             return None
 
+        app_cfg = get_app_settings(db)
+
+        # Excluded since it was queued. The exclude settings are checked
+        # when a scan, a webhook or the single-file scan queues a file, and a
+        # record they match is removed at the end of the next completed
+        # scan. A job already waiting was never checked again, so a pattern
+        # added while it waited did not stop it, and Retry, Retry All,
+        # Process Now and the review answers queue a file without the check
+        # at all. Every one of them passes through here.
+        #
+        # After the on-disk checks above: the extras rule looks at the
+        # folders around the file, which an unmounted share does not have.
+        #
+        # The record is left for that next scan to remove, with its size and
+        # mtime cleared as cancel_item clears them. Left as they were, a
+        # delta scan would read the file as unchanged, so removing the
+        # pattern before a scan ran would leave it skipped until a Force
+        # Full Rescan.
+        excluded_by = ExcludeRules.from_settings(app_cfg).reason(media.path)
+        if excluded_by:
+            job.status           = "skipped"
+            job.reason           = f"Excluded: {excluded_by}"
+            job.review_subtitles = None
+            job.completed_at     = utcnow()
+            media.status         = "skipped"
+            media.size           = -1
+            media.mtime          = -1.0
+            db.commit()
+            logger.info("Job %d: %s is excluded (%s) — skipped",
+                        job_id, media.path, excluded_by)
+            return None
+
         # A row that has never been probed for fonts — every row from before
         # the count was stored — reads as font-free to the gate below, and a
         # normal scan skips unchanged files, so it can stay that way through
@@ -1695,7 +1728,6 @@ def _load_job_data(job_id: int):
         )
         tracks = [_track_to_dict(t) for t in tracks_raw]
 
-        app_cfg    = get_app_settings(db)
         file_info  = _file_info_for(media)
         overrides  = _load_subtitle_overrides(media, tracks)
         audio_lang_overrides = _load_audio_language_overrides(media, tracks)

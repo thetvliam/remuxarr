@@ -5,11 +5,12 @@ Three settings decide it. skip_extras (on by default) covers trailers and
 other extras named the way Plex or Jellyfin expect, and Plex's optimised
 versions. exclude_patterns is the user's own list. A file either one matches
 is not probed or queued by a scan, a webhook or the single-file scan
-endpoint, and a record already held for it is removed at the end of the next
-completed scan (scanner.remove_excluded_files). include_patterns (Always
-Include) overrides both: a file it matches is never excluded, so one file
-the extras rule caught can be brought back without renaming it or turning
-that rule off for the whole library.
+endpoint, a job already queued for it is skipped when its turn comes
+(worker._load_job_data), and a record already held for it is removed at the
+end of the next completed scan (scanner.remove_excluded_files).
+include_patterns (Always Include) overrides both: a file it matches is never
+excluded, so one file the extras rule caught can be brought back without
+renaming it or turning that rule off for the whole library.
 
 The extras conventions
 ----------------------

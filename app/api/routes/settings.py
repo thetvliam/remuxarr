@@ -414,8 +414,9 @@ SETTINGS_SCHEMA = [
                        "a name ending in -trailer, -featurette, -sample and "
                        "so on), and the copies Plex's Optimize writes to a "
                        "Plex Versions folder. Ones already in Remuxarr are "
-                       "removed from it at the next scan; the files "
-                       "themselves are not touched.",
+                       "removed from it at the next scan, and one waiting "
+                       "in the queue is skipped when its turn comes; the "
+                       "files themselves are not touched.",
     },
     {
         "key":         "exclude_patterns",
@@ -430,7 +431,9 @@ SETTINGS_SCHEMA = [
                        "covers everything inside it. * and ? are wildcards, "
                        "and case is ignored. Files already in Remuxarr that "
                        "a pattern matches are removed from it at the next "
-                       "scan; the files themselves are not touched.",
+                       "scan, and one waiting in the queue is skipped when "
+                       "its turn comes; the files themselves are not "
+                       "touched.",
     },
     {
         "key":         "include_patterns",
