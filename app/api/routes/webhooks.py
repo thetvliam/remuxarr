@@ -61,6 +61,21 @@ it, and a plain refresh often does not make Plex re-read a file's tracks;
 that is what the Plex Analyze Backlog exists for. Nor is this a reprocess,
 so it queues nothing for that backlog.
 
+Imports and the library paths
+-----------------------------
+Media Library Paths are empty on a fresh install, so that nothing happens
+until they point at the library. An import used to be processed whatever
+they said: reproduced against a real server, a Sonarr import with no
+library paths set was queued and converted. With none set, an import is
+now logged and ignored: nothing is queued and Plex is not told.
+
+An import from outside every library path, once some are set, is still
+processed, with a warning in the log. Ignoring those too would be
+consistent, since scans, cleanup and the library-relative exclude patterns
+all work only inside the library paths; but someone whose paths cover only
+their movies, relying on Sonarr's webhook for TV, would silently lose TV
+processing. The warning says how to bring the folder in.
+
 Surviving a stop
 ----------------
 The timer lives in memory, and the webhook has already been answered
@@ -85,6 +100,7 @@ it.
 """
 import asyncio
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -93,7 +109,7 @@ from app.config import settings
 from app.core.exclude import ExcludeRules
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.scanner import move_renamed_file, queue_single_file
-from app.core.pathmap import translate_path
+from app.core.pathmap import swap_prefix, translate_path
 from app.core.timeutil import utcnow
 from app.database.models import MediaFile, QueueItem, WebhookIntake
 from app.database.session import SessionLocal, get_app_settings
@@ -339,9 +355,27 @@ async def _delayed_queue(
     """
     try:
         await asyncio.sleep(settings.WEBHOOK_DEBOUNCE_SECONDS)
-        logger.info("Debounce fired — queuing: %s", path)
-
         loop    = asyncio.get_running_loop()
+
+        # Checked when the timer fires rather than on arrival, so an import
+        # replayed after a restart is checked against the settings as they
+        # are now. See "Imports and the library paths" above.
+        where = await loop.run_in_executor(None, _where_in_library_sync, path)
+        if where == "none":
+            logger.warning(
+                "Ignoring the import of %s: no Media Library Paths are set "
+                "(Settings, Library & Processing, Library)", path)
+            if intake_id is not None:
+                await loop.run_in_executor(None, _forget_sync, intake_id)
+            return
+        if where == "outside":
+            logger.warning(
+                "The import of %s is outside every Media Library Path; "
+                "processing it anyway. Add its folder under Settings, "
+                "Library & Processing, Library so scans and cleanup cover "
+                "it too.", path)
+
+        logger.info("Debounce fired — queuing: %s", path)
         started = utcnow()
         qi      = await loop.run_in_executor(
             None, _queue_sync, path, series_id, radarr_movie_id, intake_id
@@ -381,6 +415,27 @@ async def _delayed_queue(
             # point of debouncing for that path.
             if _pending.get(path) is asyncio.current_task():
                 _pending.pop(path, None)
+
+
+def _where_in_library_sync(path: str) -> str:
+    """
+    "none" when no Media Library Paths are set, "inside" when path is under
+    one of them, "outside" otherwise. Under a path on whole folder names, as
+    everywhere else (pathmap.swap_prefix), so /media/tv does not hold
+    /media/tv2.
+    """
+    db = SessionLocal()
+    try:
+        roots = [os.path.normpath(p)
+                 for p in (get_app_settings(db).get("scan_paths") or []) if p]
+    finally:
+        db.close()
+    if not roots:
+        return "none"
+    if any(swap_prefix(os.path.normpath(path), root, root) is not None
+           for root in roots):
+        return "inside"
+    return "outside"
 
 
 def _queue_sync(

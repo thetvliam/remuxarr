@@ -33,6 +33,12 @@ The second turned out to change nothing: an import with a job writes no
 fresh skipped row, so the fresh-skip check already left it alone, and
 removing the queued check survived every test. It was taken out rather than kept as
 code nothing can pin.
+
+An import is now ignored while no Media Library Paths are set, and the
+fixture sets one for its library; every test above ran with none, which was
+incidental to what each asks. The last test pins that an ignored import is
+not shown to Plex either. Its mutations are recorded in
+test_webhook_intake.py, where the check's own tests are.
 """
 import asyncio
 import json
@@ -98,6 +104,12 @@ def lib(tmp_path, monkeypatch):
 
     folder = tmp_path / "tv" / "Show" / "Season 01"
     folder.mkdir(parents=True)
+    # The library this fixture's files live in. A webhook import is
+    # ignored when no Media Library Paths are set, and every install that
+    # sends one has its library there.
+    with factory() as db:
+        db.merge(AppSetting(key="scan_paths", value=json.dumps([str(tmp_path / "tv")])))
+        db.commit()
 
     def media(name="Show - S01E01.mkv"):
         f = folder / name
@@ -243,3 +255,18 @@ def test_a_plex_failure_leaves_the_import_dealt_with(lib, monkeypatch):
     lib.import_(path)
 
     assert lib.items() == [("skipped", False)]
+
+
+def test_an_import_ignored_for_want_of_library_paths_is_not_shown_to_plex(lib):
+    """
+    With no Media Library Paths set, Remuxarr acts on no import at all,
+    and telling Plex about one is acting on it. This file needs no
+    changes, the case Plex would otherwise be told about at once.
+    """
+    lib.settings(dry_run_mode=False, prefer_mp4_container=False, scan_paths=[], **PLEX_ON)
+    path = lib.media()
+
+    lib.import_(path)
+
+    assert lib.items() == []
+    assert lib.told == []

@@ -67,6 +67,9 @@ def queued(monkeypatch):
         webhooks, "_resolve_translated_path_sync",
         lambda path, series_id=None, radarr_movie_id=None: path,
     )
+    # Whether the import is inside the library paths reads settings too, and
+    # is test_webhook_intake.py's question. These imports are inside them.
+    monkeypatch.setattr(webhooks, "_where_in_library_sync", lambda path: "inside")
     return calls
 
 

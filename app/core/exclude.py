@@ -55,9 +55,9 @@ entry ending in a media extension also matches that name with any other
 media extension (see _compile).
 
 The library path's own folders are never tested, or "Movies" would exclude
-a whole library mounted at /media/Movies. A path under no library path (a
-webhook on an install with none configured) is tested on all its folders
-by name patterns and the extras rule; path patterns cannot apply to it.
+a whole library mounted at /media/Movies. A path under no library path (an
+import from outside all of them) is tested on all its folders by name
+patterns and the extras rule; path patterns cannot apply to it.
 """
 import os
 import re

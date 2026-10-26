@@ -29,8 +29,20 @@ The last was not in the plan. The first version of the table had a plain
 integer id, and test_a_first_attempt_finishing_late_leaves_the_newer_record
 failed against it: SQLite gave the replacing row the replaced row's id, so
 deleting by id was deleting by path after all.
+
+Imports and the library paths, at the end, came later. The fixture now sets
+a Media Library Path for its library, since an import is ignored without
+one; every test above ran with none set, which was incidental to what each
+asks. Five mutations, each against the whole 2077-test suite with that
+fixture change and before these tests, all five survived: no check; the
+intake record kept for an ignored import, so it is replayed and ignored at
+every start; imports from outside the library paths ignored as well; a
+library path counted as holding a folder whose name only starts the same;
+and the warning for an outside import dropped. All five are killed here,
+the first two also by test_plex_on_import.py.
 """
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -44,7 +56,7 @@ import app.main as main
 from app.api.routes import webhooks
 from app.config import settings as app_settings
 from app.core import scanner
-from app.database.models import Base, QueueItem, WebhookIntake
+from app.database.models import AppSetting, Base, QueueItem, WebhookIntake
 
 
 def _probe_mkv():
@@ -80,6 +92,12 @@ def lib(tmp_path, monkeypatch):
 
     media = tmp_path / "tv" / "Show" / "Season 01" / "Show - S01E01.mkv"
     media.parent.mkdir(parents=True)
+    # The library this fixture's files live in. A webhook import is
+    # ignored when no Media Library Paths are set, and every install that
+    # sends one has its library there.
+    with factory() as db:
+        db.merge(AppSetting(key="scan_paths", value=json.dumps([str(tmp_path / "tv")])))
+        db.commit()
     media.write_bytes(b"\0" * 64)
     path = str(media)
 
@@ -292,3 +310,79 @@ def test_a_webhook_that_cannot_be_recorded_is_still_queued(lib):
 
     assert lib.run(receive_and_wait)["status"] == "accepted"
     assert lib.items() == [("pending", 7, None)]
+
+
+# ── Imports and the library paths ────────────────────────────────────────────
+#
+# Media Library Paths start empty so that nothing happens until they point at
+# the library, but an import was processed whatever they said. Reproduced
+# against a real server: with none set, a Sonarr import was queued and
+# converted. An import from outside every library path, once some are set,
+# is still processed, with a warning, so a library whose paths cover only
+# its movies does not silently lose its TV imports.
+
+def _scan_paths(lib, paths):
+    with sessionmaker(bind=lib.engine)() as db:
+        db.merge(AppSetting(key="scan_paths", value=json.dumps(paths)))
+        db.commit()
+
+
+def test_an_import_with_no_library_paths_is_ignored(lib, caplog):
+    """
+    Answered as accepted, as before: Sonarr's Test button and its own
+    retry logic see a webhook that worked. The record goes as well, or the
+    import would be replayed, and ignored again, at every start.
+    """
+    _scan_paths(lib, [])
+
+    async def receive_and_wait():
+        response = await lib.sonarr(7)
+        await _until(lambda: not webhooks._pending)
+        return response
+
+    response = lib.run(receive_and_wait)
+
+    assert response["status"] == "accepted"
+    assert lib.items() == []
+    assert lib.rows() == []
+    assert "no Media Library Paths are set" in caplog.text
+
+
+def test_an_import_outside_every_library_path_is_still_processed(lib, tmp_path, caplog):
+    _scan_paths(lib, [str(tmp_path / "movies")])
+
+    async def receive_and_wait():
+        await lib.sonarr(7)
+        await _until(lambda: lib.items() and not lib.rows())
+
+    lib.run(receive_and_wait)
+
+    assert lib.items() == [("pending", 7, None)]
+    assert "outside every Media Library Path" in caplog.text
+
+
+def test_a_path_that_only_starts_like_a_library_path_is_outside_it(lib, tmp_path, caplog):
+    """
+    The import is under .../tv; a library path of .../t is another folder,
+    so the import is outside every library path and the warning says so.
+    """
+    _scan_paths(lib, [str(tmp_path / "t")])
+
+    async def receive_and_wait():
+        await lib.sonarr(7)
+        await _until(lambda: lib.items() and not lib.rows())
+
+    lib.run(receive_and_wait)
+
+    assert "outside every Media Library Path" in caplog.text
+
+
+def test_an_import_inside_the_library_paths_logs_no_warning(lib, caplog):
+    async def receive_and_wait():
+        await lib.sonarr(7)
+        await _until(lambda: lib.items() and not lib.rows())
+
+    lib.run(receive_and_wait)
+
+    assert lib.items() == [("pending", 7, None)]
+    assert "Media Library Path" not in caplog.text

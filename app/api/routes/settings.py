@@ -401,7 +401,10 @@ SETTINGS_SCHEMA = [
         "label":       "Media Library Paths",
         "type":        "string_list",
         "placeholder": "/media/tv",
-        "description": "Absolute paths to scan for media files.",
+        "description": "Absolute paths to scan for media files. Until at "
+                       "least one is set, Sonarr and Radarr imports are "
+                       "ignored too. An import from outside all of them is "
+                       "still processed, with a warning in the log.",
     },
     {
         "key":         "skip_extras",
