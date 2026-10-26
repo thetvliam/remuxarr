@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2084 tests across 93 test files, plus 753 frontend tests under
+2094 tests across 94 test files, plus 753 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -24,8 +24,8 @@ see each docstring.
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
-`test_cleanup_keeps_unmounted_shares.py`. Real SQLite, real
-temp files. `test_media_file_deletion.py` derives the list of tables
+`test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`. Real
+SQLite, real temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
 by name; `test_clear_database.py` guards the same omission at the other end,
@@ -34,6 +34,10 @@ unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
+`test_recheck_scan.py` covers the re-check scan, which decides files a
+routine scan would skip again from their stored tracks, so a settings change
+reaches them without running ffprobe on every file as a Force Full Rescan
+does.
 `test_scan_library.py` covers the walk itself, and mostly one line of it: the
 cleanup pass is scoped to the scan paths that are directories right now, so a
 scan path that is not there at all keeps every row under it.

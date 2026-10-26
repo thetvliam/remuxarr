@@ -134,6 +134,7 @@ def scan_library(
     force_probe: bool = False,
     progress_callback=None,   # optional: callable(scanned: int, total: int)
     cancel_check=None,        # optional: callable() -> bool, checked per-file; True = stop
+    recheck:     bool = False,
 ) -> ScanStats:
     """
     Walk every path and process each media file.
@@ -143,6 +144,10 @@ def scan_library(
     force_probe : bool
         True  → run ffprobe on every file regardless of mtime/size (initial scan).
         False → only ffprobe files that changed since last scan (delta scan).
+    recheck : bool
+        True → a delta scan that also decides unchanged files again, from
+        their stored tracks, so a settings change reaches them (see
+        _process_file). Ignored when force_probe is set, which probes all.
     progress_callback : callable | None
         Called after each file is processed with (scanned, total) ints.
         Used by the scan API route to broadcast WebSocket progress updates.
@@ -158,7 +163,7 @@ def scan_library(
     stats    = ScanStats()
     app_cfg  = get_app_settings(db)
     dry_run  = app_cfg.get("dry_run_mode", False)
-    scan_label = "full" if force_probe else "delta"
+    scan_label = "full" if force_probe else ("re-check" if recheck else "delta")
     rules    = ExcludeRules.from_settings(app_cfg, paths)
 
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))
@@ -207,7 +212,8 @@ def scan_library(
                 scanned += 1
 
                 try:
-                    _process_file(db, full_path, app_cfg, force_probe, dry_run, stats)
+                    _process_file(db, full_path, app_cfg, force_probe, dry_run, stats,
+                                  recheck=recheck)
                 except Exception:
                     logger.exception("Unexpected error processing %s", full_path)
                     stats.errors += 1
@@ -990,7 +996,17 @@ def _process_file(
     stats:       ScanStats,
     sonarr_series_id: int | None = None,
     radarr_movie_id:  int | None = None,
+    recheck:     bool = False,
 ) -> None:
+    """
+    Probe (when needed), decide and queue one file.
+
+    recheck re-decides a file the delta check would skip, from the tracks
+    stored for it, so a settings change reaches files already scanned
+    without running ffprobe on every one, as a Force Full Rescan does. A
+    file that changed on disk is probed as usual: its stored tracks may no
+    longer describe it. force_probe wins when both are set.
+    """
     # ── Stat the file ──────────────────────────────────────────────────────
     try:
         st = os.stat(path)
@@ -1025,11 +1041,16 @@ def _process_file(
         ).first()
     )
 
+    from_record = False
     if existing and not force_probe:
         size_match  = existing.size == current_size
         mtime_match = abs(existing.mtime - current_mtime) < 1.0
 
-        if size_match and mtime_match and not reevaluate:
+        # A re-check decides an unchanged file again rather than skipping
+        # it, from what was stored when it was last probed.
+        from_record = recheck and size_match and mtime_match and not reevaluate
+
+        if size_match and mtime_match and not reevaluate and not from_record:
             # File is identical on disk. media_file.status == "queued" is
             # set in TWO different situations that look identical from
             # this field alone: (a) the file is simply still pending its
@@ -1068,60 +1089,75 @@ def _process_file(
     # unchanged early-returns above). Kept OUTSIDE the
     # `if existing and not force_probe` block on purpose: a full scan
     # (force_probe=True) skips that block entirely, and the old `else`
-    # there bucketed every existing file as `new`.
-    if is_new_file:
+    # there bucketed every existing file as `new`. A re-checked file is
+    # unchanged on disk, and is counted as that.
+    if from_record:
+        stats.unchanged += 1
+    elif is_new_file:
         stats.new += 1
     else:
         stats.changed += 1
 
-    # ── Run ffprobe ────────────────────────────────────────────────────────
-    try:
-        probe_data = probe_file(path, app_settings.FFPROBE_PATH)
-    except ProbeError as exc:
-        logger.error("ffprobe failed for %s: %s", path, exc)
-        stats.errors += 1
-        return
-
-    fmt_info  = extract_format_info(probe_data)
-    track_list = extract_tracks(probe_data)
-
-    # ── Upsert MediaFile ───────────────────────────────────────────────────
-    primary_video_codec = next(
-        (t["codec"] for t in track_list if t["track_type"] == "video"), None
-    )
-
-    if existing:
-        existing.size          = current_size
-        existing.mtime         = current_mtime
-        existing.container     = fmt_info.get("container")
-        existing.duration      = fmt_info.get("duration")
-        existing.video_codec   = primary_video_codec
-        existing.font_attachments = fmt_info.get("font_attachments")
-        existing.last_scanned  = utcnow()
-        if reevaluate:
-            existing.reevaluate_after_job = False
+    if from_record:
+        # Nothing on disk changed, so the record still describes the file.
+        # Ordered by id, which is the order replace_track_rows wrote them in:
+        # the probe's own order, as a scan would hand the engine.
         media_file = existing
+        track_list = [
+            _track_to_dict(t) for t in
+            db.query(Track).filter(Track.file_id == existing.id).order_by(Track.id)
+        ]
+        fmt_container = existing.container or ""
     else:
-        media_file = MediaFile(
-            path        = path,
-            filename    = os.path.basename(path),
-            directory   = os.path.dirname(path),
-            size        = current_size,
-            mtime       = current_mtime,
-            container   = fmt_info.get("container"),
-            duration    = fmt_info.get("duration"),
-            video_codec = primary_video_codec,
-            font_attachments = fmt_info.get("font_attachments"),
-            last_scanned = utcnow(),
+        # ── Run ffprobe ────────────────────────────────────────────────────
+        try:
+            probe_data = probe_file(path, app_settings.FFPROBE_PATH)
+        except ProbeError as exc:
+            logger.error("ffprobe failed for %s: %s", path, exc)
+            stats.errors += 1
+            return
+
+        fmt_info  = extract_format_info(probe_data)
+        track_list = extract_tracks(probe_data)
+
+        # ── Upsert MediaFile ───────────────────────────────────────────────
+        primary_video_codec = next(
+            (t["codec"] for t in track_list if t["track_type"] == "video"), None
         )
-        db.add(media_file)
 
-    db.flush()  # ensure media_file.id is populated
+        if existing:
+            existing.size          = current_size
+            existing.mtime         = current_mtime
+            existing.container     = fmt_info.get("container")
+            existing.duration      = fmt_info.get("duration")
+            existing.video_codec   = primary_video_codec
+            existing.font_attachments = fmt_info.get("font_attachments")
+            existing.last_scanned  = utcnow()
+            if reevaluate:
+                existing.reevaluate_after_job = False
+            media_file = existing
+        else:
+            media_file = MediaFile(
+                path        = path,
+                filename    = os.path.basename(path),
+                directory   = os.path.dirname(path),
+                size        = current_size,
+                mtime       = current_mtime,
+                container   = fmt_info.get("container"),
+                duration    = fmt_info.get("duration"),
+                video_codec = primary_video_codec,
+                font_attachments = fmt_info.get("font_attachments"),
+                last_scanned = utcnow(),
+            )
+            db.add(media_file)
 
-    # ── Replace tracks ─────────────────────────────────────────────────────
-    replace_track_rows(db, media_file.id, track_list)
+        db.flush()  # ensure media_file.id is populated
 
-    db.flush()
+        # ── Replace tracks ─────────────────────────────────────────────────
+        replace_track_rows(db, media_file.id, track_list)
+
+        db.flush()
+        fmt_container = fmt_info.get("container", "")
 
     # ── Clear stale dry-run results ─────────────────────────────────────────
     # This file is being re-evaluated right now (it changed, or its previous
@@ -1150,7 +1186,6 @@ def _process_file(
 
     # Detect fast-start for MP4 files — cheap (reads < 100 bytes), no
     # ffprobe needed. None for non-MP4 containers or on I/O error.
-    fmt_container = fmt_info.get("container", "")
     faststart = (
         is_faststart_mp4(path)
         if fmt_container == "mp4"

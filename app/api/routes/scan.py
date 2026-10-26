@@ -38,6 +38,7 @@ _scan_cancel_requested = False
 class ScanRequest(BaseModel):
     paths:       list[str] | None = None   # None → use configured scan_paths
     force_probe: bool = False              # True → full probe (ignores delta)
+    recheck:     bool = False              # True → also re-decide unchanged files from their stored tracks
 
 
 class FileScanRequest(BaseModel):
@@ -102,7 +103,7 @@ async def trigger_scan(
         # is completely outside the pool and never competes with route handlers.
         t = threading.Thread(
             target  = _run_scan,
-            args    = (paths, body.force_probe, loop),
+            args    = (paths, body.force_probe, loop, body.recheck),
             name    = "remuxarr-scanner",
             daemon  = True,   # exits automatically if the container shuts down
         )
@@ -112,7 +113,8 @@ async def trigger_scan(
         if not scan_thread_started:
             _scan_running = False
 
-    return {"status": "started", "paths": paths, "force_probe": body.force_probe}
+    return {"status": "started", "paths": paths, "force_probe": body.force_probe,
+            "recheck": body.recheck}
 
 
 @router.get("/status")
@@ -395,6 +397,7 @@ def _run_scan(
     paths:       list[str],
     force_probe: bool,
     loop:        asyncio.AbstractEventLoop,
+    recheck:     bool = False,
 ) -> None:
     """
     Executed on a dedicated daemon thread (threading.Thread), NOT via
@@ -466,7 +469,8 @@ def _run_scan(
 
         stats = scan_library(db, paths, force_probe=force_probe,
                              progress_callback=_on_progress,
-                             cancel_check=_check_cancel)
+                             cancel_check=_check_cancel,
+                             recheck=recheck)
         _broadcast({
             "event":         "scan_completed",
             "queued":        stats.queued,
