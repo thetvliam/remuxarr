@@ -38,6 +38,12 @@ Verified by mutation, 6 applied, 6 killed:
 The third of those is the one worth noting: removing the Recycle Bin
 category from SettingsPage.jsx reproduces exactly the state this feature
 shipped in for a dozen commits, and it now fails.
+
+The note on the settings a routine scan does not re-apply came later, with
+three more mutations, each run against the whole 2082-test suite before the
+two tests at the end, all three survived: one of those settings left off the
+list, the note given to Existing Subtitle Files as well, and the note never
+appended. All three are killed here. 9 applied, 9 killed.
 """
 import re
 from pathlib import Path
@@ -241,3 +247,50 @@ def test_the_container_path_example_is_what_the_translation_does(service):
 
     a, b = remote["placeholder"], local["placeholder"]
     assert a != b and not b.startswith(a + "/") and not a.startswith(b + "/")
+
+
+# ── Saying when a change reaches files already scanned ──────────────────────
+#
+# A routine scan skips a file whose size and mtime are unchanged, so a change
+# to a setting the decision engine reads reaches only waiting jobs and files
+# scanned afterwards; the rest keep their result until a Force Full Rescan.
+# Reproduced against a real server: with Keep Audio Languages narrowed from
+# English and French to English, a routine scan left a seen file's French
+# track in place and only Force Full Rescan removed it. Nothing said so
+# outside the Force Full Rescan card, so the settings that work this way say
+# it themselves now.
+
+DECISION_SOURCE = Path(__file__).resolve().parent.parent / "app" / "core" / "decision.py"
+
+# Read by analyze_file, but it only names the subtitles a job extracts:
+# changing it can make no unchanged file need work, so a rescan would apply
+# nothing and the note would mislead.
+NAMING_ONLY = {"existing_srt_handling"}
+
+
+def _settings_the_decision_engine_reads():
+    source = DECISION_SOURCE.read_text()
+    return {entry["key"] for entry in SETTINGS_SCHEMA
+            if re.search(r"""["']%s["']""" % re.escape(entry["key"]), source)}
+
+
+def test_the_rescan_note_covers_every_setting_the_decision_engine_reads():
+    """
+    Derived from decision.py, so a new setting the engine reads fails here
+    until it carries the note or is added to NAMING_ONLY with its reason.
+    """
+    from app.api.routes.settings import APPLIES_ON_RESCAN
+
+    reads = _settings_the_decision_engine_reads()
+
+    assert NAMING_ONLY <= reads, "NAMING_ONLY names a setting decision.py does not read"
+    assert APPLIES_ON_RESCAN == reads - NAMING_ONLY
+
+
+def test_each_of_those_settings_says_it():
+    from app.api.routes.settings import APPLIES_ON_RESCAN, RESCAN_NOTE
+
+    described = {entry["key"]: entry["description"] for entry in SETTINGS_SCHEMA}
+
+    assert all(described[key].endswith(RESCAN_NOTE) for key in APPLIES_ON_RESCAN)
+    assert all(RESCAN_NOTE not in described[key] for key in NAMING_ONLY)

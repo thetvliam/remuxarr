@@ -1195,3 +1195,48 @@ SETTINGS_SCHEMA = [
                        "a job succeeds.",
     },
 ]
+
+
+# ── Settings a routine scan does not re-apply ─────────────────────────────────
+#
+# A routine scan skips a file whose size and mtime have not changed, so a
+# change to one of these reaches only jobs still waiting (the worker
+# re-decides at pickup, worker._load_job_data) and files scanned afterwards.
+# A file seen before, skipped, processed or held in Review, keeps the result
+# it had until a Force Full Rescan re-decides it. Nothing said so except the
+# Force Full Rescan card itself, so a changed language list appeared to do
+# nothing to the library.
+#
+# These are the settings analyze_file reads, less existing_srt_handling:
+# that one only names the subtitles a job extracts, so changing it can make
+# no unchanged file need work, and a rescan would apply nothing.
+# test_settings_schema.py derives the list from decision.py and fails when
+# they disagree.
+RESCAN_NOTE = (
+    " A change reaches files waiting in the queue and any scanned from now "
+    "on. Files scanned before, including ones held in Review, keep their "
+    "result until you run Force Full Rescan (Settings, Maintenance & Logs)."
+)
+
+APPLIES_ON_RESCAN = {
+    "prefer_mp4_container",
+    "add_faststart_to_mp4",
+    "fix_undefined_language",
+    "fix_undefined_language_audio",
+    "undefined_language_value",
+    "undefined_language_mode",
+    "undefined_language_mode_audio",
+    "keep_audio_languages",
+    "keep_default_audio",
+    "und_audio_threshold",
+    "keep_subtitle_languages",
+    "keep_forced_subtitles",
+    "keep_undefined_subtitles",
+    "extract_text_subtitles_to_srt",
+    "image_subtitle_handling",
+    "font_attachment_handling",
+}
+
+for _entry in SETTINGS_SCHEMA:
+    if _entry["key"] in APPLIES_ON_RESCAN:
+        _entry["description"] += RESCAN_NOTE
