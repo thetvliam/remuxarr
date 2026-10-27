@@ -44,6 +44,10 @@ three more mutations, each run against the whole 2082-test suite before the
 two tests at the end, all three survived: one of those settings left off the
 list, the note given to Existing Subtitle Files as well, and the note never
 appended. All three are killed here. 9 applied, 9 killed.
+
+The rescan flag that tells the Settings page which saves to offer a re-check
+for came with the re-check scan's controls: the flag left unset survived the
+whole 2094-test suite and is killed by the last test. 10 applied, 10 killed.
 """
 import re
 from pathlib import Path
@@ -294,3 +298,14 @@ def test_each_of_those_settings_says_it():
 
     assert all(described[key].endswith(RESCAN_NOTE) for key in APPLIES_ON_RESCAN)
     assert all(RESCAN_NOTE not in described[key] for key in NAMING_ONLY)
+
+
+def test_the_settings_page_is_told_which_saves_to_offer_a_recheck_for():
+    """
+    The Settings page offers a re-check after a save only for entries
+    flagged rescan, so the flag has to mark exactly the settings the note
+    is on.
+    """
+    from app.api.routes.settings import APPLIES_ON_RESCAN
+
+    assert {entry["key"] for entry in SETTINGS_SCHEMA if entry.get("rescan")} == APPLIES_ON_RESCAN

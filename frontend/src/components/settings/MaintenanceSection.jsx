@@ -5,10 +5,11 @@ import { SectionHeader } from "./SectionHeader";
 import { ActionRow } from "./ActionRow";
 import { OnOffSwitch } from "../atoms/OnOffSwitch";
 import { Btn } from "../atoms/Btn";
+import { startRecheck } from "./startRecheck";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MAINTENANCE SECTION
- * The four cards of the Maintenance & Logs category, above LogViewer and
+ * The five cards of the Maintenance & Logs category, above LogViewer and
  * BuildInfoSection. This category has no schema-driven fields of its own, so
  * there is no SaveBar here — DangerZone is not below this, it is in the
  * separate Backup & Danger Zone category:
@@ -19,10 +20,14 @@ import { Btn } from "../atoms/Btn";
  * 2. Manual Cleanup — run the deleted-file cleanup on demand, shows
  *    how many DB entries were removed.
  *
- * 3. Force Full Rescan — clears the fingerprint cache so the next scan
+ * 3. Re-check Scanned Files — decides every file already scanned again
+ *    against the current settings, from its stored tracks; only new or
+ *    changed files are probed. SettingsPage offers the same after a save.
+ *
+ * 4. Force Full Rescan — clears the fingerprint cache so the next scan
  *    re-probes every file rather than skipping unchanged ones.
  *
- * 4. Orphaned Files — find and remove DB rows whose file is gone.
+ * 5. Orphaned Files — find and remove DB rows whose file is gone.
  *
  * Each toggle/tag saves immediately via PUT /api/settings/{key} so there's
  * no separate Save button needed. There is no PATCH route on that endpoint,
@@ -173,10 +178,12 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
   const [orphanedItems,    setOrphanedItems]    = useState([]);
   const [orphanedSelected, setOrphanedSelected] = useState(new Set());
   const [orphanedRemoving, setOrphanedRemoving] = useState(false);
-  // Removal and Force Full Rescan each take two clicks, disarming
-  // themselves after CONFIRM_MS: see useArmedConfirm.
+  // Removal, the re-check and Force Full Rescan each take two clicks,
+  // disarming themselves after CONFIRM_MS: see useArmedConfirm. The
+  // re-check can queue a job for every file a settings change affects.
   const { armed: orphanedRemoveArmed, arm: armOrphanedRemove, disarm: disarmOrphanedRemove } = useArmedConfirm();
   const { armed: forceScanArmed, arm: armForceScan, disarm: disarmForceScan } = useArmedConfirm();
+  const { armed: recheckArmed, arm: armRecheck, disarm: disarmRecheck } = useArmedConfirm();
 
   // Load current values on mount
   useEffect(() => {
@@ -285,6 +292,15 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     } finally {
       setCleanupRunning(false);
     }
+  };
+
+  const runRecheck = async () => {
+    if (!recheckArmed) {
+      armRecheck();
+      return;
+    }
+    disarmRecheck();
+    await startRecheck(api, toast);
   };
 
   const runForceFullScan = async () => {
@@ -494,7 +510,40 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     </ActionRow>
     </div>
 
-    {/* ── Card 3: Force Full Rescan ────────────────────────────────────── */}
+    {/* ── Card 3: Re-check Scanned Files ───────────────────────────────── */}
+    <div style={{
+      padding: space.xl,
+      border: `1px solid ${palette.border}`,
+      borderRadius: radius.sm,
+      marginTop: space.xl,
+    }}>
+    <div style={{ color: palette.text, fontSize: type.size.base, fontWeight: type.weight.semibold, marginBottom: space.xl }}>
+    Re-check Scanned Files
+    </div>
+
+    <ActionRow
+    flush
+    description={<>
+      Applies the current settings to every file already scanned. Each is
+      decided again from the tracks stored for it, so only new or changed
+      files are probed with ffprobe, where a Force Full Rescan probes every
+      file. Files that now need processing are queued as a
+      scan would queue them, so Dry Run and Auto-Start apply. Use it after
+      changing audio, subtitle, language or container settings.
+    </>}
+    action={
+      <Btn
+      size="md"
+      label={recheckArmed ? "CLICK AGAIN TO CONFIRM" : "RE-CHECK SCANNED FILES"}
+      color={palette.amber}
+      bg={recheckArmed ? alpha(palette.amber, ALPHA.medium) : undefined}
+      onClick={runRecheck}
+      />
+    }
+    />
+    </div>
+
+    {/* ── Card 4: Force Full Rescan ────────────────────────────────────── */}
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,
@@ -511,9 +560,10 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
       Re-probes every file with ffprobe regardless of whether its size or
       modification time has changed. Database records are updated if the
       probe results differ from what is stored. Each file is then
-      re-evaluated against the current settings — useful after changing
-      audio, subtitle, or language preferences and wanting to apply them
-      to files that were previously scanned and marked as unchanged.
+      re-evaluated against the current settings. To apply changed settings,
+      Re-check Scanned Files above does the same without re-probing
+      unchanged files; this also catches a file that was changed without
+      its size or modification time changing.
       Files that need processing will be queued normally. Slower than a
       routine scan; not recommended for everyday use.
     </>}
@@ -529,7 +579,7 @@ export const MaintenanceSection = ({ api, toast, reloadKey = 0, onRecordsRemoved
     />
     </div>
 
-    {/* ── Card 4: Orphaned Files ──────────────────────────────────────── */}
+    {/* ── Card 5: Orphaned Files ──────────────────────────────────────── */}
     <div style={{
       padding: space.xl,
       border: `1px solid ${palette.border}`,

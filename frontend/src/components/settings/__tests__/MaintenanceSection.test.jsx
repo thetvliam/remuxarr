@@ -535,3 +535,69 @@ describe("MaintenanceSection — its switches", () => {
     expect(sw).toHaveAttribute("aria-checked", String(sent));
   });
 });
+
+
+/**
+ * Re-check Scanned Files decides every file already scanned again against
+ * the current settings, from its stored tracks, so a settings change reaches
+ * files a routine scan skips. It can queue a job for each one, so it takes
+ * two clicks, like Force Full Rescan beside it.
+ *
+ * Verified by mutation, each run against the whole suite before these tests
+ * existed and surviving it: the shared startRecheck sending force_probe
+ * rather than recheck (also killed by the save-bar tests, which share it),
+ * the confirm step removed, and the card not calling startRecheck at all.
+ * All three are killed here.
+ */
+describe("MaintenanceSection — Re-check Scanned Files", () => {
+  beforeEach(() => { vi.unstubAllGlobals(); });
+
+  const recheckButton = () =>
+    screen.getByRole("button", { name: /RE-CHECK SCANNED FILES|CLICK AGAIN TO CONFIRM/ });
+
+  const triggers = () => fetch.mock.calls
+    .filter(([url]) => String(url).includes("/api/scan/trigger"))
+    .map(([, opts]) => JSON.parse(opts.body));
+
+  const withTrigger = (response) => {
+    mockApi();
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url, opts) =>
+      String(url).includes("/api/scan/trigger") ? response : inner(url, opts)));
+  };
+
+  it("starts nothing on the first click", async () => {
+    withTrigger({ ok: true, status: 200, json: async () => ({}) });
+    setup();
+    await act(async () => {});
+
+    fireEvent.click(recheckButton());
+
+    expect(recheckButton()).toHaveTextContent("CLICK AGAIN TO CONFIRM");
+    expect(triggers()).toEqual([]);
+  });
+
+  it("asks for a re-check, not a full rescan, on the second", async () => {
+    withTrigger({ ok: true, status: 200, json: async () => ({}) });
+    const { toast } = setup();
+    await act(async () => {});
+
+    fireEvent.click(recheckButton());
+    await act(async () => { fireEvent.click(recheckButton()); });
+
+    expect(triggers()).toEqual([{ recheck: true }]);
+    expect(toast).toHaveBeenCalledWith(
+      "Re-check started — progress shown in the header", "notice");
+  });
+
+  it("says so when a scan is already running", async () => {
+    withTrigger({ ok: false, status: 409, json: async () => ({}) });
+    const { toast } = setup();
+    await act(async () => {});
+
+    fireEvent.click(recheckButton());
+    await act(async () => { fireEvent.click(recheckButton()); });
+
+    expect(toast).toHaveBeenCalledWith("A scan is already in progress", "error");
+  });
+});

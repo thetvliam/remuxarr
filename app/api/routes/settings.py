@@ -1211,7 +1211,8 @@ SETTINGS_SCHEMA = [
 # that one only names the subtitles a job extracts, so changing it can make
 # no unchanged file need work, and a rescan would apply nothing.
 # test_settings_schema.py derives the list from decision.py and fails when
-# they disagree.
+# they disagree. Each also carries "rescan": True, which is how the Settings
+# page knows a save of it should offer to re-check files already scanned.
 RESCAN_NOTE = (
     " A change reaches files waiting in the queue and any scanned from now "
     "on. Files scanned before, including ones held in Review, keep their "
@@ -1240,3 +1241,4 @@ APPLIES_ON_RESCAN = {
 for _entry in SETTINGS_SCHEMA:
     if _entry["key"] in APPLIES_ON_RESCAN:
         _entry["description"] += RESCAN_NOTE
+        _entry["rescan"] = True

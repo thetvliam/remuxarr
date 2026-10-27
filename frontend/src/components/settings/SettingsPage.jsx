@@ -12,6 +12,8 @@ import { ExcludedFilesSection } from "./ExcludedFilesSection";
 import { RecycleBinSection } from "./RecycleBinSection";
 import { BuildInfoSection } from "./BuildInfoSection";
 import { LogViewer } from "./LogViewer";
+import { startRecheck } from "./startRecheck";
+import { useArmedConfirm } from "../../hooks/useArmedConfirm";
 
 const SAVE_LABEL = { idle: "SAVE CHANGES", saving: "SAVING…", saved: "✓ SAVED", error: "✗ ERROR" };
 
@@ -527,6 +529,72 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
     );
   };
 
+  /* ── Offer to re-check after a save ────────────────────────────────────────
+   * A routine scan does not re-apply a setting the decision engine reads to a
+   * file it has already seen, and the descriptions of those settings say so
+   * behind their "?". After a save that changed one of them, this row says it
+   * where it is seen, and starts the re-check that applies it.
+   *
+   * A row of its own under the save bar rather than a button in it: measured
+   * in Chromium at 390px, the save bar with this button added needed 451 to
+   * 529px against 345 to 355px available, in every theme. Two clicks, as the
+   * Maintenance card's, since one re-check can queue a job for every file the
+   * change affects. A start that fails leaves the row up, with the reason in
+   * a toast, so it can be tried again. */
+  const RecheckOffer = ({ api, toast, onClose }) => {
+    const { palette, type, space, radius } = useTheme();
+    const { armed, arm, disarm } = useArmedConfirm();
+
+    const run = async () => {
+      if (!armed) { arm(); return; }
+      disarm();
+      if (await startRecheck(api, toast)) onClose();
+    };
+
+    const button = (label, color, onClick, extra = {}) => (
+      <button
+      onClick={onClick}
+      style={{
+        padding: `${space.xs}px ${space.lg}px`,
+        background: extra.bg ?? "transparent",
+        border: `1px solid ${color}`,
+        borderRadius: radius.sm,
+        color,
+        fontSize: type.size.sm,
+        fontFamily: type.family,
+        fontWeight: type.weight.bold,
+        letterSpacing: type.tracking.wide,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+      {...(extra.aria ? { "aria-label": extra.aria } : {})}
+      >
+      {label}
+      </button>
+    );
+
+    return (
+      <div role="status" style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: space.md,
+        padding: `${space.md}px 0`,
+        borderBottom: `1px solid ${palette.border}`,
+        background: palette.bg,
+      }}>
+      <span style={{ flex: "1 1 220px", color: palette.text, fontSize: type.size.sm }}>
+      Files scanned before keep their result. Re-check them against the new settings?
+      </span>
+      <span style={{ display: "flex", gap: space.sm, marginLeft: "auto" }}>
+      {button(armed ? "CLICK AGAIN TO CONFIRM" : "RE-CHECK SCANNED FILES", palette.amber, run,
+              { bg: armed ? alpha(palette.amber, ALPHA.medium) : undefined })}
+      {button("✕", palette.muted, onClose, { aria: "Dismiss" })}
+      </span>
+      </div>
+    );
+  };
+
   /* ═══════════════════════════════════════════════════════════════════════════
    * SETTINGS PAGE
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -538,6 +606,10 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       const [baseline, setBaseline] = useState({});   // last-saved snapshot (dirty is measured against this)
       const [status,   setStatus]   = useState("idle");
       const [loadError, setLoadError] = useState(false);
+      // Set by a save that changed a setting the schema marks rescan; see
+      // RecheckOffer. Cleared by starting the re-check, dismissing it, or
+      // leaving the page, which unmounts it.
+      const [recheckOffer, setRecheckOffer] = useState(false);
 
       // Drop the "saved" confirmation back to idle after 2.5s. Same reason as
       // above: the bare setTimeout it replaces could fire into a remounted
@@ -743,6 +815,8 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
           });
           if (r.ok) {
             setStatus("saved");
+            const rescan = new Set(schema.filter(f => f.rescan).map(f => f.key));
+            if (dirtyKeys.some(k => rescan.has(k))) setRecheckOffer(true);
             // Re-read rather than trusting the local snapshot. The unsent keys
             // are exactly the ones that may have been changed elsewhere, so this
             // is what makes the page agree with the backend again instead of
@@ -885,7 +959,12 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
       };
 
       const saveBar = (
+        <>
         <SaveBar status={status} dirty={isDirty} dirtyCount={dirtyKeys.length} onSave={save} />
+        {recheckOffer && (
+          <RecheckOffer api={api} toast={toast} onClose={() => setRecheckOffer(false)} />
+        )}
+        </>
       );
 
       // ── Mobile: sticky dropdown + save bar stacked above the content ──────────

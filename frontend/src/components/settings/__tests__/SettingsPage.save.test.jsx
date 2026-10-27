@@ -296,3 +296,103 @@ describe("SettingsPage.save — an edit made while the PUT is in flight", () => 
     await waitFor(() => expect(screen.getByText("/media/films")).toBeInTheDocument());
   });
 });
+
+
+/**
+ * A routine scan does not re-apply a setting the decision engine reads to a
+ * file it has already seen. After a save that changed one (the schema marks
+ * them rescan), a row under the save bar offers the re-check that applies it.
+ * Saving anything else offers nothing.
+ *
+ * Verified by mutation, each run against the whole suite before these tests
+ * existed and surviving it: the row offered after every save, never offered,
+ * its confirm step removed, left up after the re-check started, cleared when
+ * it failed to start, its button not calling startRecheck, and startRecheck
+ * reporting a failed start as a success. All seven are killed here.
+ */
+describe("SettingsPage — offering a re-check after a save", () => {
+  const RESCAN_SCHEMA = [
+    { key: "und_audio_threshold", label: "Undefined audio threshold", type: "integer",
+      min: 1, group: "Worker", rescan: true },
+    { key: "job_timeout_minutes", label: "Job timeout minutes", type: "integer", group: "Worker" },
+  ];
+  const OFFER = /Files scanned before keep their result/;
+  let triggers;
+  let toast;
+
+  function mockRescanApi(triggerResponse = { ok: true, status: 200 }) {
+    triggers = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      if (u.includes("/api/scan/trigger")) {
+        triggers.push(JSON.parse(opts.body));
+        return { ...triggerResponse, json: async () => ({}) };
+      }
+      if (opts.method === "PUT") return { ok: true, json: async () => ({}) };
+      if (u.includes("/api/settings/schema")) return { ok: true, json: async () => RESCAN_SCHEMA };
+      if (u.match(/\/api\/settings\/?$/))
+        return { ok: true, json: async () => ({ und_audio_threshold: 2, job_timeout_minutes: 120 }) };
+      return { ok: true, json: async () => ({ value: null, count: 0 }) };
+    }));
+  }
+
+  async function renderAndSave(label, value) {
+    const user = userEvent.setup();
+    toast = vi.fn();
+    localStorage.setItem("remuxarr.settingsCategory", "worker");
+    render(<ThemeProvider><SettingsPage api="" toast={toast} /></ThemeProvider>);
+    const input = await screen.findByLabelText(label);
+    await user.clear(input);
+    await user.type(input, value);
+    await user.click(screen.getByRole("button", { name: /save/i }));
+    await screen.findByText(/^changes saved$/i);
+    return user;
+  }
+
+  it("offers a re-check after saving a setting a routine scan does not re-apply", async () => {
+    mockRescanApi();
+    await renderAndSave("Undefined audio threshold", "3");
+
+    expect(screen.getByText(OFFER)).toBeTruthy();
+  });
+
+  it("offers nothing after saving any other setting", async () => {
+    mockRescanApi();
+    await renderAndSave("Job timeout minutes", "60");
+
+    expect(screen.queryByText(OFFER)).toBeNull();
+  });
+
+  it("starts the re-check on the second click, and the row goes", async () => {
+    mockRescanApi();
+    const user = await renderAndSave("Undefined audio threshold", "3");
+
+    await user.click(screen.getByRole("button", { name: "RE-CHECK SCANNED FILES" }));
+    expect(triggers).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "CLICK AGAIN TO CONFIRM" }));
+
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+    expect(triggers).toEqual([{ recheck: true }]);
+  });
+
+  it("stays when the re-check could not start, so it can be tried again", async () => {
+    mockRescanApi({ ok: false, status: 409 });
+    const user = await renderAndSave("Undefined audio threshold", "3");
+
+    await user.click(screen.getByRole("button", { name: "RE-CHECK SCANNED FILES" }));
+    await user.click(screen.getByRole("button", { name: "CLICK AGAIN TO CONFIRM" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("A scan is already in progress", "error"));
+    expect(screen.getByText(OFFER)).toBeTruthy();
+  });
+
+  it("is dismissed by its close button", async () => {
+    mockRescanApi();
+    const user = await renderAndSave("Undefined audio threshold", "3");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(screen.queryByText(OFFER)).toBeNull();
+    expect(triggers).toEqual([]);
+  });
+});
