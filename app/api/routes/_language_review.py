@@ -748,17 +748,18 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # writes no files and runs no FFmpeg, so "do NOT modify any files"
             # does not reach it on the wording alone.
             #
-            # It reaches it because an ignore cannot be undone. The ignored
-            # column is written True here and False in only two other
-            # places: inside apply_language, and when a scan finds the file
-            # replaced by one with different tracks (scanner.forget_answers),
-            # which is a new file rather than a way back. Ignoring deletes
-            # every flag row for the file, while the scanner refuses to
-            # create new ones for a file already marked, so the route back
-            # through apply_language is closed by the same action that opens
-            # the door. No endpoint, no setting and no control clears it.
-            # (The threshold's switch does have a way back, Clear
-            # acknowledged, but this returns before writing either.)
+            # It reaches it because an ignore cannot be undone on its own.
+            # The ignored column is written True here and False in only
+            # three other places: inside apply_language; when a scan finds
+            # the file replaced by one with different tracks; and Ask again
+            # (both through scanner.forget_answers). Ignoring deletes every
+            # flag row for the file, while the scanner refuses to create new
+            # ones for a file already marked, so the route back through
+            # apply_language is closed by the same action that opens the
+            # door. A replacement is a new file rather than a way back, and
+            # Ask again takes back every other answer stored for the file
+            # with it. (The threshold's switch has a way back of its own,
+            # Clear acknowledged, but this returns before writing either.)
             #
             # A one-way door has no business being reachable in the mode that
             # ships ON and promises nothing will change.

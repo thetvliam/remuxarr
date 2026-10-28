@@ -17,6 +17,7 @@ export function useActions({
   fetchForge,
   invalidateHistory,
   setForgeRefreshKey,
+  refreshAfterReviewResolved,
 }) {
   /* The optimistic update is rolled back on failure, and the failure is
    * reported loudly. This is the app's safety interlock: if the PUT failed
@@ -225,6 +226,28 @@ export function useActions({
     toast(`Dismissed: ${item.file?.filename || "file"}`, "neutral");
   };
 
+  // Forget everything answered for the item's file and decide it again now
+  // (POST /api/queue/{id}/ask-again). The refresh is the one a resolved
+  // review needs, for the same three reasons in reverse: a waiting job can
+  // become a review, a skipped or dry-run row can go from History, and a
+  // confirmation taken back puts language flags on the Review page. The
+  // server's reason is shown on failure, since a 409 says to wait for the
+  // file's job to finish.
+  const askAgainItem = async (item) => {
+    const name = item.file?.filename || "file";
+    const r = await fetch(`${api}/api/queue/${item.id}/ask-again`, { method: "POST" }).catch(() => null);
+    const body = r ? await r.json().catch(() => ({})) : {};
+    if (!r?.ok) {
+      toast(`Could not ask again for ${name}${body?.detail ? `: ${body.detail}` : ""}`, "error");
+      return;
+    }
+    setModal(null);
+    refreshAfterReviewResolved?.();
+    toast(body?.status === "manual_review"
+      ? `Answers forgotten: ${name} is waiting in Review`
+      : `Answers forgotten: ${name} decided again`, "notice");
+  };
+
   // ── Forge actions ─────────────────────────────────────────────────────
   // Reports both outcomes. It previously reported neither: a click on
   // + ADD AC3 that 500'd looked exactly like one that worked, because the
@@ -383,7 +406,7 @@ export function useActions({
 
   return {
     toggleDryRun, togglePause, toggleAutoStart, triggerScan, cancelScan,
-    openDetail, retryItem, dismissItem, retryAllFailed,
+    openDetail, retryItem, dismissItem, askAgainItem, retryAllFailed,
     dismissQueueItem, clearQueue, prioritizeItem,
     abortJob, clearDryRun,
     forgeAdd, forgeUndo,

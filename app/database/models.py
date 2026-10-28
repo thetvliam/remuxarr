@@ -87,8 +87,9 @@ class MediaFile(Base):
     # language is correct despite not matching keep_audio_languages (e.g.
     # anime that's genuinely, correctly Japanese). Once set, no mismatch
     # flag is raised for the file again, until a scan finds it replaced by
-    # a file with different tracks (scanner.forget_answers, which forgets
-    # this along with every other answer stored for the file).
+    # a file with different tracks or the user presses Ask again on it
+    # (scanner.forget_answers, which forgets this along with every other
+    # answer stored for the file).
     #
     # Mismatch flags only: a flag records where it came from and answers to
     # its own switch (AudioLanguageFlag.origin), so a file confirmed correct

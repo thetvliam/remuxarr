@@ -72,6 +72,7 @@ beforeEach(() => {
            fetchForge:       vi.fn(),
            invalidateHistory: vi.fn(),
            setForgeRefreshKey: vi.fn(),
+           refreshAfterReviewResolved: vi.fn(),
   };
 });
 
@@ -598,5 +599,58 @@ describe("useActions — toggleAutoStart", () => {
     await useSubject({ autoStart: true }).toggleAutoStart();
 
     expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+});
+
+/* ── Ask again ──────────────────────────────────────────────────────────── */
+
+/* askAgainItem forgets what was answered for the item's file and decides it
+ * again (POST /api/queue/{id}/ask-again). Its refresh is the one a resolved
+ * review needs: the queue, History and the Review page's language sections
+ * can all change. On failure the modal stays open with the server's reason,
+ * which for a 409 says to wait for the file's job to finish.
+ *
+ * Verified by mutation, 4 applied, 4 killed, all four surviving the whole
+ * suite first: the wrong endpoint, no refresh, the modal closed on failure,
+ * and the server's reason left out of the toast. */
+describe("useActions — askAgainItem", () => {
+  const ASK = { id: 7, status: "success", file: { filename: "Movie.mkv", has_answers: true } };
+
+  it("posts to the item's ask-again endpoint and refreshes what it changed", async () => {
+    mockFetch({ ok: true, body: { status: "manual_review" } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(fetchCalls[0]).toMatchObject({ url: "/api/queue/7/ask-again", method: "POST" });
+    expect(deps.setModal).toHaveBeenCalledWith(null);
+    expect(deps.refreshAfterReviewResolved).toHaveBeenCalledTimes(1);
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Answers forgotten: Movie.mkv is waiting in Review", "notice");
+  });
+
+  it("says so when the file needed no question this time", async () => {
+    mockFetch({ ok: true, body: { success: true, media_status: "skipped" } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Answers forgotten: Movie.mkv decided again", "notice");
+  });
+
+  it("keeps the modal open and gives the server's reason on failure", async () => {
+    mockFetch({ ok: false, body: { detail: "This file is being processed. Ask again once its job has finished." } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.refreshAfterReviewResolved).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Could not ask again for Movie.mkv: This file is being processed. Ask again once its job has finished.",
+      "error");
+  });
+
+  it("reports a request that never arrived", async () => {
+    mockFetch({ throws: true });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith("Could not ask again for Movie.mkv", "error");
   });
 });

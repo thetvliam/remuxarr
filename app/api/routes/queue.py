@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.plex import refresh_in_background
-from app.core.scanner import (ScanStats, _file_info_for, _process_file,
+from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
+                              ScanStats, _file_info_for, _process_file,
                               _load_subtitle_overrides, _load_audio_language_overrides,
                               _load_subtitle_language_overrides, _load_track_answers,
                               _get_forged_ac3_audio_index, _track_to_dict,
-                              _upsert_language_flags, descriptors_by_stream)
+                              _upsert_language_flags, descriptors_by_stream,
+                              forget_answers)
 from app.core.probe import is_faststart_mp4
 from app.database.models import (
     AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
@@ -1350,6 +1352,83 @@ def prioritize_item(item_id: int, db: Session = Depends(get_db)):
     return {"id": item_id, "priority": item.priority}
 
 
+@router.post("/{item_id}/ask-again")
+def ask_again(item_id: int, db: Session = Depends(get_db)):
+    """
+    Forget every answer and confirmation stored for this item's file, then
+    decide the file again now, so each question it raises is asked afresh.
+
+    Stored answers are applied each time a file is decided, and nothing
+    else takes one back short of applying a language. A wrong Remove came
+    back as soon as a revert restored the file: the revert carries the
+    answers of the tracks it kept, and the next scan applied them.
+
+    Decided with a fresh probe and the current settings, as Re-process
+    does, and through the same _process_file, so a waiting job is replaced
+    by the review it now needs and a success record stays in history.
+    Refused while a job for the file is running: that job decided from the
+    answers and writes the file when it ends. A file that cannot be read
+    keeps its answers: the forget is rolled back with everything else.
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    media = item.media_file
+    if not media:
+        raise HTTPException(404, "Associated media file not found")
+    if db.query(QueueItem.id).filter(
+        QueueItem.file_id == media.id, QueueItem.status == "processing",
+    ).first():
+        raise HTTPException(
+            409, "This file is being processed. Ask again once its job has finished.")
+
+    file_id = media.id
+    sonarr_series_id = item.sonarr_series_id
+    radarr_movie_id  = item.radarr_movie_id
+    # Let go of the item before deciding. A waiting job is replaced by a
+    # bulk delete (scanner._supersede_stale_pending_items), and SQLite gives
+    # the review item that follows the same id when it was the newest row;
+    # still held here, the old object and the new row then collide in the
+    # session (SQLAlchemy's "Identity map already had an identity" warning).
+    db.expunge(item)
+    forget_answers(media, "Ask again")
+    stats = ScanStats()
+    try:
+        _process_file(
+            db, media.path, get_app_settings(db),
+            force_probe      = True,
+            dry_run          = _current_dry_run_mode(db),
+            stats            = stats,
+            sonarr_series_id = sonarr_series_id,
+            radarr_movie_id  = radarr_movie_id,
+        )
+    except Exception as exc:
+        logger.exception("Ask again failed for %s", media.path)
+        db.rollback()
+        raise HTTPException(400, f"Ask again failed: {exc}") from exc
+    if stats.errors:
+        db.rollback()
+        raise HTTPException(
+            400, "Ask again failed: could not re-read the file — see the log for details")
+    db.commit()
+
+    new_item = (
+        db.query(QueueItem)
+        .filter(QueueItem.file_id == file_id,
+                QueueItem.status.in_(["pending", "manual_review"]))
+        .order_by(QueueItem.created_at.desc(), QueueItem.id.desc())
+        .first()
+    )
+    if new_item:
+        return _serialize(new_item, include_actions=True)
+    media_after = db.get(MediaFile, file_id)
+    return {
+        "success": True,
+        "message": "File decided again — no questions and no further action needed.",
+        "media_status": media_after.status if media_after else None,
+    }
+
+
 # ── Serialiser ─────────────────────────────────────────────────────────────────
 
 def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
@@ -1387,6 +1466,11 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
             "container": media.container,
             "size":      media.size,
             "duration":  media.duration,
+            # Whether anything answered for the file is stored, which is
+            # what the details window's Ask again button forgets.
+            "has_answers": bool(
+                any(getattr(media, a) for a in ANSWER_COLUMNS)
+                or any(getattr(media, a) for a in CONFIRMATION_COLUMNS)),
         } if media else None,
     }
 

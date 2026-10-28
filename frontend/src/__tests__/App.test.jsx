@@ -345,3 +345,65 @@ describe("App — the header's PAUSE button follows the worker", () => {
     expect(control("▶ RESUME")).toBeTruthy();
   });
 });
+
+/* Ask again, through App. The modal shows the button when App passes a
+ * handler, and App passes one only for a file with something stored to
+ * forget (file.has_answers) and not while its job runs. The row opens the
+ * modal at once and the detail fetch then enriches it, so a job that started
+ * in between arrives as "processing" there.
+ *
+ * Verified by mutation, 3 applied, 3 killed, all three surviving the whole
+ * suite first: offered without answers, offered while processing, and the
+ * handler not reaching askAgainItem. */
+describe("App — Ask again in the details window", () => {
+  const ROW = {
+    id: 5, status: "pending", reason: "Remove 1 subtitle track", planned_actions: [],
+    file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", has_answers: true },
+  };
+
+  function serve(row, detail = row) {
+    vi.stubGlobal("fetch", vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      let body;
+      if (u.endsWith("/api/queue/5/ask-again")) body = { ...row, status: "manual_review" };
+      else if (u.endsWith("/api/queue/5")) body = detail;
+      else if (u.endsWith("/api/queue/")) body = [row];
+      else body = emptyAnswer(u);
+      return { ok: true, status: 200, json: async () => body, method: opts.method };
+    }));
+  }
+
+  const open = async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    fireEvent.click(await screen.findByTitle("Show details"));
+    await screen.findByRole("dialog");
+    // Let the detail fetch land and enrich the modal.
+    await act(async () => {});
+  };
+
+  it("forgets the answers in two clicks", async () => {
+    serve(ROW);
+    await open();
+
+    fireEvent.click(screen.getByRole("button", { name: "↺ ASK AGAIN" }));
+    fireEvent.click(screen.getByRole("button", { name: "CLICK AGAIN TO CONFIRM" }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, opts]) =>
+      String(url).endsWith("/api/queue/5/ask-again") && opts?.method === "POST")).toBe(true));
+  });
+
+  it("is not offered for a file with nothing stored", async () => {
+    const row = { ...ROW, file: { ...ROW.file, has_answers: false } };
+    serve(row);
+    await open();
+
+    expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull();
+  });
+
+  it("is not offered once the details say the file's job is running", async () => {
+    serve(ROW, { ...ROW, status: "processing" });
+    await open();
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull());
+  });
+});

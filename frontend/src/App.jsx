@@ -175,7 +175,7 @@ export default function App() {
 
   const {
     toggleDryRun, togglePause, toggleAutoStart, triggerScan, cancelScan,
-    openDetail, retryItem, dismissItem, retryAllFailed,
+    openDetail, retryItem, dismissItem, askAgainItem, retryAllFailed,
     dismissQueueItem, clearQueue, prioritizeItem,
     abortJob, clearDryRun,
     forgeAdd, forgeUndo,
@@ -453,6 +453,10 @@ export default function App() {
                 retryLabel={["success", "skipped"].includes(modal.status) ? "RE-PROCESS" : "RETRY"}
                 onDismiss={["success", "failed", "skipped", "cancelled", "dry_run"].includes(modal.status)
                   ? () => dismissItem(modal) : null}
+                /* Only for a file with something stored to forget, and not
+                   while its job runs: the server refuses that with a 409. */
+                onAskAgain={modal.file?.has_answers && modal.status !== "processing"
+                  ? () => askAgainItem(modal) : null}
                   />
             )}
             <ReleaseNotesModal api={api} />

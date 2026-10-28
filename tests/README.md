@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2103 tests across 95 test files, plus 761 frontend tests under
+2115 tests across 96 test files, plus 772 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -73,9 +73,12 @@ and the endpoint that lists excluded files, which a scan only counts.
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
 `test_clean_shutdown.py`, `test_background_tasks.py`,
-`test_retry_unreadable_file.py`. The last retries failed items whose file
+`test_retry_unreadable_file.py`, `test_ask_again.py`. `test_retry_unreadable_file.py`
+retries failed items whose file
 ffprobe cannot read, through Retry All and the item's own Retry: both deleted
-the failed row and reported nothing wrong. Four more follow one job through `worker.py` in
+the failed row and reported nothing wrong. `test_ask_again.py` covers Ask
+again, which forgets the answers and confirmations stored for one file and
+decides it again, and keeps them when the file cannot be read. Four more follow one job through `worker.py` in
 order: `test_worker_loop.py` on the pool that claims it, the three places a
 running job is tracked at once, and the pause that holds it while auto-start
 is off, `test_job_preflight.py` on the re-decision

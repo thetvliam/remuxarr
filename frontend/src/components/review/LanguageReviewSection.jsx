@@ -580,11 +580,11 @@ export const LanguageReviewSection = ({
                   * neither. It asserts the existing tag is right, deletes
                   * every flag row for the file, and the scanner then refuses
                   * to create new ones for a file already marked — so the file
-                  * never comes back and apply_language, the only place the
-                  * column is set back to False, can never run for it again.
-                  * The one route back is closed by the same action that opens
-                  * the door; see ignore_flags in _language_review.py, which
-                  * blocks this in dry-run mode for exactly that reason.
+                  * never comes back and apply_language can never run for it
+                  * again. Only Ask again in the file's details window takes
+                  * it back, and it takes back every other answer stored for
+                  * the file with it; see ignore_flags in _language_review.py,
+                  * which blocks this in dry-run mode for that reason.
                   *
                   * A word that sounds temporary should not be the label on a
                   * one-way door. */}
@@ -609,7 +609,7 @@ export const LanguageReviewSection = ({
                 <b style={{ color: palette.text }}>SET LANGUAGE</b>
                 {" retags the selected tracks. "}
                 <b style={{ color: palette.text }}>CONFIRM CORRECT</b>
-                {" says the tags on those files are already right, and those files are not flagged for language again. It lasts until a file is replaced by a release with different tracks."}
+                {" says the tags on those files are already right, and those files are not flagged for language again. It lasts until a file is replaced by a release with different tracks, or you press Ask again in its details window."}
                 </div>
 
                 {items.length === 0 && !loading ? (
