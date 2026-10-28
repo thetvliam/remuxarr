@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2095 tests across 94 test files, plus 761 frontend tests under
+2103 tests across 95 test files, plus 761 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -24,7 +24,8 @@ see each docstring.
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
-`test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`. Real
+`test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
+`test_replaced_file_answers.py`. Real
 SQLite, real temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
@@ -38,6 +39,10 @@ with the first two and stayed invisible for a dozen commits.
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan
 does.
+`test_replaced_file_answers.py` covers what a file replaced at the same path
+does to the answers stored for it: they are forgotten when the file changed on
+disk and its tracks differ, and kept through Remuxarr's own jobs, reverts and
+forge runs, which store the tracks of the file they wrote.
 `test_scan_library.py` covers the walk itself, and mostly one line of it: the
 cleanup pass is scoped to the scan paths that are directories right now, so a
 scan path that is not there at all keeps every row under it.

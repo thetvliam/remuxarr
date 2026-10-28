@@ -609,7 +609,7 @@ export const LanguageReviewSection = ({
                 <b style={{ color: palette.text }}>SET LANGUAGE</b>
                 {" retags the selected tracks. "}
                 <b style={{ color: palette.text }}>CONFIRM CORRECT</b>
-                {" says the tags on those files are already right — it is permanent, and those files are never flagged for language again."}
+                {" says the tags on those files are already right, and those files are not flagged for language again. It lasts until a file is replaced by a release with different tracks."}
                 </div>
 
                 {items.length === 0 && !loading ? (

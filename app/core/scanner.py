@@ -1120,6 +1120,12 @@ def _process_file(
         fmt_info  = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)
 
+        # ── A file replaced by something other than Remuxarr ──────────────
+        # Read before replace_track_rows below overwrites what is compared.
+        if existing and _replaced_on_disk(db, existing, current_size,
+                                          current_mtime, track_list):
+            forget_answers(existing, "the file was replaced and its tracks changed")
+
         # ── Upsert MediaFile ───────────────────────────────────────────────
         primary_video_codec = next(
             (t["codec"] for t in track_list if t["track_type"] == "video"), None
@@ -1612,6 +1618,82 @@ def clear_media_answers(media: MediaFile, why: str) -> None:
         logger.warning("Stored answers for %s cleared: %s", media.path, why)
     for attr in ANSWER_COLUMNS:
         setattr(media, attr, None)
+
+
+# The three answers that are not about one track: Confirm correct on a
+# language mismatch, audio and subtitle, and on the Undefined Audio Track
+# Threshold. Each stops a whole file being asked about.
+CONFIRMATION_COLUMNS = (
+    "audio_language_ignored",
+    "subtitle_language_ignored",
+    "und_audio_threshold_acknowledged",
+)
+
+
+def forget_answers(media: MediaFile, why: str) -> None:
+    """
+    Forget every answer and confirmation stored for a file, so each
+    question it raises is asked again. Does not commit.
+
+    Unlike clear_media_answers, which is for Remuxarr's own rewrite of a
+    file and leaves the confirmations alone, this treats the file as one
+    nobody has answered for yet.
+    """
+    if (any(getattr(media, attr) for attr in ANSWER_COLUMNS)
+            or any(getattr(media, attr) for attr in CONFIRMATION_COLUMNS)):
+        logger.info("Stored answers and confirmations for %s forgotten: %s",
+                    media.path, why)
+    for attr in ANSWER_COLUMNS:
+        setattr(media, attr, None)
+    for attr in CONFIRMATION_COLUMNS:
+        setattr(media, attr, False)
+
+
+def _track_shapes(tracks: list[dict]) -> list[list]:
+    """Each track's descriptor fields and language, in stream order."""
+    return [_descriptor_fields(t) + [(t.get("language") or "").lower()]
+            for t in sorted(tracks, key=lambda t: t["stream_index"])]
+
+
+def _replaced_on_disk(
+    db:     Session,
+    media:  MediaFile,
+    size:   int,
+    mtime:  float,
+    probed: list[dict],
+) -> bool:
+    """
+    Whether a file Remuxarr already holds answers for was replaced since,
+    by something other than Remuxarr: a Sonarr or Radarr upgrade at the
+    same path, or a file copied over it. Stored answers and confirmations
+    were given for the old file, and applied to a new release they decide
+    its tracks without asking: a Keep given for English subtitles kept the
+    German ones of a replacement whose tracks were otherwise the same.
+
+    Both have to hold:
+
+      • The file changed on disk: its size or mtime differs from what is
+        stored, or is the -1 that asks for it to be looked at again.
+        Without this, a Force Full Rescan after an update that changes how
+        tracks are read would forget the answers of every file.
+      • Its tracks differ from the stored ones, comparing what an answer is
+        keyed by plus the language, which a replacement can change while
+        everything else stays the same. Remuxarr's own changes never get
+        here: a job, a revert and the AC3 forge each probe the file they
+        wrote and store its tracks (replace_track_rows), so those match.
+        The forge leaves the stored size and mtime as they were, and every
+        revert and dismissal writes the -1, so the first test alone would
+        have caught them.
+
+    A replacement whose tracks are the same in every one of those fields
+    keeps its answers: nothing on record tells it apart from the file that
+    was answered for.
+    """
+    if media.size == size and abs(media.mtime - mtime) < 1.0:
+        return False
+    stored = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == media.id)]
+    return _track_shapes(stored) != _track_shapes(probed)
 
 
 def _load_track_answers(media_file: MediaFile, attr: str) -> dict[str, str]:
