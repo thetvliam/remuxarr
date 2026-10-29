@@ -936,7 +936,7 @@ def get_queue_item(item_id: int, db: Session = Depends(get_db)):
     item = db.get(QueueItem, item_id)
     if not item:
         raise HTTPException(404, "Queue item not found")
-    return _serialize(item, include_actions=True)
+    return with_ask_again(db, item, _serialize(item, include_actions=True))
 
 
 @router.delete("/")
@@ -1352,6 +1352,71 @@ def prioritize_item(item_id: int, db: Session = Depends(get_db)):
     return {"id": item_id, "priority": item.priority}
 
 
+def ask_again_changes(db: Session, media: MediaFile) -> bool:
+    """
+    Whether Ask again would change anything for this file: what decides
+    if the details window offers it.
+
+    A stored answer can outlive its effect. A language fix that has been
+    processed leaves the track carrying that language, and the answer is
+    carried across the job with it, so forgetting it changes nothing; the
+    button sat on the file's Succeeded record doing nothing. So the file is
+    decided twice from its stored tracks, as the re-check scan decides an
+    unchanged file: once with everything stored for it, once without. They
+    are different outcomes if the file would need review; if any action
+    differs, compared with its description, which says what happens to the
+    track (a language change included) and, for a review, how many
+    subtitles it asks about; or if a language flag would be raised that a
+    confirmation is keeping off it. Forgetting only ever adds tracks to a
+    review, so the same count is the same tracks.
+
+    Confirm correct does not change the decision itself:
+    _upsert_language_flags reads the switch and leaves the flag out, so it
+    is applied here the same way.
+
+    False for a file with nothing stored, without deciding anything, and
+    for one the engine cannot decide (ValueError on a missing container),
+    which Ask again would refuse with a 400 anyway.
+    """
+    if not (any(getattr(media, a) for a in ANSWER_COLUMNS)
+            or any(getattr(media, a) for a in CONFIRMATION_COLUMNS)):
+        return False
+    file_info, tracks, kwargs = _build_analysis_inputs(db, media)
+    settings = get_app_settings(db)
+    try:
+        stored = analyze_file(file_info, tracks, settings, **kwargs)
+        forgotten = analyze_file(
+            {**file_info, "und_audio_threshold_acknowledged": False},
+            tracks, settings,
+            **{**kwargs, **{attr: None for attr in ANSWER_COLUMNS}},
+        )
+    except ValueError:
+        return False
+    return (_outcome(stored, media.audio_language_ignored,
+                     media.subtitle_language_ignored)
+            != _outcome(forgotten, False, False))
+
+
+def _outcome(decision, audio_ignored: bool, subtitle_ignored: bool) -> tuple:
+    """What a decision does to the file and asks of the user."""
+    return (
+        decision.is_manual_review,
+        [(str(a.action_type), a.stream_index, a.description)
+         for a in decision.actions],
+        None if audio_ignored else decision.audio_language_mismatch,
+        sorted(f["stream_index"] for f in decision.undefined_audio_flags),
+        [] if subtitle_ignored else sorted(
+            m["stream_index"] for m in decision.subtitle_language_mismatches),
+    )
+
+
+def with_ask_again(db: Session, item: QueueItem, out: dict) -> dict:
+    """A details response, with file.ask_again_changes (see above) added."""
+    if out.get("file") and item.media_file:
+        out["file"]["ask_again_changes"] = ask_again_changes(db, item.media_file)
+    return out
+
+
 @router.post("/{item_id}/ask-again")
 def ask_again(item_id: int, db: Session = Depends(get_db)):
     """
@@ -1466,11 +1531,6 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
             "container": media.container,
             "size":      media.size,
             "duration":  media.duration,
-            # Whether anything answered for the file is stored, which is
-            # what the details window's Ask again button forgets.
-            "has_answers": bool(
-                any(getattr(media, a) for a in ANSWER_COLUMNS)
-                or any(getattr(media, a) for a in CONFIRMATION_COLUMNS)),
         } if media else None,
     }
 

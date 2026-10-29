@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case as sa_case, desc, func
 from sqlalchemy.orm import Session
 
-from app.api.routes.queue import _retry_with_reprobe, _serialize
+from app.api.routes.queue import _retry_with_reprobe, _serialize, with_ask_again
 from app.database.models import MediaFile, QueueItem
 from app.database.session import get_db
 
@@ -198,7 +198,7 @@ def get_history_item(item_id: int, db: Session = Depends(get_db)):
     item = db.get(QueueItem, item_id)
     if not item:
         raise HTTPException(404, "History item not found")
-    return _history_serialize(item, include_actions=True)
+    return with_ask_again(db, item, _history_serialize(item, include_actions=True))
 
 
 @router.delete("/{item_id}")

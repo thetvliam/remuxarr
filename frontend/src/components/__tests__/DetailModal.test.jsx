@@ -21,7 +21,7 @@ import { ThemeProvider } from "../../theme";
 
 const ITEM = {
   id: 5, status: "success", reason: "Remove 1 subtitle track",
-  file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", has_answers: true },
+  file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", ask_again_changes: true },
   planned_actions: [],
 };
 

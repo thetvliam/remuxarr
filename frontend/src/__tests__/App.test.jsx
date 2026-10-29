@@ -347,18 +347,21 @@ describe("App — the header's PAUSE button follows the worker", () => {
 });
 
 /* Ask again, through App. The modal shows the button when App passes a
- * handler, and App passes one only for a file with something stored to
- * forget (file.has_answers) and not while its job runs. The row opens the
+ * handler, and App passes one only when the details say forgetting would
+ * change something for the file (file.ask_again_changes, which only the
+ * details response carries) and not while its job runs. The row opens the
  * modal at once and the detail fetch then enriches it, so a job that started
  * in between arrives as "processing" there.
  *
  * Verified by mutation, 3 applied, 3 killed, all three surviving the whole
  * suite first: offered without answers, offered while processing, and the
- * handler not reaching askAgainItem. */
+ * handler not reaching askAgainItem. App reading the old row flag,
+ * has_answers, in place of ask_again_changes is killed here too; it was
+ * already killed by these tests once their fixtures carried the new flag. */
 describe("App — Ask again in the details window", () => {
   const ROW = {
     id: 5, status: "pending", reason: "Remove 1 subtitle track", planned_actions: [],
-    file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", has_answers: true },
+    file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", ask_again_changes: true },
   };
 
   function serve(row, detail = row) {
@@ -392,8 +395,26 @@ describe("App — Ask again in the details window", () => {
       String(url).endsWith("/api/queue/5/ask-again") && opts?.method === "POST")).toBe(true));
   });
 
+  /* Rows do not carry the flag: it takes two runs of the decision engine,
+   * so only the details response has it, and the button waits for it. */
+  const BARE = { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv" };
+
+  it("appears once the details say asking again would change something", async () => {
+    serve({ ...ROW, file: BARE }, ROW);
+    await open();
+
+    expect(await screen.findByRole("button", { name: "↺ ASK AGAIN" })).toBeTruthy();
+  });
+
+  it("is not offered when the details say nothing would change", async () => {
+    serve({ ...ROW, file: BARE }, { ...ROW, file: { ...BARE, ask_again_changes: false } });
+    await open();
+
+    expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull();
+  });
+
   it("is not offered for a file with nothing stored", async () => {
-    const row = { ...ROW, file: { ...ROW.file, has_answers: false } };
+    const row = { ...ROW, file: { ...ROW.file, ask_again_changes: false } };
     serve(row);
     await open();
 

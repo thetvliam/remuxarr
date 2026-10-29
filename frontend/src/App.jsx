@@ -453,9 +453,12 @@ export default function App() {
                 retryLabel={["success", "skipped"].includes(modal.status) ? "RE-PROCESS" : "RETRY"}
                 onDismiss={["success", "failed", "skipped", "cancelled", "dry_run"].includes(modal.status)
                   ? () => dismissItem(modal) : null}
-                /* Only for a file with something stored to forget, and not
-                   while its job runs: the server refuses that with a 409. */
-                onAskAgain={modal.file?.has_answers && modal.status !== "processing"
+                /* Only when forgetting the file's answers would change what
+                   happens to it, which the details response says
+                   (queue.ask_again_changes), so the button appears once the
+                   details have loaded. Not while its job runs: the server
+                   refuses that with a 409. */
+                onAskAgain={modal.file?.ask_again_changes && modal.status !== "processing"
                   ? () => askAgainItem(modal) : null}
                   />
             )}

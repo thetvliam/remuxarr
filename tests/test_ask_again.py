@@ -10,8 +10,9 @@ carries the answers of the tracks it kept, and the next scan applied them.
 POST /api/queue/{item_id}/ask-again forgets all five for the item's file
 (scanner.forget_answers) and decides the file again now, with a fresh probe
 and the current settings, as Re-process does. The details window shows the
-button only for a file with something stored, which the queue and history
-rows now say in file.has_answers.
+button only when that would change what happens to the file, which the
+queue and history details say in file.ask_again_changes (see the section
+near the end).
 
 These drive the real route function and _process_file against a real
 database and real files. Only ffprobe is replaced, by a table keyed by
@@ -21,9 +22,9 @@ Confirmed unprotected before this file was written: eight mutations, each
 run against the whole 2103-test suite, all eight survived. Forgetting
 without deciding again; forgetting only the per-track answers; no refusal
 while a job is running; the forgotten answers committed when the file
-cannot be read; has_answers blind to the confirmations; has_answers always
-false; has_answers always true; and the route holding on to the item while
-it is replaced (see the first test). All eight are killed here.
+cannot be read; three on the has_answers row flag, which ask_again_changes
+has since replaced; and the route holding on to the item while it is
+replaced (see the first test). All eight were killed here.
 """
 import json
 import warnings
@@ -33,7 +34,8 @@ from fastapi import HTTPException
 from sqlalchemy.exc import SAWarning
 
 import app.core.scanner as scanner
-from app.api.routes.queue import _serialize, ask_again
+from app.api.routes.history import get_history_item
+from app.api.routes.queue import ask_again, get_queue_item
 from app.core.probe import ProbeError
 from app.core.scanner import descriptors_by_stream, extract_tracks, scan_library
 from app.database.models import (AppSetting, AudioLanguageFlag, MediaFile,
@@ -214,21 +216,159 @@ def test_an_unknown_item_is_a_404(lib):
     assert exc.value.status_code == 404
 
 
-@pytest.mark.parametrize("attr, value", [
-    ("subtitle_overrides", '{"a": "keep"}'),
-    ("audio_language_overrides", '{"a": "eng"}'),
-    ("subtitle_language_overrides", '{"a": "eng"}'),
-    ("audio_language_ignored", True),
-    ("subtitle_language_ignored", True),
-    ("und_audio_threshold_acknowledged", True),
-])
-def test_rows_say_the_file_has_answers(lib, attr, value):
-    lib.put(_probe(pgs=True))
-    lib.scan()
-    item = lib.db.query(QueueItem).first()
-    assert _serialize(item)["file"]["has_answers"] is False
 
-    setattr(lib.media(), attr, value)
+# ── When the details window offers it ─────────────────────────────────────
+#
+# Only when forgetting would change what happens to the file
+# (queue.ask_again_changes). A processed language fix was the case that
+# showed the button doing nothing: the track carries the language now and
+# the answer is still stored.
+#
+# Confirmed unprotected before these were written: nine mutations, each
+# run against the whole 2109-test suite, all nine survived. The check
+# always true; always false; comparing only whether review is needed;
+# ignoring both confirmations, the audio one, and the subtitle one;
+# keeping the undefined-audio confirmation in the second decision; a file
+# the engine cannot decide raising instead of answering false; the
+# History details not carrying the flag. All are killed here. Comparing
+# which subtitles a review asks about was dropped as the same thing: the
+# review action's description counts them, and forgetting only ever adds
+# tracks to a review.
+
+
+def _tracks(*streams):
+    out = [{"index": 0, "codec_type": "video", "codec_name": "h264"}]
+    for i, (kind, lang) in enumerate(streams, start=1):
+        if kind == "audio":
+            out.append({"index": i, "codec_type": "audio", "codec_name": "aac",
+                        "channels": 2, "tags": {"language": lang}})
+        elif kind == "text":
+            out.append({"index": i, "codec_type": "subtitle",
+                        "codec_name": "subrip", "tags": {"language": lang}})
+        else:
+            out.append({"index": i, "codec_type": "subtitle",
+                        "codec_name": "hdmv_pgs_subtitle",
+                        "tags": {"language": lang, "title": f"Track {i}"}})
+    return {"format": {"format_name": "matroska,webm", "duration": "1.0"},
+            "streams": out}
+
+
+def _store(lib, probe, **columns):
+    """Scan the file, then store answers, each given as {stream: answer}."""
+    lib.put(probe)
+    lib.scan()
+    keys = descriptors_by_stream(extract_tracks(probe))
+    media = lib.media()
+    for attr, value in columns.items():
+        if isinstance(value, dict):
+            value = json.dumps({keys[si]: answer for si, answer in value.items()})
+        setattr(media, attr, value)
     lib.db.commit()
 
-    assert _serialize(item)["file"]["has_answers"] is True
+
+def _offered(lib):
+    item = lib.db.query(QueueItem).order_by(QueueItem.id.desc()).first()
+    return get_queue_item(item.id, db=lib.db)["file"]["ask_again_changes"]
+
+
+def test_not_offered_with_nothing_stored(lib):
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng")))
+
+    assert _offered(lib) is False
+
+
+def test_not_offered_once_a_language_fix_has_been_processed(lib):
+    """The track carries the language now; the stored answer changes nothing."""
+    _store(lib, _tracks(("audio", "eng")), audio_language_overrides={1: "eng"})
+
+    assert _offered(lib) is False
+
+
+def test_offered_for_a_kept_subtitle(lib):
+    """Keep, then the user wants it removed: the case it exists for."""
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng")),
+           subtitle_overrides={2: "keep"})
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_a_remove_whose_job_has_not_run(lib):
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng")),
+           subtitle_overrides={2: "remove"})
+    lib.scan(recheck=True)
+    assert lib.items()[-1] == "pending"
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_a_language_fix_not_yet_processed(lib):
+    _store(lib, _tracks(("audio", "dut")), audio_language_overrides={1: "eng"})
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_confirm_correct(lib):
+    """
+    Confirm correct leaves the decision as it is and keeps the flag off the
+    Review page, so the check has to apply the switch as the flags do.
+    """
+    _store(lib, _tracks(("audio", "jpn")), audio_language_ignored=True)
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_confirm_correct_on_a_subtitle(lib):
+    """The subtitle switch, read the same way: an undefined text subtitle
+    kept, under Ask for undefined subtitle languages."""
+    for key, value in {"fix_undefined_language": "always_ask",
+                       "keep_undefined_subtitles": True}.items():
+        lib.db.merge(AppSetting(key=key, value=json.dumps(value)))
+    lib.db.commit()
+    _store(lib, _tracks(("audio", "eng"), ("text", "und")),
+           subtitle_language_ignored=True)
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_a_review_answered_in_part(lib):
+    """
+    Answered for one of two image subtitles: the file is in review either
+    way, and forgetting brings the answered one back into it.
+    """
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng"), ("subtitle", "eng")),
+           subtitle_overrides={2: "keep"})
+    assert lib.items() == ["manual_review"]
+
+    assert _offered(lib) is True
+
+
+def test_offered_for_a_confirmed_undefined_audio_threshold(lib):
+    _store(lib, _tracks(("audio", "und"), ("audio", "und"), ("audio", "und")),
+           und_audio_threshold_acknowledged=True)
+
+    assert _offered(lib) is True
+
+
+def test_history_details_say_so_too(lib):
+    """Where a processed file's Keep is taken back from."""
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng")),
+           subtitle_overrides={2: "keep"})
+    item = lib.db.query(QueueItem).one()
+    item.status = "success"
+    lib.db.commit()
+
+    assert get_history_item(item.id, db=lib.db)["file"]["ask_again_changes"] is True
+
+
+def test_not_offered_for_a_file_the_engine_cannot_decide(lib):
+    """
+    A record without a container makes analyze_file refuse (ValueError).
+    The details window still opens, without the button; Ask again would
+    have answered 400.
+    """
+    _store(lib, _tracks(("audio", "eng"), ("subtitle", "eng")),
+           subtitle_overrides={2: "keep"})
+    lib.media().container = None
+    lib.db.commit()
+
+    assert _offered(lib) is False

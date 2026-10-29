@@ -614,7 +614,7 @@ describe("useActions — toggleAutoStart", () => {
  * suite first: the wrong endpoint, no refresh, the modal closed on failure,
  * and the server's reason left out of the toast. */
 describe("useActions — askAgainItem", () => {
-  const ASK = { id: 7, status: "success", file: { filename: "Movie.mkv", has_answers: true } };
+  const ASK = { id: 7, status: "success", file: { filename: "Movie.mkv", ask_again_changes: true } };
 
   it("posts to the item's ask-again endpoint and refreshes what it changed", async () => {
     mockFetch({ ok: true, body: { status: "manual_review" } });
