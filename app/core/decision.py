@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 from typing import Literal
 
+from app.core.langcodes import canonical, two_letter
 from app.core.probe import _FORCED_RE, _SDH_RE, _DUB_RE
 
 logger = logging.getLogger(__name__)
@@ -91,21 +92,6 @@ SRT_CONVERTIBLE_SUBS = frozenset({
     "subrip", "srt", "mov_text", "ass", "ssa",
 })
 
-# ISO 639-2/B (3-letter, used by ffprobe/Matroska/MP4) → ISO 639-1
-# (2-letter, used in Plex's external-subtitle naming convention, e.g.
-# "Movie.en.srt"). Anything not listed falls back to its original code.
-ISO_639_2_TO_1 = {
-    "eng": "en", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
-    "spa": "es", "ita": "it", "por": "pt", "dut": "nl", "nld": "nl",
-    "swe": "sv", "nor": "no", "nob": "no", "nno": "no", "dan": "da",
-    "fin": "fi", "pol": "pl", "rus": "ru", "jpn": "ja", "chi": "zh",
-    "zho": "zh", "kor": "ko", "ara": "ar", "heb": "he", "hin": "hi",
-    "tha": "th", "tur": "tr", "cze": "cs", "ces": "cs", "gre": "el",
-    "ell": "el", "hun": "hu", "rum": "ro", "ron": "ro", "ukr": "uk",
-    "vie": "vi", "ind": "id", "may": "ms", "msa": "ms", "bul": "bg",
-    "hrv": "hr", "srp": "sr", "slv": "sl", "est": "et", "lav": "lv",
-    "lit": "lt", "slk": "sk", "slo": "sk", "cat": "ca",
-}
 
 ActionType = Literal[
     "copy_track", "drop_track", "transcode_track",
@@ -303,6 +289,11 @@ _UND_APPLY_KEYS = {
 }
 
 
+def _primary_language(settings: dict) -> str:
+    """Primary Language (undefined_language_value), as langcodes.canonical."""
+    return canonical((settings.get("undefined_language_value") or "").strip()) or "eng"
+
+
 def _resolve_und_mode(settings: dict, track_type: str) -> str:
     """
     The undefined-language mode for one track type, as a three-state string.
@@ -349,7 +340,7 @@ def _resolve_undefined_subtitle_language(
 
     # Primary Language stays shared across both types; only the mode and
     # the Apply To rule are per type.
-    lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
+    lang_value = _primary_language(settings)
     lang_mode  = settings.get(
         _UND_APPLY_KEYS["subtitle"], "all_undefined_per_type",
     )
@@ -442,10 +433,16 @@ def analyze_file(
     # own docstring guarantees it touches nothing outside itself; mutating
     # a caller-owned dict would quietly violate that.
     subtitle_overrides = dict(subtitle_overrides) if subtitle_overrides else {}
-    audio_language_overrides = audio_language_overrides or {}
-    subtitle_language_overrides = subtitle_language_overrides or {}
-    keep_audio_langs    = set(settings.get("keep_audio_languages",   ["eng"]))
-    keep_sub_langs      = set(settings.get("keep_subtitle_languages", ["eng"]))
+    # Every language below is compared in one form, ISO 639-2/B (see
+    # langcodes): the keep lists, the answers and the tracks' own tags may
+    # each have been written as en, eng, de, deu or ger. Settings and
+    # answers are saved that way now, but ones saved before were not.
+    audio_language_overrides = {
+        si: canonical(lang) for si, lang in (audio_language_overrides or {}).items()}
+    subtitle_language_overrides = {
+        si: canonical(lang) for si, lang in (subtitle_language_overrides or {}).items()}
+    keep_audio_langs    = {canonical(c) for c in settings.get("keep_audio_languages",   ["eng"])}
+    keep_sub_langs      = {canonical(c) for c in settings.get("keep_subtitle_languages", ["eng"])}
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
     keep_und_subs       = settings.get("keep_undefined_subtitles", False)
     keep_default_audio  = settings.get("keep_default_audio",      True)
@@ -487,6 +484,24 @@ def analyze_file(
         "(path=%s)",
         file_info.get("container"), current_container, file_info.get("path"),
     )
+
+    # The tracks' tags too, as copies: analyze_file never changes its
+    # caller's inputs. A two-letter tag is remembered, so a file processed
+    # for another reason gets its canonical code written (see the end of
+    # this function): MP4 cannot hold a two-letter code, and FFmpeg drops it
+    # without an error, so a conversion would leave the track undefined.
+    two_letter_tags: dict[int, str] = {}
+    canonical_tracks = []
+    for t in tracks:
+        tag = t.get("language")
+        code = canonical(tag)
+        if code != tag:
+            t = {**t, "language": code}
+            if (t["track_type"] in ("audio", "subtitle")
+                    and len(tag.strip()) == 2 and len(code) == 3):
+                two_letter_tags[t["stream_index"]] = code
+        canonical_tracks.append(t)
+    tracks = canonical_tracks
 
     video_tracks = [t for t in tracks if t["track_type"] == "video"]
     audio_tracks = [t for t in tracks if t["track_type"] == "audio"]
@@ -1254,7 +1269,7 @@ def analyze_file(
         # Primary Language is deliberately still shared: a file's untagged
         # tracks are untagged for the same reason whatever their type, and
         # two codes to keep in sync is a way to get them out of sync.
-        lang_value = (settings.get("undefined_language_value") or "eng").strip() or "eng"
+        lang_value = _primary_language(settings)
 
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
 
@@ -1504,6 +1519,23 @@ def analyze_file(
             faststart_enabled=add_faststart,
         )
 
+    # ── Two-letter tags, written in full ─────────────────────────────────
+    # Only for a file being processed anyway: a two-letter tag in Matroska
+    # is understood now that every comparison goes through canonical(), and
+    # queueing a job for the tag alone would touch every such file in a
+    # library. A track already being retagged keeps that tag.
+    retagged = 0
+    for i, action in enumerate(actions):
+        if (action.action_type == "copy_track"
+                and action.stream_index in two_letter_tags
+                and not action.target_language):
+            code = two_letter_tags[action.stream_index]
+            actions[i] = dc_replace(
+                action, target_language=code,
+                description=f"{action.description} — language tag written as {code}",
+            )
+            retagged += 1
+
     # ── Build human-readable reason ────────────────────────────────────────
     parts: list[str] = []
     if has_drops:
@@ -1535,6 +1567,9 @@ def analyze_file(
     if override_fixed_indices:
         n = len(override_fixed_indices)
         parts.append(f"Correct language tag{'s' if n > 1 else ''} on {n} track{'s' if n > 1 else ''}")
+    if retagged:
+        parts.append(f"Write the three-letter language code on {retagged} "
+                     f"track{'s' if retagged > 1 else ''} tagged with two letters")
 
     return ProcessingDecision(
         should_process=True,
@@ -1707,9 +1742,9 @@ def _build_srt_path(
         Over Your Dead Body (2026).en.sdh.srt
         Over Your Dead Body (2026).en.dub.srt
 
-    The 3-letter ffprobe language code is converted to the 2-letter ISO
-    639-1 code Plex expects (e.g. "eng" → "en"); unmapped codes (including
-    "und") are passed through unchanged.
+    The language is named by its 2-letter ISO 639-1 code where it has one
+    ("eng" → "en", langcodes.two_letter), and by its 3-letter code where it
+    does not ("und", "fil"). Plex reads both.
 
     SDH and Dubtitle tracks each get a distinct suffix so a file with all
     three subtitle types produces three separate, clearly-named SRT files
@@ -1721,7 +1756,7 @@ def _build_srt_path(
     folder), a numeric suffix is appended: Movie.en.2.srt, Movie.en.3.srt, ...
     """
     p = Path(media_path)
-    lang_tag = ISO_639_2_TO_1.get(language, language)
+    lang_tag = two_letter(language)
 
     def _candidate(suffix: str | None) -> str:
         parts = [p.stem, lang_tag]

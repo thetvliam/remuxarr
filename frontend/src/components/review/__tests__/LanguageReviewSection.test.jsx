@@ -768,8 +768,9 @@ describe("the language code box", () => {
   });
 
   it.each([["eng"], ["en"], ["cym"]])("allows %s", async (code) => {
-    /* cym is not in ISO_639_2_TO_1, which is a 49-entry convenience map
-     * rather than the standard — the check is on shape, not membership. */
+    /* The check is on shape, not membership: a code no table knows is still
+     * a code. The server stores each as ISO 639-2/B (app/core/langcodes.py),
+     * so en is saved as eng and cym, Welsh's other three-letter code, as wel. */
     setup();
     const user = userEvent.setup();
     await selectOne(user);

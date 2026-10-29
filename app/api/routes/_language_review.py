@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
                               _track_to_dict, descriptors_by_stream)
-from app.core.decision import ISO_639_2_TO_1
+from app.core.langcodes import canonical, two_letter
 from app.core.plex import refresh_in_background
 from app.database.models import MediaFile, QueueItem, RevertPoint, Track
 from app.database.session import get_app_settings, get_db
@@ -137,15 +137,15 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     # named Show.und.forced.srt has to become Show.en.forced.srt and keep
     # being the forced one.
     #
-    # Written as the 2-letter ISO 639-1 code, via the same map
-    # _build_srt_path uses, NOT the 3-letter code the user picked. Both
+    # Written as the 2-letter ISO 639-1 code, via langcodes.two_letter as
+    # _build_srt_path does, NOT the 3-letter code the user picked. Both
     # paths that can fix an extracted subtitle's language have to agree on
     # the filename or the same track ends up named two different ways
     # depending on which one got there — and this function exists solely to
     # make Plex read the correction, so writing the form the other path
     # deliberately avoids defeats its own purpose. "und" is unmapped and
     # passes through, which is how it got into the name to begin with.
-    lang_tag = ISO_639_2_TO_1.get(lang, lang)
+    lang_tag = two_letter(lang)
 
     parts = name.split(".")
     # The extracted name may carry either form of the detected code, so try
@@ -154,7 +154,7 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     # caller with a real code would otherwise silently fail to find it.
     detected = flag.detected_language or "und"
     index = None
-    for needle in (detected, ISO_639_2_TO_1.get(detected, detected)):
+    for needle in (detected, two_letter(detected)):
         try:
             index = len(parts) - 1 - parts[::-1].index(needle)
             break
@@ -420,17 +420,21 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
         # That filename is what Plex reads, so "english" quietly mislabels
         # the track it was meant to fix.
         #
-        # A shape check rather than a whitelist. ISO_639_2_TO_1 is a 49-entry
-        # convenience map for the common codes, not the standard — checking
-        # against it would refuse Welsh. Two or three ASCII letters covers
-        # every valid ISO 639-1 and 639-2 code and excludes everything that
-        # has no business in a filename.
+        # A shape check rather than a whitelist: a code the tables in
+        # langcodes do not know is still a code someone may mean. Two or
+        # three ASCII letters covers every valid ISO 639-1 and 639-2 code
+        # and excludes everything that has no business in a filename.
         if not re.fullmatch(r"[a-z]{2,3}", lang):
             raise HTTPException(
                 400,
                 "target_language must be a 2- or 3-letter language code, "
                 f"not {body.target_language!r}",
             )
+        # Stored and written as ISO 639-2/B. A two-letter answer was written
+        # into the file as given, and MP4 cannot hold one: FFmpeg wrote no
+        # language at all, the track stayed undefined, and every Force Full
+        # Rescan queued the same correction again.
+        lang = canonical(lang)
 
         app_cfg = get_app_settings(db)
         dry_run = app_cfg.get("dry_run_mode", False)

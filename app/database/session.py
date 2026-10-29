@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
+from app.core.langcodes import canonical
 from app.core.timeutil import utcnow
 from app.database.models import AppSetting, Base, MediaFile, QueueItem
 
@@ -882,8 +883,30 @@ def get_app_settings(db: Session) -> dict[str, Any]:
     return result
 
 
+# Saved in one form, ISO 639-2/B (app.core.langcodes), whichever of en, eng,
+# de, deu or ger was typed. The decision engine compares that form, so a
+# setting saved before this still works; saving it again shows the stored
+# form on the Settings page, which reloads from here after a save.
+_LANGUAGE_LIST_SETTINGS = {"keep_audio_languages", "keep_subtitle_languages"}
+_LANGUAGE_SETTINGS = {"undefined_language_value"}
+
+
+def _canonical_setting(key: str, value: Any) -> Any:
+    if key in _LANGUAGE_LIST_SETTINGS and isinstance(value, list):
+        out = []
+        for code in value:
+            code = canonical(code) if isinstance(code, str) else code
+            if code not in out:
+                out.append(code)
+        return out
+    if key in _LANGUAGE_SETTINGS and isinstance(value, str):
+        return canonical(value)
+    return value
+
+
 def update_app_setting(db: Session, key: str, value: Any) -> AppSetting:
-    """Upsert a single setting value."""
+    """Upsert a single setting value. Language codes are saved canonical."""
+    value = _canonical_setting(key, value)
     setting = db.get(AppSetting, key)
     if setting:
         setting.value = json.dumps(value)

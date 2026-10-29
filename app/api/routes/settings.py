@@ -558,9 +558,10 @@ SETTINGS_SCHEMA = [
         "label":       "Primary Language",
         "type":        "string",
         "placeholder": "eng",
-        "description": "ISO 639-2/B language code to apply to undefined tracks "
-                       "(e.g. eng, fre, jpn). Must match the codes used in "
-                       "Keep Audio Languages and Keep Subtitle Languages.",
+        "description": "Language code to apply to undefined tracks "
+                       "(e.g. eng, fre, jpn). A two-letter code (en) is saved "
+                       "as its three-letter form (eng), which is what gets "
+                       "written into the file.",
     },
     {
         # Unsuffixed key = subtitles, matching fix_undefined_language above
@@ -628,8 +629,11 @@ SETTINGS_SCHEMA = [
         "label":       "Keep Audio Languages",
         "type":        "string_list",
         "placeholder": "eng",
-        "description": "ISO 639-2/B codes (e.g. eng, fre, jpn). "
-                       "Tracks in other languages will be removed.",
+        "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
+                       "either three-letter form (deu or ger) are accepted, "
+                       "saved as the ISO 639-2/B form (eng, ger), and match "
+                       "tracks tagged with any of them. "
+                       "Audio in other languages will be removed.",
     },
     {
         "key":         "keep_default_audio",
@@ -663,7 +667,11 @@ SETTINGS_SCHEMA = [
         "label":       "Keep Subtitle Languages",
         "type":        "string_list",
         "placeholder": "eng",
-        "description": "ISO 639-2/B codes. Subtitles in other languages will be removed.",
+        "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
+                       "either three-letter form (deu or ger) are accepted, "
+                       "saved as the ISO 639-2/B form (eng, ger), and match "
+                       "tracks tagged with any of them. "
+                       "Subtitles in other languages will be removed.",
     },
     {
         "key":         "keep_forced_subtitles",
