@@ -5,6 +5,7 @@ import { StatusBadge } from "./atoms/StatusBadge";
 import { ActionBadge } from "./atoms/ActionBadge";
 import { Stat } from "./atoms/Stat";
 import { Btn } from "./atoms/Btn";
+import { useArmedConfirm } from "../hooks/useArmedConfirm";
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * DETAIL MODAL
@@ -18,8 +19,18 @@ import { Btn } from "./atoms/Btn";
  * re-renders correctly on every prop change; memoising this with default
  * shallow comparison risks the enriched data silently failing to render.
  ═══════════════════════════════════════════════════════════════════════════ */
-export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, isMobile = false }) => {
+export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDismiss, onAskAgain, isMobile = false }) => {
   const { palette, type, space, radius, size, surface, actionCfg } = useTheme();
+
+  /* Ask again forgets every answer and confirmation stored for the file,
+   * and nothing brings them back short of answering again, so it takes two
+   * clicks, as the Settings actions that cannot be undone do. */
+  const { armed: askArmed, arm: armAsk, disarm: disarmAsk } = useArmedConfirm();
+  const askAgain = () => {
+    if (!askArmed) { armAsk(); return; }
+    disarmAsk();
+    onAskAgain();
+  };
   /* Read through a ref so the listener is registered once. App passes
    * onClose as an inline arrow, so [onClose] re-ran this on every App
    * render — several times a second while a job is running — removing and
@@ -291,16 +302,27 @@ export const DetailModal = ({ item, onClose, onRetry, retryLabel = "RETRY", onDi
       </div>
       </div>
 
-      {/* Action buttons — only shown for terminal states */}
-      {(onRetry || onDismiss) && (
+      {/* Action buttons — only shown for terminal states, and for Ask again
+        * on a file with stored answers. Wraps, so three buttons with the
+        * armed label still fit a phone. */}
+      {(onRetry || onDismiss || onAskAgain) && (
         <div style={{
           padding: `${space.md}px ${space.xxl}px`,
           borderTop: `1px solid ${palette.border}`,
           display: "flex",
+          flexWrap: "wrap",
           gap: space.sm,
           justifyContent: "flex-end",
           background: palette.card,
         }}>
+        {onAskAgain && (
+          <Btn
+          label={askArmed ? "CLICK AGAIN TO CONFIRM" : "↺ ASK AGAIN"}
+          color={palette.amber}
+          bg={askArmed ? alpha(palette.amber, ALPHA.medium) : undefined}
+          onClick={askAgain}
+          />
+        )}
         {onDismiss && (
           <Btn label="DISMISS" color={palette.muted} onClick={onDismiss} />
         )}

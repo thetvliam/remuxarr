@@ -33,8 +33,9 @@ is genuinely gone must still be removed. Either alone can be satisfied by
 breaking the other — "never delete anything" passes the first, and the
 symptom of that is deleted files that never leave the UI.
 
-Eighteen mutants, all confirmed surviving the full suite before this file
-was written:
+Nineteen mutants, all confirmed surviving the full suite before the tests
+that kill them were written: eighteen before this file, and the recheck
+hand-on, added with the re-check scan, before its test:
 
   cleanup     the path filter widened to every path given        killed
               the cleanup call replaced by removed = 0           killed
@@ -52,6 +53,7 @@ was written:
   per file    the try/except around _process_file removed        killed
               stats.errors no longer incremented                 killed
               force_probe replaced by a literal False            killed
+              recheck not handed on to _process_file             killed
               the time.sleep(0) yield removed                    ALIVE
   progress    the total reported as the running count            killed
 
@@ -163,9 +165,9 @@ def _record_processed(monkeypatch):
     calls: list[dict] = []
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
-             sonarr_series_id=None, radarr_movie_id=None):
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
         calls.append({"path": path, "force_probe": force_probe,
-                      "dry_run": dry_run})
+                      "dry_run": dry_run, "recheck": recheck})
 
     monkeypatch.setattr(sc, "_process_file", fake)
     return calls
@@ -451,7 +453,7 @@ def test_one_file_that_raises_does_not_end_the_scan(db, tmp_path,
     seen: list[str] = []
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
-             sonarr_series_id=None, radarr_movie_id=None):
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
         seen.append(path)
         if os.path.basename(path) == "B.mkv":
             raise OSError("unreadable")
@@ -486,6 +488,22 @@ def test_the_scan_mode_reaches_every_file(db, tmp_path, monkeypatch):
     assert [(c["force_probe"], c["dry_run"]) for c in calls] == [
         (True, False), (False, False),
     ]
+
+
+def test_a_recheck_reaches_every_file(db, tmp_path, monkeypatch):
+    """
+    Closes: scan_library not handing recheck on to _process_file. The
+    re-check would run as a plain delta scan and report success, and the
+    settings change it was started for would reach none of the files.
+    """
+    _setting(db, "dry_run_mode", "false")
+    calls = _record_processed(monkeypatch)
+    lib = _library(tmp_path, "tv", "A.mkv", "B.mkv")
+
+    scan_library(db, [lib], recheck=True)
+    scan_library(db, [lib])
+
+    assert [c["recheck"] for c in calls] == [True, True, False, False]
 
 
 # ── A job that renames a file while the scan that queued it is still going ───

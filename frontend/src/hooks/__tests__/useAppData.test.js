@@ -1185,3 +1185,25 @@ describe("useAppData — scan_completed toast", () => {
       "Scan complete — 1 queued, 0 review, 0 errors");
   });
 });
+
+/**
+ * The worker pauses itself in two cases the header did not cause: auto-start
+ * turned off from somewhere else, and a run started with Resume while
+ * auto-start is off reaching the end of the queue. It says so with
+ * worker_paused, and PAUSE has to follow, or it reads PAUSE over a worker
+ * that has stopped.
+ *
+ * Verified by mutation, 1 applied, 1 killed: the case ignoring the message
+ * survived the whole suite before this test, and is killed by it and by
+ * App's test of the same message.
+ */
+describe("useAppData — worker_paused", () => {
+  it("marks the worker paused", async () => {
+    const { result } = await mount();
+    expect(result.current.workerPaused).toBe(false);
+
+    await act(async () => { ws.onMessage({ event: "worker_paused" }); });
+
+    expect(result.current.workerPaused).toBe(true);
+  });
+});

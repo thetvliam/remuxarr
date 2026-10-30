@@ -23,8 +23,9 @@ run. Cancel with no scan running, or fail to clear it, and the flag
 survives to kill the *next* scan a few files in — which looks like a scan
 that stopped for no reason.
 
-Fifteen mutants, all confirmed surviving the full suite before this file
-existed:
+Seventeen mutants, all confirmed surviving the full suite before the tests
+that kill them existed: fifteen before this file, and the two recheck
+hand-ons, added with the re-check scan, before theirs:
 
   trigger    the 409 guard removed                            killed
              the flag never set                               killed
@@ -32,6 +33,7 @@ existed:
              the thread-started flag never recorded           killed
              configured scan_paths ignored                    killed
              force_probe not passed to the thread             killed
+             recheck not passed to the thread                 killed
   cancel     cancelling with no scan running allowed          killed
              the cancel flag not set                          killed
   the thread a stale cancel not cleared at the start          killed
@@ -41,6 +43,7 @@ existed:
              the running flag not cleared in the finally      killed
              no completion broadcast when the scan raises     killed
              cancel_check wired to a constant False           killed
+             recheck not passed on to scan_library            killed
 
 Each test names the one it closes.
 
@@ -107,8 +110,9 @@ def _settings(monkeypatch, **cfg):
     monkeypatch.setattr(scan_routes, "get_app_settings", lambda _db: cfg)
 
 
-def _trigger(paths=None, force_probe=False):
-    body = scan_routes.ScanRequest(paths=paths, force_probe=force_probe)
+def _trigger(paths=None, force_probe=False, recheck=False):
+    body = scan_routes.ScanRequest(paths=paths, force_probe=force_probe,
+                                   recheck=recheck)
     return asyncio.run(scan_routes.trigger_scan(body, db=object()))
 
 
@@ -218,6 +222,23 @@ def test_force_probe_reaches_the_scan_thread(monkeypatch, thread):
 
     _trigger(force_probe=True)
     assert thread["args"][1] is True
+
+
+def test_a_recheck_reaches_the_scan_thread(monkeypatch, thread):
+    """Closes: recheck replaced by a literal in the thread arguments."""
+    _settings(monkeypatch, scan_paths=["/media"])
+
+    result = _trigger(recheck=True)
+
+    assert thread["args"][3] is True
+    assert result["recheck"] is True
+
+
+def test_the_scan_thread_hands_recheck_to_the_scanner(thread_rig):
+    """Closes: _run_scan not passing recheck on to scan_library."""
+    scan_routes._run_scan(["/media"], False, object(), True)
+
+    assert thread_rig["scan_kwargs"]["recheck"] is True
 
 
 # ── Cancelling ────────────────────────────────────────────────────────────────

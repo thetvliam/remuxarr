@@ -43,7 +43,12 @@ import App from "../App";
 import { ThemeProvider } from "../theme";
 import { stubViewport } from "../test/viewport";
 
-vi.mock("../hooks/useWebSocket", () => ({ useWebSocket: () => true }));
+/* The handler is kept so a test can deliver a message, as useAppData's
+ * tests do. The mock answers as before for every test that does not. */
+const ws = vi.hoisted(() => ({ onMessage: null }));
+vi.mock("../hooks/useWebSocket", () => ({
+  useWebSocket: (_url, onMessage) => { ws.onMessage = onMessage; return true; },
+}));
 
 function emptyAnswer(url) {
   const u = String(url);
@@ -284,5 +289,142 @@ describe("App — Settings and Review keep the scrollbar's strip", () => {
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
 
     expect(scroller.style.scrollbarGutter).toBe("stable");
+  });
+});
+
+/* The header's PAUSE button follows the worker when the worker pauses
+ * itself. Switching to MANUAL pauses it (worker._loop acts on the setting
+ * changing), and so does the end of a run started with Resume while
+ * auto-start is off, which arrives as worker_paused. useActions and
+ * useAppData each pin their half on spies or on the hook's return; these
+ * pin that App carries it to the button, at the full header's width where
+ * both controls are labelled. The server is modelled as the backend now
+ * behaves: once auto-start is switched off, the status reports paused.
+ *
+ * Verified by mutation: useAppData handing useActions a setWorkerPaused that
+ * does nothing, and App handing the header a fixed workerPaused, each
+ * survived the suite without this block. */
+describe("App — the header's PAUSE button follows the worker", () => {
+  let autoStart;
+
+  beforeEach(() => {
+    stubViewport(1140);
+    autoStart = true;
+    vi.stubGlobal("fetch", vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (u.includes("/api/settings/auto_start_jobs")) {
+        if (opts.method === "PUT") autoStart = JSON.parse(opts.body).value;
+        return reply({ key: "auto_start_jobs", value: autoStart });
+      }
+      if (u.includes("/api/worker/status")) return reply({ paused: !autoStart, active_jobs: 0 });
+      return reply(emptyAnswer(url));
+    }));
+  });
+
+  const control = (name) => screen.getByRole("button", { name });
+
+  it("reads paused as soon as auto-start is switched to MANUAL", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+    expect(control("⏸ PAUSE")).toBeTruthy();
+
+    await act(async () => { fireEvent.click(control("⚡ AUTO")); });
+
+    expect(await screen.findByRole("button", { name: "⏸ MANUAL" })).toBeTruthy();
+    expect(control("▶ RESUME")).toBeTruthy();
+  });
+
+  it("reads paused when the worker says it has paused", async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    await screen.findByText("Queue is empty");
+    expect(control("⏸ PAUSE")).toBeTruthy();
+
+    await act(async () => { ws.onMessage({ event: "worker_paused" }); });
+
+    expect(control("▶ RESUME")).toBeTruthy();
+  });
+});
+
+/* Ask again, through App. The modal shows the button when App passes a
+ * handler, and App passes one only when the details say forgetting would
+ * change something for the file (file.ask_again_changes, which only the
+ * details response carries) and not while its job runs. The row opens the
+ * modal at once and the detail fetch then enriches it, so a job that started
+ * in between arrives as "processing" there.
+ *
+ * Verified by mutation, 3 applied, 3 killed, all three surviving the whole
+ * suite first: offered without answers, offered while processing, and the
+ * handler not reaching askAgainItem. App reading the old row flag,
+ * has_answers, in place of ask_again_changes is killed here too; it was
+ * already killed by these tests once their fixtures carried the new flag. */
+describe("App — Ask again in the details window", () => {
+  const ROW = {
+    id: 5, status: "pending", reason: "Remove 1 subtitle track", planned_actions: [],
+    file: { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv", ask_again_changes: true },
+  };
+
+  function serve(row, detail = row) {
+    vi.stubGlobal("fetch", vi.fn(async (url, opts = {}) => {
+      const u = String(url);
+      let body;
+      if (u.endsWith("/api/queue/5/ask-again")) body = { ...row, status: "manual_review" };
+      else if (u.endsWith("/api/queue/5")) body = detail;
+      else if (u.endsWith("/api/queue/")) body = [row];
+      else body = emptyAnswer(u);
+      return { ok: true, status: 200, json: async () => body, method: opts.method };
+    }));
+  }
+
+  const open = async () => {
+    render(<ThemeProvider><App /></ThemeProvider>);
+    fireEvent.click(await screen.findByTitle("Show details"));
+    await screen.findByRole("dialog");
+    // Let the detail fetch land and enrich the modal.
+    await act(async () => {});
+  };
+
+  it("forgets the answers in two clicks", async () => {
+    serve(ROW);
+    await open();
+
+    fireEvent.click(screen.getByRole("button", { name: "↺ ASK AGAIN" }));
+    fireEvent.click(screen.getByRole("button", { name: "CLICK AGAIN TO CONFIRM" }));
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url, opts]) =>
+      String(url).endsWith("/api/queue/5/ask-again") && opts?.method === "POST")).toBe(true));
+  });
+
+  /* Rows do not carry the flag: it takes two runs of the decision engine,
+   * so only the details response has it, and the button waits for it. */
+  const BARE = { id: 1, filename: "Ep1.mkv", path: "/tv/Show/Ep1.mkv" };
+
+  it("appears once the details say asking again would change something", async () => {
+    serve({ ...ROW, file: BARE }, ROW);
+    await open();
+
+    expect(await screen.findByRole("button", { name: "↺ ASK AGAIN" })).toBeTruthy();
+  });
+
+  it("is not offered when the details say nothing would change", async () => {
+    serve({ ...ROW, file: BARE }, { ...ROW, file: { ...BARE, ask_again_changes: false } });
+    await open();
+
+    expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull();
+  });
+
+  it("is not offered for a file with nothing stored", async () => {
+    const row = { ...ROW, file: { ...ROW.file, ask_again_changes: false } };
+    serve(row);
+    await open();
+
+    expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull();
+  });
+
+  it("is not offered once the details say the file's job is running", async () => {
+    serve(ROW, { ...ROW, status: "processing" });
+    await open();
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /ASK AGAIN/ })).toBeNull());
   });
 });

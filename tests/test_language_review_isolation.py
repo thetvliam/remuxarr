@@ -660,11 +660,13 @@ def test_an_empty_language_is_still_refused(db, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("value,stored", [
     ("eng", "eng"),     # ISO 639-2, what the scanner writes
-    ("en", "en"),       # ISO 639-1, equally valid
+    ("en", "eng"),      # ISO 639-1, equally valid, stored as 639-2/B: MP4
+                        # cannot hold a two-letter code (see langcodes)
     ("  ENG ", "eng"),  # still stripped and lowercased
-    ("cym", "cym"),     # not in ISO_639_2_TO_1, which is a 49-entry
-                        # convenience map rather than the standard — a
-                        # whitelist would have refused Welsh
+    ("cym", "wel"),     # Welsh's 639-2/T code, stored as /B; the old
+                        # 49-entry table did not have it, and a whitelist
+                        # would have refused it
+    ("xyz", "xyz"),     # a code no table knows is still accepted as given
 ])
 def test_a_real_language_code_is_accepted(db, value, stored, tmp_path, monkeypatch):
     media, flag = _one_flag(db, tmp_path)

@@ -175,7 +175,7 @@ export default function App() {
 
   const {
     toggleDryRun, togglePause, toggleAutoStart, triggerScan, cancelScan,
-    openDetail, retryItem, dismissItem, retryAllFailed,
+    openDetail, retryItem, dismissItem, askAgainItem, retryAllFailed,
     dismissQueueItem, clearQueue, prioritizeItem,
     abortJob, clearDryRun,
     forgeAdd, forgeUndo,
@@ -453,6 +453,13 @@ export default function App() {
                 retryLabel={["success", "skipped"].includes(modal.status) ? "RE-PROCESS" : "RETRY"}
                 onDismiss={["success", "failed", "skipped", "cancelled", "dry_run"].includes(modal.status)
                   ? () => dismissItem(modal) : null}
+                /* Only when forgetting the file's answers would change what
+                   happens to it, which the details response says
+                   (queue.ask_again_changes), so the button appears once the
+                   details have loaded. Not while its job runs: the server
+                   refuses that with a 409. */
+                onAskAgain={modal.file?.ask_again_changes && modal.status !== "processing"
+                  ? () => askAgainItem(modal) : null}
                   />
             )}
             <ReleaseNotesModal api={api} />

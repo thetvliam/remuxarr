@@ -5,11 +5,12 @@ Three settings decide it. skip_extras (on by default) covers trailers and
 other extras named the way Plex or Jellyfin expect, and Plex's optimised
 versions. exclude_patterns is the user's own list. A file either one matches
 is not probed or queued by a scan, a webhook or the single-file scan
-endpoint, and a record already held for it is removed at the end of the next
-completed scan (scanner.remove_excluded_files). include_patterns (Always
-Include) overrides both: a file it matches is never excluded, so one file
-the extras rule caught can be brought back without renaming it or turning
-that rule off for the whole library.
+endpoint, a job already queued for it is skipped when its turn comes
+(worker._load_job_data), and a record already held for it is removed at the
+end of the next completed scan (scanner.remove_excluded_files).
+include_patterns (Always Include) overrides both: a file it matches is never
+excluded, so one file the extras rule caught can be brought back without
+renaming it or turning that rule off for the whole library.
 
 The extras conventions
 ----------------------
@@ -54,9 +55,9 @@ entry ending in a media extension also matches that name with any other
 media extension (see _compile).
 
 The library path's own folders are never tested, or "Movies" would exclude
-a whole library mounted at /media/Movies. A path under no library path (a
-webhook on an install with none configured) is tested on all its folders
-by name patterns and the extras rule; path patterns cannot apply to it.
+a whole library mounted at /media/Movies. A path under no library path (an
+import from outside all of them) is tested on all its folders by name
+patterns and the extras rule; path patterns cannot apply to it.
 """
 import os
 import re

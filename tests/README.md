@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2048 tests across 93 test files, plus 747 frontend tests under
+2165 tests across 97 test files, plus 774 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -16,7 +16,10 @@ in use at once until this was written down.
 every file; these take plain dicts in and assert on a plain dataclass out, so
 they need no ffmpeg, no database and no real files, and run in well under a
 second. Most are tied to a specific incident from this project's development —
-see each docstring.
+see each docstring. `test_language_codes.py` covers language codes in any of
+their spellings (en, eng, and deu beside ger): the tables in
+`app/core/langcodes.py`, the engine comparing them as one, settings saved in
+the one form, and two-letter tags written in full when a file is processed.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
@@ -24,8 +27,9 @@ see each docstring.
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
 `test_settings_schema.py`, `test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
-`test_cleanup_keeps_unmounted_shares.py`. Real SQLite, real
-temp files. `test_media_file_deletion.py` derives the list of tables
+`test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
+`test_replaced_file_answers.py`. Real
+SQLite, real temp files. `test_media_file_deletion.py` derives the list of tables
 referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
 by name; `test_clear_database.py` guards the same omission at the other end,
@@ -34,6 +38,14 @@ unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
+`test_recheck_scan.py` covers the re-check scan, which decides files a
+routine scan would skip again from their stored tracks, so a settings change
+reaches them without running ffprobe on every file as a Force Full Rescan
+does.
+`test_replaced_file_answers.py` covers what a file replaced at the same path
+does to the answers stored for it: they are forgotten when the file changed on
+disk and its tracks differ, and kept through Remuxarr's own jobs, reverts and
+forge runs, which store the tracks of the file they wrote.
 `test_scan_library.py` covers the walk itself, and mostly one line of it: the
 cleanup pass is scoped to the scan paths that are directories right now, so a
 scan path that is not there at all keeps every row under it.
@@ -64,11 +76,16 @@ and the endpoint that lists excluded files, which a scan only counts.
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
 `test_clean_shutdown.py`, `test_background_tasks.py`,
-`test_retry_unreadable_file.py`. The last retries failed items whose file
+`test_retry_unreadable_file.py`, `test_ask_again.py`. `test_retry_unreadable_file.py`
+retries failed items whose file
 ffprobe cannot read, through Retry All and the item's own Retry: both deleted
-the failed row and reported nothing wrong. Four more follow one job through `worker.py` in
-order: `test_worker_loop.py` on the pool that claims it and the three places a
-running job is tracked at once, `test_job_preflight.py` on the re-decision
+the failed row and reported nothing wrong. `test_ask_again.py` covers Ask
+again, which forgets the answers and confirmations stored for one file and
+decides it again, keeps them when the file cannot be read, and decides when
+the details window offers it: only when forgetting would change the outcome. Four more follow one job through `worker.py` in
+order: `test_worker_loop.py` on the pool that claims it, the three places a
+running job is tracked at once, and the pause that holds it while auto-start
+is off, `test_job_preflight.py` on the re-decision
 against current settings between queueing and execution,
 `test_run_job_preflight.py` on the dry-run and disk-space checks made before
 FFmpeg is spawned, and `test_post_job_broadcast.py` on the dispatch afterwards.

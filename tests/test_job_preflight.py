@@ -64,6 +64,14 @@ and the comparison inverted. The first three survived it and are killed
 here, the second only by the check on the row. The inverted one was already
 killed by test_clean_shutdown.py, since it turns every real job into a
 preview, and is not claimed here. 21 applied, 21 killed.
+
+The exclude settings applied at pickup to a job queued before they matched.
+Five more mutations, each against the whole 2056-test suite before the five
+tests at the end, all five survived: no check at all; the rules built
+without Always Include; the job cancelled rather than skipped; the record's
+size and mtime left as they were; and the check moved ahead of the on-disk
+checks. All five are killed here, each by its own test. 26 applied, 26
+killed.
 """
 import json
 import os
@@ -624,3 +632,109 @@ def test_a_real_job_stays_real_while_dry_run_is_off(rig):
 
     assert job_dict["is_dry_run"] is False
     assert job(rig).is_dry_run is False
+
+
+# ── Excluded since it was queued ─────────────────────────────────────────────
+#
+# The exclude settings were checked only when a file was queued. A pattern
+# added while its job waited did not stop it, and Retry, Retry All, Process
+# Now and the review answers queue a file without the check at all.
+# Reproduced against the real server first: with an Exclude Pattern listed
+# as matching the file, Resume converted it, and so did Retry All.
+
+def _setting(rig, key, value):
+    from app.database.models import AppSetting
+    rig.db.merge(AppSetting(key=key, value=json.dumps(value)))
+    rig.db.commit()
+
+
+def _file_in(rig, tmp_path, *parts):
+    path = tmp_path.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not really a video")
+    rig.path = str(path)
+    return path
+
+
+def test_a_job_excluded_since_it_was_queued_is_skipped(rig, tmp_path):
+    """
+    Skipped, with the reason naming the setting, so the Skipped tab says
+    which control to change. Not cancelled: History folds that into the
+    Failed tab, and nothing failed.
+    """
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _setting(rig, "exclude_patterns", ["Kids"])
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "skipped"
+    assert job(rig).reason == "Excluded: Exclude Patterns: 'Kids'"
+    assert job(rig).completed_at is not None
+    assert file_row(rig).status == "skipped"
+    assert rig.analyze_calls == []
+
+
+def test_an_extras_file_queued_before_it_was_excluded_is_skipped(rig, tmp_path):
+    """The extras rule is the other half of the same settings."""
+    _file_in(rig, tmp_path, "lib", "Film (2020)", "Film-trailer.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "skipped"
+    assert job(rig).reason.startswith("Excluded: Skip Trailers and Extras")
+
+
+def test_always_include_still_runs_a_job_a_pattern_would_exclude(rig, tmp_path):
+    """
+    Always Include is how a file the other two settings catch is processed
+    on purpose, so it has to work here as it does at queueing. The entry is
+    a path from the library path, which only means anything when the check
+    is given the scan paths.
+    """
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _setting(rig, "scan_paths", [str(tmp_path / "lib")])
+    _setting(rig, "exclude_patterns", ["Kids"])
+    _setting(rig, "include_patterns", ["Kids/Show.mkv"])
+
+    assert worker._load_job_data(1) is not None
+    assert len(rig.analyze_calls) == 1
+
+
+def test_an_excluded_job_leaves_its_file_for_the_next_scan(rig, tmp_path):
+    """
+    The next completed scan removes the record if the file is still
+    excluded. If the pattern was removed first, that scan has to look at
+    the file again, and a delta scan only does so when the stored size and
+    mtime no longer match.
+    """
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _setting(rig, "exclude_patterns", ["Kids"])
+
+    worker._load_job_data(1)
+
+    assert (file_row(rig).size, file_row(rig).mtime) == (-1, -1.0)
+
+
+def test_an_excluded_file_in_a_library_that_is_not_mounted_still_fails(rig, tmp_path):
+    """
+    The check comes after the on-disk ones. A library that is not mounted
+    is reported as one whatever its files' patterns say, so the failure
+    and its email still come; skipping instead would hide it.
+    """
+    folder = tmp_path / "lib" / "Kids"
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _setting(rig, "exclude_patterns", ["Kids"])
+    os.remove(rig.path)
+    folder.rmdir()
+
+    assert worker._load_job_data(1) is None
+    assert rig.finish_calls == [(1, False, None, None, MISSING_LIBRARY)]
+    assert job(rig).status == "processing"

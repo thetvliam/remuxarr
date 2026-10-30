@@ -72,6 +72,7 @@ beforeEach(() => {
            fetchForge:       vi.fn(),
            invalidateHistory: vi.fn(),
            setForgeRefreshKey: vi.fn(),
+           refreshAfterReviewResolved: vi.fn(),
   };
 });
 
@@ -568,5 +569,88 @@ describe("useActions — toggleAutoStart", () => {
 
     expect(deps.toast).toHaveBeenCalledTimes(1);
     expect(deps.toast.mock.calls[0][0]).not.toMatch(/disabled|enabled/i);
+  });
+
+  /* Switching to MANUAL pauses the worker, which acts on the setting
+   * changing (worker._loop), so PAUSE has to read paused straight away.
+   * Switching to AUTO does not resume it, by decision: a paused queue waits
+   * for Resume, and PAUSE must not claim it is running.
+   *
+   * Verified by mutation, 3 applied, 3 killed, all three surviving the whole
+   * suite first: not marking it paused (the first test, and App's), marking
+   * it running on a switch to AUTO (the second), and marking it paused
+   * before the PUT has succeeded (the third). */
+  it("marks the worker paused when switching to MANUAL", async () => {
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).toHaveBeenCalledWith(true);
+  });
+
+  it("leaves the pause alone when switching to AUTO", async () => {
+    mockFetch({ ok: true });
+    await useSubject({ autoStart: false, workerPaused: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+
+  it("does not mark the worker paused when the switch failed", async () => {
+    mockFetch({ ok: false });
+    await useSubject({ autoStart: true }).toggleAutoStart();
+
+    expect(deps.setWorkerPaused).not.toHaveBeenCalled();
+  });
+});
+
+/* ── Ask again ──────────────────────────────────────────────────────────── */
+
+/* askAgainItem forgets what was answered for the item's file and decides it
+ * again (POST /api/queue/{id}/ask-again). Its refresh is the one a resolved
+ * review needs: the queue, History and the Review page's language sections
+ * can all change. On failure the modal stays open with the server's reason,
+ * which for a 409 says to wait for the file's job to finish.
+ *
+ * Verified by mutation, 4 applied, 4 killed, all four surviving the whole
+ * suite first: the wrong endpoint, no refresh, the modal closed on failure,
+ * and the server's reason left out of the toast. */
+describe("useActions — askAgainItem", () => {
+  const ASK = { id: 7, status: "success", file: { filename: "Movie.mkv", ask_again_changes: true } };
+
+  it("posts to the item's ask-again endpoint and refreshes what it changed", async () => {
+    mockFetch({ ok: true, body: { status: "manual_review" } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(fetchCalls[0]).toMatchObject({ url: "/api/queue/7/ask-again", method: "POST" });
+    expect(deps.setModal).toHaveBeenCalledWith(null);
+    expect(deps.refreshAfterReviewResolved).toHaveBeenCalledTimes(1);
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Answers forgotten: Movie.mkv is waiting in Review", "notice");
+  });
+
+  it("says so when the file needed no question this time", async () => {
+    mockFetch({ ok: true, body: { success: true, media_status: "skipped" } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Answers forgotten: Movie.mkv decided again", "notice");
+  });
+
+  it("keeps the modal open and gives the server's reason on failure", async () => {
+    mockFetch({ ok: false, body: { detail: "This file is being processed. Ask again once its job has finished." } });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.refreshAfterReviewResolved).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Could not ask again for Movie.mkv: This file is being processed. Ask again once its job has finished.",
+      "error");
+  });
+
+  it("reports a request that never arrived", async () => {
+    mockFetch({ throws: true });
+    await useSubject().askAgainItem(ASK);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith("Could not ask again for Movie.mkv", "error");
   });
 });

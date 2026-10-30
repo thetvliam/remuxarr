@@ -17,6 +17,7 @@ export function useActions({
   fetchForge,
   invalidateHistory,
   setForgeRefreshKey,
+  refreshAfterReviewResolved,
 }) {
   /* The optimistic update is rolled back on failure, and the failure is
    * reported loudly. This is the app's safety interlock: if the PUT failed
@@ -118,6 +119,12 @@ export function useActions({
       toast(`Could not change auto-start — still ${next ? "OFF" : "ON"}`, "error");
       return;
     }
+    // Switching to MANUAL pauses processing: the worker sees the setting
+    // change on its next pass and pauses itself. PAUSE shows it now rather
+    // than waiting for that pass's worker_paused message. Switching to AUTO
+    // leaves the pause alone, because the worker does too: a paused queue
+    // waits for Resume.
+    if (!next) setWorkerPaused(true);
     toast(`Auto-start ${next ? "enabled" : "disabled"}`, "quiet");
   };
 
@@ -217,6 +224,28 @@ export function useActions({
     // Tagged from the item since it could have been in any tab.
     invalidateHistory?.(item.status || null);
     toast(`Dismissed: ${item.file?.filename || "file"}`, "neutral");
+  };
+
+  // Forget everything answered for the item's file and decide it again now
+  // (POST /api/queue/{id}/ask-again). The refresh is the one a resolved
+  // review needs, for the same three reasons in reverse: a waiting job can
+  // become a review, a skipped or dry-run row can go from History, and a
+  // confirmation taken back puts language flags on the Review page. The
+  // server's reason is shown on failure, since a 409 says to wait for the
+  // file's job to finish.
+  const askAgainItem = async (item) => {
+    const name = item.file?.filename || "file";
+    const r = await fetch(`${api}/api/queue/${item.id}/ask-again`, { method: "POST" }).catch(() => null);
+    const body = r ? await r.json().catch(() => ({})) : {};
+    if (!r?.ok) {
+      toast(`Could not ask again for ${name}${body?.detail ? `: ${body.detail}` : ""}`, "error");
+      return;
+    }
+    setModal(null);
+    refreshAfterReviewResolved?.();
+    toast(body?.status === "manual_review"
+      ? `Answers forgotten: ${name} is waiting in Review`
+      : `Answers forgotten: ${name} decided again`, "notice");
   };
 
   // ── Forge actions ─────────────────────────────────────────────────────
@@ -377,7 +406,7 @@ export function useActions({
 
   return {
     toggleDryRun, togglePause, toggleAutoStart, triggerScan, cancelScan,
-    openDetail, retryItem, dismissItem, retryAllFailed,
+    openDetail, retryItem, dismissItem, askAgainItem, retryAllFailed,
     dismissQueueItem, clearQueue, prioritizeItem,
     abortJob, clearDryRun,
     forgeAdd, forgeUndo,

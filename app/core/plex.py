@@ -46,6 +46,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from app.core.langcodes import canonical
 from app.core.pathmap import swap_prefix
 
 logger = logging.getLogger(__name__)
@@ -342,9 +343,10 @@ def _audio_languages_match(
         )
         return None
 
+    # In one form, as the decision engine compares them: the file's tag may
+    # be deu where Plex reports ger, which is the same language.
     def code(value) -> str:
-        value = (value or "").strip().lower()
-        return value or "und"
+        return canonical((value or "").strip()) or "und"
 
     found = [
         code(stream.get("languageCode"))

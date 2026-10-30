@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.plex import refresh_in_background
-from app.core.scanner import (ScanStats, _file_info_for, _process_file,
+from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
+                              ScanStats, _file_info_for, _process_file,
                               _load_subtitle_overrides, _load_audio_language_overrides,
                               _load_subtitle_language_overrides, _load_track_answers,
                               _get_forged_ac3_audio_index, _track_to_dict,
-                              _upsert_language_flags, descriptors_by_stream)
+                              _upsert_language_flags, descriptors_by_stream,
+                              forget_answers)
 from app.core.probe import is_faststart_mp4
 from app.database.models import (
     AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
@@ -934,7 +936,7 @@ def get_queue_item(item_id: int, db: Session = Depends(get_db)):
     item = db.get(QueueItem, item_id)
     if not item:
         raise HTTPException(404, "Queue item not found")
-    return _serialize(item, include_actions=True)
+    return with_ask_again(db, item, _serialize(item, include_actions=True))
 
 
 @router.delete("/")
@@ -1348,6 +1350,148 @@ def prioritize_item(item_id: int, db: Session = Depends(get_db)):
     item.priority = (current_min - 1) if current_min is not None else 5
     db.commit()
     return {"id": item_id, "priority": item.priority}
+
+
+def ask_again_changes(db: Session, media: MediaFile) -> bool:
+    """
+    Whether Ask again would change anything for this file: what decides
+    if the details window offers it.
+
+    A stored answer can outlive its effect. A language fix that has been
+    processed leaves the track carrying that language, and the answer is
+    carried across the job with it, so forgetting it changes nothing; the
+    button sat on the file's Succeeded record doing nothing. So the file is
+    decided twice from its stored tracks, as the re-check scan decides an
+    unchanged file: once with everything stored for it, once without. They
+    are different outcomes if the file would need review; if any action
+    differs, compared with its description, which says what happens to the
+    track (a language change included) and, for a review, how many
+    subtitles it asks about; or if a language flag would be raised that a
+    confirmation is keeping off it. Forgetting only ever adds tracks to a
+    review, so the same count is the same tracks.
+
+    Confirm correct does not change the decision itself:
+    _upsert_language_flags reads the switch and leaves the flag out, so it
+    is applied here the same way.
+
+    False for a file with nothing stored, without deciding anything, and
+    for one the engine cannot decide (ValueError on a missing container),
+    which Ask again would refuse with a 400 anyway.
+    """
+    if not (any(getattr(media, a) for a in ANSWER_COLUMNS)
+            or any(getattr(media, a) for a in CONFIRMATION_COLUMNS)):
+        return False
+    file_info, tracks, kwargs = _build_analysis_inputs(db, media)
+    settings = get_app_settings(db)
+    try:
+        stored = analyze_file(file_info, tracks, settings, **kwargs)
+        forgotten = analyze_file(
+            {**file_info, "und_audio_threshold_acknowledged": False},
+            tracks, settings,
+            **{**kwargs, **{attr: None for attr in ANSWER_COLUMNS}},
+        )
+    except ValueError:
+        return False
+    return (_outcome(stored, media.audio_language_ignored,
+                     media.subtitle_language_ignored)
+            != _outcome(forgotten, False, False))
+
+
+def _outcome(decision, audio_ignored: bool, subtitle_ignored: bool) -> tuple:
+    """What a decision does to the file and asks of the user."""
+    return (
+        decision.is_manual_review,
+        [(str(a.action_type), a.stream_index, a.description)
+         for a in decision.actions],
+        None if audio_ignored else decision.audio_language_mismatch,
+        sorted(f["stream_index"] for f in decision.undefined_audio_flags),
+        [] if subtitle_ignored else sorted(
+            m["stream_index"] for m in decision.subtitle_language_mismatches),
+    )
+
+
+def with_ask_again(db: Session, item: QueueItem, out: dict) -> dict:
+    """A details response, with file.ask_again_changes (see above) added."""
+    if out.get("file") and item.media_file:
+        out["file"]["ask_again_changes"] = ask_again_changes(db, item.media_file)
+    return out
+
+
+@router.post("/{item_id}/ask-again")
+def ask_again(item_id: int, db: Session = Depends(get_db)):
+    """
+    Forget every answer and confirmation stored for this item's file, then
+    decide the file again now, so each question it raises is asked afresh.
+
+    Stored answers are applied each time a file is decided, and nothing
+    else takes one back short of applying a language. A wrong Remove came
+    back as soon as a revert restored the file: the revert carries the
+    answers of the tracks it kept, and the next scan applied them.
+
+    Decided with a fresh probe and the current settings, as Re-process
+    does, and through the same _process_file, so a waiting job is replaced
+    by the review it now needs and a success record stays in history.
+    Refused while a job for the file is running: that job decided from the
+    answers and writes the file when it ends. A file that cannot be read
+    keeps its answers: the forget is rolled back with everything else.
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(404, "Queue item not found")
+    media = item.media_file
+    if not media:
+        raise HTTPException(404, "Associated media file not found")
+    if db.query(QueueItem.id).filter(
+        QueueItem.file_id == media.id, QueueItem.status == "processing",
+    ).first():
+        raise HTTPException(
+            409, "This file is being processed. Ask again once its job has finished.")
+
+    file_id = media.id
+    sonarr_series_id = item.sonarr_series_id
+    radarr_movie_id  = item.radarr_movie_id
+    # Let go of the item before deciding. A waiting job is replaced by a
+    # bulk delete (scanner._supersede_stale_pending_items), and SQLite gives
+    # the review item that follows the same id when it was the newest row;
+    # still held here, the old object and the new row then collide in the
+    # session (SQLAlchemy's "Identity map already had an identity" warning).
+    db.expunge(item)
+    forget_answers(media, "Ask again")
+    stats = ScanStats()
+    try:
+        _process_file(
+            db, media.path, get_app_settings(db),
+            force_probe      = True,
+            dry_run          = _current_dry_run_mode(db),
+            stats            = stats,
+            sonarr_series_id = sonarr_series_id,
+            radarr_movie_id  = radarr_movie_id,
+        )
+    except Exception as exc:
+        logger.exception("Ask again failed for %s", media.path)
+        db.rollback()
+        raise HTTPException(400, f"Ask again failed: {exc}") from exc
+    if stats.errors:
+        db.rollback()
+        raise HTTPException(
+            400, "Ask again failed: could not re-read the file — see the log for details")
+    db.commit()
+
+    new_item = (
+        db.query(QueueItem)
+        .filter(QueueItem.file_id == file_id,
+                QueueItem.status.in_(["pending", "manual_review"]))
+        .order_by(QueueItem.created_at.desc(), QueueItem.id.desc())
+        .first()
+    )
+    if new_item:
+        return _serialize(new_item, include_actions=True)
+    media_after = db.get(MediaFile, file_id)
+    return {
+        "success": True,
+        "message": "File decided again — no questions and no further action needed.",
+        "media_status": media_after.status if media_after else None,
+    }
 
 
 # ── Serialiser ─────────────────────────────────────────────────────────────────

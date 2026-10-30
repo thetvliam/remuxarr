@@ -451,23 +451,29 @@ describe("ignoring", () => {
     ]);
   });
 
-  it("says that confirming is permanent", async () => {
+  it("says that confirming lasts until the file is replaced or asked again", async () => {
     /* CONFIRM CORRECT was labelled IGNORE, which reads as "dismiss" or "not
      * now". It is neither: it sets the ignored column, deletes every flag
      * row for the file, and the scanner then refuses to create new ones for
-     * a file already marked — so apply_language, the only place that column
-     * is set back to False, can never run for that file again. The one route
-     * back is closed by the same action that opens the door, which is why
-     * ignore_flags blocks it under dry run.
+     * a file already marked — so apply_language can never run for that file
+     * again. Short of Ask again, which takes back every answer stored for the
+     * file, the route back is closed by the same action that opens the door,
+     * which is why ignore_flags blocks it under dry run.
      *
      * The Approve/Skip pair on ReviewPage already carries this kind of line.
-     * This half of the page did not. */
+     * This half of the page did not.
+     *
+     * It was "permanent". A scan that finds the file replaced by a release
+     * with different tracks forgets the confirmation with every other answer
+     * (scanner.forget_answers), so the line says when it ends. Ask again,
+     * in a file's details window, takes it back too. */
     setup();
 
     const shown = await screen.findByText(/says the tags on those files are already right/i);
 
-    expect(shown.textContent).toMatch(/permanent/i);
-    expect(shown.textContent).toMatch(/never flagged for language again/i);
+    expect(shown.textContent).toMatch(/not flagged for language again/i);
+    expect(shown.textContent).toMatch(/until a file is replaced by a release with different tracks/i);
+    expect(shown.textContent).toMatch(/or you press Ask again in its details window/i);
   });
 
   it("counts files on the confirm button and tracks on the apply button", async () => {
@@ -762,8 +768,9 @@ describe("the language code box", () => {
   });
 
   it.each([["eng"], ["en"], ["cym"]])("allows %s", async (code) => {
-    /* cym is not in ISO_639_2_TO_1, which is a 49-entry convenience map
-     * rather than the standard — the check is on shape, not membership. */
+    /* The check is on shape, not membership: a code no table knows is still
+     * a code. The server stores each as ISO 639-2/B (app/core/langcodes.py),
+     * so en is saved as eng and cym, Welsh's other three-letter code, as wel. */
     setup();
     const user = userEvent.setup();
     await selectOne(user);

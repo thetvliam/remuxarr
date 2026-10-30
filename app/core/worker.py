@@ -10,6 +10,7 @@ Key controls (set at runtime, no restart needed):
   get_active_job_count()             — how many jobs are running right now
 """
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -19,8 +20,10 @@ from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
+from app.core.arr_lookup import find_arr_id
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
+from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core import revert_lock
@@ -42,6 +45,13 @@ logger = logging.getLogger(__name__)
 _worker_task: asyncio.Task | None = None
 _running      = False
 _paused       = False          # set by pause_worker() / resume_worker()
+# The auto_start_jobs value _loop() last saw. The loop acts on the setting
+# changing to off, not on it being off: with auto-start off, Resume is how a
+# user processes the queue by hand, and a check of the level would pause
+# that run again on the next pass. start_worker() seeds it with the value
+# the worker starts from, so the first pass compares against that rather
+# than whatever an earlier start in the same process left here.
+_auto_start_seen = True
 _active_jobs: set[int] = set() # job IDs currently being processed
 # Mirrors _loop()'s local active_tasks dict — updated in lockstep — so
 # abort_job() (called from the API route) can find and cancel a specific
@@ -88,12 +98,12 @@ def abort_job(job_id: int) -> bool:
     alone doesn't help if the worker just claims the next item on its very
     next loop tick. Calling pause_worker() here sets the actual in-memory
     flag the live loop checks (_paused), which is distinct from the
-    auto_start_jobs database setting the API route also updates — that
-    setting is only ever read at container startup and before a new scan
-    begins, so writing it alone has no effect on a worker loop that's
-    already running. Both are needed: pause_worker() stops the current
-    session immediately, auto_start_jobs prevents auto-resuming on a
-    future restart or scan.
+    auto_start_jobs database setting the API route also updates. The loop
+    does pause itself when it sees that setting turn off, but only on its
+    next pass, up to a second later, and the next job could be claimed in
+    between. Both are needed: pause_worker() stops the current
+    session immediately, auto_start_jobs keeps it paused through a
+    restart, and has every later scan pause it again.
 
     Marks the DB row "cancelled" (reusing the existing status rather than
     inventing a new one, so every existing filter/tab/badge that already
@@ -231,7 +241,7 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
 
 
 async def start_worker() -> None:
-    global _worker_task, _running, _paused
+    global _worker_task, _running, _paused, _auto_start_seen
     _running = True
 
     # Initialise the pause state from the auto_start_jobs setting.
@@ -239,7 +249,8 @@ async def start_worker() -> None:
     # auto_start_jobs = False → start paused (user must click Resume)
     with SessionLocal() as db:
         cfg = get_app_settings(db)
-        _paused = not cfg.get("auto_start_jobs", True)
+        _auto_start_seen = bool(cfg.get("auto_start_jobs", True))
+        _paused = not _auto_start_seen
 
         recover_interrupted_jobs(db)
 
@@ -315,12 +326,15 @@ async def _loop() -> None:
 
     Each iteration:
       1. Prune completed tasks from the active set.
-      2. Read max_concurrent_jobs from settings.
+      2. Read max_concurrent_jobs and auto_start_jobs from settings, and
+         pause if auto-start has just been turned off.
       3. While not paused and active < max, claim and launch a new job.
+         With auto-start off, pause once nothing is running and nothing
+         is left to claim.
       4. Sleep briefly before the next iteration.
     """
     from app.api.ws_manager import ws_manager   # avoid circular import
-    global _forge_task
+    global _forge_task, _auto_start_seen
 
     loop         = asyncio.get_running_loop()
     active_tasks: dict[int, asyncio.Task] = {}  # job_id → Task
@@ -342,6 +356,23 @@ async def _loop() -> None:
             with SessionLocal() as db:
                 cfg = get_app_settings(db)
             max_jobs = max(1, int(cfg.get("max_concurrent_jobs", 1)))
+
+            # ── Auto-start turned off ──────────────────────────────────────
+            # Read here, on every pass, rather than where the setting is
+            # written, because four places write it: the header toggle, a
+            # Settings save, a settings import, and abort. The setting used
+            # to be read only at start-up and when a scan began, so turning
+            # it off while the worker ran stopped nothing, and every
+            # Sonarr/Radarr import after that was processed as it arrived.
+            #
+            # Turning it on does not resume. A paused worker stays paused
+            # until the user presses Resume, whichever way it was paused.
+            auto_start = bool(cfg.get("auto_start_jobs", True))
+            turned_off = _auto_start_seen and not auto_start
+            _auto_start_seen = auto_start
+            if turned_off:
+                pause_worker()
+                await ws_manager.broadcast_json({"event": "worker_paused"})
 
             if not _paused:
                 total_active = len(active_tasks) + (1 if forge_task is not None else 0)
@@ -392,6 +423,19 @@ async def _loop() -> None:
                     active_tasks[job_id] = task
                     _active_task_registry[job_id] = task
                     total_active += 1
+
+                # ── A manual run has finished ──────────────────────────────
+                # With auto-start off, Resume processes what is in the queue
+                # and stops there: anything queued later waits for the next
+                # Resume. Nothing running at this point means the forge
+                # check and the claim above both ran this pass and found
+                # nothing, so the queue is empty, except for a job the claim
+                # skips because a revert is rewriting its file. That one
+                # stays pending until the next Resume.
+                if not auto_start and total_active == 0:
+                    logger.info("Queue finished with auto-start off")
+                    pause_worker()
+                    await ws_manager.broadcast_json({"event": "worker_paused"})
 
         except asyncio.CancelledError:
             break
@@ -490,6 +534,15 @@ async def _run_and_broadcast(
                         _trigger_arr_notify(
                             post_job["radarr"], loop, notify_radarr,
                             restore_movie_quality, "Radarr",
+                        )
+                    )
+                # A file that came with neither ID: a scan found it.
+                if post_job["lookup"]:
+                    asyncio.create_task(
+                        _find_then_notify(
+                            post_job["lookup"], loop,
+                            functools.partial(_remember_arr_id_on_job, job_id),
+                            f"job {job_id}",
                         )
                     )
 
@@ -1629,6 +1682,38 @@ def _load_job_data(job_id: int):
                 )
             return None
 
+        app_cfg = get_app_settings(db)
+
+        # Excluded since it was queued. The exclude settings are checked
+        # when a scan, a webhook or the single-file scan queues a file, and a
+        # record they match is removed at the end of the next completed
+        # scan. A job already waiting was never checked again, so a pattern
+        # added while it waited did not stop it, and Retry, Retry All,
+        # Process Now and the review answers queue a file without the check
+        # at all. Every one of them passes through here.
+        #
+        # After the on-disk checks above: the extras rule looks at the
+        # folders around the file, which an unmounted share does not have.
+        #
+        # The record is left for that next scan to remove, with its size and
+        # mtime cleared as cancel_item clears them. Left as they were, a
+        # delta scan would read the file as unchanged, so removing the
+        # pattern before a scan ran would leave it skipped until a Force
+        # Full Rescan.
+        excluded_by = ExcludeRules.from_settings(app_cfg).reason(media.path)
+        if excluded_by:
+            job.status           = "skipped"
+            job.reason           = f"Excluded: {excluded_by}"
+            job.review_subtitles = None
+            job.completed_at     = utcnow()
+            media.status         = "skipped"
+            media.size           = -1
+            media.mtime          = -1.0
+            db.commit()
+            logger.info("Job %d: %s is excluded (%s) — skipped",
+                        job_id, media.path, excluded_by)
+            return None
+
         # A row that has never been probed for fonts — every row from before
         # the count was stored — reads as font-free to the gate below, and a
         # normal scan skips unchanged files, so it can stay that way through
@@ -1654,7 +1739,6 @@ def _load_job_data(job_id: int):
         )
         tracks = [_track_to_dict(t) for t in tracks_raw]
 
-        app_cfg    = get_app_settings(db)
         file_info  = _file_info_for(media)
         overrides  = _load_subtitle_overrides(media, tracks)
         audio_lang_overrides = _load_audio_language_overrides(media, tracks)
@@ -2384,24 +2468,42 @@ def _load_post_job_data(job_id: int) -> dict | None:
                                     job.output_path, f"job {job_id}")
         radarr = _arr_notify_target(cfg, "radarr", job.radarr_movie_id,
                                     job.output_path, f"job {job_id}")
-        return {"final": final, "sonarr": sonarr, "radarr": radarr}
+        lookup = _arr_lookup_candidates(cfg, job.sonarr_series_id,
+                                        job.radarr_movie_id, job.output_path,
+                                        f"job {job_id}")
+        return {"final": final, "sonarr": sonarr, "radarr": radarr,
+                "lookup": lookup}
 
 
 def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
                        local_path: str | None, context: str) -> dict | None:
     """
     What _trigger_arr_notify needs to tell Sonarr or Radarr about a file,
-    or None when there is no one to tell: no series/movie id (the file did
-    not come from that service's webhook), the service off, or its url or
-    key missing.
+    or None when there is no one to tell: no series/movie id (neither the
+    service's webhook nor a lookup has given the file one), the service
+    off, or its url or key missing.
 
     service is "sonarr" or "radarr", which is also the prefix of each of
     its settings. Shared by jobs and reverts; context names which, for the
     log line.
     """
-    name = "Sonarr" if service == "sonarr" else "Radarr"
     if not entity_id:
         return None
+    connection = _arr_connection(cfg, service, local_path, context)
+    if connection is None:
+        return None
+    return {"entity_id": entity_id, **connection}
+
+
+def _arr_connection(cfg: dict, service: str, local_path: str | None,
+                    context: str) -> dict | None:
+    """
+    The url, key and translated path for talking to Sonarr or Radarr about a
+    file, or None when the service is off or its url or key is missing.
+    _arr_notify_target adds the ID; _arr_lookup_candidates uses it to find
+    one.
+    """
+    name = "Sonarr" if service == "sonarr" else "Radarr"
     if not cfg.get(f"{service}_enabled", False):
         return None
     url     = (cfg.get(f"{service}_url") or "").rstrip("/")
@@ -2418,7 +2520,6 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
     # report, using the same prefixes the webhook uses in the opposite
     # direction.
     return {
-        "entity_id":   entity_id,
         "url":         url,
         "api_key":     api_key,
         "output_path": translate_path(
@@ -2427,6 +2528,111 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
             cfg.get(f"{service}_path_prefix_remote", "") or "",
         ) or None,
     }
+
+
+def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
+                           radarr_id: int | None, local_path: str | None,
+                           context: str) -> list[dict]:
+    """
+    The services to ask which series or movie a file belongs to, in the
+    order to ask them, when it carries no ID from either.
+
+    The IDs used to come only from a webhook, so a file a scan found was
+    never announced to Sonarr or Radarr at all. A file that carries one
+    service's ID belongs to that service and asks nobody. Sonarr comes
+    first; Radarr is asked only when Sonarr has no match (_find_then_notify).
+    Each entry is _arr_connection's, with the service named, so the path is
+    already in that service's terms.
+    """
+    if sonarr_id or radarr_id or not local_path:
+        return []
+    candidates = []
+    for service in ("sonarr", "radarr"):
+        connection = _arr_connection(cfg, service, local_path, context)
+        if connection is not None:
+            candidates.append({"service": service, **connection})
+    return candidates
+
+
+def _remember_arr_id_on_job(job_id: int, service: str, entity_id: int) -> None:
+    """
+    Store an ID found by lookup on the job's own row, where newest_arr_ids
+    reads it back for the file's later jobs and reverts, so the lookup is
+    made once per file rather than once per job.
+    """
+    column = "sonarr_series_id" if service == "sonarr" else "radarr_movie_id"
+    with SessionLocal() as db:
+        job = db.get(QueueItem, job_id)
+        if job is not None:
+            setattr(job, column, entity_id)
+            db.commit()
+
+
+def _remember_arr_id_on_file(file_id: int, service: str, entity_id: int) -> None:
+    """
+    The same for a revert, which has no row of its own: the file's newest
+    queue item takes the ID, which is the row newest_arr_ids reads first.
+    """
+    column = "sonarr_series_id" if service == "sonarr" else "radarr_movie_id"
+    with SessionLocal() as db:
+        item = (db.query(QueueItem)
+                  .filter(QueueItem.file_id == file_id)
+                  .order_by(QueueItem.id.desc())
+                  .first())
+        if item is not None:
+            setattr(item, column, entity_id)
+            db.commit()
+
+
+async def _find_then_notify(candidates: list[dict], loop: asyncio.AbstractEventLoop,
+                            remember, context: str) -> None:
+    """
+    Fire-and-forget task: find the file's series or movie, store the ID,
+    then rescan and restore quality as for a file that came with one.
+
+    Runs here rather than in the loaders, which hold a database session:
+    the lookup is an HTTP request, and a slow Sonarr would hold the
+    connection with it. A failed request is logged and the next service is
+    asked, as a failed rescan is logged and costs a delayed refresh.
+    """
+    def _find():
+        for candidate in candidates:
+            try:
+                entity_id = find_arr_id(candidate["service"], candidate["url"],
+                                        candidate["api_key"], candidate["output_path"])
+            except Exception as exc:
+                logger.warning("Could not look up %s in %s for %s: %s",
+                               candidate["output_path"], candidate["service"],
+                               context, exc)
+                continue
+            if entity_id:
+                return candidate, entity_id
+        return None, None
+
+    try:
+        candidate, entity_id = await loop.run_in_executor(None, _find)
+    except Exception:
+        logger.exception("Sonarr/Radarr lookup failed for %s", context)
+        return
+    if not entity_id:
+        logger.info("%s is not in Sonarr or Radarr, so neither is told about %s",
+                    candidates[0]["output_path"], context)
+        return
+
+    try:
+        await loop.run_in_executor(None, remember, candidate["service"], entity_id)
+    except Exception:
+        logger.exception("Could not store the %s ID found for %s",
+                         candidate["service"], context)
+
+    data = {"entity_id": entity_id, "url": candidate["url"],
+            "api_key": candidate["api_key"], "output_path": candidate["output_path"]}
+    if candidate["service"] == "sonarr":
+        await _trigger_arr_notify(data, loop, notify_sonarr,
+                                  restore_episode_quality, "Sonarr")
+    else:
+        await _trigger_arr_notify(data, loop, notify_radarr,
+                                  restore_movie_quality, "Radarr")
 
 
 async def _trigger_arr_notify(
@@ -2483,10 +2689,10 @@ def _load_plex_notify_data(job_id: int) -> dict | None:
     see the inline comment below for why that classification can diverge
     from Plex's actual indexed state.
 
-    Unlike Sonarr/Radarr (which only fire for webhook-triggered jobs), Plex
-    notification is considered for EVERY successful job when enabled — Plex
-    needs to know about every file Remuxarr touches, not just *arr-originated
-    ones.
+    Plex notification is considered for EVERY successful job when enabled,
+    and needs no ID: Plex is told by path. Sonarr and Radarr are told by
+    series or movie ID, which a scanned file has to have looked up first
+    (_arr_lookup_candidates).
     """
     with SessionLocal() as db:
         job = db.get(QueueItem, job_id)
@@ -2706,9 +2912,9 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
     extension, so the services' view of the file is as stale as after one.
 
     The series/movie id comes from the newest queue item for the file that
-    carries one, which is how the file reached Remuxarr from that service's
-    webhook. A file only ever processed from a scan has none, and is not
-    announced to Sonarr or Radarr — as for its jobs.
+    carries one: from the service's webhook, or from an earlier lookup by
+    folder. A file with neither is looked up as a job's is
+    (_arr_lookup_candidates), and the ID found goes on its newest queue item.
 
     restored_path, not MediaFile.path: the revert's own bookkeeping can fail
     after the file is written, leaving the row on the old path, and it is
@@ -2723,6 +2929,8 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
                                     restored_path, context)
         radarr = _arr_notify_target(cfg, "radarr", radarr_id,
                                     restored_path, context)
+        lookup = _arr_lookup_candidates(cfg, sonarr_id, radarr_id,
+                                        restored_path, context)
 
         plex = None
         media = db.get(MediaFile, file_id)
@@ -2731,7 +2939,8 @@ def _load_revert_notify_data(file_id: int, restored_path: str) -> dict:
             if plex is not None:
                 plex["local_path"] = restored_path
 
-        return {"sonarr": sonarr, "radarr": radarr, "plex": plex}
+        return {"sonarr": sonarr, "radarr": radarr, "lookup": lookup,
+                "plex": plex}
 
 
 async def notify_after_revert(file_id: int, restored_path: str) -> None:
@@ -2761,6 +2970,12 @@ async def notify_after_revert(file_id: int, restored_path: str) -> None:
         asyncio.create_task(_trigger_arr_notify(
             data["radarr"], loop, notify_radarr, restore_movie_quality,
             "Radarr",
+        ))
+    if data["lookup"]:
+        asyncio.create_task(_find_then_notify(
+            data["lookup"], loop,
+            functools.partial(_remember_arr_id_on_file, file_id),
+            f"the revert of {restored_path}",
         ))
     if data["plex"]:
         asyncio.create_task(_trigger_plex_notify(data["plex"], loop))

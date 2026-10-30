@@ -401,7 +401,10 @@ SETTINGS_SCHEMA = [
         "label":       "Media Library Paths",
         "type":        "string_list",
         "placeholder": "/media/tv",
-        "description": "Absolute paths to scan for media files.",
+        "description": "Absolute paths to scan for media files. Until at "
+                       "least one is set, Sonarr and Radarr imports are "
+                       "ignored too. An import from outside all of them is "
+                       "still processed, with a warning in the log.",
     },
     {
         "key":         "skip_extras",
@@ -414,8 +417,9 @@ SETTINGS_SCHEMA = [
                        "a name ending in -trailer, -featurette, -sample and "
                        "so on), and the copies Plex's Optimize writes to a "
                        "Plex Versions folder. Ones already in Remuxarr are "
-                       "removed from it at the next scan; the files "
-                       "themselves are not touched.",
+                       "removed from it at the next scan, and one waiting "
+                       "in the queue is skipped when its turn comes; the "
+                       "files themselves are not touched.",
     },
     {
         "key":         "exclude_patterns",
@@ -430,7 +434,9 @@ SETTINGS_SCHEMA = [
                        "covers everything inside it. * and ? are wildcards, "
                        "and case is ignored. Files already in Remuxarr that "
                        "a pattern matches are removed from it at the next "
-                       "scan; the files themselves are not touched.",
+                       "scan, and one waiting in the queue is skipped when "
+                       "its turn comes; the files themselves are not "
+                       "touched.",
     },
     {
         "key":         "include_patterns",
@@ -552,9 +558,10 @@ SETTINGS_SCHEMA = [
         "label":       "Primary Language",
         "type":        "string",
         "placeholder": "eng",
-        "description": "ISO 639-2/B language code to apply to undefined tracks "
-                       "(e.g. eng, fre, jpn). Must match the codes used in "
-                       "Keep Audio Languages and Keep Subtitle Languages.",
+        "description": "Language code to apply to undefined tracks "
+                       "(e.g. eng, fre, jpn). A two-letter code (en) is saved "
+                       "as its three-letter form (eng), which is what gets "
+                       "written into the file.",
     },
     {
         # Unsuffixed key = subtitles, matching fix_undefined_language above
@@ -622,8 +629,11 @@ SETTINGS_SCHEMA = [
         "label":       "Keep Audio Languages",
         "type":        "string_list",
         "placeholder": "eng",
-        "description": "ISO 639-2/B codes (e.g. eng, fre, jpn). "
-                       "Tracks in other languages will be removed.",
+        "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
+                       "either three-letter form (deu or ger) are accepted, "
+                       "saved as the ISO 639-2/B form (eng, ger), and match "
+                       "tracks tagged with any of them. "
+                       "Audio in other languages will be removed.",
     },
     {
         "key":         "keep_default_audio",
@@ -657,7 +667,11 @@ SETTINGS_SCHEMA = [
         "label":       "Keep Subtitle Languages",
         "type":        "string_list",
         "placeholder": "eng",
-        "description": "ISO 639-2/B codes. Subtitles in other languages will be removed.",
+        "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
+                       "either three-letter form (deu or ger) are accepted, "
+                       "saved as the ISO 639-2/B form (eng, ger), and match "
+                       "tracks tagged with any of them. "
+                       "Subtitles in other languages will be removed.",
     },
     {
         "key":         "keep_forced_subtitles",
@@ -841,13 +855,15 @@ SETTINGS_SCHEMA = [
     {
         "key":         "auto_start_jobs",
         "group":       "Worker",
-        "label":       "Auto-Start Processing After Scan",
+        "label":       "Auto-Start Processing",
         "type":        "boolean",
-        "description": "When enabled (default), queued files begin processing "
-                       "immediately after a scan completes. When disabled, "
-                       "files are queued but the worker starts paused — use "
-                       "the Resume button on the dashboard when you are ready "
-                       "to begin processing.",
+        "description": "When enabled (default), files are processed as soon "
+                       "as they are queued, by a scan or by a Sonarr or "
+                       "Radarr import. When disabled, processing pauses and "
+                       "files wait in the queue until you press Resume, "
+                       "which processes the queue and then pauses again. "
+                       "Enabling it does not resume a paused queue; press "
+                       "Resume.",
     },
     {
         "key":         "job_timeout_minutes",
@@ -879,9 +895,13 @@ SETTINGS_SCHEMA = [
         "type":        "boolean",
         "description": "Calls Sonarr's RescanSeries after each job completes, "
                        "so Sonarr re-discovers the file at its new path or "
-                       "extension. Incoming webhooks are accepted whatever "
-                       "this is set to — to stop Remuxarr acting on them, "
-                       "remove the webhook in Sonarr itself. To send imports "
+                       "extension. A file found by a scan rather than sent "
+                       "by Sonarr is matched to its series by the folder it "
+                       "is in, so the Container Paths below must be right "
+                       "for scanned files too. Incoming webhooks are "
+                       "accepted whatever this is set to — to stop Remuxarr "
+                       "acting on them, remove the webhook in Sonarr itself. "
+                       "To send imports "
                        "here, add a Webhook in Sonarr → Settings → Connect "
                        "with the URL http://<this server>:<port>"
                        "/api/webhooks/sonarr and On File Import, On File "
@@ -944,9 +964,13 @@ SETTINGS_SCHEMA = [
         "type":        "boolean",
         "description": "Calls Radarr's RescanMovie after each job completes, "
                        "so Radarr re-discovers the file at its new path or "
-                       "extension. Incoming webhooks are accepted whatever "
-                       "this is set to — to stop Remuxarr acting on them, "
-                       "remove the webhook in Radarr itself. To send imports "
+                       "extension. A file found by a scan rather than sent "
+                       "by Radarr is matched to its movie by the folder it "
+                       "is in, so the Container Paths below must be right "
+                       "for scanned files too. Incoming webhooks are "
+                       "accepted whatever this is set to — to stop Remuxarr "
+                       "acting on them, remove the webhook in Radarr itself. "
+                       "To send imports "
                        "here, add a Webhook in Radarr → Settings → Connect "
                        "with the URL http://<this server>:<port>"
                        "/api/webhooks/radarr and On File Import, On File "
@@ -1179,3 +1203,50 @@ SETTINGS_SCHEMA = [
                        "a job succeeds.",
     },
 ]
+
+
+# ── Settings a routine scan does not re-apply ─────────────────────────────────
+#
+# A routine scan skips a file whose size and mtime have not changed, so a
+# change to one of these reaches only jobs still waiting (the worker
+# re-decides at pickup, worker._load_job_data) and files scanned afterwards.
+# A file seen before, skipped, processed or held in Review, keeps the result
+# it had until a Force Full Rescan re-decides it. Nothing said so except the
+# Force Full Rescan card itself, so a changed language list appeared to do
+# nothing to the library.
+#
+# These are the settings analyze_file reads, less existing_srt_handling:
+# that one only names the subtitles a job extracts, so changing it can make
+# no unchanged file need work, and a rescan would apply nothing.
+# test_settings_schema.py derives the list from decision.py and fails when
+# they disagree. Each also carries "rescan": True, which is how the Settings
+# page knows a save of it should offer to re-check files already scanned.
+RESCAN_NOTE = (
+    " A change reaches files waiting in the queue and any scanned from now "
+    "on. Files scanned before, including ones held in Review, keep their "
+    "result until you run Force Full Rescan (Settings, Maintenance & Logs)."
+)
+
+APPLIES_ON_RESCAN = {
+    "prefer_mp4_container",
+    "add_faststart_to_mp4",
+    "fix_undefined_language",
+    "fix_undefined_language_audio",
+    "undefined_language_value",
+    "undefined_language_mode",
+    "undefined_language_mode_audio",
+    "keep_audio_languages",
+    "keep_default_audio",
+    "und_audio_threshold",
+    "keep_subtitle_languages",
+    "keep_forced_subtitles",
+    "keep_undefined_subtitles",
+    "extract_text_subtitles_to_srt",
+    "image_subtitle_handling",
+    "font_attachment_handling",
+}
+
+for _entry in SETTINGS_SCHEMA:
+    if _entry["key"] in APPLIES_ON_RESCAN:
+        _entry["description"] += RESCAN_NOTE
+        _entry["rescan"] = True

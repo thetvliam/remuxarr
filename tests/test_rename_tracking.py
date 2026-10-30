@@ -73,6 +73,12 @@ def lib(tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "WEBHOOK_DEBOUNCE_SECONDS", 0.01)
     folder = tmp_path / "tv" / "Show" / "Season 01"
     folder.mkdir(parents=True)
+    # The library this fixture's files live in. A webhook import is
+    # ignored when no Media Library Paths are set, and every install that
+    # sends one has its library there.
+    with factory() as db:
+        db.merge(AppSetting(key="scan_paths", value=json.dumps([str(tmp_path / "tv")])))
+        db.commit()
     yield SimpleNamespace(Session=factory, root=tmp_path, folder=folder)
     engine.dispose()
 

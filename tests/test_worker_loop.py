@@ -44,6 +44,20 @@ runs; not counting a started forge; running one job over the limit; not
 tracking a claimed job's id; not registering its Task; and letting one
 failed iteration end the worker. All twelve are killed by the tests
 below.
+
+Auto-start off, added when Sonarr and Radarr imports were found being
+processed with it off: eight mutations of the new code, each run against
+the whole 2048-test suite before these tests existed, all eight survived.
+Now 8 applied, 8 killed. Not pausing when the setting turns off (the
+off-switch test and both API tests); resuming when it turns back on (the
+leaves-paused test); pausing whenever it is off rather than when it
+changes (the manual-run, mid-run and forge tests); pausing on an empty
+queue whatever the setting (the auto-start-on test, and the off-switch
+test, which then sees two events); ending a manual run while a job is
+still running (the mid-run and forge tests); ending one while the forge
+runs (the forge test); and each of the two worker_paused broadcasts
+dropped, a mutant apiece since they are separate lines (the off-switch
+test and the manual-run test).
 """
 import asyncio
 from types import SimpleNamespace
@@ -101,6 +115,15 @@ def rig(monkeypatch):
         iterations=1,
         iteration=0,
         max_jobs=1,
+        # auto_start_jobs as the settings read reports it. A value in
+        # auto_start_at takes over from that iteration on.
+        auto_start=True,
+        auto_start_at={},
+        # Queue items that arrive at a given iteration, as an import does
+        # while the worker runs.
+        arrivals={},
+        # Replaces the fake settings read when a test needs the real one.
+        read_settings=None,
         claims=[],
         jobs_finish=False,
         forge_pending=False,
@@ -119,7 +142,12 @@ def rig(monkeypatch):
             worker._running = False
         if rig.iteration in rig.failing_iterations:
             raise RuntimeError("settings read failed")
-        return {"max_concurrent_jobs": rig.max_jobs}
+        rig.claims.extend(rig.arrivals.get(rig.iteration, []))
+        if rig.read_settings is not None:
+            return rig.read_settings(db)
+        rig.auto_start = rig.auto_start_at.get(rig.iteration, rig.auto_start)
+        return {"max_concurrent_jobs": rig.max_jobs,
+                "auto_start_jobs": rig.auto_start}
 
     def fake_claim():
         return rig.claims.pop(0) if rig.claims else None
@@ -141,6 +169,12 @@ def rig(monkeypatch):
             await asyncio.Event().wait()
         return True
 
+    # The loop's own settings reader, kept for the test that needs the real
+    # one. Taken from worker rather than from app.database.session, which
+    # test_schema_migration.py reloads: after that, the session module's
+    # functions are new objects and worker's are not.
+    rig.real_get_app_settings = worker.get_app_settings
+
     monkeypatch.setattr(worker, "asyncio", _NoWaitAsyncio())
     monkeypatch.setattr(worker, "SessionLocal", lambda: _NullSession())
     monkeypatch.setattr(worker, "get_app_settings", fake_settings)
@@ -149,6 +183,9 @@ def rig(monkeypatch):
     monkeypatch.setattr(worker, "_run_and_broadcast", fake_run_and_broadcast)
     monkeypatch.setattr(worker, "_process_next_forge", fake_process_next_forge)
     monkeypatch.setattr(worker, "_paused", False)
+    # What start_worker() would have seeded: the worker started with
+    # auto-start on, as every test here did before the setting was read.
+    monkeypatch.setattr(worker, "_auto_start_seen", True)
     monkeypatch.setattr(ws_module, "ws_manager", rig.ws)
 
     # Module-level and shared between tests, so both are emptied on the
@@ -356,3 +393,175 @@ def test_a_failed_iteration_does_not_stop_the_worker(rig):
     run(rig)
 
     assert rig.started == [1]
+
+
+# ── Auto-start off ───────────────────────────────────────────────────────────
+#
+# With auto-start off, nothing is processed until the user presses Resume,
+# and Resume processes the queue and then stops. The setting used to be read
+# only at start-up and when a scan began, so turning it off while the worker
+# ran stopped nothing, and a single Resume left the worker running for good:
+# every Sonarr or Radarr import after either was processed as it arrived.
+
+def paused_events(rig):
+    return [m for m in rig.ws.sent if m.get("event") == "worker_paused"]
+
+
+def test_turning_auto_start_off_pauses_before_the_next_claim(rig):
+    """
+    An import that arrives after the switch waits. The broadcast is what
+    puts the header's PAUSE button into its paused state when the change
+    was made somewhere other than the header, such as a Settings save.
+    """
+    rig.iterations = 2
+    rig.auto_start_at = {2: False}
+    rig.arrivals = {2: [5]}
+
+    run(rig)
+
+    assert rig.started == []
+    assert worker.is_worker_paused()
+    assert len(paused_events(rig)) == 1
+
+
+def test_turning_auto_start_on_leaves_a_paused_worker_paused(rig, monkeypatch):
+    """
+    Decided, not incidental: switching back to AUTO does not start
+    processing a queue the user built up while it was off. They press
+    Resume.
+    """
+    monkeypatch.setattr(worker, "_paused", True)
+    monkeypatch.setattr(worker, "_auto_start_seen", False)
+    rig.iterations = 3
+    rig.auto_start_at = {1: False, 2: True}
+    rig.claims = [5]
+
+    run(rig)
+
+    assert rig.started == []
+    assert worker.is_worker_paused()
+
+
+def test_resume_with_auto_start_off_runs_the_queue_then_pauses(rig, monkeypatch):
+    """
+    The manual run. Both queued jobs run, one after the other at a limit of
+    one; the worker pauses once nothing is running and nothing is left, and
+    an import arriving after that waits for the next Resume.
+
+    Also what keeps the pause tied to the setting CHANGING rather than to it
+    being off: read as a level, auto-start off would pause the worker again
+    on the first pass after Resume, before it claimed anything.
+    """
+    monkeypatch.setattr(worker, "_auto_start_seen", False)   # off at start-up
+    # _paused is False: the user pressed Resume.
+    rig.auto_start = False
+    rig.iterations = 5
+    rig.jobs_finish = True
+    rig.claims = [1, 2]
+    rig.arrivals = {5: [3]}
+
+    run(rig)
+
+    assert rig.started == [1, 2]
+    assert worker.is_worker_paused()
+    assert len(paused_events(rig)) == 1
+
+
+def test_with_auto_start_on_an_empty_queue_does_not_pause(rig):
+    """The self-pause belongs to a manual run only."""
+    rig.iterations = 3
+    rig.arrivals = {3: [1]}
+
+    run(rig)
+
+    assert rig.started == [1]
+    assert not worker.is_worker_paused()
+    assert paused_events(rig) == []
+
+
+def test_a_job_queued_during_a_manual_run_is_still_claimed(rig, monkeypatch):
+    """
+    A manual run ends when nothing is running and nothing is waiting, not
+    at the first pass that finds nothing to claim. At a limit of two with
+    one job running, the queue is briefly empty; an import landing then is
+    part of the run.
+    """
+    monkeypatch.setattr(worker, "_auto_start_seen", False)
+    rig.auto_start = False
+    rig.iterations = 2
+    rig.max_jobs = 2
+    rig.claims = [1]
+    rig.arrivals = {2: [2]}
+
+    run(rig)
+
+    assert rig.started == [1, 2]
+    assert not worker.is_worker_paused()
+
+
+def test_a_waiting_forge_job_keeps_a_manual_run_going(rig, monkeypatch):
+    """
+    AC3 Forge work is part of the queue Resume runs. The regular pool is
+    empty on the pass the forge starts, so a check of that pool alone would
+    pause the worker with the forge still running, and the import that
+    follows would wait.
+    """
+    monkeypatch.setattr(worker, "_auto_start_seen", False)
+    rig.auto_start = False
+    rig.iterations = 2
+    rig.max_jobs = 2
+    rig.forge_pending = True
+    rig.arrivals = {2: [7]}
+
+    run(rig)
+
+    assert rig.forge_runs == 1
+    assert rig.started == [7]
+    assert not worker.is_worker_paused()
+
+
+@pytest.mark.parametrize("save", ["header toggle", "settings page"])
+def test_auto_start_switched_off_through_the_api_pauses_the_worker(
+        rig, monkeypatch, save):
+    """
+    The two routes a user turns it off through, with the real settings
+    table between them and the loop: the header PUTs the one key, a
+    Settings save PUTs the keys that changed. The loop's settings read is
+    the real one, so this pins that the stored value comes back as the
+    boolean the loop tests rather than, say, a string that is always true.
+    """
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    import app.api.routes.settings as settings_routes
+    from app.database.models import Base
+    from app.main import app
+    from tests.conftest import memory_engine
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    # Keyed on the get_db the settings routes hold. test_schema_migration.py
+    # reloads app.database.session, so once a test before it has imported
+    # app.main, the session module's get_db is a different function from
+    # the routes' and an override keyed on it never applies: the PUT went to
+    # the suite's database and this test failed only in the full run.
+    app.dependency_overrides[settings_routes.get_db] = lambda: factory()
+    try:
+        client = TestClient(app)   # no `with`: the lifespan, and its own worker, stay off
+        if save == "header toggle":
+            r = client.put("/api/settings/auto_start_jobs", json={"value": False})
+        else:
+            r = client.put("/api/settings/", json={"auto_start_jobs": False})
+        assert r.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+    rig.read_settings = rig.real_get_app_settings
+    rig.claims = [5]
+
+    run(rig)
+
+    assert rig.started == []
+    assert worker.is_worker_paused()
