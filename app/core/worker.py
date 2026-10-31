@@ -33,9 +33,9 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
-from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -2204,22 +2204,35 @@ def _finish_job(
                         track_list = extract_tracks(probe_data)
 
                         # The rows about to be replaced are what the stored
-                        # answers are keyed against, so the answers are
-                        # carried across first. See rekey_track_answers.
-                        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+                        # answers and the Language Review questions are
+                        # keyed against, so both are carried across first.
+                        # See rekey_track_answers and rekey_language_flags.
+                        has_answers = any(getattr(media, a) for a in ANSWER_COLUMNS)
+                        has_flags = any(
+                            db.query(Flag.id).filter(Flag.file_id == media.id).first()
+                            for Flag in (AudioLanguageFlag, SubtitleLanguageFlag)
+                        )
+                        if has_answers or has_flags:
                             before = [_track_to_dict(t) for t in
                                       db.query(Track).filter(Track.file_id == media.id)]
-                            removed = {
-                                a.stream_index for a in db.query(PlannedAction).filter(
+                            removals = {
+                                (a.action_type, a.stream_index)
+                                for a in db.query(PlannedAction).filter(
                                     PlannedAction.queue_item_id == job.id,
                                     PlannedAction.action_type.in_(
                                         ("drop_track", "extract_subtitle")),
                                 )
                             }
-                            rekey_media_answers(
-                                media, before, track_list,
-                                job_stream_mapping(before, track_list, removed, final_path),
-                            )
+                            mapping = job_stream_mapping(
+                                before, track_list,
+                                {si for _kind, si in removals}, final_path)
+                            if has_answers:
+                                rekey_media_answers(media, before, track_list, mapping)
+                            if has_flags:
+                                rekey_language_flags(
+                                    db, media.id, mapping,
+                                    {si for kind, si in removals
+                                     if kind == "extract_subtitle"})
 
                         replace_track_rows(db, media.id, track_list)
 

@@ -616,11 +616,15 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     # except when its subtitle was extracted and the .srt is still there.
     #
     # That exception is what makes the question survive the job that
-    # raises it. Extraction removes the track from the mux, so the
-    # re-analysis _finish_job runs on the OUTPUT sees no subtitle tracks,
-    # reports no mismatches, and used to delete every row — the review
-    # page emptied itself the moment the work finished, and three files
-    # named "und" were left with nothing offering to correct them.
+    # raises it. Extraction removes the track from the mux, so any later
+    # analysis of the OUTPUT (a scan, or the next job's pickup) sees no
+    # subtitle tracks, reports no mismatches, and used to delete every row
+    # — the review page emptied itself, and three files named "und" were
+    # left with nothing offering to correct them. This comment once said
+    # _finish_job re-analysed the output; it never has. It moves the rows
+    # instead (rekey_language_flags), and an extracted track's row gets a
+    # negative stream_index, so it never matches a mismatch above and
+    # always arrives here.
     #
     # "No such track any more" does not mean "no longer a problem" here.
     # It means the tag can no longer be fixed in the file and only the
@@ -1619,6 +1623,76 @@ def rekey_media_answers(
             continue
         carried = rekey_track_answers(stored, before, after, mapping)
         setattr(media, attr, json.dumps(carried) if carried else None)
+
+
+def rekey_language_flags(
+    db:        Session,
+    file_id:   int,
+    mapping:   dict[int, int],
+    extracted: set[int],
+) -> None:
+    """
+    Move a file's Language Review questions to where their tracks now sit,
+    after Remuxarr rewrote it. Does not commit.
+
+    The rows are keyed by stream_index, a position in one probe of the file,
+    and Set language stores its answer against whatever track has that
+    position when it is clicked. A job that drops or extracts a track
+    renumbers everything after it, and its new size and mtime mean no delta
+    scan looks at the file again, so a question raised for an untagged track
+    at stream 2 was answered onto the English track that had moved into
+    stream 2, and the follow-up job retagged it.
+
+    `mapping` is job_stream_mapping's, the one the stored answers follow.
+    A kept track's question takes the track's new position. A subtitle the
+    job extracted keeps its question while its sidecar exists, for the
+    reason _upsert_language_flags gives where it declines to delete one, but
+    the track is no longer in the file, so it gets a negative stream_index:
+    one below the lowest already used for the file, so a second job
+    extracting at the same old position cannot clash with the first. Left at
+    its old position it claimed whichever track moved there, both for Set
+    language and for the next scan's upsert. Every other question for a
+    track the job removed is deleted, as is one the mapping could not pair,
+    the case in which the stored answers are dropped too.
+
+    In two steps, through temporary positions no row holds: the table is
+    unique on (file_id, stream_index), so moving 3 to 2 while another row
+    still held 2 failed outright, depending on the order the rows were
+    written in. The rows are updated rather than replaced because the
+    review page selects them by id.
+    """
+    moves: list[tuple[object, int]] = []
+    for flag in db.query(AudioLanguageFlag).filter(AudioLanguageFlag.file_id == file_id):
+        if flag.stream_index in mapping:
+            moves.append((flag, mapping[flag.stream_index]))
+        else:
+            db.delete(flag)
+
+    sub_flags = (db.query(SubtitleLanguageFlag)
+                   .filter(SubtitleLanguageFlag.file_id == file_id)
+                   .order_by(SubtitleLanguageFlag.stream_index)
+                   .all())
+    lowest = min([f.stream_index for f in sub_flags] + [0])
+    for flag in sub_flags:
+        if flag.stream_index < 0:
+            continue        # extracted by an earlier job; holds no position
+        if flag.stream_index in mapping:
+            moves.append((flag, mapping[flag.stream_index]))
+        elif (flag.stream_index in extracted and flag.extracted_path
+                and os.path.exists(flag.extracted_path)):
+            lowest -= 1
+            moves.append((flag, lowest))
+        else:
+            db.delete(flag)
+
+    # Temporaries far below any position a file or the allocation above
+    # reaches, distinct per row because ids are distinct per table.
+    for flag, _new in moves:
+        flag.stream_index = -1_000_000_000 - flag.id
+    db.flush()
+    for flag, new in moves:
+        flag.stream_index = new
+    db.flush()
 
 
 def clear_media_answers(media: MediaFile, why: str) -> None:

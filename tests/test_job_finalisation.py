@@ -43,6 +43,29 @@ anything else:
     rows with them via cascade. Only
     test_stale_row_removal_does_not_touch_unrelated_rows catches it.
 
+The Language Review tests at the end came with scanner.rekey_language_flags.
+Ten mutants, each run against the full 2167-test suite before the tests
+existed, and all ten survived it. Killed now as follows, the end-to-end test
+being test_language_answer_during_job.py's answer after a job:
+
+  • the re-key not called from _finish_job     → all nine new tests
+  • the old track list read only when there
+    are answers, as it was                     → all nine
+  • audio questions left out                   → the five audio ones,
+                                                 end-to-end included
+  • subtitle questions left out                → the five subtitle ones
+  • an extracted question kept at its old
+    position, and one deleted instead          → the three extracted ones
+                                                 (two mutants)
+  • a removed track's question kept, audio
+    and subtitle separately                    → removed track (two mutants)
+  • the renumber done in one step              → creation order (3, 2) only
+  • an extracted question placed at -(old+1)   → second extraction only
+
+The one-step renumber fails in one creation order and not the other, which
+is why both are run; the order that fails is the ORM's choice and could
+change between SQLAlchemy versions.
+
 WHY THE FIXTURES LOOK LIKE THIS
 _finish_job opens its own session and closes it in a finally block. The
 established `monkeypatch.setattr(worker, "SessionLocal", lambda: db)` shortcut
@@ -824,3 +847,284 @@ def test_a_probe_failure_after_a_job_forgets_the_answers(worker, Session,
     media = _media(Session, media_id)
     assert (media.audio_language_overrides, media.subtitle_overrides,
             media.subtitle_language_overrides) == (None, None, None)
+
+
+# ── Language Review questions follow the tracks ──────────────────────────────
+# Each row asks about the track at one stream_index, and Set language stores
+# its answer against whatever track sits there when it is clicked. A job
+# renumbers the tracks after any it drops or extracts, and records the new
+# size and mtime so no delta scan looks again; these pin that _finish_job
+# moves the rows itself (scanner.rekey_language_flags). Mutation record in
+# the module docstring.
+
+def _flagged_job(Session, src, before, actions, flags):
+    """
+    A job about to finish on a file with Language Review questions and no
+    stored answers, so nothing but the questions can call for the re-key.
+
+    flags: (kind, stream_index, extracted_path or None), kind "audio" or
+    "subtitle", created in the order given, so a test controls their ids.
+    Returns (media_id, job_id, {stream_index: flag id}).
+    """
+    from app.database.models import (AudioLanguageFlag, PlannedAction,
+                                      SubtitleLanguageFlag, Track)
+
+    media_id, job_id = _seed(Session, src)
+    ids = {}
+    with Session() as db:
+        for td in before:
+            db.add(Track(file_id=media_id, **td))
+        for order, (action, si) in enumerate(actions):
+            db.add(PlannedAction(queue_item_id=job_id, order=order, action_type=action,
+                                 description=action, stream_index=si))
+        for kind, si, sidecar in flags:
+            if kind == "audio":
+                flag = AudioLanguageFlag(file_id=media_id, stream_index=si,
+                                         detected_language="und", origin="mismatch")
+            else:
+                flag = SubtitleLanguageFlag(file_id=media_id, stream_index=si,
+                                            detected_language="und",
+                                            extracted_path=sidecar)
+            db.add(flag)
+            db.flush()
+            ids[si] = flag.id
+        db.commit()
+    return media_id, job_id, ids
+
+
+def _flags(Session, model):
+    """{flag id: (stream_index, extracted_path)} for every row of one table."""
+    with Session() as db:
+        return {f.id: (f.stream_index, getattr(f, "extracted_path", None))
+                for f in db.query(model)}
+
+
+def _v():
+    return _track(0, "video", "h264", "und", channels=None)
+
+
+def _sub(si, codec="subrip", language="und"):
+    return _track(si, "subtitle", codec, language, channels=None)
+
+
+def test_an_audio_question_follows_its_track(worker, Session, media_dir,
+                                             monkeypatch):
+    """
+    The reported case: French, untagged and English audio, French dropped.
+    The question raised for the untagged track at stream 2 was left at 2,
+    where the English track now sits, and answering it retagged English.
+
+    No answers are stored, which is what reaches the question-only path: the
+    old track list used to be read only when there were answers to carry.
+    """
+    from app.database.models import AudioLanguageFlag
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    before = [_v(), _track(1, "audio", "aac", "fre"), _track(2, "audio", "aac", "und"),
+              _track(3, "audio", "aac", "eng")]
+    _media_id, job_id, ids = _flagged_job(
+        Session, src, before,
+        [("drop_track", 1), ("copy_track", 2), ("copy_track", 3)],
+        [("audio", 2, None)])
+    after = [_v(), _track(1, "audio", "aac", "und"), _track(2, "audio", "aac", "eng")]
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _flags(Session, AudioLanguageFlag) == {ids[2]: (1, None)}, (
+        "the question stayed on stream 2, which is the English track now")
+
+
+def test_a_subtitle_question_follows_its_track(worker, Session, media_dir,
+                                               monkeypatch):
+    from app.database.models import SubtitleLanguageFlag
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    before = [_v(), _track(1, "audio", "aac", "eng"), _sub(2, language="fre"), _sub(3)]
+    _media_id, job_id, ids = _flagged_job(
+        Session, src, before,
+        [("copy_track", 1), ("drop_track", 2), ("copy_track", 3)],
+        [("subtitle", 3, None)])
+    after = [_v(), _track(1, "audio", "aac", "eng"), _sub(2)]
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _flags(Session, SubtitleLanguageFlag) == {ids[3]: (2, None)}
+
+
+def _extracted_job(Session, media_dir):
+    """
+    An untagged SubRip at stream 2 extracted to its sidecar, with a kept PGS
+    behind it: after the job the PGS is stream 2.
+    """
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    sidecar = media_dir / "movie.und.srt"
+    sidecar.write_text("extracted")
+    before = [_v(), _track(1, "audio", "aac", "eng"), _sub(2),
+              _sub(3, "hdmv_pgs_subtitle", "eng")]
+    media_id, job_id, ids = _flagged_job(
+        Session, src, before,
+        [("copy_track", 1), ("extract_subtitle", 2), ("copy_track", 3)],
+        [("subtitle", 2, str(sidecar))])
+    after = [_v(), _track(1, "audio", "aac", "eng"), _sub(2, "hdmv_pgs_subtitle", "eng")]
+    return src, sidecar, media_id, job_id, ids, after
+
+
+def test_an_extracted_subtitles_question_gives_up_its_position(worker, Session,
+                                                               media_dir,
+                                                               monkeypatch):
+    """
+    The question stays, because the sidecar's name is the only thing left
+    that can carry the language, but no position in the file is its now.
+    Kept at 2 it claimed the PGS that moved there; deleted, nothing would
+    ever offer to correct the sidecar.
+    """
+    from app.database.models import SubtitleLanguageFlag
+
+    src, sidecar, _media_id, job_id, ids, after = _extracted_job(Session, media_dir)
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    rows = _flags(Session, SubtitleLanguageFlag)
+    assert list(rows) == [ids[2]], "the question for the sidecar was lost"
+    position, path = rows[ids[2]]
+    assert position < 0, f"still claims stream {position}, which is the PGS now"
+    assert path == str(sidecar)
+
+
+def test_answering_an_extracted_subtitle_after_its_job_renames_the_sidecar(
+        worker, Session, media_dir, monkeypatch):
+    """
+    What the position is for. Left at 2, Set language found the PGS there,
+    took the question for an embedded one and stored the answer against the
+    PGS, so the follow-up job retagged it.
+    """
+    import app.api.routes._language_review as lr
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.subtitle_language import apply_language
+
+    src, sidecar, media_id, job_id, ids, after = _extracted_job(Session, media_dir)
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+    worker._finish_job(job_id, True, str(src), 10, None)
+    monkeypatch.setattr(lr, "get_app_settings", lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+
+    with Session() as db:
+        apply_language(ApplyRequest(flag_ids=[ids[2]], target_language="fre"), db)
+
+    assert _media(Session, media_id).subtitle_language_overrides in (None, "{}"), (
+        "the answer for the sidecar was stored against the PGS track")
+    assert not sidecar.exists()
+    assert (media_dir / "movie.fr.srt").exists()
+
+
+def test_a_removed_tracks_question_goes_with_it(worker, Session, media_dir,
+                                                monkeypatch):
+    """
+    A dropped track has nothing left to answer for, audio or subtitle, and a
+    subtitle with no sidecar has no filename to correct either. Kept, each
+    sat at a position another track now holds.
+    """
+    from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    before = [_v(), _track(1, "audio", "aac", "fre"), _track(2, "audio", "aac", "eng"),
+              _sub(3), _sub(4, language="eng")]
+    _media_id, job_id, _ids = _flagged_job(
+        Session, src, before,
+        [("drop_track", 1), ("copy_track", 2), ("drop_track", 3), ("copy_track", 4)],
+        [("audio", 1, None), ("subtitle", 3, None)])
+    after = [_v(), _track(1, "audio", "aac", "eng"), _sub(2, language="eng")]
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _flags(Session, AudioLanguageFlag) == {}
+    assert _flags(Session, SubtitleLanguageFlag) == {}
+
+
+@pytest.mark.parametrize("created", [(2, 3), (3, 2)])
+def test_questions_move_whatever_order_they_were_made_in(worker, Session, media_dir,
+                                                         monkeypatch, created):
+    """
+    Two questions both moving down one, 2 to 1 and 3 to 2. The table is
+    unique on (file_id, stream_index), so a single pass can move 3 onto 2
+    while the other row still holds it, depending on the order the rows are
+    written in; both creation orders are run because which one fails is the
+    ORM's business, not this test's.
+    """
+    from app.database.models import AudioLanguageFlag, QueueItem
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    before = [_v(), _track(1, "audio", "aac", "fre"), _track(2, "audio", "aac", "und"),
+              _track(3, "audio", "aac", "und")]
+    _media_id, job_id, ids = _flagged_job(
+        Session, src, before,
+        [("drop_track", 1), ("copy_track", 2), ("copy_track", 3)],
+        [("audio", si, None) for si in created])
+    after = [_v(), _track(1, "audio", "aac", "und"), _track(2, "audio", "aac", "und")]
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after)
+
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    assert _job(Session, job_id).status == "success"
+    assert _flags(Session, AudioLanguageFlag) == {ids[2]: (1, None), ids[3]: (2, None)}
+    with Session() as db:
+        assert db.get(QueueItem, job_id).error_message is None
+
+
+def test_a_second_extraction_does_not_clash_with_the_first(worker, Session,
+                                                           media_dir, monkeypatch):
+    """
+    Two untagged subtitles at 2 and 3. The first job extracts 2, so 3 moves
+    to 2; a later job extracts that one too, from the same old position.
+    Each extracted question needs its own negative position, so the second
+    is placed below the first rather than derived from the old position,
+    which is 2 both times.
+    """
+    from app.database.models import (PlannedAction, QueueItem,
+                                      SubtitleLanguageFlag, Track)
+
+    src = media_dir / "movie.mkv"
+    src.write_bytes(b"x" * 10)
+    first, second = media_dir / "movie.und.srt", media_dir / "movie.und.2.srt"
+    first.write_text("one")
+    second.write_text("two")
+    before = [_v(), _track(1, "audio", "aac", "eng"), _sub(2), _sub(3)]
+    media_id, job_id, ids = _flagged_job(
+        Session, src, before,
+        [("copy_track", 1), ("extract_subtitle", 2), ("copy_track", 3)],
+        [("subtitle", 2, str(first)), ("subtitle", 3, str(second))])
+    after_first = [_v(), _track(1, "audio", "aac", "eng"), _sub(2)]
+    _stub_probe(monkeypatch, worker, container="mkv", tracks=after_first)
+    worker._finish_job(job_id, True, str(src), 10, None)
+
+    with Session() as db:
+        job2 = QueueItem(file_id=media_id, status="processing")
+        db.add(job2)
+        db.flush()
+        db.add(PlannedAction(queue_item_id=job2.id, order=0, action_type="copy_track",
+                             description="copy", stream_index=1))
+        db.add(PlannedAction(queue_item_id=job2.id, order=1,
+                             action_type="extract_subtitle", description="extract",
+                             stream_index=2))
+        db.commit()
+        job2_id = job2.id
+    _stub_probe(monkeypatch, worker, container="mkv",
+                tracks=[_v(), _track(1, "audio", "aac", "eng")])
+    worker._finish_job(job2_id, True, str(src), 10, None)
+
+    assert _job(Session, job2_id).status == "success"
+    rows = _flags(Session, SubtitleLanguageFlag)
+    assert {fid: path for fid, (_si, path) in rows.items()} == {
+        ids[2]: str(first), ids[3]: str(second)}
+    assert all(si < 0 for si, _path in rows.values())
+    with Session() as db:
+        assert db.query(Track).filter(Track.file_id == media_id).count() == 2

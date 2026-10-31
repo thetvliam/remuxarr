@@ -63,3 +63,4 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - A scan no longer stops at a file it could not record. One database error, such as a Sonarr or Radarr import of the same file arriving mid-scan, left every file after it unscanned and the scan reported as failed with 0 files. A file that fails during a scan is now tried again by the next scan, where it could be left unprocessed until a Force Full Rescan.
+- A language you set in Audio or Subtitle Language Review after a file was processed now goes to the track you were asked about. When the job had removed a track before it, the choice went to the track that took its place, and that track was retagged. Audio questions on files processed before this update are put right by Force Full Rescan (Settings, Maintenance & Logs). A question about a subtitle extracted before this update is not, and answering it can still retag the subtitle that moved into its place.

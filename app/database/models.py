@@ -612,6 +612,13 @@ class SubtitleLanguageFlag(Base):
     id      = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
                      nullable=False, index=True)
+    # The track's position in the file, or a negative number once a job has
+    # extracted it: the row stays while its sidecar does (extracted_path
+    # below), but no position in the file is its any more, and keeping the
+    # old one made it claim whichever track moved there. Unique per file,
+    # never shown (the review page names such a row by its sidecar), and
+    # assigned by scanner.rekey_language_flags. A row written before that
+    # existed may still hold its old position.
     stream_index = Column(Integer, nullable=False)
     detected_language = Column(String, index=True)
 
