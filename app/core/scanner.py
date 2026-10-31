@@ -217,6 +217,21 @@ def scan_library(
                 except Exception:
                     logger.exception("Unexpected error processing %s", full_path)
                     stats.errors += 1
+                    # Every other caller of _process_file rolls back here, and
+                    # this one has more reason to: the session is shared by
+                    # the whole walk. A failed flush or commit leaves it
+                    # refusing all further work, so one UNIQUE clash (a
+                    # webhook recording the same new file while this one was
+                    # probing it) failed every file after it and then the
+                    # cleanup pass, and the scan reported failure with 0
+                    # files. Any other error leaves this file's record and
+                    # tracks flushed but not committed, and the next file's
+                    # commit saved them with the real size and mtime, so the
+                    # next delta scan called the file unchanged and never
+                    # tried it again; the last file walked was retried, as
+                    # nothing committed after it. Discarded, the file is
+                    # tried by every scan until it succeeds.
+                    db.rollback()
 
                 if progress_callback:
                     progress_callback(scanned, total_files)

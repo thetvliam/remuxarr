@@ -107,6 +107,15 @@ killed by the tests at the end of the walk section. A third, removing the
 skip of a library path an earlier one already walked, was already killed by
 the excluded-files list's tests in test_exclude_scan.py, which walk the same
 way, and is killed here too, by the file directly in the inner path.
+
+Three more came with the rollback after a file that fails, each run against
+the full 2165-test suite before the two tests after the per-file one
+existed, and all three survived: the rollback removed, which is the code as
+it was; the rollback limited to database errors; and expire_all in its
+place, which resets the objects and leaves the failed transaction. The
+first and third are killed by both tests. The second is killed only by the
+half-written record, as a ValueError is not a database error, which is why
+that test exists.
 """
 import os
 
@@ -465,6 +474,111 @@ def test_one_file_that_raises_does_not_end_the_scan(db, tmp_path,
 
     assert len(seen) == 3, "the scan stopped at the file that raised"
     assert stats.errors == 1
+
+
+def _recording_fake(monkeypatch, first_file):
+    """
+    Substitute _process_file with one that records each file the way the
+    real one does, a MediaFile row committed per file, and hands the FIRST
+    file walked to first_file(db, path) instead.
+
+    The first file, not a named one: os.walk does not order a directory's
+    files, so a test keyed to "B.mkv" could find it walked last, with nothing
+    after it to be affected.
+    """
+    from app.core import scanner as sc
+    from app.database.models import MediaFile
+
+    seen: list[str] = []
+
+    def fake(db, path, app_cfg, force_probe, dry_run, stats,
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
+        seen.append(path)
+        if len(seen) == 1:
+            first_file(db, path)
+            return
+        db.add(MediaFile(path=path, filename=os.path.basename(path),
+                         directory=os.path.dirname(path), size=100, mtime=1.0))
+        db.commit()
+
+    monkeypatch.setattr(sc, "_process_file", fake)
+    return seen
+
+
+def test_a_database_error_on_one_file_does_not_end_the_scan(db, tmp_path,
+                                                            monkeypatch):
+    """
+    Closes: the rollback after a failed file removed, and replaced by
+    expire_all, which looks like a reset and leaves the failed transaction.
+
+    The session is shared by the whole walk, and a failed flush leaves it
+    refusing everything until it is rolled back. The clash is the race the
+    real scanner has: a Sonarr or Radarr webhook records the same new file
+    while the scan is probing it, so the scan's own insert of that path hits
+    the UNIQUE constraint. Without the rollback every file after it failed
+    with PendingRollbackError, then the cleanup pass raised out of
+    scan_library, and the scan reported failure with 0 files.
+
+    The other writer's row is committed through this same session because
+    the module's in-memory database has one connection; what matters is the
+    order, its commit landing before the scan's flush.
+    """
+    from app.database.models import MediaFile
+
+    def clash(db, path):
+        row = dict(path=path, filename=os.path.basename(path),
+                   directory=os.path.dirname(path), size=100, mtime=1.0)
+        db.add(MediaFile(**row))        # the webhook's insert, committed
+        db.commit()
+        db.add(MediaFile(**row))        # the scan's own insert of the same path
+        db.flush()
+
+    seen = _recording_fake(monkeypatch, clash)
+    lib = _library(tmp_path, "tv", "A.mkv", "B.mkv", "C.mkv")
+
+    stats = scan_library(db, [lib])
+
+    assert len(seen) == 3
+    assert stats.errors == 1, "the files after the clash failed as well"
+    assert _media_files(db) == {os.path.join(lib, f) for f in ("A.mkv", "B.mkv", "C.mkv")}
+
+
+def test_a_file_that_fails_leaves_no_half_written_record(db, tmp_path,
+                                                         monkeypatch):
+    """
+    Closes: the rollback removed, and narrowed to database errors.
+
+    The real _process_file flushes a file's record and tracks before it
+    decides, and analyze_file raises on purpose for a container it cannot
+    identify. Without the rollback the next file's commit saved that record,
+    with the size and mtime it has on disk, so every later delta scan called
+    the file unchanged and never tried it again: reported once, then left
+    unprocessed until a Force Full Rescan. A rollback only for database
+    errors still leaves it, because this is not one.
+
+    No record means the next scan treats the file as new and tries it again,
+    which is what the webhook, retry and Ask again paths already do.
+    """
+    from app.database.models import MediaFile
+
+    failed: list[str] = []
+
+    def half_written(db, path):
+        failed.append(path)
+        db.add(MediaFile(path=path, filename=os.path.basename(path),
+                         directory=os.path.dirname(path), size=100, mtime=1.0))
+        db.flush()
+        raise ValueError("Cannot determine container format")
+
+    _recording_fake(monkeypatch, half_written)
+    lib = _library(tmp_path, "tv", "A.mkv", "B.mkv", "C.mkv")
+
+    stats = scan_library(db, [lib])
+
+    assert stats.errors == 1
+    assert failed[0] not in _media_files(db), \
+        "the failed file's record was committed by the file after it"
+    assert len(_media_files(db)) == 2
 
 
 def test_the_scan_mode_reaches_every_file(db, tmp_path, monkeypatch):
