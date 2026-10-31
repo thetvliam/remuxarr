@@ -882,6 +882,13 @@ def finish_forge_job(
         # job to start on the old ones.
         if success and fresh_tracks is not None:
             from app.core.scanner import replace_track_rows
+            if job.is_undo:
+                _rekey_questions_after_undo(db, job.file_id, fresh_tracks)
+            # An add needs nothing of the kind: it appends its AC3 after
+            # every existing stream, so each keeps its position (verified
+            # with the real command). Mapped the way an undo is, the extra
+            # audio track would read as a count that does not add up, and
+            # every audio question would be deleted.
             replace_track_rows(db, job.file_id, fresh_tracks)
 
         db.commit()
@@ -894,6 +901,39 @@ def finish_forge_job(
         logger.exception("Failed to finalise forge job %d", job_id)
     finally:
         db.close()
+
+
+def _rekey_questions_after_undo(db, file_id: int, fresh_tracks: list[dict]) -> None:
+    """
+    Move the file's Language Review questions past the AC3 an undo removed.
+
+    A job after the add writes video, then audio, then subtitles, so the
+    AC3 that was appended last ends up in front of the subtitles, and
+    removing it moves each of them down one: a subtitle's question left at
+    its old position named the next subtitle along, or nothing.
+
+    The removed track is found in the stored rows, which are what the
+    questions are numbered against, by the rule the undo itself uses
+    (resolve_forge_ac3_for_undo). Rows that do not show it are left to
+    job_stream_mapping's count check with nothing marked removed: a layout
+    that is the same either side pairs one to one, and a type whose count
+    does not add up loses its questions, which the next scan asks again,
+    as the forge leaves the stored size behind.
+    """
+    from app.core.scanner import (_track_to_dict, job_stream_mapping,
+                                  rekey_language_flags)
+    from app.database.models import MediaFile, Track
+
+    before = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == file_id)
+                             .order_by(Track.stream_index)]
+    outcome, audio_index = resolve_forge_ac3_for_undo(before)
+    audio = [t for t in before if t["track_type"] == "audio"]
+    removed = {audio[audio_index]["stream_index"]} if outcome == "found" else set()
+    media = db.get(MediaFile, file_id)
+    mapping = job_stream_mapping(before, fresh_tracks, removed,
+                                 media.path if media else str(file_id))
+    rekey_language_flags(db, file_id, mapping, set())
 
 
 def load_forge_final_state(job_id: int) -> dict | None:

@@ -66,6 +66,18 @@ another module is named:
 One more was proposed and is not counted: routing a dry run through the
 real-success branch, where the re-key lives. The pre-existing
 test_dry_run_leaves_the_file_queued_for_a_real_pass already kills it.
+
+The two revert tests for Language Review questions at the end came with the
+revert carrying them as well (scanner.rekey_language_flags, as a job does).
+Three mutants, each run against the full 2176-test suite before the tests
+existed, and all three survived it:
+
+  • _apply never re-keys the questions       → both question tests
+  • the old track list read only when there
+    are answers, this copy of that guard     → carries questions back
+  • an extracted question kept once its
+    sidecar is gone                          → the sidecar the revert
+                                               removed
 """
 import pytest
 
@@ -297,7 +309,27 @@ def reverting(tmp_path, monkeypatch):
         db.add(Track(file_id=media.id, **td))
     db.commit()
 
-    def restore(*, probe_fails=False):
+    def restore(*, probe_fails=False, questions=(), keep_answers=True):
+        """
+        questions: Language Review rows to hold before the revert, as
+        (kind, stream_index, sidecar or None), kind "audio" or "subtitle".
+        keep_answers=False clears the stored answers first, so only the
+        questions can call for the re-key.
+        """
+        from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
+
+        if not keep_answers:
+            media.audio_language_overrides = media.subtitle_overrides = None
+        for kind, si, sidecar in questions:
+            if kind == "audio":
+                db.add(AudioLanguageFlag(file_id=media.id, stream_index=si,
+                                         detected_language="und"))
+            else:
+                db.add(SubtitleLanguageFlag(file_id=media.id, stream_index=si,
+                                            detected_language="und",
+                                            extracted_path=sidecar))
+        db.commit()
+
         def fake_probe(path, ffprobe_path):
             if probe_fails:
                 raise rr.ProbeError("unreadable")
@@ -313,6 +345,7 @@ def reverting(tmp_path, monkeypatch):
         db.refresh(media)
         return media
 
+    restore.db = db
     return restore
 
 
@@ -334,3 +367,45 @@ def test_a_revert_whose_file_cannot_be_probed_forgets_the_answers(reverting):
 
     assert media.audio_language_overrides is None
     assert media.subtitle_overrides is None
+
+
+def _questions(db):
+    from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
+
+    db.expire_all()
+    return ([f.stream_index for f in db.query(AudioLanguageFlag)],
+            sorted((f.stream_index, f.extracted_path)
+                   for f in db.query(SubtitleLanguageFlag)))
+
+
+def test_a_revert_carries_questions_back_to_where_the_tracks_were(reverting):
+    """
+    The job dropped the English audio, so the undefined audio and the
+    subtitle each moved down one, and their questions with them. The revert
+    puts English back in front, and a question left at its processed
+    position named English and the undefined audio respectively. With no
+    answers stored, as the old track list used to be read only for those.
+    """
+    reverting(questions=[("audio", 1, None), ("subtitle", 2, None)],
+              keep_answers=False)
+
+    assert _questions(reverting.db) == ([2], [(3, None)]), (
+        "a question is on the track that took its processed position")
+
+
+def test_an_extracted_question_goes_once_the_revert_removes_its_sidecar(reverting,
+                                                                        tmp_path):
+    """
+    A revert re-embeds an extracted subtitle and removes its sidecar first,
+    so the subtitle is back in the file and the next scan asks about it
+    there. Its row, kept, could only report it as no longer in the file. One
+    whose sidecar the revert left, because the user had changed it, still
+    has a filename to correct and keeps its row.
+    """
+    kept = tmp_path / "Show.und.2.srt"
+    kept.write_text("edited since")
+    gone = str(tmp_path / "Show.und.srt")
+
+    reverting(questions=[("subtitle", -1, gone), ("subtitle", -2, str(kept))])
+
+    assert _questions(reverting.db) == ([], [(-2, str(kept))])

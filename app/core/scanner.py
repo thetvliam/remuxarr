@@ -1633,7 +1633,10 @@ def rekey_language_flags(
 ) -> None:
     """
     Move a file's Language Review questions to where their tracks now sit,
-    after Remuxarr rewrote it. Does not commit.
+    after Remuxarr rewrote it: a job (worker._finish_job), a revert
+    (revert_restore._apply, through the revert point's manifest) and an AC3
+    Forge undo (forge.finish_forge_job). A forge add needs none, as it
+    appends its track after every existing one. Does not commit.
 
     The rows are keyed by stream_index, a position in one probe of the file,
     and Set language stores its answer against whatever track has that
@@ -1675,7 +1678,14 @@ def rekey_language_flags(
     lowest = min([f.stream_index for f in sub_flags] + [0])
     for flag in sub_flags:
         if flag.stream_index < 0:
-            continue        # extracted by an earlier job; holds no position
+            # Extracted by an earlier job, so it holds no position. Kept
+            # while its sidecar is there; once it is gone the scan's own
+            # rule would delete the row, and until then Set language could
+            # only report it as no longer in the file. A revert removes the
+            # sidecars it re-embeds before calling this.
+            if not (flag.extracted_path and os.path.exists(flag.extracted_path)):
+                db.delete(flag)
+            continue
         if flag.stream_index in mapping:
             moves.append((flag, mapping[flag.stream_index]))
         elif (flag.stream_index in extracted and flag.extracted_path

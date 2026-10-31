@@ -13,6 +13,23 @@ Covers two pieces of behaviour that had no suite coverage:
     is still visible to the caller's OSError cleanup handler.
 
 Grown from the ad-hoc scripts used to verify those changes.
+
+The two Language Review tests after the status tests came with the undo
+moving a file's questions (forge._rekey_questions_after_undo). Three
+mutants, each run against the full 2176-test suite before they existed,
+and all three survived it:
+
+  • the undo never re-keys                 → the undo test, and the real
+                                             undo in
+                                             test_forge_keeps_tracks_current
+  • an add re-keyed the same way           → the add test
+  • the removed AC3 not given to the
+    mapping                                → the undo test, through its
+                                             audio question
+
+The add test passes on the code before the change as well, since an add
+already left the questions alone; it is there for the second mutant, the
+fix that looks complete and deletes every audio question.
 """
 import asyncio
 import os
@@ -134,6 +151,87 @@ def test_stale_five_argument_call_raises(db):
     jid = _job(db)
     with pytest.raises(TypeError):
         finish_forge_job(jid, True, "/m/some.mkv", 555, None)
+
+
+# Language Review questions are numbered by stream, so an undo that removes
+# the AC3 in front of the subtitles has to move theirs, and an add, which
+# appends, must leave every one alone. Mutation record in the module docstring.
+
+def _t(si, kind, codec, language="und", channels=None):
+    return {"stream_index": si, "track_type": kind, "codec": codec,
+            "language": language, "channels": channels,
+            "channel_layout": "5.1" if channels == 6 else None,
+            "is_default": False, "is_forced": False,
+            "is_hearing_impaired": False, "is_dub": False, "title": None}
+
+
+def _questions_job(db, *, is_undo, stored, questions):
+    """A forge job mid-run on a file with these Track rows and questions:
+    (kind, stream_index) pairs, kind "audio" or "subtitle"."""
+    from app.database.models import (Ac3ForgeJob, AudioLanguageFlag, MediaFile,
+                                      SubtitleLanguageFlag, Track)
+
+    mf = MediaFile(path="/m/Movie.mkv", filename="Movie.mkv", directory="/m",
+                   size=1, mtime=1.0)
+    db.add(mf)
+    db.flush()
+    for td in stored:
+        db.add(Track(file_id=mf.id, **td))
+    for kind, si in questions:
+        Flag = AudioLanguageFlag if kind == "audio" else SubtitleLanguageFlag
+        db.add(Flag(file_id=mf.id, stream_index=si, detected_language="und"))
+    job = Ac3ForgeJob(file_id=mf.id, status="processing", is_undo=is_undo)
+    db.add(job)
+    db.commit()
+    return job.id
+
+
+def _positions(db):
+    from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
+
+    db.expire_all()
+    return ([f.stream_index for f in db.query(AudioLanguageFlag)],
+            [f.stream_index for f in db.query(SubtitleLanguageFlag)])
+
+
+def test_an_undo_moves_the_questions_after_the_removed_ac3(db):
+    """
+    A job after the add put the AC3 in front of the subtitle, so removing it
+    moved the subtitle from 3 to 2, and its question was left at 3, where
+    nothing is. The audio question in front of the AC3 keeps its place:
+    left out of the mapping, the AC3 makes the audio count disagree and that
+    question would be deleted.
+    """
+    jid = _questions_job(
+        db, is_undo=True,
+        stored=[_t(0, "video", "h264"), _t(1, "audio", "aac", "jpn", 6),
+                _t(2, "audio", "ac3", "jpn", 6), _t(3, "subtitle", "subrip")],
+        questions=[("audio", 1), ("subtitle", 3)])
+
+    finish_forge_job(jid, True, 10, None, fresh_tracks=[
+        _t(0, "video", "h264"), _t(1, "audio", "aac", "jpn", 6),
+        _t(2, "subtitle", "subrip")])
+
+    assert _positions(db) == ([1], [2])
+
+
+def test_an_add_leaves_every_question_where_it_was(db):
+    """
+    The add appends its AC3 after every stream, so nothing moves. Treated
+    like an undo, the extra audio track reads as a count that does not add
+    up, and the audio question is deleted.
+    """
+    jid = _questions_job(
+        db, is_undo=False,
+        stored=[_t(0, "video", "h264"), _t(1, "audio", "aac", "jpn", 6),
+                _t(2, "subtitle", "subrip")],
+        questions=[("audio", 1), ("subtitle", 2)])
+
+    finish_forge_job(jid, True, 10, None, fresh_tracks=[
+        _t(0, "video", "h264"), _t(1, "audio", "aac", "jpn", 6),
+        _t(2, "subtitle", "subrip"), _t(3, "audio", "ac3", "jpn", 6)])
+
+    assert _positions(db) == ([1], [2])
 
 
 # ── _stage_parts ─────────────────────────────────────────────────────────────
