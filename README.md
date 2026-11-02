@@ -340,7 +340,11 @@ or that arrives while the job runs, is not overwritten in the first place: the
 extracted one is saved under the next free number, such as `Movie.en.2.srt`.
 The **Existing Subtitle Files** setting can make extraction replace it instead,
 which a revert cannot undo, or give the extracted subtitle the name and move
-the existing file to the next free number, where a revert leaves it.
+the existing file to the next free number, where a revert leaves it. Setting
+an extracted subtitle's language in Subtitle Language Review renames it by the
+same rule, except that a rename never replaces a file: under Replace it takes
+the next free number too, because the name can belong to another subtitle
+extracted from the same video.
 
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no

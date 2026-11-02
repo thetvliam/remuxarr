@@ -732,7 +732,11 @@ SETTINGS_SCHEMA = [
                        "back the file it replaced. With Embedded first, a "
                        "revert removes the extracted file but leaves the "
                        "earlier one under its new number; rename it back if "
-                       "you want it at its original name.",
+                       "you want it at its original name. Set language in "
+                       "Subtitle Language Review renames an extracted "
+                       "subtitle by the same rule, except that it never "
+                       "replaces a file: under Replace it takes the next "
+                       "free number, as under Keep both.",
     },
     {
         "key":     "image_subtitle_handling",

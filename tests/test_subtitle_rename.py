@@ -68,7 +68,8 @@ that one test updated to the new contract. Six mutants were run against it:
 
   • the question deleted whatever the rename did,
     as it was                                    → both new tests
-  • a refused question kept but not reported     → the taken name
+  • a refused question kept but not reported     → the sidecar that cannot
+                                                   be renamed
   • every question of the file kept once one
     is refused                                   → the one not renamed
   • a name that already carries the answer read
@@ -90,6 +91,29 @@ tests were drafted (a name without the language, a failed rename, a name
 already right) and left out: the endpoint treats every None alike and the
 helper tests above already pin each of those Nones, so no mutant was left
 for them to catch.
+
+Both were written about a taken name, and were re-aimed at a sidecar whose
+name does not hold its language when a taken name stopped refusing: a
+rename now follows Existing Subtitle Files, numbering past the name under
+Keep both and under Replace, and taking it under Embedded first, with the
+file there moved to the next free number. The three mutants above were run
+again on that code and are still killed by the re-aimed tests.
+test_an_existing_target_is_never_overwritten asserted the refusal and now
+asserts the numbered name. Eight mutants, each run against the full suite
+(2183 tests) with the three tests that pinned the refusal deselected, and
+all eight survived it:
+
+  • the setting ignored, a taken name refused
+    as it was                                    → all seven taken-name
+                                                   tests
+  • Keep both overwriting                        → the four numbering tests
+  • Replace overwriting                          → Replace numbers past
+  • Embedded first numbering instead             → the three Embedded first
+                                                   tests
+  • the setting not passed to the rename         → the same three
+  • no put-back when the rename fails            → puts the other file back
+  • the moved file's revert entry not repointed  → carries the revert entry
+  • the two repoints in the other order          → carries the revert entry
 """
 import os
 
@@ -631,15 +655,20 @@ def test_an_existing_target_is_never_overwritten(tmp_path):
     """
     Something is already called Show.en.srt — quite possibly a subtitle
     the user downloaded for exactly this language. Renaming over it would
-    destroy a file nobody asked to replace, to fix a filename.
+    destroy a file nobody asked to replace, to fix a filename. The sidecar
+    takes the next free number instead, as an extracted one does under Keep
+    both, the default of Existing Subtitle Files. This used to refuse, and
+    the sidecar kept "und".
     """
     srt = tmp_path / "Show.und.srt"
     srt.write_text("extracted")
     theirs = tmp_path / "Show.en.srt"
     theirs.write_text("downloaded by Bazarr")
 
-    assert _rename(_Flag(str(srt)), "eng") is None
-    assert srt.exists()
+    numbered = tmp_path / "Show.en.2.srt"
+    assert _rename(_Flag(str(srt)), "eng") == str(numbered)
+    assert numbered.read_text() == "extracted"
+    assert not srt.exists()
     assert theirs.read_text() == "downloaded by Bazarr"
 
 
@@ -908,13 +937,20 @@ def test_a_sidecar_that_is_gone_is_reported_not_answered(tmp_path, monkeypatch):
 # question whatever the rename returned, and reported success. Mutation
 # record in the module docstring.
 
-def _apply_lang(db, flag_ids, lang, monkeypatch):
-    """apply_language for real (not dry run), the reprocess stubbed out."""
+def _apply_lang(db, flag_ids, lang, monkeypatch, srt_mode=None):
+    """
+    apply_language for real (not dry run), the reprocess stubbed out.
+    srt_mode sets Existing Subtitle Files; None leaves it unset, so the
+    default applies.
+    """
     import app.api.routes._language_review as lr
     from app.api.routes._language_review import ApplyRequest
     from app.api.routes.subtitle_language import apply_language
 
-    monkeypatch.setattr(lr, "get_app_settings", lambda _db: {"dry_run_mode": False})
+    cfg = {"dry_run_mode": False}
+    if srt_mode is not None:
+        cfg["existing_srt_handling"] = srt_mode
+    monkeypatch.setattr(lr, "get_app_settings", lambda _db: cfg)
     monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
     return apply_language(ApplyRequest(flag_ids=flag_ids, target_language=lang), db)
 
@@ -925,29 +961,39 @@ def _left(db):
     return [f.id for f in db.query(SubtitleLanguageFlag)]
 
 
-def test_a_taken_name_keeps_the_question_and_says_so(tmp_path, monkeypatch):
+def _without_the_language(db, flag, srt):
+    """Rename the sidecar to a name the rename refuses: no language in it."""
+    renamed = srt.parent / "Show.forced.srt"
+    srt.rename(renamed)
+    flag.extracted_path = str(renamed)
+    db.commit()
+    return renamed
+
+
+def test_a_sidecar_that_cannot_be_renamed_keeps_its_question_and_says_so(
+        tmp_path, monkeypatch):
     """
-    The review's case: the English name is already taken, quite possibly by
-    a subtitle downloaded for exactly that language, so the rename is
-    refused. The question was deleted anyway and the sidecar kept "und" for
-    good, with a response saying it had been applied.
+    The name does not hold the language it was extracted under, so there is
+    nothing the rename can safely replace. The question was deleted anyway
+    and the sidecar kept its name for good, with a response saying it had
+    been applied. This was the review's case of a taken name, until a taken
+    name stopped refusing (see the Existing Subtitle Files tests below).
     """
     db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
-    theirs = tmp_path / "Show.en.forced.srt"
-    theirs.write_text("downloaded by Bazarr")
+    renamed = _without_the_language(db, flag, srt)
 
     result = _apply_lang(db, [flag.id], "eng", monkeypatch)
 
     assert _left(db) == [flag.id], "the question went although nothing was renamed"
-    assert srt.exists() and theirs.read_text() == "downloaded by Bazarr"
+    assert renamed.exists()
     assert [e["file_id"] for e in result["errors"]] == [flag.file_id]
-    assert "Show.und.forced.srt" in result["errors"][0]["error"]
+    assert "Show.forced.srt" in result["errors"][0]["error"]
 
 
 def test_only_the_question_that_was_not_renamed_stays(tmp_path, monkeypatch):
     """
-    One file, two questions: an extracted subtitle whose name is taken, and
-    an undefined subtitle still in the file. The second's answer is stored
+    One file, two questions: an extracted subtitle whose sidecar cannot be
+    renamed, and an undefined subtitle still in the file. The second's answer is stored
     against its track and needs no file, so its question goes; read as a
     refusal because it has no sidecar to rename, it would stay for ever.
     """
@@ -955,8 +1001,8 @@ def test_only_the_question_that_was_not_renamed_stays(tmp_path, monkeypatch):
                                   resolve_track_answers)
     from app.database.models import SubtitleLanguageFlag, Track
 
-    db, media, extracted, _srt = _flagged_with_sidecar(tmp_path)
-    (tmp_path / "Show.en.forced.srt").write_text("downloaded by Bazarr")
+    db, media, extracted, srt = _flagged_with_sidecar(tmp_path)
+    _without_the_language(db, extracted, srt)
     db.add(Track(file_id=media.id, stream_index=3, track_type="subtitle",
                  codec="subrip", language="und"))
     embedded = SubtitleLanguageFlag(file_id=media.id, stream_index=3,
@@ -972,3 +1018,125 @@ def test_only_the_question_that_was_not_renamed_stays(tmp_path, monkeypatch):
               db.query(Track).filter(Track.file_id == media.id)]
     assert resolve_track_answers(
         _load_track_answers(media, "subtitle_language_overrides"), tracks) == {3: "eng"}
+
+
+# ── A taken name follows Existing Subtitle Files ─────────────────────────────
+#
+# Through apply_language, so the setting is read where the endpoint reads
+# it. The sidecar is Show.und.forced.srt and its answer English, so the name
+# it wants is Show.en.forced.srt, which holds another file in each test.
+
+def _taken(tmp_path, content="downloaded by Bazarr"):
+    theirs = tmp_path / "Show.en.forced.srt"
+    theirs.write_text(content)
+    return theirs
+
+
+def test_keep_both_numbers_past_a_taken_name(tmp_path, monkeypatch):
+    db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
+    theirs = _taken(tmp_path)
+
+    result = _apply_lang(db, [flag.id], "eng", monkeypatch)
+
+    assert (tmp_path / "Show.en.forced.2.srt").read_text() == "extracted"
+    assert theirs.read_text() == "downloaded by Bazarr"
+    assert not srt.exists()
+    assert _left(db) == [] and result["errors"] == []
+
+
+def test_keep_both_takes_the_first_free_number(tmp_path, monkeypatch):
+    db, _media, flag, _srt = _flagged_with_sidecar(tmp_path)
+    _taken(tmp_path)
+    (tmp_path / "Show.en.forced.2.srt").write_text("an earlier one")
+
+    _apply_lang(db, [flag.id], "eng", monkeypatch, srt_mode="keep_both")
+
+    assert (tmp_path / "Show.en.forced.3.srt").read_text() == "extracted"
+    assert (tmp_path / "Show.en.forced.2.srt").read_text() == "an earlier one"
+
+
+def test_replace_numbers_past_too_rather_than_overwrite(tmp_path, monkeypatch):
+    """
+    The one place the setting is not followed to the letter. The name can
+    belong to another subtitle Remuxarr extracted from the same video, its
+    English track say, and replacing it would leave that track's only copy
+    outside the video gone. Extraction never meets that case, as it numbers
+    its own tracks apart, so Replace was never about it.
+    """
+    db, _media, flag, _srt = _flagged_with_sidecar(tmp_path)
+    theirs = _taken(tmp_path, "the video's own English track")
+
+    _apply_lang(db, [flag.id], "eng", monkeypatch, srt_mode="replace")
+
+    assert theirs.read_text() == "the video's own English track"
+    assert (tmp_path / "Show.en.forced.2.srt").read_text() == "extracted"
+
+
+def test_embedded_first_takes_the_name_and_moves_the_other_file(tmp_path, monkeypatch):
+    db, _media, flag, _srt = _flagged_with_sidecar(tmp_path)
+    theirs = _taken(tmp_path)
+
+    result = _apply_lang(db, [flag.id], "eng", monkeypatch, srt_mode="embedded_first")
+
+    assert theirs.read_text() == "extracted"
+    assert (tmp_path / "Show.en.forced.2.srt").read_text() == "downloaded by Bazarr"
+    assert _left(db) == [] and result["errors"] == []
+
+
+def test_embedded_first_carries_the_moved_files_revert_entry_with_it(tmp_path,
+                                                                     monkeypatch):
+    """
+    The file moved aside is the video's own English track, extracted by the
+    same job and recorded in its revert point. Its entry has to follow it to
+    .2, and the renamed sidecar's entry has to land on the name. Both are
+    found by path, so the order matters: repoint the sidecar's onto the name
+    first, and moving the name's entries to .2 takes it along.
+    """
+    import json
+
+    from app.database.models import RevertPoint
+
+    db, media, flag, srt = _flagged_with_sidecar(tmp_path)
+    theirs = _taken(tmp_path, "the video's own English track")
+    point = RevertPoint(
+        file_id=media.id, sidecar_path="/recycle/1_1.remuxarr_revert",
+        sidecar_size=1, original_path="/m/Show.mkv",
+        manifest=json.dumps({"version": 2, "streams": [], "created_files": [
+            {"path": str(theirs), "size": 1, "mtime": 1.0},
+            {"path": str(srt), "size": 2, "mtime": 2.0},
+        ]}))
+    db.add(point)
+    db.commit()
+
+    _apply_lang(db, [flag.id], "eng", monkeypatch, srt_mode="embedded_first")
+
+    db.refresh(point)
+    entries = {e["size"]: e["path"] for e in json.loads(point.manifest)["created_files"]}
+    assert entries == {1: str(tmp_path / "Show.en.forced.2.srt"),
+                       2: str(theirs)}
+
+
+def test_embedded_first_puts_the_other_file_back_if_the_rename_fails(tmp_path,
+                                                                     monkeypatch):
+    import app.api.routes._language_review as mod
+
+    db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
+    theirs = _taken(tmp_path)
+    real_rename = os.rename
+    calls = []
+
+    def second_fails(src, dst):
+        calls.append((src, dst))
+        if len(calls) == 2:
+            raise OSError("read-only file system")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(mod.os, "rename", second_fails)
+
+    result = _apply_lang(db, [flag.id], "eng", monkeypatch, srt_mode="embedded_first")
+
+    assert len(calls) == 3, "the move aside was not put back"
+    assert theirs.read_text() == "downloaded by Bazarr"
+    assert srt.read_text() == "extracted"
+    assert not (tmp_path / "Show.en.forced.2.srt").exists()
+    assert _left(db) == [flag.id] and len(result["errors"]) == 1
