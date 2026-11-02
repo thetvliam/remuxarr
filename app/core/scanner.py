@@ -19,6 +19,7 @@ For each media file found on disk:
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from app.core.timeutil import utcnow
@@ -1623,6 +1624,30 @@ def rekey_media_answers(
             continue
         carried = rekey_track_answers(stored, before, after, mapping)
         setattr(media, attr, json.dumps(carried) if carried else None)
+
+
+def next_free_srt_name(path: str, avoid: set[str] = frozenset()) -> str:
+    """
+    The first numbered name beside a subtitle file that nothing holds:
+    Movie.en.srt gives Movie.en.2.srt, or .3 and on when that is taken.
+
+    A number the name already ends in is dropped first, so Movie.en.2.srt
+    gives Movie.en.3.srt rather than Movie.en.2.2.srt. `avoid` holds
+    casefolded names that count as taken although nothing is on disk yet,
+    such as the ones a job is about to write.
+
+    Taken out of worker._move_aside, which uses it for embedded_first, so
+    that renaming a sidecar in Language Review numbers past a taken name by
+    the same rule rather than by a copy of it.
+    """
+    stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
+                  if path.lower().endswith(".srt") else os.path.splitext(path)[0])
+    n = 2
+    while True:
+        candidate = f"{stem}.{n}.srt"
+        if candidate.casefold() not in avoid and not os.path.exists(candidate):
+            return candidate
+        n += 1
 
 
 def rekey_language_flags(

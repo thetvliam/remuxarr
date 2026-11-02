@@ -14,7 +14,6 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
@@ -33,7 +32,7 @@ from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1906,7 +1905,8 @@ def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
     Movie.en.srt goes to Movie.en.2.srt, or the first number after that
     which is neither on disk nor in `avoid` (casefolded), which holds every
     name this job is about to write: a job extracting two English tracks
-    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3.
+    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3. The
+    name is scanner.next_free_srt_name's.
 
     Returns (old, new) for each file moved. A path holding nothing is
     skipped. If a move fails, the ones already made are put back before the
@@ -1917,14 +1917,7 @@ def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
         for path in paths:
             if not os.path.exists(path):
                 continue
-            stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
-                          if path.lower().endswith(".srt") else os.path.splitext(path)[0])
-            n = 2
-            while True:
-                candidate = f"{stem}.{n}.srt"
-                if candidate.casefold() not in avoid and not os.path.exists(candidate):
-                    break
-                n += 1
+            candidate = next_free_srt_name(path, avoid)
             os.rename(path, candidate)
             moved.append((path, candidate))
     except OSError:
