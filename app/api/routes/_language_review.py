@@ -114,7 +114,14 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     """
     Rename a flagged track's extracted .srt to carry the chosen language.
 
-    Returns the new path when a file was renamed, or None.
+    Returns the sidecar's path once its name carries the language: the new
+    path after a rename, or the unchanged one when the name already did.
+    None means it does not: there is no sidecar, its name does not hold the
+    language it was extracted under, the new name is taken, or the rename
+    failed. Each of those is logged here. The caller keeps the question
+    for a None, because the filename is the only thing left that can carry
+    the answer; it used to treat a None like a rename and delete it, so the
+    sidecar kept "und" with nothing offering to correct it.
 
     Only ever acts on the path recorded when the file was extracted. The
     name cannot be reconstructed at this point: extraction removes the
@@ -170,7 +177,7 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     parts[index] = lang_tag
     new_path = os.path.join(directory, ".".join(parts))
     if new_path == old_path:
-        return None
+        return old_path
 
     if os.path.exists(new_path):
         # Something is already there. Overwriting it would destroy a
@@ -586,14 +593,20 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # file keeps "und" in its name permanently, which is what
                 # Plex reads. Renaming here is the only point at which the
                 # correction can reach it.
+                #
+                # An extracted track whose sidecar did not end up carrying the
+                # language keeps its question: the name taken, a name without
+                # the language in it, or a rename that failed. Deleted, as it
+                # was whatever the rename did, the sidecar kept its old name
+                # and the response reported success. The helper logs why; the
+                # file is reported among the errors, which the Review page
+                # counts. An answer for a track still in the file is stored
+                # above and needs no file, so its question goes regardless.
+                not_renamed = []
                 for flag in flags:
-                    # The return value is deliberately discarded. It used to
-                    # be collected into results["renamed"], which nothing has
-                    # ever read — not the two callers, not the frontend, not
-                    # a test, and no endpoint description mentions it. The
-                    # helper logs every outcome itself: the rename, the
-                    # collision it declined, and the OSError it swallowed.
-                    _rename_extracted_subtitle(flag, lang, db)
+                    settled = _rename_extracted_subtitle(flag, lang, db)
+                    if flag in extracted and settled is None:
+                        not_renamed.append(flag)
 
                 # The questions have been answered, so stop asking them. Left
                 # in place the rows would survive every later scan — rows
@@ -601,8 +614,21 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # because the track itself is gone from the file and only the
                 # filename is still correctable.
                 for flag in flags:
-                    db.delete(flag)
+                    if flag not in not_renamed:
+                        db.delete(flag)
                 db.commit()
+                if not_renamed:
+                    names = ", ".join(os.path.basename(f.extracted_path)
+                                      for f in not_renamed)
+                    results["errors"].append({
+                        "file_id": file_id,
+                        "error": (
+                            f"{names} could not be renamed to carry "
+                            f"{lang} (see the log for why), so "
+                            f"{'it is' if len(not_renamed) == 1 else 'they are'} "
+                            f"still asked about in Review"
+                        ),
+                    })
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the

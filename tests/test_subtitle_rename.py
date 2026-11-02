@@ -57,6 +57,39 @@ observably identical: os.rename raises FileNotFoundError and the same
 handler catches it. The check earns its place by keeping an ordinary
 event quiet — a user deleting an extracted subtitle should not produce a
 warning — and that is what the test asserts.
+
+The two tests at the end came with apply_language keeping a question whose
+sidecar was not renamed, where it used to delete it whatever the rename
+did. The helper now returns the unchanged path for a name that already
+carries the answer, so None means a refusal and nothing else, and
+test_choosing_the_language_it_already_has_is_a_no_op asserts that path
+instead of None. The baseline was the suite as it stood (2181 tests) with
+that one test updated to the new contract. Six mutants were run against it:
+
+  • the question deleted whatever the rename did,
+    as it was                                    → both new tests
+  • a refused question kept but not reported     → the taken name
+  • every question of the file kept once one
+    is refused                                   → the one not renamed
+  • a name that already carries the answer read
+    as a refusal                                 → already killed by the
+                                                   updated no-op test
+  • questions for tracks still in the file kept
+    because they have no sidecar                 → already killed by 25
+                                                   tests across five
+                                                   modules
+  • a path equal to the recorded one read as a
+    refusal                                      → already killed by
+                                                   test_a_real_apply_still_
+                                                   renames_and_clears_the_row,
+                                                   as a rename updates the
+                                                   recorded path
+
+The last three are recorded rather than claimed. Three further endpoint
+tests were drafted (a name without the language, a failed rename, a name
+already right) and left out: the endpoint treats every None alike and the
+helper tests above already pin each of those Nones, so no mutant was left
+for them to catch.
 """
 import os
 
@@ -611,10 +644,16 @@ def test_an_existing_target_is_never_overwritten(tmp_path):
 
 
 def test_choosing_the_language_it_already_has_is_a_no_op(tmp_path):
+    """
+    Nothing to rename, and nothing wrong either: the name already carries
+    the answer, so the path comes back unchanged. This returned None, the
+    value every refusal returns, which left the caller unable to tell a
+    settled sidecar from one it could not rename.
+    """
     srt = tmp_path / "Show.und.srt"
     srt.write_text("subtitle text")
 
-    assert _rename(_Flag(str(srt)), "und") is None
+    assert _rename(_Flag(str(srt)), "und") == str(srt)
     assert srt.exists()
 
 
@@ -860,3 +899,76 @@ def test_a_sidecar_that_is_gone_is_reported_not_answered(tmp_path, monkeypatch):
     assert result["applied"] == 0
     assert [e["file_id"] for e in result["errors"]] == [1]
     assert db.query(SubtitleLanguageFlag).count() == 1
+
+
+# ── A rename that does not happen keeps the question ────────────────────────
+#
+# The answer to an extracted subtitle is its filename, so a sidecar left
+# with its old name has not been answered. apply_language deleted the
+# question whatever the rename returned, and reported success. Mutation
+# record in the module docstring.
+
+def _apply_lang(db, flag_ids, lang, monkeypatch):
+    """apply_language for real (not dry run), the reprocess stubbed out."""
+    import app.api.routes._language_review as lr
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.subtitle_language import apply_language
+
+    monkeypatch.setattr(lr, "get_app_settings", lambda _db: {"dry_run_mode": False})
+    monkeypatch.setattr(lr, "_process_file", lambda *a, **k: None)
+    return apply_language(ApplyRequest(flag_ids=flag_ids, target_language=lang), db)
+
+
+def _left(db):
+    from app.database.models import SubtitleLanguageFlag
+    db.expire_all()
+    return [f.id for f in db.query(SubtitleLanguageFlag)]
+
+
+def test_a_taken_name_keeps_the_question_and_says_so(tmp_path, monkeypatch):
+    """
+    The review's case: the English name is already taken, quite possibly by
+    a subtitle downloaded for exactly that language, so the rename is
+    refused. The question was deleted anyway and the sidecar kept "und" for
+    good, with a response saying it had been applied.
+    """
+    db, _media, flag, srt = _flagged_with_sidecar(tmp_path)
+    theirs = tmp_path / "Show.en.forced.srt"
+    theirs.write_text("downloaded by Bazarr")
+
+    result = _apply_lang(db, [flag.id], "eng", monkeypatch)
+
+    assert _left(db) == [flag.id], "the question went although nothing was renamed"
+    assert srt.exists() and theirs.read_text() == "downloaded by Bazarr"
+    assert [e["file_id"] for e in result["errors"]] == [flag.file_id]
+    assert "Show.und.forced.srt" in result["errors"][0]["error"]
+
+
+def test_only_the_question_that_was_not_renamed_stays(tmp_path, monkeypatch):
+    """
+    One file, two questions: an extracted subtitle whose name is taken, and
+    an undefined subtitle still in the file. The second's answer is stored
+    against its track and needs no file, so its question goes; read as a
+    refusal because it has no sidecar to rename, it would stay for ever.
+    """
+    from app.core.scanner import (_load_track_answers, _track_to_dict,
+                                  resolve_track_answers)
+    from app.database.models import SubtitleLanguageFlag, Track
+
+    db, media, extracted, _srt = _flagged_with_sidecar(tmp_path)
+    (tmp_path / "Show.en.forced.srt").write_text("downloaded by Bazarr")
+    db.add(Track(file_id=media.id, stream_index=3, track_type="subtitle",
+                 codec="subrip", language="und"))
+    embedded = SubtitleLanguageFlag(file_id=media.id, stream_index=3,
+                                    detected_language="und")
+    db.add(embedded)
+    db.commit()
+
+    _apply_lang(db, [extracted.id, embedded.id], "eng", monkeypatch)
+
+    assert _left(db) == [extracted.id]
+    db.refresh(media)
+    tracks = [_track_to_dict(t) for t in
+              db.query(Track).filter(Track.file_id == media.id)]
+    assert resolve_track_answers(
+        _load_track_answers(media, "subtitle_language_overrides"), tracks) == {3: "eng"}
