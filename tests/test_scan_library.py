@@ -174,7 +174,8 @@ def _record_processed(monkeypatch):
     calls: list[dict] = []
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
-             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False,
+             original_language=None):
         calls.append({"path": path, "force_probe": force_probe,
                       "dry_run": dry_run, "recheck": recheck})
 
@@ -462,7 +463,8 @@ def test_one_file_that_raises_does_not_end_the_scan(db, tmp_path,
     seen: list[str] = []
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
-             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False,
+             original_language=None):
         seen.append(path)
         if os.path.basename(path) == "B.mkv":
             raise OSError("unreadable")
@@ -492,7 +494,8 @@ def _recording_fake(monkeypatch, first_file):
     seen: list[str] = []
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
-             sonarr_series_id=None, radarr_movie_id=None, recheck=False):
+             sonarr_series_id=None, radarr_movie_id=None, recheck=False,
+             original_language=None):
         seen.append(path)
         if len(seen) == 1:
             first_file(db, path)

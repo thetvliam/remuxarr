@@ -325,6 +325,7 @@ def clear_database(db: Session = Depends(get_db)):
 
 KNOWN_KEYS = {
     "keep_audio_languages",
+    "original_language_audio",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
     "keep_undefined_subtitles",
@@ -644,6 +645,33 @@ SETTINGS_SCHEMA = [
                        "when no preferred-language track exists — prevents "
                        "accidentally removing the only audio from a file. Has "
                        "no effect when a preferred-language track is present.",
+    },
+    {
+        "key":     "original_language_audio",
+        "group":   "Audio",
+        "label":   "Original Language Audio",
+        "type":    "select",
+        "options": [
+            {"value": "off", "label": "Off"},
+            {"value": "keep_both",
+             "label": "Keep both (the original language and Keep Audio Languages)"},
+            {"value": "original_only",
+             "label": "Keep original only (when the file has a track in it)"},
+        ],
+        "description": "Keep the audio in the language the film or series "
+                       "was made in, as Sonarr or Radarr records it, even when "
+                       "it is not in Keep Audio Languages. Keep both keeps it "
+                       "as well as those languages, and a default-flagged dub "
+                       "is then not kept just because none of them is there. "
+                       "Keep original only keeps just the original language "
+                       "when the file has a track in it, and Keep Audio "
+                       "Languages otherwise. Needs the Sonarr or Radarr "
+                       "integration: an import brings the original language "
+                       "with it, and Re-check Scanned Files or Force Full "
+                       "Rescan looks it up for files already in your library. "
+                       "Routine scans do not ask, and a file whose original "
+                       "language is not known keeps what Keep Audio Languages "
+                       "keeps.",
     },
     {
         "key":         "und_audio_threshold",
@@ -1241,6 +1269,7 @@ APPLIES_ON_RESCAN = {
     "undefined_language_mode_audio",
     "keep_audio_languages",
     "keep_default_audio",
+    "original_language_audio",
     "und_audio_threshold",
     "keep_subtitle_languages",
     "keep_forced_subtitles",

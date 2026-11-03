@@ -848,6 +848,32 @@ def analyze_file(
     kept_audio: list[dict] = []
     order = 0
 
+    # Original Language Audio. The languages this file keeps, worked out once
+    # here because three things below read the keep list, the "has preferred
+    # audio" check, the no-silent-output fallback and the keep rule itself,
+    # and the comment at the fallback records what letting two of them drift
+    # apart cost. Off, or with no original language known (no Sonarr or
+    # Radarr match, or one naming none), it is Keep Audio Languages, exactly.
+    #
+    # keep_both adds the original language. That makes it preferred as well,
+    # so a default-flagged dub is not kept by keep_default_audio merely
+    # because no Keep Audio Languages track is present: a French original
+    # with a default German dub and English in the list keeps the French
+    # only. original_only replaces the list with the original language, but
+    # only when a track in it exists; otherwise the list applies, so a file
+    # whose only audio is a dub still keeps what it would have kept.
+    #
+    # Compared against the tracks' own tags, as the keep list always is;
+    # Language Review answers are applied further down, as retags.
+    file_keep_audio_langs = keep_audio_langs
+    original_language = canonical(file_info.get("original_language")) or None
+    original_mode = settings.get("original_language_audio", "off")
+    if original_language and original_mode == "keep_both":
+        file_keep_audio_langs = keep_audio_langs | {original_language}
+    elif (original_language and original_mode == "original_only"
+            and any((t["language"] or "und") == original_language for t in audio_tracks)):
+        file_keep_audio_langs = {original_language}
+
     # Pre-check: is there at least one audio track in the preferred language
     # list?  The keep_default_audio guard below uses this to limit its scope —
     # it should only fire as a safety net when NO preferred-language track
@@ -862,7 +888,7 @@ def analyze_file(
     # undefined or non-preferred language — not to override the language filter
     # when a preferred track is available.
     has_preferred_audio = any(
-        (t["language"] or "und") in keep_audio_langs
+        (t["language"] or "und") in file_keep_audio_langs
         for t in audio_tracks
     )
 
@@ -907,7 +933,7 @@ def analyze_file(
     # Keeping the two expressions in step is what makes the invariant hold,
     # so any future change to should_keep's terms belongs here too.
     survives_without_fallback = any(
-        (t["language"] or "und") in keep_audio_langs
+        (t["language"] or "und") in file_keep_audio_langs
         or (t["language"] or "und") == "und"
         or (keep_default_audio and t.get("is_default") and not has_preferred_audio)
         for t in audio_tracks
@@ -942,7 +968,7 @@ def analyze_file(
         codec    = (track["codec"] or "").lower()
 
         should_keep = (
-            lang in keep_audio_langs
+            lang in file_keep_audio_langs
             # Undefined-language audio is ALWAYS kept — deliberately
             # asymmetric with subtitles, where _sub_is_kept (above) has no
             # equivalent branch and an "und" subtitle only survives by

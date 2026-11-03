@@ -207,7 +207,8 @@ def test_the_decision_input_lists_the_folder(tmp_path):
     (tmp_path / "Movie.en.srt").write_text("bazarr")
     media = SimpleNamespace(path=str(tmp_path / "Movie.mkv"), container="mkv",
                             video_codec="h264", font_attachments=0,
-                            und_audio_threshold_acknowledged=False)
+                            und_audio_threshold_acknowledged=False,
+                            original_language=None)
 
     assert sorted(_file_info_for(media)["folder_entries"]) == [
         str(tmp_path / "Movie.en.srt"), str(tmp_path / "Movie.mkv")]

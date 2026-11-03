@@ -36,6 +36,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
+    # Off: a file keeps exactly the audio it kept before the setting existed.
+    # "keep_both" and "original_only" read MediaFile.original_language
+    # (decision.analyze_file).
+    "original_language_audio": "off",
     # Remux to MP4 when all tracks are container-compatible
     "prefer_mp4_container": True,
     # Global dry-run toggle — no files are modified when True. Defaults to

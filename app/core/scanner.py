@@ -22,6 +22,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from app.core.arr_lookup import original_languages
 from app.core.timeutil import utcnow
 
 from sqlalchemy.exc import InvalidRequestError
@@ -167,6 +168,17 @@ def scan_library(
     scan_label = "full" if force_probe else ("re-check" if recheck else "delta")
     rules    = ExcludeRules.from_settings(app_cfg, paths)
 
+    # Original Language Audio's lookup. Only for a re-check or a full rescan,
+    # the two scans that decide files already seen, and only while the
+    # setting is on: a routine scan sees new and changed files, which an
+    # import's webhook has usually told about already, and asking each
+    # service for its whole library on every scheduled scan was the cost
+    # chosen against. One request per service per scan, before the walk.
+    original_language_for = None
+    if ((force_probe or recheck)
+            and app_cfg.get("original_language_audio", "off") != "off"):
+        original_language_for = original_languages(app_cfg)
+
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))
 
     # Pre-count total media files across all paths so the progress callback
@@ -214,7 +226,9 @@ def scan_library(
 
                 try:
                     _process_file(db, full_path, app_cfg, force_probe, dry_run, stats,
-                                  recheck=recheck)
+                                  recheck=recheck,
+                                  original_language=(original_language_for(full_path)
+                                                     if original_language_for else None))
                 except Exception:
                     logger.exception("Unexpected error processing %s", full_path)
                     stats.errors += 1
@@ -1901,6 +1915,7 @@ def _file_info_for(media_file: MediaFile) -> dict:
     """
     return {
         "path":             media_file.path,
+        "original_language": media_file.original_language,
         "container":        media_file.container,
         "video_codec":      media_file.video_codec,
         "font_attachments": media_file.font_attachments,
