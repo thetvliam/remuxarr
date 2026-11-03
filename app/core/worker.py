@@ -19,7 +19,7 @@ from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
-from app.core.arr_lookup import find_arr_id
+from app.core.arr_lookup import arr_connection, find_arr_id
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
@@ -30,7 +30,6 @@ from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
-from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
@@ -2495,45 +2494,10 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
     """
     if not entity_id:
         return None
-    connection = _arr_connection(cfg, service, local_path, context)
+    connection = arr_connection(cfg, service, local_path, context)
     if connection is None:
         return None
     return {"entity_id": entity_id, **connection}
-
-
-def _arr_connection(cfg: dict, service: str, local_path: str | None,
-                    context: str) -> dict | None:
-    """
-    The url, key and translated path for talking to Sonarr or Radarr about a
-    file, or None when the service is off or its url or key is missing.
-    _arr_notify_target adds the ID; _arr_lookup_candidates uses it to find
-    one.
-    """
-    name = "Sonarr" if service == "sonarr" else "Radarr"
-    if not cfg.get(f"{service}_enabled", False):
-        return None
-    url     = (cfg.get(f"{service}_url") or "").rstrip("/")
-    api_key = (cfg.get(f"{service}_api_key") or "")
-    if not url or not api_key:
-        logger.warning(
-            "%s notification skipped for %s: %s_url or %s_api_key not configured",
-            name, context, service, service,
-        )
-        return None
-    # The *arr reports its own view of the path, which is not Remuxarr's
-    # when the two containers mount the library differently. Sent already
-    # translated so the restore can compare against what the service will
-    # report, using the same prefixes the webhook uses in the opposite
-    # direction.
-    return {
-        "url":         url,
-        "api_key":     api_key,
-        "output_path": translate_path(
-            local_path or "",
-            cfg.get(f"{service}_path_prefix_local", "") or "",
-            cfg.get(f"{service}_path_prefix_remote", "") or "",
-        ) or None,
-    }
 
 
 def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
@@ -2547,14 +2511,14 @@ def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
     never announced to Sonarr or Radarr at all. A file that carries one
     service's ID belongs to that service and asks nobody. Sonarr comes
     first; Radarr is asked only when Sonarr has no match (_find_then_notify).
-    Each entry is _arr_connection's, with the service named, so the path is
+    Each entry is arr_connection's, with the service named, so the path is
     already in that service's terms.
     """
     if sonarr_id or radarr_id or not local_path:
         return []
     candidates = []
     for service in ("sonarr", "radarr"):
-        connection = _arr_connection(cfg, service, local_path, context)
+        connection = arr_connection(cfg, service, local_path, context)
         if connection is not None:
             candidates.append({"service": service, **connection})
     return candidates
