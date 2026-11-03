@@ -448,12 +448,28 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     manual_review has the exact same character and needs the same
     treatment.
 
+    The rows' PlannedActions go first, by hand. A bulk delete bypasses the
+    ORM cascade, and SQLite's foreign_keys PRAGMA is off, so the schema's
+    ondelete=CASCADE does nothing either. Skipped and review rows do carry
+    actions: the worker's pickup moves a pending job to either status
+    without removing its plan. Left behind, the actions were picked up by
+    the next queue item SQLite gave the same id, which is the one this scan
+    creates next whenever the deleted row was the newest, and showed in its
+    plan beside its own.
+
     Deliberately does NOT apply to completed/failed/cancelled/dry_run —
     those represent real, historical events that actually happened and
     should stay in history regardless of the file's current state; only
     "skipped" and "manual_review" can have their entire claim become
     false out from under them like this.
     """
+    stale = db.query(QueueItem.id).filter(
+        QueueItem.file_id == file_id,
+        QueueItem.status.in_(statuses),
+    )
+    db.query(PlannedAction).filter(
+        PlannedAction.queue_item_id.in_(stale)
+    ).delete(synchronize_session=False)
     db.query(QueueItem).filter(
         QueueItem.file_id == file_id,
         QueueItem.status.in_(statuses),
@@ -483,13 +499,12 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     NOT routed through _clear_stale_status_records for two load-bearing
     reasons:
 
-    1. Cascade safety — that helper uses a bulk delete, which bypasses
-       ORM relationship cascades, and this codebase does not enable
-       SQLite's foreign_keys PRAGMA, so the schema-level
-       ondelete=CASCADE is inert too. Harmless there (skipped /
-       manual_review items never have PlannedActions); here it would
-       orphan the pending item's planned_actions rows forever. Children
-       are deleted explicitly instead.
+    1. Cascade safety — a bulk delete bypasses ORM relationship
+       cascades, and this codebase does not enable SQLite's foreign_keys
+       PRAGMA, so the schema-level ondelete=CASCADE is inert too. Both
+       functions delete the children by hand for that reason; this one
+       has to tie that to the guarded delete below, which the helper's
+       unguarded one does not need.
 
     2. Claim race — the worker can claim a pending item (flipping it to
        "processing") between this function's SELECT and its DELETE.
