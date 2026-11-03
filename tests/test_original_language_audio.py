@@ -58,6 +58,18 @@ it; the tests here catch it as well.
                 the answer not handed to _process_file   → re-check, full,
                                                            e2e both modes
 
+The reason a drop gives, added after a report that Keep original only
+dropped English as "not in keep list" with English in the list: 4 applied,
+3 killed, all four surviving the suite before these tests.
+
+  the reason    every original_only drop named original  → other languages
+                checked against the file's own keep set  → names itself
+                the track's language shown as original   → names itself
+                the mode check removed                   survives: equivalent,
+                                                           as no other mode
+                                                           drops a listed
+                                                           language
+
 The no-original-track test first had English ahead of German, and the
 mutant that applied original_only without the track survived it: the keep
 list emptied, and the fallback kept English anyway. German now comes first.
@@ -147,6 +159,44 @@ def test_original_only_with_no_original_track_keeps_audio_languages():
               make_track(2, "audio", codec="aac", language="eng")]
 
     assert _dropped(analyze_file(_film(), tracks, _mode("original_only"))) == [1]
+
+
+# ── The reason a drop gives ──────────────────────────────────────────────────
+
+def _miraculous():
+    """The layout of the report that showed the wrong reason: English, the
+    French original and a German dub, with English in Keep Audio Languages."""
+    return [make_track(0, "video", codec="h264"),
+            make_track(1, "audio", codec="eac3", language="eng"),
+            make_track(2, "audio", codec="eac3", language="fre"),
+            make_track(3, "audio", codec="eac3", language="ger")]
+
+
+def _reasons(decision):
+    return {a.stream_index: a.description.split(" — ", 1)[1] for a in decision.actions
+            if a.track_type == "audio" and a.action_type == "drop_track"}
+
+
+def test_original_only_names_itself_for_a_language_in_the_list():
+    """English is in Keep Audio Languages, so "not in keep list" pointed at
+    a setting that already listed it."""
+    reasons = _reasons(analyze_file(_film(), _miraculous(), _mode("original_only")))
+
+    assert reasons[1] == ("not the original language [fre] "
+                          "(Original Language Audio: Keep original only)")
+
+
+def test_original_only_still_says_not_in_keep_list_for_other_languages():
+    """German is in neither list, so the old reason is still the true one."""
+    reasons = _reasons(analyze_file(_film(), _miraculous(), _mode("original_only")))
+
+    assert reasons[3] == "not in keep list"
+
+
+def test_off_gives_the_reason_it_always_gave():
+    reasons = _reasons(analyze_file(_film(), _miraculous(), _mode("off")))
+
+    assert reasons == {2: "not in keep list", 3: "not in keep list"}
 
 
 def test_no_original_language_known_is_off():

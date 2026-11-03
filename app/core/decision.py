@@ -994,12 +994,26 @@ def analyze_file(
         )
 
         if not should_keep:
+            # Keep original only narrows this file's keep set to the original
+            # language, so a track can be dropped while its language is in
+            # Keep Audio Languages. "Not in keep list" would then send the
+            # user to a setting that already lists it; name the one that
+            # dropped it instead. Any other drop is outside both lists. The
+            # mode check is implied today, since no other mode drops a listed
+            # language; it stays so that one which narrows the set later
+            # does not borrow this wording.
+            why = (
+                f"not the original language [{original_language}] "
+                "(Original Language Audio: Keep original only)"
+                if original_mode == "original_only" and lang in keep_audio_langs
+                else "not in keep list"
+            )
             actions.append(Action(
                 action_type="drop_track",
                 description=(
                     f"Drop audio [{lang}] {codec} "
                     f"{track.get('channel_layout', '')} "
-                    f"(stream {track['stream_index']}) — not in keep list"
+                    f"(stream {track['stream_index']}) — {why}"
                 ),
                 track_type="audio",
                 stream_index=track["stream_index"],
