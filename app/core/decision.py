@@ -1404,7 +1404,15 @@ def analyze_file(
                                 file_info.get("path", ""), used_srt_paths,
                             )
                         else:
-                            actions[i] = dc_replace(action, target_language=lang_value)
+                            # Named in the plan, as the two-letter pass names
+                            # its code: the line still shows the [und] the
+                            # track has now, and the reason only says a tag
+                            # is fixed, so nothing said what it becomes.
+                            actions[i] = dc_replace(
+                                action, target_language=lang_value,
+                                description=(f"{action.description} — "
+                                             f"language tag set to {lang_value}"),
+                            )
                         has_language_fix = True
                         und_fixed_indices.add(action.stream_index)
                     else:   # always_ask — flag for review, don't touch the track
