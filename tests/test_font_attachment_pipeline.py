@@ -43,6 +43,9 @@ they reach the probe and it fails. The other twelve survived:
                    the pickup probe never running                   killed
                    the pickup probe's answer not stored             killed
                    the pickup probe running when already stored     killed
+                     (pickup now probes every job once, to check the
+                     record; that test pins one probe and the stored
+                     count kept instead)
                    a pickup probe failure recorded as no fonts      killed
                    the post-job refresh not storing it              killed
                    a revert not storing it                          killed
@@ -213,12 +216,17 @@ def _pending_job(factory, path, font_attachments):
                           font_attachments=font_attachments)
         db.add(media)
         db.flush()
-        for index, kind, codec in [(0, "video", "hevc"), (1, "audio", "aac"),
-                                   (2, "subtitle", "ass")]:
+        # As _probe describes the file. The worker checks the record against
+        # a probe at pickup and decides again when they differ, which these
+        # tests are not about.
+        for index, kind, codec, extra in [
+                (0, "video", "hevc", {}),
+                (1, "audio", "aac", {"channels": 2}),
+                (2, "subtitle", "ass", {"title": "Signs and Songs"})]:
             db.add(Track(file_id=media.id, stream_index=index,
                          track_type=kind, codec=codec,
                          language="und" if kind == "video" else "eng",
-                         is_default=(index == 1)))
+                         is_default=(index == 1), **extra))
         job = QueueItem(file_id=media.id, status="pending")
         db.add(job)
         db.commit()
@@ -246,22 +254,27 @@ def test_a_row_never_counted_is_counted_at_pickup(factory, monkeypatch, episode)
         assert db.get(MediaFile, media_id).font_attachments == 2
 
 
-def test_a_stored_count_is_not_probed_again(factory, monkeypatch, episode):
+def test_a_stored_count_is_not_probed_or_counted_again(factory, monkeypatch, episode):
     """
-    Closes: the pickup probe running on every job.
+    Closes: a second ffprobe for the count, and a stored count overwritten.
 
-    It exists for rows that were never counted. Running it for a row that
-    already has an answer, including 0, is an ffprobe per job for a
-    number already in hand.
+    This once pinned that pickup does not probe at all for a row already
+    counted. Pickup now probes every job once, to check the stored tracks
+    against the file (worker._load_job_data), and the count comes from that
+    same probe. What is still pinned is that the count costs no probe of
+    its own and that a stored answer, including 0, stands: the probe here
+    finds two fonts, and the row keeps its 0.
     """
     probed = []
     monkeypatch.setattr(worker, "probe_file",
-                        lambda path, *_a, **_kw: probed.append(path) or _probe(0))
-    _, job_id = _pending_job(factory, episode, font_attachments=0)
+                        lambda path, *_a, **_kw: probed.append(path) or _probe(fonts=2))
+    media_id, job_id = _pending_job(factory, episode, font_attachments=0)
 
     worker._load_job_data(job_id)
 
-    assert probed == []
+    assert probed == [episode]
+    with factory() as db:
+        assert db.get(MediaFile, media_id).font_attachments == 0
 
 
 def test_a_failed_count_is_left_to_try_again(factory, monkeypatch, episode):
