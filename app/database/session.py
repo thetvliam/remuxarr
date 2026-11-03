@@ -788,6 +788,11 @@ def _migrate_schema() -> None:
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
         ("subtitle_language_flags", "extracted_path",
          "ALTER TABLE subtitle_language_flags ADD COLUMN extracted_path TEXT"),
+        # No DEFAULT: null is "not told", which is what every existing row is.
+        ("media_files", "original_language",
+         "ALTER TABLE media_files ADD COLUMN original_language TEXT"),
+        ("webhook_intake", "original_language",
+         "ALTER TABLE webhook_intake ADD COLUMN original_language TEXT"),
     ]
 
     inspector = inspect(engine)

@@ -53,7 +53,8 @@ def queued(monkeypatch):
     monkeypatch.setattr(app_settings, "WEBHOOK_DEBOUNCE_SECONDS", 0.01)
     monkeypatch.setattr(
         webhooks, "_queue_sync",
-        lambda path, series_id=None, radarr_movie_id=None, intake_id=None:
+        lambda path, series_id=None, radarr_movie_id=None, intake_id=None,
+               original_language=None:
             calls.append(path),
     )
     # The intake record is written on arrival through the module's own

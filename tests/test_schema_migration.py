@@ -1226,3 +1226,62 @@ def test_the_re_keying_does_not_repeat_on_later_startups(indexed_answers,
 
     assert not [r for r in caplog.records
                 if "track answer" in r.getMessage()]
+
+
+# ── original_language ────────────────────────────────────────────────────────
+
+@pytest.fixture
+def untold(tmp_path, monkeypatch):
+    """
+    media_files and webhook_intake as they were before original_language,
+    one row in each, built from the models with the column dropped as
+    uncounted does above.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    for table in ("media_files", "webhook_intake"):
+        Base.metadata.tables[table].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    for table in ("media_files", "webhook_intake"):
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN original_language")
+    conn.execute(
+        "INSERT INTO media_files (path, filename, directory, size, mtime, status) "
+        "VALUES ('/m/Show.mkv', 'Show.mkv', '/m', 1, 1.0, 'processed')"
+    )
+    conn.execute("INSERT INTO webhook_intake (path, sonarr_series_id) VALUES ('/m/Show.mkv', 7)")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    yield path
+
+    _restore_the_engine(session_mod)
+
+
+def test_both_tables_gain_original_language_and_their_rows_know_none(untold):
+    """
+    Null is "not told", which is the truth about every file and pending
+    import already there. A webhook or a re-check fills it in; until then
+    the setting that reads it treats the file as it always did.
+    """
+    conn = sqlite3.connect(untold)
+    try:
+        values = {table: conn.execute(f"SELECT original_language FROM {table}").fetchall()
+                  for table in ("media_files", "webhook_intake")}
+    finally:
+        conn.close()
+
+    assert values == {"media_files": [(None,)], "webhook_intake": [(None,)]}
+
+
+# Verified by mutation, 2 applied 2 killed, both surviving the full
+# 2203-test suite first. Each upgrade step pointed at another column name:
+# webhook_intake's fails the assertion above; media_files' fails start-up
+# itself, as a later step of init_db reads the column and finds it missing,
+# so an existing install would not have started.

@@ -133,6 +133,13 @@ class MediaFile(Base):
     # is running for it (scanner._process_file), which also clears it.
     reevaluate_after_job = Column(Boolean, default=False)
 
+    # The language the film or series was made in, as Sonarr or Radarr knows
+    # it (their originalLanguage, through langcodes.from_arr_language), or
+    # null when Remuxarr has not been told. Written from a webhook's payload
+    # whatever the settings say, as it costs nothing; never cleared by a
+    # caller that brings none. Read by nothing yet.
+    original_language = Column(String)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -499,6 +506,9 @@ class WebhookIntake(Base):
     path             = Column(String, nullable=False, unique=True)
     sonarr_series_id = Column(Integer, nullable=True)
     radarr_movie_id  = Column(Integer, nullable=True)
+    # The webhook's original language, kept with its IDs so a replay after a
+    # restart still hands it on (MediaFile.original_language).
+    original_language = Column(String, nullable=True)
     received_at      = Column(DateTime, default=utcnow)
 
 

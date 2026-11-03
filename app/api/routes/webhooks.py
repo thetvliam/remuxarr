@@ -107,6 +107,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.api.ws_manager import ws_manager
 from app.config import settings
 from app.core.exclude import ExcludeRules
+from app.core.langcodes import from_arr_language
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.scanner import move_renamed_file, queue_single_file
 from app.core.pathmap import swap_prefix, translate_path
@@ -169,7 +170,8 @@ async def sonarr_webhook(request: Request):
     paths     = _sonarr_paths(payload)
     series_id = _sonarr_series_id(payload)
     await _move_renamed(_sonarr_renames(payload), series_id=series_id)
-    await _debounce_all(paths, series_id)
+    await _debounce_all(paths, series_id,
+                        original_language=_original_language(payload, "series"))
     return {"status": "accepted", "files": len(paths)}
 
 
@@ -187,7 +189,8 @@ async def radarr_webhook(request: Request):
     paths    = _radarr_paths(payload)
     movie_id = _radarr_movie_id(payload)
     await _move_renamed(_radarr_renames(payload), radarr_movie_id=movie_id)
-    await _debounce_all(paths, radarr_movie_id=movie_id)
+    await _debounce_all(paths, radarr_movie_id=movie_id,
+                        original_language=_original_language(payload, "movie"))
     return {"status": "accepted", "files": len(paths)}
 
 
@@ -238,6 +241,7 @@ async def _debounce_all(
     paths: list[str],
     series_id:      int | None = None,
     radarr_movie_id: int | None = None,
+    original_language: str | None = None,
 ) -> None:
     loop = asyncio.get_running_loop()
     for raw_path in paths:
@@ -255,8 +259,9 @@ async def _debounce_all(
         # docstring, "Surviving a stop".
         intake_id = await loop.run_in_executor(
             None, _remember_sync, path, series_id, radarr_movie_id,
+            original_language,
         )
-        await _arm(path, series_id, radarr_movie_id, intake_id)
+        await _arm(path, series_id, radarr_movie_id, intake_id, original_language)
 
 
 async def _arm(
@@ -264,6 +269,7 @@ async def _arm(
     series_id:       int | None,
     radarr_movie_id: int | None,
     intake_id:       int | None,
+    original_language: str | None = None,
 ) -> None:
     """Start the debounce timer for an already-translated path."""
     async with _lock:
@@ -271,7 +277,8 @@ async def _arm(
             _pending[path].cancel()
             logger.debug("Debounce reset: %s", path)
         task = asyncio.create_task(
-            _delayed_queue(path, series_id, radarr_movie_id, intake_id)
+            _delayed_queue(path, series_id, radarr_movie_id, intake_id,
+                           original_language)
         )
         _pending[path] = task
 
@@ -289,22 +296,24 @@ async def replay_webhook_intake() -> None:
     """
     loop = asyncio.get_running_loop()
     rows = await loop.run_in_executor(None, _intake_rows_sync)
-    for intake_id, path, series_id, radarr_movie_id in rows:
+    for intake_id, path, series_id, radarr_movie_id, original_language in rows:
         logger.info("Replaying a webhook received before the last stop: %s", path)
-        await _arm(path, series_id, radarr_movie_id, intake_id)
+        await _arm(path, series_id, radarr_movie_id, intake_id, original_language)
 
 
 def _remember_sync(
     path: str,
     series_id:       int | None,
     radarr_movie_id: int | None,
+    original_language: str | None = None,
 ) -> int | None:
     """Record the path, replacing any earlier row for it. Returns the row id."""
     db = SessionLocal()
     try:
         db.query(WebhookIntake).filter(WebhookIntake.path == path).delete()
         row = WebhookIntake(path=path, sonarr_series_id=series_id,
-                            radarr_movie_id=radarr_movie_id)
+                            radarr_movie_id=radarr_movie_id,
+                            original_language=original_language)
         db.add(row)
         db.commit()
         return row.id
@@ -336,7 +345,8 @@ def _forget_sync(intake_id: int) -> None:
 def _intake_rows_sync() -> list[tuple]:
     db = SessionLocal()
     try:
-        return [(row.id, row.path, row.sonarr_series_id, row.radarr_movie_id)
+        return [(row.id, row.path, row.sonarr_series_id, row.radarr_movie_id,
+                 row.original_language)
                 for row in db.query(WebhookIntake).order_by(WebhookIntake.id)]
     finally:
         db.close()
@@ -347,6 +357,7 @@ async def _delayed_queue(
     series_id:      int | None = None,
     radarr_movie_id: int | None = None,
     intake_id:      int | None = None,
+    original_language: str | None = None,
 ) -> None:
     """
     Wait debounce_seconds, then probe-and-queue the file.
@@ -378,7 +389,8 @@ async def _delayed_queue(
         logger.info("Debounce fired — queuing: %s", path)
         started = utcnow()
         qi      = await loop.run_in_executor(
-            None, _queue_sync, path, series_id, radarr_movie_id, intake_id
+            None, _queue_sync, path, series_id, radarr_movie_id, intake_id,
+            original_language,
         )
 
         if qi:
@@ -443,6 +455,7 @@ def _queue_sync(
     series_id:      int | None = None,
     radarr_movie_id: int | None = None,
     intake_id:      int | None = None,
+    original_language: str | None = None,
 ):
     """
     Synchronous wrapper for thread-pool execution.
@@ -459,6 +472,7 @@ def _queue_sync(
             db, path,
             sonarr_series_id=series_id,
             radarr_movie_id=radarr_movie_id,
+            original_language=original_language,
         )
     except Exception:
         logger.exception("Failed to queue %s", path)
@@ -557,6 +571,17 @@ def _sonarr_paths(payload: dict) -> list[str]:
 def _sonarr_renames(payload: dict) -> list[tuple[str, str]]:
     """(previousPath, path) for each file a Sonarr Rename event moved."""
     return _renames(payload.get("renamedEpisodeFiles", []))
+
+
+def _original_language(payload: dict, entity: str) -> str | None:
+    """
+    The code for the payload's series or movie original language (entity
+    "series" for Sonarr, "movie" for Radarr), or None. Both services put it
+    on the entity they send with every import, as {"id", "name"}; see
+    langcodes.from_arr_language for why only the name is read.
+    """
+    entry = payload.get(entity)
+    return from_arr_language(entry.get("originalLanguage")) if isinstance(entry, dict) else None
 
 
 def _radarr_movie_id(payload: dict) -> int | None:

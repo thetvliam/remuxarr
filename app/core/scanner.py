@@ -286,11 +286,15 @@ def queue_single_file(
     path: str,
     sonarr_series_id: int | None = None,
     radarr_movie_id:  int | None = None,
+    original_language: str | None = None,
 ) -> QueueItem | None:
     """
     Probe and (re-)queue a single file immediately.
     Used by the webhook handler after debounce expires.
     Returns the new QueueItem or None if the file was skipped.
+
+    original_language is the webhook's, stored on the file's record
+    (MediaFile.original_language).
 
     A file the exclude settings match is not probed or queued. A record
     already held for it is left to the next scan's remove_excluded_files.
@@ -308,6 +312,7 @@ def queue_single_file(
         force_probe=True, dry_run=dry_run, stats=stats,
         sonarr_series_id=sonarr_series_id,
         radarr_movie_id=radarr_movie_id,
+        original_language=original_language,
     )
 
     media = db.query(MediaFile).filter(MediaFile.path == path).first()
@@ -1017,9 +1022,14 @@ def _process_file(
     sonarr_series_id: int | None = None,
     radarr_movie_id:  int | None = None,
     recheck:     bool = False,
+    original_language: str | None = None,
 ) -> None:
     """
     Probe (when needed), decide and queue one file.
+
+    original_language, when given, is stored on the record. None leaves what
+    is stored alone: most callers have no source for it, and a retry or a
+    scan must not wipe what a webhook brought.
 
     recheck re-decides a file the delta check would skip, from the tracks
     stored for it, so a settings change reaches files already scanned
@@ -1184,6 +1194,9 @@ def _process_file(
 
         db.flush()
         fmt_container = fmt_info.get("container", "")
+
+    if original_language:
+        media_file.original_language = original_language
 
     # ── Clear stale dry-run results ─────────────────────────────────────────
     # This file is being re-evaluated right now (it changed, or its previous

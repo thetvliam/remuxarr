@@ -40,6 +40,31 @@ every start; imports from outside the library paths ignored as well; a
 library path counted as holding a folder whose name only starts the same;
 and the warning for an outside import dropped. All five are killed here,
 the first two also by test_plex_on_import.py.
+
+The original language, at the end, came with MediaFile.original_language:
+each service's originalLanguage is carried from the payload through the
+intake record and the debounce to the file's record. The baseline was the
+whole 2203-test suite with one mechanical change: test_webhook_enable_scope
+stubs _queue_sync with a lambda of fixed signature, which gained the new
+keyword. Twelve mutants were run against it, one per hop, and all twelve
+survived (one run also showed an unrelated timing test failing, recorded
+separately). Killed here:
+
+  • Sonarr's payload ignored                 → all four Sonarr tests
+  • Radarr's payload ignored                 → the Radarr import
+  • the name stored instead of the code      → all five
+  • the intake record not storing it         → the record, the replay
+  • the replay dropping it                   → the replay
+  • _debounce_all not handing it to the timer,
+    the timer to its task, the task to
+    _queue_sync, _queue_sync to
+    queue_single_file, queue_single_file to
+    _process_file (five mutants)              → the import, and the replay
+                                               for all but the first
+  • _process_file not storing it             → the import, the replay
+  • a call bringing none clearing it         → a later import without one
+
+The two upgrade steps' mutants are recorded in test_schema_migration.py.
 """
 import asyncio
 import json
@@ -56,7 +81,7 @@ import app.main as main
 from app.api.routes import webhooks
 from app.config import settings as app_settings
 from app.core import scanner
-from app.database.models import AppSetting, Base, QueueItem, WebhookIntake
+from app.database.models import AppSetting, Base, MediaFile, QueueItem, WebhookIntake
 
 
 def _probe_mkv():
@@ -101,14 +126,22 @@ def lib(tmp_path, monkeypatch):
     media.write_bytes(b"\0" * 64)
     path = str(media)
 
-    def sonarr(series_id):
+    def _entity(entity_id, language):
+        # As both services send it: {"id", "name"}, the id numbering their
+        # own languages (French is 2 in each).
+        entity = {"id": entity_id}
+        if language:
+            entity["originalLanguage"] = {"id": 2, "name": language}
+        return entity
+
+    def sonarr(series_id, language=None):
         return webhooks.sonarr_webhook(_Request({
-            "eventType": "Download", "series": {"id": series_id},
+            "eventType": "Download", "series": _entity(series_id, language),
             "episodeFile": {"path": path}}))
 
-    def radarr(movie_id):
+    def radarr(movie_id, language=None):
         return webhooks.radarr_webhook(_Request({
-            "eventType": "Download", "movie": {"id": movie_id},
+            "eventType": "Download", "movie": _entity(movie_id, language),
             "movieFile": {"path": path}}))
 
     def rows():
@@ -121,6 +154,16 @@ def lib(tmp_path, monkeypatch):
             return [(i.status, i.sonarr_series_id, i.radarr_movie_id)
                     for i in db.query(QueueItem).order_by(QueueItem.id)]
 
+    def intake_languages():
+        with factory() as db:
+            return [r.original_language
+                    for r in db.query(WebhookIntake).order_by(WebhookIntake.id)]
+
+    def stored_language():
+        with factory() as db:
+            media = db.query(MediaFile).filter(MediaFile.path == path).first()
+            return media.original_language if media else "no record"
+
     def run(coro_fn):
         # A fresh lock per event loop. The module's lock is created once at
         # import, and a lock that ever had to wait belongs to that loop;
@@ -129,7 +172,9 @@ def lib(tmp_path, monkeypatch):
         return asyncio.run(coro_fn())
 
     yield SimpleNamespace(path=path, sonarr=sonarr, radarr=radarr, rows=rows,
-                          items=items, run=run, engine=engine)
+                          items=items, run=run, engine=engine,
+                          intake_languages=intake_languages,
+                          stored_language=stored_language)
     engine.dispose()
 
 
@@ -386,3 +431,62 @@ def test_an_import_inside_the_library_paths_logs_no_warning(lib, caplog):
 
     assert lib.items() == [("pending", 7, None)]
     assert "Media Library Path" not in caplog.text
+
+
+# ── The original language the webhook brings ─────────────────────────────────
+#
+# Both services put the series' or movie's original language on the entity
+# they send with every import. It is carried from the payload, through the
+# intake record and the debounce, to the file's record, where the Original
+# Language Audio setting will read it. Mutation record in the module
+# docstring.
+
+@pytest.mark.parametrize("service", ["sonarr", "radarr"])
+def test_an_imports_original_language_is_stored_on_its_file(lib, service):
+    async def receive_and_wait():
+        await getattr(lib, service)(7, "French")
+        await _until(lambda: lib.items() and not lib.rows())
+
+    lib.run(receive_and_wait)
+
+    assert lib.stored_language() == "fre", (
+        "the code, as tracks are compared, not the name the service sent")
+
+
+def test_the_record_holds_it_before_the_webhook_is_answered(lib):
+    async def receive_then_stop():
+        await lib.sonarr(7, "French")
+        return lib.intake_languages()
+
+    assert lib.run(receive_then_stop) == ["fre"]
+
+
+def test_a_replay_after_a_stop_still_stores_it(lib):
+    async def receive_then_stop():
+        await lib.sonarr(7, "French")
+
+    lib.run(receive_then_stop)
+
+    async def next_start():
+        await webhooks.replay_webhook_intake()
+        await _until(lambda: lib.items() and not lib.rows())
+
+    lib.run(next_start)
+
+    assert lib.stored_language() == "fre"
+
+
+def test_a_later_import_without_one_keeps_it(lib):
+    """
+    A webhook that brings no original language, or one naming none, says
+    nothing about it, so what an earlier one stored stays.
+    """
+    async def receive_twice():
+        await lib.sonarr(7, "French")
+        await _until(lambda: lib.items() and not lib.rows())
+        await lib.sonarr(7)
+        await _until(lambda: not lib.rows())
+
+    lib.run(receive_twice)
+
+    assert lib.stored_language() == "fre"
