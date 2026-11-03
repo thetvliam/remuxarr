@@ -148,7 +148,8 @@ def make_track(
 
 
 def make_file_info(path="/media/movies/Test Movie (2020)/Test Movie (2020).mp4",
-                    container="mp4", video_codec="h264", font_attachments=0):
+                    container="mp4", video_codec="h264", font_attachments=0,
+                    original_language=None):
     """
     file_info as scanner._file_info_for() builds it, which is the only place
     production builds it.
@@ -156,6 +157,10 @@ def make_file_info(path="/media/movies/Test Movie (2020)/Test Movie (2020).mp4",
     font_attachments defaults to 0, the stored count for a file with no
     fonts. The key is always present in production, so it is always present
     here too rather than only in the tests that care about it.
+
+original_language defaults to None, a file Sonarr or Radarr has told
+nothing about, which is every file until a webhook or a re-check does; the
+key is always present in production too.
 
     This docstring used to name probe.extract_format_info() as the source.
     That function does count the fonts, but production never passed its
@@ -169,6 +174,7 @@ def make_file_info(path="/media/movies/Test Movie (2020)/Test Movie (2020).mp4",
         "container":        container,
         "video_codec":      video_codec,
         "font_attachments": font_attachments,
+        "original_language": original_language,
     }
 
 

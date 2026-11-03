@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import settings
 from app.core.langcodes import canonical
 from app.core.timeutil import utcnow
-from app.database.models import AppSetting, Base, MediaFile, QueueItem
+from app.database.models import AppSetting, Base, MediaFile, PlannedAction, QueueItem
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
+    # Off: a file keeps exactly the audio it kept before the setting existed.
+    # "keep_both" and "original_only" read MediaFile.original_language
+    # (decision.analyze_file).
+    "original_language_audio": "off",
     # Remux to MP4 when all tracks are container-compatible
     "prefer_mp4_container": True,
     # Global dry-run toggle — no files are modified when True. Defaults to
@@ -345,6 +349,7 @@ def init_db() -> None:
     _label_flagged_track_reasons()
     _release_threshold_holds()
     _key_track_answers_by_descriptor()
+    _remove_orphaned_planned_actions()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -509,6 +514,30 @@ def _release_threshold_holds() -> None:
                 "Releasing %d file(s) held by the undefined-audio threshold: "
                 "their undefined tracks move to Audio Language Review on the "
                 "next scan", released
+            )
+
+
+def _remove_orphaned_planned_actions() -> None:
+    """
+    Delete PlannedActions whose queue item no longer exists.
+
+    The scan's _clear_stale_status_records once deleted skipped and review
+    rows without their actions (see its docstring). SQLite reuses the id of
+    a deleted last row, so each action left behind would show in the plan
+    of whichever queue item is next given that id. Writes nothing once
+    they are gone, so later startups and fresh installs do no work here.
+    """
+    with SessionLocal() as db:
+        removed = (
+            db.query(PlannedAction)
+            .filter(~PlannedAction.queue_item_id.in_(db.query(QueueItem.id)))
+            .delete(synchronize_session=False)
+        )
+        if removed:
+            db.commit()
+            logger.info(
+                "Removed %d planned action(s) left behind by deleted queue items",
+                removed,
             )
 
 
@@ -788,6 +817,11 @@ def _migrate_schema() -> None:
          "ALTER TABLE revert_points ADD COLUMN detached_at DATETIME"),
         ("subtitle_language_flags", "extracted_path",
          "ALTER TABLE subtitle_language_flags ADD COLUMN extracted_path TEXT"),
+        # No DEFAULT: null is "not told", which is what every existing row is.
+        ("media_files", "original_language",
+         "ALTER TABLE media_files ADD COLUMN original_language TEXT"),
+        ("webhook_intake", "original_language",
+         "ALTER TABLE webhook_intake ADD COLUMN original_language TEXT"),
     ]
 
     inspector = inspect(engine)

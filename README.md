@@ -106,6 +106,7 @@ Remuxarr only ever touches what's cheap and lossless to touch:
 
 - **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
+- **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
 
 Nothing is ever re-encoded - not video, not audio, under any setting, for any reason. That's not a preference here - it's the entire point of the project. (If you specifically need AAC 5.1 → AC3 for an older AV receiver's bitstream passthrough, that's a deliberate, reviewable, undoable operation in AC3 Forge - never something the main pipeline does automatically to every matching file.)
@@ -340,7 +341,11 @@ or that arrives while the job runs, is not overwritten in the first place: the
 extracted one is saved under the next free number, such as `Movie.en.2.srt`.
 The **Existing Subtitle Files** setting can make extraction replace it instead,
 which a revert cannot undo, or give the extracted subtitle the name and move
-the existing file to the next free number, where a revert leaves it.
+the existing file to the next free number, where a revert leaves it. Setting
+an extracted subtitle's language in Subtitle Language Review renames it by the
+same rule, except that a rename never replaces a file: under Replace it takes
+the next free number too, because the name can belong to another subtitle
+extracted from the same video.
 
 **Two limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no

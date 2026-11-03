@@ -133,6 +133,15 @@ class MediaFile(Base):
     # is running for it (scanner._process_file), which also clears it.
     reevaluate_after_job = Column(Boolean, default=False)
 
+    # The language the film or series was made in, as Sonarr or Radarr knows
+    # it (their originalLanguage, through langcodes.from_arr_language), or
+    # null when Remuxarr has not been told. Written from a webhook's payload
+    # whatever the settings say, as it costs nothing, and by Re-check Scanned
+    # Files and Force Full Rescan while Original Language Audio is on
+    # (arr_lookup.original_languages); never cleared by a caller that brings
+    # none. Read by analyze_file through scanner._file_info_for.
+    original_language = Column(String)
+
     tracks      = relationship("Track",     back_populates="media_file",
                                cascade="all, delete-orphan")
     queue_items = relationship("QueueItem", back_populates="media_file",
@@ -499,6 +508,9 @@ class WebhookIntake(Base):
     path             = Column(String, nullable=False, unique=True)
     sonarr_series_id = Column(Integer, nullable=True)
     radarr_movie_id  = Column(Integer, nullable=True)
+    # The webhook's original language, kept with its IDs so a replay after a
+    # restart still hands it on (MediaFile.original_language).
+    original_language = Column(String, nullable=True)
     received_at      = Column(DateTime, default=utcnow)
 
 
@@ -612,6 +624,13 @@ class SubtitleLanguageFlag(Base):
     id      = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("media_files.id", ondelete="CASCADE"),
                      nullable=False, index=True)
+    # The track's position in the file, or a negative number once a job has
+    # extracted it: the row stays while its sidecar does (extracted_path
+    # below), but no position in the file is its any more, and keeping the
+    # old one made it claim whichever track moved there. Unique per file,
+    # never shown (the review page names such a row by its sidecar), and
+    # assigned by scanner.rekey_language_flags. A row written before that
+    # existed may still hold its old position.
     stream_index = Column(Integer, nullable=False)
     detected_language = Column(String, index=True)
 

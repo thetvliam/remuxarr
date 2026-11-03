@@ -42,6 +42,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
+                              next_free_srt_name,
                               _track_to_dict, descriptors_by_stream)
 from app.core.langcodes import canonical, two_letter
 from app.core.plex import refresh_in_background
@@ -110,11 +111,32 @@ def _switches_for(kind: LanguageReviewKind, flags) -> set[str]:
     return {by_origin[flag.origin] for flag in flags}
 
 
-def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
+def _rename_extracted_subtitle(flag, lang: str, db=None,
+                               mode: str = "keep_both") -> str | None:
     """
     Rename a flagged track's extracted .srt to carry the chosen language.
 
-    Returns the new path when a file was renamed, or None.
+    A name that is already taken is dealt with by Existing Subtitle Files
+    (`mode`, existing_srt_handling), the setting extraction uses for the same
+    clash, with one exception. Under keep_both the sidecar takes the next
+    free number (Show.en.2.srt); under embedded_first it takes the name, and
+    the file that held it moves to the next free number. Under replace it is
+    numbered too, as under keep_both: a rename never overwrites. The name it
+    wants can belong to another subtitle Remuxarr extracted from the same
+    video (its English track as Show.en.srt, when the untagged one is
+    answered English), and replacing that would leave the track's only copy
+    outside the video gone. Extraction never meets that case, because it
+    numbers its own tracks apart, so the setting's Replace was never about
+    it. This used to refuse every taken name.
+
+    Returns the sidecar's path once its name carries the language: the new
+    path after a rename, or the unchanged one when the name already did.
+    None means it does not: there is no sidecar, its name does not hold the
+    language it was extracted under, the new name is taken, or the rename
+    failed. Each of those is logged here. The caller keeps the question
+    for a None, because the filename is the only thing left that can carry
+    the answer; it used to treat a None like a rename and delete it, so the
+    sidecar kept "und" with nothing offering to correct it.
 
     Only ever acts on the path recorded when the file was extracted. The
     name cannot be reconstructed at this point: extraction removes the
@@ -170,16 +192,29 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     parts[index] = lang_tag
     new_path = os.path.join(directory, ".".join(parts))
     if new_path == old_path:
-        return None
+        return old_path
 
+    # (old name, new name) of a file embedded_first moved out of the way.
+    moved_aside = None
     if os.path.exists(new_path):
-        # Something is already there. Overwriting it would destroy a
-        # subtitle nobody asked to replace — quite possibly one the user
-        # downloaded for exactly this language.
-        logger.warning(
-            "Not renaming %s: %s already exists", old_path, new_path,
-        )
-        return None
+        # Something is already there, quite possibly a subtitle the user
+        # downloaded for exactly this language, so it is never overwritten.
+        if mode == "embedded_first":
+            aside = next_free_srt_name(new_path)
+            try:
+                os.rename(new_path, aside)
+            except OSError as exc:
+                logger.warning(
+                    "Not renaming %s: could not move %s aside to %s: %s",
+                    old_path, new_path, aside, exc,
+                )
+                return None
+            moved_aside = (new_path, aside)
+            logger.info("Moved existing %s to %s", new_path, aside)
+        else:
+            numbered = next_free_srt_name(new_path)
+            logger.info("%s already exists; using %s", new_path, numbered)
+            new_path = numbered
 
     try:
         os.rename(old_path, new_path)
@@ -187,6 +222,13 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
         logger.warning(
             "Could not rename %s to %s: %s", old_path, new_path, exc,
         )
+        if moved_aside is not None:
+            # Put back, so a failed rename leaves the folder as it was found.
+            try:
+                os.rename(moved_aside[1], moved_aside[0])
+            except OSError as back_exc:
+                logger.warning("Could not move %s back to %s: %s",
+                               moved_aside[1], moved_aside[0], back_exc)
         return None
 
     # Kept even though the only production caller deletes this row moments
@@ -200,6 +242,15 @@ def _rename_extracted_subtitle(flag, lang: str, db=None) -> str | None:
     logger.info("Renamed %s → %s", old_path, new_path)
 
     if db is not None:
+        if moved_aside is not None:
+            # The file moved aside can be one Remuxarr extracted itself, the
+            # video's English track say, with a revert entry of its own that
+            # has to follow it. First, because both are found by path: once
+            # this sidecar's entry has been repointed onto the name, moving
+            # the name's entries to the new number would carry it off too.
+            # No question can name that file, as a question's sidecar always
+            # carries "und" and the name taken carries the answer.
+            _repoint_revert_points(db, flag.file_id, *moved_aside)
         _repoint_revert_points(db, flag.file_id, old_path, new_path)
     return new_path
 
@@ -586,14 +637,22 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # file keeps "und" in its name permanently, which is what
                 # Plex reads. Renaming here is the only point at which the
                 # correction can reach it.
+                #
+                # An extracted track whose sidecar did not end up carrying the
+                # language keeps its question: a name without the language in
+                # it, or a rename that failed. A taken name no longer refuses;
+                # see _rename_extracted_subtitle. Deleted, as it
+                # was whatever the rename did, the sidecar kept its old name
+                # and the response reported success. The helper logs why; the
+                # file is reported among the errors, which the Review page
+                # counts. An answer for a track still in the file is stored
+                # above and needs no file, so its question goes regardless.
+                not_renamed = []
+                srt_mode = app_cfg.get("existing_srt_handling", "keep_both")
                 for flag in flags:
-                    # The return value is deliberately discarded. It used to
-                    # be collected into results["renamed"], which nothing has
-                    # ever read — not the two callers, not the frontend, not
-                    # a test, and no endpoint description mentions it. The
-                    # helper logs every outcome itself: the rename, the
-                    # collision it declined, and the OSError it swallowed.
-                    _rename_extracted_subtitle(flag, lang, db)
+                    settled = _rename_extracted_subtitle(flag, lang, db, srt_mode)
+                    if flag in extracted and settled is None:
+                        not_renamed.append(flag)
 
                 # The questions have been answered, so stop asking them. Left
                 # in place the rows would survive every later scan — rows
@@ -601,8 +660,21 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # because the track itself is gone from the file and only the
                 # filename is still correctable.
                 for flag in flags:
-                    db.delete(flag)
+                    if flag not in not_renamed:
+                        db.delete(flag)
                 db.commit()
+                if not_renamed:
+                    names = ", ".join(os.path.basename(f.extracted_path)
+                                      for f in not_renamed)
+                    results["errors"].append({
+                        "file_id": file_id,
+                        "error": (
+                            f"{names} could not be renamed to carry "
+                            f"{lang} (see the log for why), so "
+                            f"{'it is' if len(not_renamed) == 1 else 'they are'} "
+                            f"still asked about in Review"
+                        ),
+                    })
 
             # A file whose job is CURRENTLY RUNNING must be skipped, not
             # cleared: deleting a "processing" row does nothing to the

@@ -14,13 +14,12 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
-from app.core.arr_lookup import find_arr_id
+from app.core.arr_lookup import arr_connection, find_arr_id
 from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
@@ -31,11 +30,10 @@ from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
-from app.core.pathmap import translate_path
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_to_dict, _upsert_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
-from app.database.models import Ac3ForgeJob, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, Track
+from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
 
 logger = logging.getLogger(__name__)
@@ -1714,25 +1712,61 @@ def _load_job_data(job_id: int):
                         job_id, media.path, excluded_by)
             return None
 
+        # The job is decided below from the stored tracks, so they are
+        # checked against the file first. A record can stop describing its
+        # file in two ways nothing else catches here: the file replaced
+        # between queueing and pickup (the job's own size-and-mtime check
+        # starts only once it runs), and a record that was already wrong
+        # when the job was queued, as for files processed before a job
+        # stored its output's tracks (2f3c521) and re-checked since from
+        # that record. Decided from those tracks, a job would run against
+        # streams the file does not have.
+        #
+        # Compared as a scan compares them (_track_shapes), and on tracks
+        # alone: a size or mtime change over the same tracks leaves the
+        # decision right. A mismatch cancels the job and decides the file
+        # again from a fresh probe, which refreshes the record. The scan
+        # stamp is left alone for that, so the scan's own replacement check
+        # (_replaced_on_disk) keeps the answers of a file that did not
+        # change on disk and forgets those of one that did.
+        #
+        # A probe failure decides from the stored tracks, as before this
+        # check existed: FFmpeg reports an unreadable file when the job
+        # runs, and failing it here would be a new way to fail.
+        try:
+            probe_data = probe_file(media.path, app_settings.FFPROBE_PATH)
+        except ProbeError as exc:
+            probe_data = None
+            logger.warning(
+                "Job %d: could not probe %s (%s) — deciding from the stored "
+                "tracks", job_id, media.path, exc,
+            )
+        if probe_data is not None:
+            stored = [_track_to_dict(t) for t in
+                      db.query(Track).filter(Track.file_id == media.id)]
+            if _track_shapes(stored) != _track_shapes(extract_tracks(probe_data)):
+                logger.info(
+                    "Job %d: the tracks stored for %s do not match the file "
+                    "— deciding it again", job_id, media.path,
+                )
+                _cancel_for_changed_source(
+                    job_id,
+                    f"{media.filename} no longer matched the tracks Remuxarr "
+                    f"had on record for it, so it was probed and decided "
+                    f"again. Nothing was done to it.",
+                    reset_stamp=False,
+                )
+                return None
+
         # A row that has never been probed for fonts — every row from before
         # the count was stored — reads as font-free to the gate below, and a
         # normal scan skips unchanged files, so it can stay that way through
         # any number of scans. Here is where a wrong answer converts the
-        # file, so it is counted here, once, and stored.
-        #
-        # A probe failure leaves it null and the job goes on as it would
-        # have before the count existed. Failing the job instead would be a
-        # new way to fail, over a count the file may not need.
-        if media.font_attachments is None:
-            try:
-                media.font_attachments = count_font_attachments(
-                    probe_file(media.path, app_settings.FFPROBE_PATH)
-                )
-            except ProbeError as exc:
-                logger.warning(
-                    "Job %d: could not count embedded fonts in %s (%s) — "
-                    "deciding without them", job_id, media.path, exc,
-                )
+        # file, so it is counted here, once, and stored, from the probe
+        # above. Left null when that probe failed, and the job goes on as it
+        # would have before the count existed.
+        if media.font_attachments is None and probe_data is not None:
+            media.font_attachments = count_font_attachments(probe_data)
 
         tracks_raw: list[Track] = (
             db.query(Track).filter(Track.file_id == media.id).all()
@@ -1906,7 +1940,8 @@ def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
     Movie.en.srt goes to Movie.en.2.srt, or the first number after that
     which is neither on disk nor in `avoid` (casefolded), which holds every
     name this job is about to write: a job extracting two English tracks
-    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3.
+    writes Movie.en.srt and Movie.en.2.srt, so the old file goes to .3. The
+    name is scanner.next_free_srt_name's.
 
     Returns (old, new) for each file moved. A path holding nothing is
     skipped. If a move fails, the ones already made are put back before the
@@ -1917,14 +1952,7 @@ def _move_aside(paths: list[str], avoid: set[str]) -> list[tuple[str, str]]:
         for path in paths:
             if not os.path.exists(path):
                 continue
-            stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
-                          if path.lower().endswith(".srt") else os.path.splitext(path)[0])
-            n = 2
-            while True:
-                candidate = f"{stem}.{n}.srt"
-                if candidate.casefold() not in avoid and not os.path.exists(candidate):
-                    break
-                n += 1
+            candidate = next_free_srt_name(path, avoid)
             os.rename(path, candidate)
             moved.append((path, candidate))
     except OSError:
@@ -2204,22 +2232,35 @@ def _finish_job(
                         track_list = extract_tracks(probe_data)
 
                         # The rows about to be replaced are what the stored
-                        # answers are keyed against, so the answers are
-                        # carried across first. See rekey_track_answers.
-                        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+                        # answers and the Language Review questions are
+                        # keyed against, so both are carried across first.
+                        # See rekey_track_answers and rekey_language_flags.
+                        has_answers = any(getattr(media, a) for a in ANSWER_COLUMNS)
+                        has_flags = any(
+                            db.query(Flag.id).filter(Flag.file_id == media.id).first()
+                            for Flag in (AudioLanguageFlag, SubtitleLanguageFlag)
+                        )
+                        if has_answers or has_flags:
                             before = [_track_to_dict(t) for t in
                                       db.query(Track).filter(Track.file_id == media.id)]
-                            removed = {
-                                a.stream_index for a in db.query(PlannedAction).filter(
+                            removals = {
+                                (a.action_type, a.stream_index)
+                                for a in db.query(PlannedAction).filter(
                                     PlannedAction.queue_item_id == job.id,
                                     PlannedAction.action_type.in_(
                                         ("drop_track", "extract_subtitle")),
                                 )
                             }
-                            rekey_media_answers(
-                                media, before, track_list,
-                                job_stream_mapping(before, track_list, removed, final_path),
-                            )
+                            mapping = job_stream_mapping(
+                                before, track_list,
+                                {si for _kind, si in removals}, final_path)
+                            if has_answers:
+                                rekey_media_answers(media, before, track_list, mapping)
+                            if has_flags:
+                                rekey_language_flags(
+                                    db, media.id, mapping,
+                                    {si for kind, si in removals
+                                     if kind == "extract_subtitle"})
 
                         replace_track_rows(db, media.id, track_list)
 
@@ -2310,7 +2351,7 @@ def _requeue_cut_off_job(job_id: int) -> None:
         logger.info("Job %d was cut off by shutdown — back in the queue", job_id)
 
 
-def _cancel_for_changed_source(job_id: int, reason: str) -> None:
+def _cancel_for_changed_source(job_id: int, reason: str, *, reset_stamp: bool = True) -> None:
     """
     End a job whose source changed while it ran, or was gone by the time
     its turn came (_load_job_data), and decide the file again.
@@ -2328,6 +2369,11 @@ def _cancel_for_changed_source(job_id: int, reason: str) -> None:
 
     A job no longer at "processing" (aborted by the user meanwhile) is
     left as it is.
+
+    reset_stamp=False is for a file whose record, not the file, was found
+    wrong at pickup. The stamp is left for the re-evaluation's replacement
+    check to compare (see _load_job_data), and written only if the
+    re-evaluation fails, so the next delta scan still looks at the file.
     """
     with SessionLocal() as db:
         job = db.get(QueueItem, job_id)
@@ -2341,8 +2387,9 @@ def _cancel_for_changed_source(job_id: int, reason: str) -> None:
         path = None
         if job.media_file:
             path = job.media_file.path
-            job.media_file.size   = -1
-            job.media_file.mtime  = -1.0
+            if reset_stamp:
+                job.media_file.size   = -1
+                job.media_file.mtime  = -1.0
             job.media_file.status = "skipped"
         db.commit()
         logger.info("Job %d cancelled: %s", job_id, reason)
@@ -2359,6 +2406,10 @@ def _cancel_for_changed_source(job_id: int, reason: str) -> None:
             )
         except Exception:
             db.rollback()
+            if not reset_stamp:
+                db.query(MediaFile).filter(MediaFile.path == path).update(
+                    {"size": -1, "mtime": -1.0}, synchronize_session=False)
+                db.commit()
             logger.exception(
                 "Job %d: re-evaluating %s after its source changed failed — "
                 "the next scan will pick it up", job_id, path,
@@ -2489,45 +2540,10 @@ def _arr_notify_target(cfg: dict, service: str, entity_id: int | None,
     """
     if not entity_id:
         return None
-    connection = _arr_connection(cfg, service, local_path, context)
+    connection = arr_connection(cfg, service, local_path, context)
     if connection is None:
         return None
     return {"entity_id": entity_id, **connection}
-
-
-def _arr_connection(cfg: dict, service: str, local_path: str | None,
-                    context: str) -> dict | None:
-    """
-    The url, key and translated path for talking to Sonarr or Radarr about a
-    file, or None when the service is off or its url or key is missing.
-    _arr_notify_target adds the ID; _arr_lookup_candidates uses it to find
-    one.
-    """
-    name = "Sonarr" if service == "sonarr" else "Radarr"
-    if not cfg.get(f"{service}_enabled", False):
-        return None
-    url     = (cfg.get(f"{service}_url") or "").rstrip("/")
-    api_key = (cfg.get(f"{service}_api_key") or "")
-    if not url or not api_key:
-        logger.warning(
-            "%s notification skipped for %s: %s_url or %s_api_key not configured",
-            name, context, service, service,
-        )
-        return None
-    # The *arr reports its own view of the path, which is not Remuxarr's
-    # when the two containers mount the library differently. Sent already
-    # translated so the restore can compare against what the service will
-    # report, using the same prefixes the webhook uses in the opposite
-    # direction.
-    return {
-        "url":         url,
-        "api_key":     api_key,
-        "output_path": translate_path(
-            local_path or "",
-            cfg.get(f"{service}_path_prefix_local", "") or "",
-            cfg.get(f"{service}_path_prefix_remote", "") or "",
-        ) or None,
-    }
 
 
 def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
@@ -2541,14 +2557,14 @@ def _arr_lookup_candidates(cfg: dict, sonarr_id: int | None,
     never announced to Sonarr or Radarr at all. A file that carries one
     service's ID belongs to that service and asks nobody. Sonarr comes
     first; Radarr is asked only when Sonarr has no match (_find_then_notify).
-    Each entry is _arr_connection's, with the service named, so the path is
+    Each entry is arr_connection's, with the service named, so the path is
     already in that service's terms.
     """
     if sonarr_id or radarr_id or not local_path:
         return []
     candidates = []
     for service in ("sonarr", "radarr"):
-        connection = _arr_connection(cfg, service, local_path, context)
+        connection = arr_connection(cfg, service, local_path, context)
         if connection is not None:
             candidates.append({"service": service, **connection})
     return candidates

@@ -69,6 +69,10 @@ Verified by mutation, 1 applied, 1 killed. Putting `or "mkv"` back is the
 code as it stood, which the suite then (2044 tests) passed. The
 no-container run kills it: on that code the forge reported success and
 left Matroska in the .mp4.
+
+test_a_subtitles_question_follows_it_past_an_undone_ac3 came with the undo
+moving Language Review questions; its mutation record is in
+test_forge_and_staging.py, beside the tests that pin the move itself.
 """
 import asyncio
 import json
@@ -284,6 +288,50 @@ def test_a_job_waiting_when_the_forge_removes_its_ac3_runs(lib):
 
     assert _run_queued(lib) == ("success", None)
     assert _streams(lib.video) == [("video", "h264", None), ("audio", "aac", "eng")]
+
+
+@needs_ffmpeg
+def test_a_subtitles_question_follows_it_past_an_undone_ac3(lib):
+    """
+    With real FFmpeg: the add appends the AC3 last, a job that drops the
+    French audio writes video, audio, subtitles, which puts the AC3 in
+    front of the subtitle, and the undo then moves the subtitle from 3 to 2.
+    The question about it has to move with it, from the stored rows the
+    forge reads to the file the real undo wrote.
+    """
+    from app.database.models import AppSetting, MediaFile, SubtitleLanguageFlag
+
+    # Extraction off, so the job keeps the subtitle in the file behind the
+    # AC3 rather than writing it to a sidecar.
+    with lib.Session() as db:
+        db.merge(AppSetting(key="extract_text_subtitles_to_srt", value=json.dumps(False)))
+        db.commit()
+    _video(lib.video, audio=(ENGLISH_51, ("fre", 2, None)))
+    _queue(lib)
+    forge_job, status = _forge(lib)
+    assert status == "success"
+    _drop_french(lib, key="keep_audio_languages")
+    assert _queue(lib) is not None, "dropping French audio queued nothing"
+    assert _run_queued(lib) == ("success", None)
+    assert [t[1] for t in _stored(lib)] == ["video", "audio", "audio", "subtitle"]
+
+    # The question is added by hand, at the subtitle's stored position: the
+    # subtitle is tagged French, and what is under test is the move, not
+    # how a question is raised.
+    with lib.Session() as db:
+        media_id = db.query(MediaFile.id).scalar()
+        db.add(SubtitleLanguageFlag(file_id=media_id, stream_index=3,
+                                    detected_language="und"))
+        db.commit()
+
+    _, status = _forge(lib, undo_of=forge_job)
+    assert status == "undone"
+    assert _stored(lib) == _probed(lib)
+
+    with lib.Session() as db:
+        position = db.query(SubtitleLanguageFlag).one().stream_index
+    assert position == 2
+    assert _stored(lib)[position][1] == "subtitle"
 
 
 def test_a_file_that_cannot_be_probed_after_the_forge_gives_no_tracks(monkeypatch, caplog):

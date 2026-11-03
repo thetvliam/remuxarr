@@ -31,6 +31,24 @@ code (by the extraction tests in test_decision.py), and a Set language
 answer stored as typed and either table ignored (by the cases in
 test_language_review_isolation.py this change updated). All four are
 killed here too.
+
+The tests at the end came with ARR_LANGUAGE_NAMES and from_arr_language,
+which read the language objects Sonarr and Radarr send. Nothing imported
+either yet, so every mutant survived by construction; two were run against
+this file as it stood to confirm the harness reached the code, and both
+survived. Six, run against this file alone, the only one that reaches
+them, and all killed:
+
+  • a name that is no language read as "und"     → read by its name
+  • a bare string read as a name                 → read by its name
+  • a project's own code changed (Hindi)         → agrees with the
+                                                   projects' codes
+  • a registry code changed to another valid one
+    (Urdu as hin)                                → agrees with the registry
+  • an entry missing (Telugu)                    → every language has a
+                                                   code, and the registry
+  • an entry in its terminologic form (nld)      → the projects' codes, and
+                                                   the form tracks compare in
 """
 import json
 
@@ -276,3 +294,116 @@ def test_plex_reporting_the_other_form_counts_as_a_match(monkeypatch):
             {"streamType": 2, "languageCode": "ger"}]}]}]}]}})
 
     assert plex_mod._audio_languages_match("http://plex", "t", 1, ["deu"]) is True
+
+
+# ── Sonarr's and Radarr's language names ─────────────────────────────────────
+#
+# Every language each project defines (Languages/Language.cs) on its release
+# branch, Sonarr main at bc54afb and Radarr master at a96bf7c, by the name its
+# API sends, with the three-letter code its own table (Parser/IsoLanguages.cs)
+# gives it, or None where it gives none. Read from the source, not the docs.
+# Sonarr's names are a subset of Radarr's, and where both give a code they
+# agree. Refreshing these after either project adds a language is what
+# keeps ARR_LANGUAGE_NAMES complete.
+ARR_PROJECT_CODES = {
+    "Afrikaans": None, "Albanian": None, "Any": None, "Arabic": "ara",
+    "Bengali": None, "Bosnian": "bos", "Bulgarian": "bul", "Catalan": "cat",
+    "Chinese": "zho", "Croatian": "hrv", "Czech": "ces", "Danish": "dan",
+    "Dutch": "nld", "English": "eng", "Estonian": "est", "Finnish": "fin",
+    "Flemish": "nld", "French": "fra", "Georgian": None, "German": "deu",
+    "Greek": "ell", "Hebrew": "heb", "Hindi": "hin", "Hungarian": "hun",
+    "Icelandic": "isl", "Indonesian": "ind", "Italian": "ita",
+    "Japanese": "jpn", "Kannada": None, "Korean": "kor", "Latvian": "lav",
+    "Lithuanian": "lit", "Macedonian": "mkd", "Malayalam": "mal",
+    "Marathi": None, "Mongolian": None, "Norwegian": "nor", "Original": None,
+    "Persian": "fas", "Polish": "pol", "Portuguese": "por",
+    "Portuguese (Brazil)": "por", "Romanian": "ron", "Romansh": None,
+    "Russian": "rus", "Serbian": "srp", "Slovak": "slk", "Slovenian": "slv",
+    "Spanish": "spa", "Spanish (Latino)": "spa", "Swedish": "swe",
+    "Tagalog": None, "Tamil": "tam", "Telugu": None, "Thai": "tha",
+    "Turkish": "tur", "Ukrainian": "ukr", "Unknown": None, "Urdu": None,
+    "Vietnamese": "vie",
+}
+SONARR_LANGUAGE_NAMES = {
+    "Arabic", "Bosnian", "Bulgarian", "Catalan", "Chinese", "Croatian",
+    "Czech", "Danish", "Dutch", "English", "Estonian", "Finnish", "Flemish",
+    "French", "German", "Greek", "Hebrew", "Hindi", "Hungarian", "Icelandic",
+    "Indonesian", "Italian", "Japanese", "Korean", "Latvian", "Lithuanian",
+    "Macedonian", "Malayalam", "Norwegian", "Original", "Persian", "Polish",
+    "Portuguese", "Portuguese (Brazil)", "Romanian", "Russian", "Serbian",
+    "Slovak", "Slovenian", "Spanish", "Spanish (Latino)", "Swedish", "Tamil",
+    "Thai", "Turkish", "Ukrainian", "Unknown", "Vietnamese",
+}
+NO_LANGUAGE = {"Unknown", "Any", "Original"}
+# The eleven neither project gives a code, as the ISO 639-2 registry names
+# them (pycountry 26.2.16), in whichever three-letter form it lists.
+ISO_REGISTRY_CODES = {
+    "Afrikaans": "afr", "Albanian": "sqi", "Bengali": "ben", "Georgian": "kat",
+    "Kannada": "kan", "Marathi": "mar", "Mongolian": "mon", "Romansh": "roh",
+    "Tagalog": "tgl", "Telugu": "tel", "Urdu": "urd",
+}
+
+
+def test_every_sonarr_and_radarr_language_has_a_code():
+    """
+    A name missing from the table reads as no original language, so the
+    feature quietly does nothing for that film or series.
+    """
+    from app.core.langcodes import ARR_LANGUAGE_NAMES
+
+    assert SONARR_LANGUAGE_NAMES <= set(ARR_PROJECT_CODES)
+    assert set(ARR_LANGUAGE_NAMES) == set(ARR_PROJECT_CODES) - NO_LANGUAGE
+
+
+def test_the_table_agrees_with_the_projects_own_codes():
+    """
+    Where a project names the code itself, the table holds that code in the
+    form canonical() compares (fra becomes fre); the rest came from the ISO
+    639-2 registry by name.
+    """
+    from app.core.langcodes import ARR_LANGUAGE_NAMES
+
+    theirs = {name: canonical(code) for name, code in ARR_PROJECT_CODES.items() if code}
+    assert {name: ARR_LANGUAGE_NAMES[name] for name in theirs} == theirs
+
+
+def test_the_rest_agree_with_the_iso_registry():
+    """
+    The eleven a project gives no code for. Checked against the registry's
+    entries recorded above, so a wrong but valid code (Urdu as hin) fails
+    here rather than passing the shape check below.
+    """
+    from app.core.langcodes import ARR_LANGUAGE_NAMES
+
+    gaps = {name for name, code in ARR_PROJECT_CODES.items() if not code} - NO_LANGUAGE
+    assert gaps == set(ISO_REGISTRY_CODES)
+    assert {name: ARR_LANGUAGE_NAMES[name] for name in gaps} == {
+        name: canonical(code) for name, code in ISO_REGISTRY_CODES.items()}
+
+
+def test_every_code_is_already_in_the_form_tracks_are_compared_in():
+    from app.core.langcodes import ARR_LANGUAGE_NAMES
+
+    bibliographic = set(TWO_LETTER.values())
+    assert all(canonical(code) == code and code in bibliographic
+               for code in ARR_LANGUAGE_NAMES.values())
+
+
+@pytest.mark.parametrize("language, code", [
+    ({"id": 2, "name": "French"}, "fre"),
+    # The same id in both services, two different languages: only the name
+    # can be trusted.
+    ({"id": 26, "name": "Arabic"}, "ara"),     # Sonarr's 26
+    ({"id": 26, "name": "Hindi"}, "hin"),      # Radarr's 26
+    ({"id": 0, "name": "Unknown"}, None),
+    ({"id": -1, "name": "Any"}, None),
+    ({"id": -2, "name": "Original"}, None),
+    ({"id": 99, "name": "Klingon"}, None),
+    ({"id": 2}, None),
+    (None, None),
+    ("French", None),
+])
+def test_a_language_object_is_read_by_its_name(language, code):
+    from app.core.langcodes import from_arr_language
+
+    assert from_arr_language(language) == code

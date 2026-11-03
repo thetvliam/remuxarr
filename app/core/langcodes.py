@@ -24,6 +24,10 @@ two_letter() is the other direction, for the .srt names Plex reads
 (Movie.en.srt): the ISO 639-1 code where the language has one, the
 three-letter code where it does not.
 
+from_arr_language() reads the language objects Sonarr and Radarr send, such
+as a series' or movie's original language, which carry an English name and
+an id rather than a code.
+
 The tables are the ISO 639-2 registry as published (184 two-letter codes;
 the twenty languages whose /T code differs from /B), generated from
 pycountry's copy of it rather than typed. test_language_codes.py checks them
@@ -73,6 +77,37 @@ TERMINOLOGIC = {
 }
 
 
+# Sonarr's and Radarr's languages, by the name their API and webhooks give
+# (a series' or movie's originalLanguage is {"id": 2, "name": "French"}), in
+# the form canonical() returns. By name, because the two number their
+# languages differently from 26 on: 26 is Arabic in Sonarr and Hindi in
+# Radarr. Every name either defines on its release branch (Sonarr main at
+# bc54afb, Radarr master at a96bf7c; Sonarr's are a subset of Radarr's)
+# except Unknown, Any and Original, which name no language. Generated: the
+# code each project's IsoLanguages gives, and, for the eleven it gives none
+# (Afrikaans, Albanian, Bengali, Georgian, Kannada, Marathi, Mongolian,
+# Romansh, Tagalog, Telugu, Urdu), the ISO 639-2 registry's entry of that
+# name. test_language_codes.py checks the table against both projects' lists.
+ARR_LANGUAGE_NAMES = {
+    "Afrikaans": "afr", "Albanian": "alb", "Arabic": "ara", "Bengali": "ben",
+    "Bosnian": "bos", "Bulgarian": "bul", "Catalan": "cat", "Chinese": "chi",
+    "Croatian": "hrv", "Czech": "cze", "Danish": "dan", "Dutch": "dut",
+    "English": "eng", "Estonian": "est", "Finnish": "fin", "Flemish": "dut",
+    "French": "fre", "Georgian": "geo", "German": "ger", "Greek": "gre",
+    "Hebrew": "heb", "Hindi": "hin", "Hungarian": "hun", "Icelandic": "ice",
+    "Indonesian": "ind", "Italian": "ita", "Japanese": "jpn",
+    "Kannada": "kan", "Korean": "kor", "Latvian": "lav", "Lithuanian": "lit",
+    "Macedonian": "mac", "Malayalam": "mal", "Marathi": "mar",
+    "Mongolian": "mon", "Norwegian": "nor", "Persian": "per", "Polish": "pol",
+    "Portuguese": "por", "Portuguese (Brazil)": "por", "Romanian": "rum",
+    "Romansh": "roh", "Russian": "rus", "Serbian": "srp", "Slovak": "slo",
+    "Slovenian": "slv", "Spanish": "spa", "Spanish (Latino)": "spa",
+    "Swedish": "swe", "Tagalog": "tgl", "Tamil": "tam", "Telugu": "tel",
+    "Thai": "tha", "Turkish": "tur", "Ukrainian": "ukr", "Urdu": "urd",
+    "Vietnamese": "vie",
+}
+
+
 # Where the .srt names Remuxarr has always written differ from ISO 639-1:
 # Norwegian Bokmal and Nynorsk were named "no", not "nb" and "nn". Kept, so a
 # file processed again does not get a second sidecar under the other name.
@@ -99,3 +134,15 @@ def two_letter(code: str) -> str:
     """The code a .srt name carries: ISO 639-1 if the language has one."""
     code = canonical(code)
     return _TO_TWO_LETTER.get(code, code)
+
+
+def from_arr_language(language) -> str | None:
+    """
+    The code for a Sonarr or Radarr language object ({"id", "name"}), or None
+    when it names no language: Unknown, Any, Original, a name this table does
+    not have, or anything that is not such an object. Read by name alone; the
+    id means a different language in each service.
+    """
+    if not isinstance(language, dict):
+        return None
+    return ARR_LANGUAGE_NAMES.get(language.get("name"))

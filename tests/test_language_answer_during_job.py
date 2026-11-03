@@ -29,6 +29,13 @@ upgrade step missing, by test_schema_migration:
   • the mark used up while a job runs        → the scan during the job
   • the mark never cleared                   → the successful job, both
                                                endings
+
+The test at the end is about an answer given after the job rather than
+during it: the question had to follow its track through the job first. Its
+mutation record is in test_job_finalisation.py, beside the tests that pin
+the re-key itself; three of those ten mutants are killed here as well (the
+re-key not called, the old track list read only with answers, and audio
+questions left out).
 """
 import asyncio
 import json
@@ -60,10 +67,10 @@ def _audio_languages(path):
 
 
 @pytest.fixture
-def lib(tmp_path, monkeypatch):
+def database(tmp_path, monkeypatch):
     """
-    Movie.mkv with two untagged audio tracks, scanned: a job is queued to
-    convert it to MP4, and each track is a question in Audio Language Review.
+    A file-backed database the worker and the routes both use, with Dry Run
+    off and an empty library folder.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -71,8 +78,7 @@ def lib(tmp_path, monkeypatch):
     import app.core.worker as worker
     import app.database.session as session_module
     from app.config import settings as app_settings
-    from app.core import scanner
-    from app.database.models import AppSetting, AudioLanguageFlag, Base, QueueItem
+    from app.database.models import AppSetting, Base
 
     engine = create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
                            connect_args={"check_same_thread": False, "timeout": 30})
@@ -86,6 +92,24 @@ def lib(tmp_path, monkeypatch):
 
     library = tmp_path / "library"
     library.mkdir()
+    with factory() as db:
+        db.merge(AppSetting(key="dry_run_mode", value=json.dumps(False)))
+        db.commit()
+
+    yield SimpleNamespace(Session=factory, worker=worker, library=library)
+    engine.dispose()
+
+
+@pytest.fixture
+def lib(database):
+    """
+    Movie.mkv with two untagged audio tracks, scanned: a job is queued to
+    convert it to MP4, and each track is a question in Audio Language Review.
+    """
+    from app.core import scanner
+    from app.database.models import AudioLanguageFlag, QueueItem
+
+    factory, library = database.Session, database.library
     video = library / "Movie.mkv"
     subprocess.run([
         "ffmpeg", "-v", "error", "-y",
@@ -97,14 +121,11 @@ def lib(tmp_path, monkeypatch):
         "-c:a", "aac", "-f", "matroska", str(video)], check=True)
 
     with factory() as db:
-        db.merge(AppSetting(key="dry_run_mode", value=json.dumps(False)))
-        db.commit()
         scanner.scan_library(db, [str(library)], force_probe=True)
         assert [q.status for q in db.query(QueueItem)] == ["pending"], "no job queued"
         assert db.query(AudioLanguageFlag).count() == 2, "no questions to answer"
 
-    yield SimpleNamespace(Session=factory, worker=worker, library=library)
-    engine.dispose()
+    return database
 
 
 def _answer(lib, language="jpn"):
@@ -210,3 +231,52 @@ def test_a_scan_while_the_job_runs_leaves_the_mark(lib):
     assert stats.unchanged == 1
     assert _state(lib).marked is True
     lib.worker._finish_job(job_id, False, None, None, "stopped for the test")
+
+
+def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):
+    """
+    French, untagged and English audio, with undefined audio left to ask
+    about. The job drops French, so the untagged track moves from stream 2
+    to 1 and English takes stream 2. The question stayed at stream 2: the
+    answer was stored against English and the follow-up job retagged it,
+    leaving [und, jpn] where [jpn, eng] was asked for. Reproduced with real
+    FFmpeg before scanner.rekey_language_flags existed.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.core import scanner
+    from app.database.models import AppSetting, AudioLanguageFlag, MediaFile, QueueItem
+
+    lib, factory, library = database, database.Session, database.library
+    video = library / "Movie.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=300:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=500:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=700:duration=1",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-metadata:s:a:0", "language=fre", "-metadata:s:a:2", "language=eng",
+        "-f", "matroska", str(video)], check=True)
+
+    with factory() as db:
+        for key, value in (("fix_undefined_language_audio", "always_ask"),
+                           ("undefined_language_mode_audio", "all_undefined")):
+            db.merge(AppSetting(key=key, value=json.dumps(value)))
+        db.commit()
+        scanner.scan_library(db, [str(library)], force_probe=True)
+        assert [f.stream_index for f in db.query(AudioLanguageFlag)] == [2]
+        assert [q.status for q in db.query(QueueItem)] == ["pending"]
+    _run_next(lib)
+    # MP4 writes "und" for an untagged track, so that is how it reads back.
+    assert _audio_languages(_state(lib).path) == ["und", "eng"], "French was not dropped"
+
+    with factory() as db:
+        ids = [f.id for f in db.query(AudioLanguageFlag)]
+        apply_language(ApplyRequest(flag_ids=ids, target_language="jpn"), db)
+    _run_next(lib)
+
+    with factory() as db:
+        path = db.query(MediaFile).one().path
+    assert _audio_languages(path) == ["jpn", "eng"]

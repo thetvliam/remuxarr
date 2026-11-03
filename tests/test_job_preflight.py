@@ -510,6 +510,7 @@ def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
         "video_codec": "hevc",
         "font_attachments": 3,
         "und_audio_threshold_acknowledged": True,
+        "original_language": None,
         # The rig's folder holds only the video itself.
         "folder_entries": [rig.path],
     }

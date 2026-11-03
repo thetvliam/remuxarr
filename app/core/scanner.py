@@ -19,8 +19,10 @@ For each media file found on disk:
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
+from app.core.arr_lookup import original_languages
 from app.core.timeutil import utcnow
 
 from sqlalchemy.exc import InvalidRequestError
@@ -166,6 +168,17 @@ def scan_library(
     scan_label = "full" if force_probe else ("re-check" if recheck else "delta")
     rules    = ExcludeRules.from_settings(app_cfg, paths)
 
+    # Original Language Audio's lookup. Only for a re-check or a full rescan,
+    # the two scans that decide files already seen, and only while the
+    # setting is on: a routine scan sees new and changed files, which an
+    # import's webhook has usually told about already, and asking each
+    # service for its whole library on every scheduled scan was the cost
+    # chosen against. One request per service per scan, before the walk.
+    original_language_for = None
+    if ((force_probe or recheck)
+            and app_cfg.get("original_language_audio", "off") != "off"):
+        original_language_for = original_languages(app_cfg)
+
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))
 
     # Pre-count total media files across all paths so the progress callback
@@ -213,10 +226,27 @@ def scan_library(
 
                 try:
                     _process_file(db, full_path, app_cfg, force_probe, dry_run, stats,
-                                  recheck=recheck)
+                                  recheck=recheck,
+                                  original_language=(original_language_for(full_path)
+                                                     if original_language_for else None))
                 except Exception:
                     logger.exception("Unexpected error processing %s", full_path)
                     stats.errors += 1
+                    # Every other caller of _process_file rolls back here, and
+                    # this one has more reason to: the session is shared by
+                    # the whole walk. A failed flush or commit leaves it
+                    # refusing all further work, so one UNIQUE clash (a
+                    # webhook recording the same new file while this one was
+                    # probing it) failed every file after it and then the
+                    # cleanup pass, and the scan reported failure with 0
+                    # files. Any other error leaves this file's record and
+                    # tracks flushed but not committed, and the next file's
+                    # commit saved them with the real size and mtime, so the
+                    # next delta scan called the file unchanged and never
+                    # tried it again; the last file walked was retried, as
+                    # nothing committed after it. Discarded, the file is
+                    # tried by every scan until it succeeds.
+                    db.rollback()
 
                 if progress_callback:
                     progress_callback(scanned, total_files)
@@ -270,11 +300,15 @@ def queue_single_file(
     path: str,
     sonarr_series_id: int | None = None,
     radarr_movie_id:  int | None = None,
+    original_language: str | None = None,
 ) -> QueueItem | None:
     """
     Probe and (re-)queue a single file immediately.
     Used by the webhook handler after debounce expires.
     Returns the new QueueItem or None if the file was skipped.
+
+    original_language is the webhook's, stored on the file's record
+    (MediaFile.original_language).
 
     A file the exclude settings match is not probed or queued. A record
     already held for it is left to the next scan's remove_excluded_files.
@@ -292,6 +326,7 @@ def queue_single_file(
         force_probe=True, dry_run=dry_run, stats=stats,
         sonarr_series_id=sonarr_series_id,
         radarr_movie_id=radarr_movie_id,
+        original_language=original_language,
     )
 
     media = db.query(MediaFile).filter(MediaFile.path == path).first()
@@ -413,12 +448,28 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     manual_review has the exact same character and needs the same
     treatment.
 
+    The rows' PlannedActions go first, by hand. A bulk delete bypasses the
+    ORM cascade, and SQLite's foreign_keys PRAGMA is off, so the schema's
+    ondelete=CASCADE does nothing either. Skipped and review rows do carry
+    actions: the worker's pickup moves a pending job to either status
+    without removing its plan. Left behind, the actions were picked up by
+    the next queue item SQLite gave the same id, which is the one this scan
+    creates next whenever the deleted row was the newest, and showed in its
+    plan beside its own.
+
     Deliberately does NOT apply to completed/failed/cancelled/dry_run —
     those represent real, historical events that actually happened and
     should stay in history regardless of the file's current state; only
     "skipped" and "manual_review" can have their entire claim become
     false out from under them like this.
     """
+    stale = db.query(QueueItem.id).filter(
+        QueueItem.file_id == file_id,
+        QueueItem.status.in_(statuses),
+    )
+    db.query(PlannedAction).filter(
+        PlannedAction.queue_item_id.in_(stale)
+    ).delete(synchronize_session=False)
     db.query(QueueItem).filter(
         QueueItem.file_id == file_id,
         QueueItem.status.in_(statuses),
@@ -448,13 +499,12 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     NOT routed through _clear_stale_status_records for two load-bearing
     reasons:
 
-    1. Cascade safety — that helper uses a bulk delete, which bypasses
-       ORM relationship cascades, and this codebase does not enable
-       SQLite's foreign_keys PRAGMA, so the schema-level
-       ondelete=CASCADE is inert too. Harmless there (skipped /
-       manual_review items never have PlannedActions); here it would
-       orphan the pending item's planned_actions rows forever. Children
-       are deleted explicitly instead.
+    1. Cascade safety — a bulk delete bypasses ORM relationship
+       cascades, and this codebase does not enable SQLite's foreign_keys
+       PRAGMA, so the schema-level ondelete=CASCADE is inert too. Both
+       functions delete the children by hand for that reason; this one
+       has to tie that to the guarded delete below, which the helper's
+       unguarded one does not need.
 
     2. Claim race — the worker can claim a pending item (flipping it to
        "processing") between this function's SELECT and its DELETE.
@@ -601,11 +651,15 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     # except when its subtitle was extracted and the .srt is still there.
     #
     # That exception is what makes the question survive the job that
-    # raises it. Extraction removes the track from the mux, so the
-    # re-analysis _finish_job runs on the OUTPUT sees no subtitle tracks,
-    # reports no mismatches, and used to delete every row — the review
-    # page emptied itself the moment the work finished, and three files
-    # named "und" were left with nothing offering to correct them.
+    # raises it. Extraction removes the track from the mux, so any later
+    # analysis of the OUTPUT (a scan, or the next job's pickup) sees no
+    # subtitle tracks, reports no mismatches, and used to delete every row
+    # — the review page emptied itself, and three files named "und" were
+    # left with nothing offering to correct them. This comment once said
+    # _finish_job re-analysed the output; it never has. It moves the rows
+    # instead (rekey_language_flags), and an extracted track's row gets a
+    # negative stream_index, so it never matches a mismatch above and
+    # always arrives here.
     #
     # "No such track any more" does not mean "no longer a problem" here.
     # It means the tag can no longer be fixed in the file and only the
@@ -997,9 +1051,14 @@ def _process_file(
     sonarr_series_id: int | None = None,
     radarr_movie_id:  int | None = None,
     recheck:     bool = False,
+    original_language: str | None = None,
 ) -> None:
     """
     Probe (when needed), decide and queue one file.
+
+    original_language, when given, is stored on the record. None leaves what
+    is stored alone: most callers have no source for it, and a retry or a
+    scan must not wipe what a webhook brought.
 
     recheck re-decides a file the delta check would skip, from the tracks
     stored for it, so a settings change reaches files already scanned
@@ -1164,6 +1223,9 @@ def _process_file(
 
         db.flush()
         fmt_container = fmt_info.get("container", "")
+
+    if original_language:
+        media_file.original_language = original_language
 
     # ── Clear stale dry-run results ─────────────────────────────────────────
     # This file is being re-evaluated right now (it changed, or its previous
@@ -1606,6 +1668,110 @@ def rekey_media_answers(
         setattr(media, attr, json.dumps(carried) if carried else None)
 
 
+def next_free_srt_name(path: str, avoid: set[str] = frozenset()) -> str:
+    """
+    The first numbered name beside a subtitle file that nothing holds:
+    Movie.en.srt gives Movie.en.2.srt, or .3 and on when that is taken.
+
+    A number the name already ends in is dropped first, so Movie.en.2.srt
+    gives Movie.en.3.srt rather than Movie.en.2.2.srt. `avoid` holds
+    casefolded names that count as taken although nothing is on disk yet,
+    such as the ones a job is about to write.
+
+    Taken out of worker._move_aside, which uses it for embedded_first, so
+    that renaming a sidecar in Language Review numbers past a taken name by
+    the same rule rather than by a copy of it.
+    """
+    stem = re.sub(r"\.\d+$", "", path[:-len(".srt")]
+                  if path.lower().endswith(".srt") else os.path.splitext(path)[0])
+    n = 2
+    while True:
+        candidate = f"{stem}.{n}.srt"
+        if candidate.casefold() not in avoid and not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+
+def rekey_language_flags(
+    db:        Session,
+    file_id:   int,
+    mapping:   dict[int, int],
+    extracted: set[int],
+) -> None:
+    """
+    Move a file's Language Review questions to where their tracks now sit,
+    after Remuxarr rewrote it: a job (worker._finish_job), a revert
+    (revert_restore._apply, through the revert point's manifest) and an AC3
+    Forge undo (forge.finish_forge_job). A forge add needs none, as it
+    appends its track after every existing one. Does not commit.
+
+    The rows are keyed by stream_index, a position in one probe of the file,
+    and Set language stores its answer against whatever track has that
+    position when it is clicked. A job that drops or extracts a track
+    renumbers everything after it, and its new size and mtime mean no delta
+    scan looks at the file again, so a question raised for an untagged track
+    at stream 2 was answered onto the English track that had moved into
+    stream 2, and the follow-up job retagged it.
+
+    `mapping` is job_stream_mapping's, the one the stored answers follow.
+    A kept track's question takes the track's new position. A subtitle the
+    job extracted keeps its question while its sidecar exists, for the
+    reason _upsert_language_flags gives where it declines to delete one, but
+    the track is no longer in the file, so it gets a negative stream_index:
+    one below the lowest already used for the file, so a second job
+    extracting at the same old position cannot clash with the first. Left at
+    its old position it claimed whichever track moved there, both for Set
+    language and for the next scan's upsert. Every other question for a
+    track the job removed is deleted, as is one the mapping could not pair,
+    the case in which the stored answers are dropped too.
+
+    In two steps, through temporary positions no row holds: the table is
+    unique on (file_id, stream_index), so moving 3 to 2 while another row
+    still held 2 failed outright, depending on the order the rows were
+    written in. The rows are updated rather than replaced because the
+    review page selects them by id.
+    """
+    moves: list[tuple[object, int]] = []
+    for flag in db.query(AudioLanguageFlag).filter(AudioLanguageFlag.file_id == file_id):
+        if flag.stream_index in mapping:
+            moves.append((flag, mapping[flag.stream_index]))
+        else:
+            db.delete(flag)
+
+    sub_flags = (db.query(SubtitleLanguageFlag)
+                   .filter(SubtitleLanguageFlag.file_id == file_id)
+                   .order_by(SubtitleLanguageFlag.stream_index)
+                   .all())
+    lowest = min([f.stream_index for f in sub_flags] + [0])
+    for flag in sub_flags:
+        if flag.stream_index < 0:
+            # Extracted by an earlier job, so it holds no position. Kept
+            # while its sidecar is there; once it is gone the scan's own
+            # rule would delete the row, and until then Set language could
+            # only report it as no longer in the file. A revert removes the
+            # sidecars it re-embeds before calling this.
+            if not (flag.extracted_path and os.path.exists(flag.extracted_path)):
+                db.delete(flag)
+            continue
+        if flag.stream_index in mapping:
+            moves.append((flag, mapping[flag.stream_index]))
+        elif (flag.stream_index in extracted and flag.extracted_path
+                and os.path.exists(flag.extracted_path)):
+            lowest -= 1
+            moves.append((flag, lowest))
+        else:
+            db.delete(flag)
+
+    # Temporaries far below any position a file or the allocation above
+    # reaches, distinct per row because ids are distinct per table.
+    for flag, _new in moves:
+        flag.stream_index = -1_000_000_000 - flag.id
+    db.flush()
+    for flag, new in moves:
+        flag.stream_index = new
+    db.flush()
+
+
 def clear_media_answers(media: MediaFile, why: str) -> None:
     """
     Forget a file's answers when it was rewritten and its new tracks could
@@ -1764,6 +1930,7 @@ def _file_info_for(media_file: MediaFile) -> dict:
     """
     return {
         "path":             media_file.path,
+        "original_language": media_file.original_language,
         "container":        media_file.container,
         "video_codec":      media_file.video_codec,
         "font_attachments": media_file.font_attachments,

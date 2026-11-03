@@ -353,8 +353,10 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     """
     from app.core.scanner import (ANSWER_COLUMNS, _delete_media_file_and_related,
                                   _track_to_dict, clear_media_answers,
-                                  rekey_media_answers, replace_track_rows)
-    from app.database.models import MediaFile, RevertPoint, Track
+                                  rekey_language_flags, rekey_media_answers,
+                                  replace_track_rows)
+    from app.database.models import (AudioLanguageFlag, MediaFile, RevertPoint,
+                                      SubtitleLanguageFlag, Track)
 
     media = db.get(MediaFile, plan.file_id)
     if media is None:
@@ -433,14 +435,33 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         # order, so each one's own index is where it now sits. A stream the
         # revert brought back from the sidecar had no track to answer for in
         # the processed file, so its question is asked again.
-        if any(getattr(media, a) for a in ANSWER_COLUMNS):
+        #
+        # The Language Review questions are moved by the same mapping, for
+        # the reason rekey_language_flags gives: a question left at its
+        # processed position named whichever track the revert put there, a
+        # dropped French track coming back in front of the untagged one it
+        # was asked about, say. Nothing is marked extracted, as a revert
+        # extracts nothing; an extracted subtitle's question loses its row
+        # if the revert removed its sidecar (_remove_created_files runs
+        # first), since the subtitle is back in the file and the next scan
+        # asks about it there.
+        has_answers = any(getattr(media, a) for a in ANSWER_COLUMNS)
+        has_flags = any(
+            db.query(Flag.id).filter(Flag.file_id == media.id).first()
+            for Flag in (AudioLanguageFlag, SubtitleLanguageFlag)
+        )
+        if has_answers or has_flags:
             before = [_track_to_dict(t) for t in
                       db.query(Track).filter(Track.file_id == media.id)]
-            rekey_media_answers(media, before, track_list, {
+            mapping = {
                 stream["processed_index"]: stream["index"]
                 for stream in plan.manifest.get("streams", [])
                 if stream.get("processed_index") is not None
-            })
+            }
+            if has_answers:
+                rekey_media_answers(media, before, track_list, mapping)
+            if has_flags:
+                rekey_language_flags(db, media.id, mapping, set())
 
         replace_track_rows(db, media.id, track_list)
 
