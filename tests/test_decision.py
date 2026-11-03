@@ -831,6 +831,62 @@ def test_fix_undefined_language_writes_target_language(settings):
     assert audio_action.target_language == "eng"
 
 
+# A Language Review answer that corrects a tag is named the same way. 3
+# mutations applied, 3 killed, all three surviving the 2242-test suite
+# before these: the track's current tag named in place of the answer (by
+# the first two), the answer named on audio only (by the second), and the
+# answer named on a track whose tag already matches it (by the third).
+
+def test_the_plan_names_the_tag_an_audio_answer_corrects_to(settings):
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="dut"),
+    ]
+    settings["keep_audio_languages"] = ["eng", "dut"]
+
+    d = analyze_file(make_file_info(), tracks, settings,
+                     audio_language_overrides={1: "eng"})
+
+    assert next(a for a in d.actions if a.stream_index == 1).description == (
+        "Copy audio [dut] aac stereo (stream 1) — language tag set to eng")
+
+
+def test_the_plan_names_the_tag_a_subtitle_answer_corrects_to(settings):
+    settings["keep_undefined_subtitles"] = True
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="eng"),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip", language="und"),
+    ]
+
+    d = analyze_file(make_file_info(path="/m/Film.mkv", container="mkv"), tracks,
+                     settings, subtitle_language_overrides={2: "eng"})
+
+    assert next(a for a in d.actions if a.stream_index == 2).description.endswith(
+        " — language tag set to eng")
+
+
+def test_an_answer_the_tag_already_matches_names_nothing(settings):
+    """
+    The pass skips it, as the correction already happened. The German track
+    gives the file something else to do, so that the line exists.
+    """
+    settings["keep_audio_languages"] = ["eng"]
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="eng"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="ger"),
+    ]
+
+    d = analyze_file(make_file_info(), tracks, settings,
+                     audio_language_overrides={1: "eng"})
+
+    kept = next(a for a in d.actions if a.stream_index == 1)
+    assert kept.action_type == "copy_track"
+    assert "language tag" not in kept.description
+
+
 # ── Undefined-language mode, per track type ──────────────────────────────────
 #
 # fix_undefined_language used to cover audio and subtitles together, so

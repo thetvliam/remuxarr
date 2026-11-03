@@ -1694,7 +1694,14 @@ def _apply_language_override_pass(
             and action.action_type in ("copy_track", "transcode_track")
             and current_language_by_stream.get(action.stream_index) != override_lang
         ):
-            actions[i] = dc_replace(action, target_language=override_lang)
+            # Named in the plan, as the undefined-tag pass names its tag:
+            # the line shows the tag being corrected, and the reason only
+            # says that one is.
+            actions[i] = dc_replace(
+                action, target_language=override_lang,
+                description=(f"{action.description} — "
+                             f"language tag set to {override_lang}"),
+            )
             fixed_indices.add(action.stream_index)
 
     return fixed_indices
