@@ -2264,6 +2264,15 @@ def _finish_job(
 
                         replace_track_rows(db, media.id, track_list)
 
+                        # A job can drop a forged AC3 with the AAC it was
+                        # built from, as the two share a language. Its forge
+                        # job kept saying "success", which kept the file off
+                        # the Forge page's candidates until an undo found
+                        # nothing to remove. From the same probe, in the
+                        # same commit, as a revert does it.
+                        from app.core.forge import settle_forge_jobs
+                        settle_forge_jobs(db, media.id, track_list, after="job")
+
                         primary_video_codec = next(
                             (t["codec"] for t in track_list if t["track_type"] == "video"),
                             None,

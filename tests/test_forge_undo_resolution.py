@@ -437,7 +437,7 @@ def test_original_status_matrix_unchanged():
 # ── After a revert ───────────────────────────────────────────────────────────
 #
 # A revert removes an AC3 forged after processing, and brings one forged
-# before it back. revert_restore._settle_forge_jobs uses the resolver above,
+# before it back. forge.settle_forge_jobs uses the resolver above,
 # on the probe of the restored file, to bring the file's forge jobs in line.
 #
 # Mutants, run against the suite without these tests first (they were
@@ -452,6 +452,12 @@ def test_original_status_matrix_unchanged():
 #
 # The last two tests came with settling each job by its own ac3_marked; their
 # mutants are recorded in test_forge_undo_identity.
+#
+# The function moved from revert_restore to forge when _finish_job came to
+# call it as well, and these tests changed only their import and gained the
+# caller argument. The seven mutants above and those two were run before the
+# move and again at the new location, and each was killed by the same tests
+# both times.
 
 import pytest  # noqa: E402
 
@@ -498,13 +504,13 @@ def test_a_revert_that_removed_the_forged_track_settles_its_jobs_as_undone(forge
     job stayed "success", the Forge page listed the file as forged, and
     queueing it again was refused as already processed.
     """
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
     stuck = _job(forge_db, 1, "undo_failed")
     failed_add = _job(forge_db, 1, "failed")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)], after="revert")
     forge_db.commit()
 
     statuses = _statuses(forge_db)
@@ -519,11 +525,11 @@ def test_a_revert_that_removed_the_forged_track_settles_its_jobs_as_undone(forge
 
 def test_a_revert_that_brought_the_forged_track_back_leaves_its_jobs(forge_db):
     """Forged before processing, the AC3 is part of the original and returns."""
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)
@@ -535,23 +541,23 @@ def test_an_ac3_where_the_forge_never_puts_one_is_not_guessed_about(forge_db):
     that, and so does this. Settling it as undone would invite a second
     forge onto a file that may still carry the first.
     """
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1), _aac51(2)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1), _aac51(2)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)
 
 
 def test_only_the_reverted_files_jobs_are_settled(forge_db):
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     mine = _job(forge_db, 1, "success")
     other = _job(forge_db, 2, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)], after="revert")
     forge_db.commit()
 
     statuses = _statuses(forge_db)
@@ -592,12 +598,12 @@ def test_each_job_is_settled_by_its_own_rule(forge_db):
     as the forged one still there, so an unmarked job keeps "success", the
     answer that rule has always given here.
     """
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     marked = _job(forge_db, 1, "success", marked=True)
     unmarked = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)], after="revert")
     forge_db.commit()
 
     statuses = _statuses(forge_db)
@@ -607,11 +613,11 @@ def test_each_job_is_settled_by_its_own_rule(forge_db):
 
 def test_a_restored_file_whose_only_audio_is_an_ac3_51_is_not_settled(forge_db):
     """The undo refuses that file, so the revert does not settle it either."""
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)

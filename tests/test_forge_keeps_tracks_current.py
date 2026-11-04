@@ -471,3 +471,93 @@ def test_an_add_for_a_file_with_no_stored_container_fails_and_changes_nothing(li
     assert job.status == "failed"
     assert "Unsupported container ''" in job.error
     assert mp4.read_bytes() == before
+
+
+# ── The forge job after a job ────────────────────────────────────────────────
+#
+# A job rewrites the file too, and can take the forged AC3 with it: the AC3
+# inherits the language of the AAC it was built from, so dropping that
+# language drops both. Its forge job kept saying "success", which kept the
+# file off the Forge page's candidates and refused queueing it again, until
+# an undo found nothing to remove. _finish_job now settles the file's forge
+# jobs from its post-job probe (forge.settle_forge_jobs), as a revert does.
+#
+# Verified by mutation, 2 applied, 2 killed. Both survived the full suite
+# (2266 tests) first. That baseline included one mechanical change: the
+# settle tests in test_forge_undo_resolution import the function from forge,
+# where it moved, instead of revert_restore.
+#
+#   • no settling after a job               → the dropped-AC3 test
+#   • settling from the Track rows stored
+#     before the job instead of the probe   → the kept-AC3 test: stored rows
+#                                             keep no handler name, so a
+#                                             marked job's AC3 read as gone
+#
+# A first version of the second mutant called the function above its local
+# import, and every job crashed on it; it was re-aimed to change only the
+# track list.
+
+
+def _candidate(lib):
+    """Whether the Forge page lists the file, and whether it can be queued."""
+    from fastapi import HTTPException
+
+    from app.api.routes.forge import QueueForgeRequest, add_to_queue
+    from app.database.models import MediaFile
+
+    with lib.Session() as db:
+        file_id = db.query(MediaFile).one().id
+        listed = any(item["id"] == file_id
+                     for item in lib.forge.get_candidates(db)["items"])
+        try:
+            add_to_queue(QueueForgeRequest(file_id=file_id), db)
+            queued = True
+        except HTTPException:
+            queued = False
+        return listed, queued
+
+
+def _add_status(lib, job_id):
+    from app.database.models import Ac3ForgeJob
+
+    with lib.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        return job.status, job.is_undo
+
+
+@needs_ffmpeg
+def test_a_job_that_dropped_the_forged_ac3_frees_the_file_for_forging(lib):
+    """
+    French AAC 5.1, forged into a French AC3, beside an English AAC 5.1.
+    Dropping French takes both, and leaves an AAC 5.1 to forge from again.
+    """
+    _video(lib.video, audio=[("fre", 6, None), ENGLISH_51])
+    _queue(lib)
+    add_id, status = _forge(lib)
+    assert status == "success"
+    assert _candidate(lib) == (False, False), "the premise: a forged file is not offered"
+
+    _drop_french(lib, "keep_audio_languages")
+    assert _queue(lib) is not None
+    assert _run_queued(lib) == ("success", None)
+    assert [codec for codec, *_ in _audio(lib.video)] == ["aac"], "the job kept the AC3"
+
+    assert _add_status(lib, add_id) == ("undone", True)
+    assert _candidate(lib) == (True, True)
+
+
+@needs_ffmpeg
+def test_a_job_that_kept_the_forged_ac3_leaves_its_forge_job(lib):
+    """The job drops a French stereo track; the forged English AC3 stays."""
+    _video(lib.video, audio=[ENGLISH_51, ("fre", 2, None)])
+    _queue(lib)
+    add_id, status = _forge(lib)
+    assert status == "success"
+
+    _drop_french(lib, "keep_audio_languages")
+    assert _queue(lib) is not None
+    assert _run_queued(lib) == ("success", None)
+    assert ("ac3", 6, "eng", None) in _audio(lib.video)
+
+    assert _add_status(lib, add_id) == ("success", False)
+    assert _candidate(lib) == (False, False)

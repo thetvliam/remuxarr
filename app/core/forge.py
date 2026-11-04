@@ -696,6 +696,79 @@ def resolve_forge_aac_for_add(tracks: list[dict]) -> tuple[int, int] | None:
     return aac[0]["stream_index"], len(audio)
 
 
+def settle_forge_jobs(db, file_id: int, tracks: list[dict], *, after: str) -> None:
+    """
+    Bring the file's finished AC3 Forge jobs in line with the file, after
+    something other than the forge rewrote it. Does not commit.
+
+    Two things do, and each can take the forged AC3 away:
+
+      • a revert (after="revert", revert_restore._apply): an AC3 forged
+        after processing is not part of the original and goes. One forged
+        BEFORE processing is part of it, and comes back;
+      • a job (after="job", worker._finish_job): the forged AC3 inherits
+        its AAC's language, so dropping that language from Keep Audio
+        Languages drops both.
+
+    Either way the forge job used to keep saying "success". The Forge page
+    then listed the file as forged, left it out of the candidates and
+    refused to queue it again, until an undo that had nothing to remove.
+
+    tracks is the probe the caller has just made of the rewritten file, so
+    a probe that failed never reaches here and the jobs stay as they were.
+    The file decides, through resolve_forge_ac3_for_undo, the test the
+    undo itself uses, applied to each job with that job's own ac3_marked,
+    as its undo would apply it: "absent" settles the job as undone, the
+    state a completed undo leaves; "found" leaves it alone; "mismatch" (an
+    AC3 5.1 where the forge never puts one) and "only_audio" are left
+    alone too, as the undo refuses to act on either.
+
+    Per job, because the rule differs. Under the last-track rule alone, a
+    file that carries its own AC3 5.1 last reads as "found" once the
+    forged one has gone: the job stays "success", and its undo would then
+    remove the file's own AC3. A marked job looks for its marker, which
+    that track does not carry.
+
+    "undo_failed" is settled with "success": the AC3 that undo could not
+    remove is gone now as well. No other status is touched. A revert is
+    refused while the file has a pending or running forge job
+    (routes/revert.restore). After a job, a pending add or undo re-reads
+    the file when it starts, and goes by what it finds there
+    (load_forge_job_data).
+
+    after names the caller, for the log.
+    """
+    from app.database.models import Ac3ForgeJob
+
+    jobs = (db.query(Ac3ForgeJob)
+              .filter(Ac3ForgeJob.file_id == file_id,
+                      Ac3ForgeJob.status.in_(("success", "undo_failed")))
+              .all())
+    settled = 0
+    for job in jobs:
+        outcome, _index = resolve_forge_ac3_for_undo(
+            tracks, marked=bool(job.ac3_marked))
+        if outcome in ("mismatch", "only_audio"):
+            logger.warning(
+                "AC3 Forge job %d for file %d left as it is after the %s: "
+                "its undo would refuse the file (%s)",
+                job.id, file_id, after, outcome,
+            )
+            continue
+        if outcome == "found":
+            continue
+        job.status = "undone"
+        job.is_undo = True
+        job.completed_at = utcnow()
+        job.error_message = None
+        settled += 1
+    if settled:
+        logger.info(
+            "Marked %d AC3 Forge job(s) for file %d undone: the %s removed "
+            "the forged track", settled, file_id, after,
+        )
+
+
 def load_forge_job_data(job_id: int) -> dict | None:
     """
     Return everything the worker needs to execute a forge job.
