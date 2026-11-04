@@ -479,8 +479,13 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
 def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     """
     Delete any PENDING QueueItem(s) for this file — called from the
-    manual-review branch of _process_file right before it records the
-    review state.
+    manual-review and skip branches of _process_file right before each
+    records its state.
+
+    The skip branch needs it for the same reason as the one below, with a
+    skipped row in place of the review: a queued MKV-to-MP4 conversion, then
+    Prefer MP4 turned off and a Re-check, left the job pending beside the
+    skip, and its pickup added a second skipped row.
 
     Why this exists: a file could hold a pending item AND a
     manual_review item simultaneously. Sequence: a scan queues the file
@@ -1282,6 +1287,38 @@ def _process_file(
         if radarr_movie_id is None:
             radarr_movie_id = known_radarr
 
+    # ── A job running for this file ────────────────────────────────────────
+    # Nothing is recorded while one runs. The decision above came from the
+    # file as it was before the job, and the job is about to change it:
+    #
+    #   • a review raised now named its tracks by their pre-job stream
+    #     numbers. Once the job had dropped an audio track, the styled
+    #     subtitle the card showed as stream 3 was stream 2, stream 3 was
+    #     the French SRT, and the user's "remove" was stored against the
+    #     French SRT;
+    #   • a skip marked the file "skipped" while it was being processed;
+    #   • work the job was not doing (a subtitle language removed from the
+    #     keep list mid-job, say) reached the in-progress check in the queue
+    #     branch and was dropped. The job then recorded the file's new size
+    #     and mtime, so no delta scan looked at it again.
+    #
+    # All reproduced with a Re-check during a real job. The file is marked
+    # instead, as an answer given during a job marks it (see
+    # MediaFile.reevaluate_after_job): the worker decides it again from a
+    # fresh probe straight after a successful job, and the next scan does
+    # after any other outcome. The running job takes the IDs this call
+    # brought, for the reason the queue branch gives below.
+    running = db.query(QueueItem).filter(
+        QueueItem.file_id == media_file.id,
+        QueueItem.status == "processing",
+    ).first()
+    if running:
+        running.sonarr_series_id = sonarr_series_id
+        running.radarr_movie_id  = radarr_movie_id
+        media_file.reevaluate_after_job = True
+        db.commit()
+        return
+
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:
         media_file.status = "manual_review"
@@ -1373,6 +1410,11 @@ def _process_file(
         media_file.status = "skipped"
         stats.skipped += 1
         _clear_stale_status_records(db, media_file.id, ("manual_review",))
+        # A job still waiting from an earlier scan is superseded, as in the
+        # review branch. Left, the Queue held a conversion for a file History
+        # said needed nothing (Prefer MP4 turned off, then Re-check), and its
+        # pickup decided the same and left a second skipped row.
+        _supersede_stale_pending_items(db, media_file.id)
 
         # Create or update a skipped QueueItem so the file is visible in
         # the History panel with the reason it needed no changes.
@@ -1425,7 +1467,9 @@ def _process_file(
         return
 
     # ── Queue ──────────────────────────────────────────────────────────────
-    # Don't double-queue files already pending or being processed
+    # Don't double-queue files already pending. A running job returned
+    # further up; "processing" stays in the filter for one the worker claims
+    # between that check and this one.
     in_progress = db.query(QueueItem).filter(
         QueueItem.file_id == media_file.id,
         QueueItem.status.in_(["pending", "processing"]),
