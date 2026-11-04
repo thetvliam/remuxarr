@@ -389,6 +389,14 @@ class Ac3ForgeJob(Base):
     aac_stream_index  = Column(Integer)
     audio_track_count = Column(Integer)
 
+    # True when the probe after a successful add found the forge marker
+    # (forge.FORGE_AC3_HANDLER_NAME) on the new AC3. Undo then identifies
+    # the track by the marker alone. False for adds from before the marker
+    # existed, for containers that do not keep it (AVI, MPEG-TS and ASF
+    # drop it), and when that probe failed: those fall back to the
+    # last-audio-track rule. See forge.resolve_forge_ac3_for_undo.
+    ac3_marked = Column(Boolean, default=False)
+
     progress       = Column(Float,  default=0.0)
     current_action = Column(String)
     error_message  = Column(Text)

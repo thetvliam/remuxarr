@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2250 tests across 100 test files, plus 774 frontend tests under
+2266 tests across 101 test files, plus 774 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -124,7 +124,11 @@ traceback, and the other three left the reason out.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
-`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`.
+`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`,
+`test_forge_undo_identity.py`.
+`test_forge_undo_identity.py` runs a real forge, a job and an undo on a
+file that had an AC3 5.1 of its own: once the job had dropped the forged
+AC3, undo removed the original's and could leave a file with no audio.
 `test_forge_keeps_tracks_current.py` runs a real forge add and undo
 with a job waiting for the same file: the stored track list stayed as it was
 before the rewrite, so the job left out a just-added AC3, or mapped a removed

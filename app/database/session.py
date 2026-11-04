@@ -822,6 +822,10 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN original_language TEXT"),
         ("webhook_intake", "original_language",
          "ALTER TABLE webhook_intake ADD COLUMN original_language TEXT"),
+        # DEFAULT 0: every existing add predates the forge marker, so none
+        # of their AC3 tracks carries it.
+        ("ac3_forge_jobs", "ac3_marked",
+         "ALTER TABLE ac3_forge_jobs ADD COLUMN ac3_marked BOOLEAN DEFAULT 0"),
     ]
 
     inspector = inspect(engine)

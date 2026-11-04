@@ -1584,11 +1584,16 @@ def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
     """
     Forged before processing, the AC3 is part of the original: the revert
     puts it back, and the forge job's "success" is still the truth.
+
+    The job is marked, so the revert settles it by the marker, and "success"
+    holds only if the restore wrote the forged track's handler_name back
+    with the rest of its recorded tags.
     """
     from app.database.models import Ac3ForgeJob
 
     lib = forge_lib
     forged = _forge(lib)
+    assert forged.ac3_marked is True
     _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
 
     outcome = _revert(lib)
@@ -1789,7 +1794,8 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
     import json
 
     from app.core.probe import extract_tracks, probe_file
-    from app.core.scanner import _track_to_dict, descriptors_by_stream, resolve_track_answers
+    from app.core.scanner import (_track_to_dict, descriptors_by_stream,
+                                  replace_track_rows, resolve_track_answers)
     from app.database.models import MediaFile, Track
 
     # Drop the English audio: the processed file is video, fre, ger subtitle.
@@ -1800,8 +1806,9 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
     assert [(td["stream_index"], td["language"]) for td in processed][1:] == [(1, "fre"), (2, "ger")]
     keys = descriptors_by_stream(processed)
     media = db.get(MediaFile, lib["media"].id)
-    for td in processed:
-        db.add(Track(file_id=media.id, **td))
+    # Written the way _finish_job writes them. Unpacked straight into Track,
+    # the probe's dict fails on any key no column holds (handler_name).
+    replace_track_rows(db, media.id, processed)
     media.audio_language_overrides = json.dumps({keys[1]: "ita"})
     media.subtitle_overrides = json.dumps({keys[2]: "keep"})
     db.commit()

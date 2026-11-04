@@ -296,10 +296,17 @@ def _settle_forge_jobs(db, file_id: int, tracks: list[dict]) -> None:
     original, though, and comes back — its "success" is still true.
 
     So the restored file decides, through resolve_forge_ac3_for_undo, the
-    test the undo itself uses: "absent" settles the file's finished forge
-    jobs as undone, the state a completed undo leaves; "found" leaves them
-    alone; "mismatch" — an AC3 5.1 where the forge never puts one — is
-    left alone too, as the undo refuses to guess about it.
+    test the undo itself uses, applied to each job with that job's own
+    ac3_marked, as its undo would apply it: "absent" settles the job as
+    undone, the state a completed undo leaves; "found" leaves it alone;
+    "mismatch" — an AC3 5.1 where the forge never puts one — and
+    "only_audio" are left alone too, as the undo refuses to act on either.
+
+    Per job, because the rule differs. Under the last-track rule alone, an
+    original that carries its own AC3 5.1 last reads as "found" after a
+    revert that removed the forged one: the job stays "success", and its
+    undo would then remove the original's AC3. A marked job looks for its
+    marker, which the original's track does not carry.
 
     "undo_failed" is settled with "success": the AC3 that undo could not
     remove is gone now as well. Pending and running jobs cannot be here —
@@ -311,30 +318,32 @@ def _settle_forge_jobs(db, file_id: int, tracks: list[dict]) -> None:
     from app.core.forge import resolve_forge_ac3_for_undo
     from app.database.models import Ac3ForgeJob
 
-    outcome, _index = resolve_forge_ac3_for_undo(tracks)
-    if outcome == "mismatch":
-        logger.warning(
-            "Forge jobs for file %d left as they are after its revert: the "
-            "restored file has an AC3 5.1 that is not its last audio track",
-            file_id,
-        )
-        return
-    if outcome == "found":
-        return
-
     jobs = (db.query(Ac3ForgeJob)
               .filter(Ac3ForgeJob.file_id == file_id,
                       Ac3ForgeJob.status.in_(("success", "undo_failed")))
               .all())
+    settled = 0
     for job in jobs:
+        outcome, _index = resolve_forge_ac3_for_undo(
+            tracks, marked=bool(job.ac3_marked))
+        if outcome in ("mismatch", "only_audio"):
+            logger.warning(
+                "AC3 Forge job %d for file %d left as it is after the "
+                "revert: its undo would refuse the restored file (%s)",
+                job.id, file_id, outcome,
+            )
+            continue
+        if outcome == "found":
+            continue
         job.status = "undone"
         job.is_undo = True
         job.completed_at = utcnow()
         job.error_message = None
-    if jobs:
+        settled += 1
+    if settled:
         logger.info(
             "Marked %d AC3 Forge job(s) for file %d undone: the revert "
-            "removed the forged track", len(jobs), file_id,
+            "removed the forged track", settled, file_id,
         )
 
 

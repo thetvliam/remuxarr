@@ -1285,3 +1285,56 @@ def test_both_tables_gain_original_language_and_their_rows_know_none(untold):
 # webhook_intake's fails the assertion above; media_files' fails start-up
 # itself, as a later step of init_db reads the column and finds it missing,
 # so an existing install would not have started.
+
+
+# ── ac3_forge_jobs.ac3_marked ────────────────────────────────────────────────
+
+@pytest.fixture
+def unmarked(tmp_path, monkeypatch):
+    """
+    ac3_forge_jobs as it was before ac3_marked, with one finished add, built
+    from the models with the column dropped as untold does above.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    for table in ("media_files", "ac3_forge_jobs"):
+        Base.metadata.tables[table].create(engine)
+    engine.dispose()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE ac3_forge_jobs DROP COLUMN ac3_marked")
+    conn.execute(
+        "INSERT INTO media_files (id, path, filename, directory, size, mtime, status) "
+        "VALUES (1, '/m/Show.mkv', 'Show.mkv', '/m', 1, 1.0, 'processed')"
+    )
+    conn.execute("INSERT INTO ac3_forge_jobs (file_id, status, is_undo) VALUES (1, 'success', 0)")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    session_mod.init_db()
+
+    yield path
+
+    _restore_the_engine(session_mod)
+
+
+def test_existing_forge_jobs_gain_ac3_marked_unset(unmarked):
+    """
+    Every add already there ran before the marker existed, so its AC3
+    carries none, and its undo must keep the last-track rule. Marked, it
+    would find no marker and take the AC3 for already removed.
+    """
+    conn = sqlite3.connect(unmarked)
+    try:
+        values = conn.execute("SELECT ac3_marked FROM ac3_forge_jobs").fetchall()
+    finally:
+        conn.close()
+
+    assert values == [(0,)]
+
+
+# Verified by mutation, 1 applied 1 killed, surviving the full 2250-test suite
+# first: the ADD COLUMN removed. Nothing else in the suite noticed it.
