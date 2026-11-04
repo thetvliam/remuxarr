@@ -2028,3 +2028,51 @@ def test_more_files_than_the_limit_are_refused(db):
         _preview(db, [(1, {2: "remove"})] * (PREVIEW_FILE_LIMIT + 1))
 
     assert exc.value.status_code == 400
+
+
+# ── Leftover skipped rows when an answer moves the review ────────────────────
+#
+# An answer turns the review row skipped or pending. A skipped row from an
+# earlier scan was left beside it, as pickup left one (see the same section in
+# test_job_preflight), and History listed the file under Skipped while it was
+# queued, or twice under Skipped.
+#
+# Two mutations, each against the whole 2272-test suite before these tests.
+# No clearing at all survived it and is killed by both. Clearing the answered
+# row along with the others (keep_id ignored) was already killed by thirteen
+# tests across this file, test_plex_after_review, test_review_reason and
+# test_scan_during_job, which all see the row vanish, and is not claimed here.
+
+def _with_an_earlier_skip(db):
+    from app.database.models import QueueItem
+
+    media, _ = _reviewable(db, tracks=_EXTRACTABLE_REVIEW)
+    db.add(QueueItem(id=2, file_id=1, status="skipped", is_dry_run=False,
+                     reason="earlier scan"))
+    db.commit()
+    return media
+
+
+def _statuses(db):
+    from app.database.models import QueueItem
+
+    db.expire_all()
+    return {q.id: q.status for q in db.query(QueueItem).all()}
+
+
+def test_an_answer_that_skips_the_file_takes_the_place_of_its_earlier_skip(db):
+    _with_an_earlier_skip(db)
+
+    result = _apply(db, files=[(1, {2: "keep"})])
+
+    assert result["errors"] == []
+    assert _statuses(db) == {1: "skipped"}
+
+
+def test_an_answer_that_queues_the_file_clears_its_earlier_skip(db):
+    _with_an_earlier_skip(db)
+
+    result = _apply(db, files=[(1, {2: "remove"})])
+
+    assert result["errors"] == []
+    assert _statuses(db) == {1: "pending"}

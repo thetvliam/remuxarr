@@ -425,11 +425,22 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.delete(media)
 
 
-def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, ...]) -> None:
+def _clear_stale_status_records(
+    db: Session,
+    file_id: int,
+    statuses: tuple[str, ...],
+    *,
+    keep_id: int | None = None,
+) -> None:
     """
     Delete any existing QueueItem(s) for this file matching the given
     as-of-this-scan statuses — call this right before creating a
-    genuinely new record with a DIFFERENT status for the same file.
+    genuinely new record with a DIFFERENT status for the same file, or
+    before moving an existing one to that status.
+
+    keep_id is a row that is never deleted: the one being moved, when it
+    currently holds one of the statuses being cleared. A review answer moves
+    its own manual_review row (queue._apply_decision_to_item).
 
     "skipped" and "manual_review" share the same defining trait: each
     one's entire meaning is "as of THIS scan, here's the situation,"
@@ -463,17 +474,14 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     "skipped" and "manual_review" can have their entire claim become
     false out from under them like this.
     """
-    stale = db.query(QueueItem.id).filter(
-        QueueItem.file_id == file_id,
-        QueueItem.status.in_(statuses),
-    )
+    which = [QueueItem.file_id == file_id, QueueItem.status.in_(statuses)]
+    if keep_id is not None:
+        which.append(QueueItem.id != keep_id)
+    stale = db.query(QueueItem.id).filter(*which)
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(stale)
     ).delete(synchronize_session=False)
-    db.query(QueueItem).filter(
-        QueueItem.file_id == file_id,
-        QueueItem.status.in_(statuses),
-    ).delete(synchronize_session=False)
+    db.query(QueueItem).filter(*which).delete(synchronize_session=False)
 
 
 def _supersede_stale_pending_items(db: Session, file_id: int) -> None:

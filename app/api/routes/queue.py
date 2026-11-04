@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.plex import refresh_in_background
 from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
-                              ScanStats, _file_info_for, _process_file,
+                              ScanStats, _clear_stale_status_records,
+                              _file_info_for, _process_file,
                               _load_subtitle_overrides, _load_audio_language_overrides,
                               _load_subtitle_language_overrides, _load_track_answers,
                               _get_forged_ac3_audio_index, _track_to_dict,
@@ -238,16 +239,23 @@ def _force_rescan(media: MediaFile) -> None:
 def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
                              decision) -> None:
     """
-    Apply a freshly-computed decision to a manual-review item — the
-    shared three-outcome block (stay in review / skipped / pending)
-    previously triplicated across resolve_subtitles /
-    resolve_subtitles_bulk / approve_manual_review.
+    Apply a freshly-computed decision to a manual-review item: it stays in
+    review, or becomes skipped or pending. Called by _answer_subtitle_review,
+    which /review/apply runs for each file answered. The single-item and bulk
+    resolve endpoints and approve_manual_review that once held three copies
+    of this block are gone.
 
-    Does NOT commit — the caller controls the transaction (the bulk
-    endpoint commits per item so one bad item can't roll back earlier
-    successes; the single-item endpoints commit once).
+    Does NOT commit — the caller controls the transaction: /review/apply
+    commits per file, so one bad file cannot roll back earlier successes.
 
-    Carries two fixes the triplication had let diverge:
+    Leaving review, the file's other skipped and review rows are cleared, as
+    the scanner clears them before recording either outcome and as pickup
+    does (worker._clear_leftover_rows). An earlier skipped row was left
+    beside the answered one, and History listed the file under Skipped while
+    it was queued, or twice under Skipped. The item itself is kept: it is the
+    review row being moved.
+
+    Carries two fixes the three copies had let diverge:
     • _upsert_language_flags runs for the skipped and pending outcomes —
       previously the endpoints computed decision.audio/subtitle_language_
       mismatch and then discarded them, so a skipped file with a mismatch
@@ -275,6 +283,8 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         return
 
     _upsert_language_flags(db, media, decision)
+    _clear_stale_status_records(db, media.id, ("skipped", "manual_review"),
+                                keep_id=item.id)
 
     if not decision.should_process:
         item.status = "skipped"

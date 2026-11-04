@@ -31,7 +31,7 @@ from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1589,16 +1589,29 @@ def _claim_next_locked() -> int | None:
         db.close()
 
 
+def _clear_leftover_rows(db, file_id: int) -> None:
+    """
+    Clear the file's other skipped and review rows before pickup turns its
+    job into one, as the scanner clears them before it records either
+    outcome. Left, History listed the file twice. The job itself is still
+    "processing" here, so it is not among them.
+    """
+    _clear_stale_status_records(db, file_id, ("skipped", "manual_review"))
+
+
 def _load_job_data(job_id: int):
     """
     Load everything _run_job needs, re-running the decision engine fresh —
-    and APPLY that fresh decision's outcome, exactly as queue.py's
-    _apply_decision_to_item does for its three call sites:
+    and APPLY that fresh decision's outcome, as queue.py's
+    _apply_decision_to_item does when a review is answered:
 
       • is_manual_review  → item transitions to "manual_review" (with the
         fresh reason and flagged subtitles), returns None — no execution.
       • should_process=False → item transitions to "skipped" (+ completed_at),
         returns None — no execution.
+      Either way the file's other skipped and review rows are cleared
+      first (_clear_leftover_rows), and so they are for a job skipped
+      because the file has been excluded since it was queued.
       • otherwise → PlannedActions refreshed to the FRESH decision's
         actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
         for execution. Everything returned is plain Python — no ORM
@@ -1700,6 +1713,7 @@ def _load_job_data(job_id: int):
         # Full Rescan.
         excluded_by = ExcludeRules.from_settings(app_cfg).reason(media.path)
         if excluded_by:
+            _clear_leftover_rows(db, media.id)
             job.status           = "skipped"
             job.reason           = f"Excluded: {excluded_by}"
             job.review_subtitles = None
@@ -1793,6 +1807,7 @@ def _load_job_data(job_id: int):
         )
 
         if decision.is_manual_review:
+            _clear_leftover_rows(db, media.id)
             job.status = "manual_review"
             job.reason = decision.reason
             job.review_subtitles = (
@@ -1811,6 +1826,7 @@ def _load_job_data(job_id: int):
         _upsert_language_flags(db, media, decision)
 
         if not decision.should_process:
+            _clear_leftover_rows(db, media.id)
             job.status = "skipped"
             job.reason = decision.reason
             job.review_subtitles = None
