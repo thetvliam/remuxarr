@@ -2076,3 +2076,100 @@ def test_an_answer_that_queues_the_file_clears_its_earlier_skip(db):
 
     assert result["errors"] == []
     assert _statuses(db) == {1: "pending"}
+
+
+# ── An answer for a track that has changed since the review ──────────────────
+#
+# Answers have to name the flagged streams, but a stream number can stay while
+# the track behind it changes. A review raised from the tracks a file had
+# before its job named the styled subtitle as stream 3; the job dropped an
+# audio track, the French SRT became stream 3, and "remove" on that card was
+# stored against the SRT (reproduced with a real job; see test_scan_during_job,
+# whose fix stops new rows like that). A row raised that way can still be
+# waiting, so the answer is refused, through _refuse_impossible_answers, which
+# the preview runs too.
+#
+# Eight mutations, each against the whole 2277-test suite before these tests.
+# Six survived it and are killed here. No check at all is killed by every
+# refusal case, the preview's included; each of type, codec, language and
+# forced left out of the comparison by its own parametrized case; and an
+# older entry without is_forced counted as a change by the older-entry test.
+# Counting an older entry's missing
+# codec or language as a change was already killed: fixtures across this file,
+# test_font_attachment_pipeline and test_plex_after_review flag entries that
+# carry a stream number alone.
+
+_SHIFTED = [
+    (0, "video", "h264", None),
+    (1, "audio", "aac", "eng"),
+    (2, "subtitle", "ass", "eng"),
+    (3, "subtitle", "subrip", "fre"),
+]
+
+
+def _review_flagging(db, entry, *, forced=()):
+    """A review of _SHIFTED flagging the one track `entry` describes."""
+    from app.database.models import QueueItem, Track
+
+    media, item = _reviewable(db, tracks=_SHIFTED, flagged=[entry["stream_index"]])
+    for track in db.query(Track).filter(Track.stream_index.in_(forced)):
+        track.is_forced = True
+    db.get(QueueItem, item.id).review_subtitles = json.dumps([entry])
+    db.commit()
+    return media
+
+
+def test_an_answer_for_the_track_a_job_moved_another_into_is_refused(db):
+    """The reproduction: the card says ENG ASS, stream 3 is the French SRT."""
+    from app.database.models import QueueItem
+
+    media = _review_flagging(db, {"stream_index": 3, "codec": "ass", "language": "eng",
+                                  "is_forced": False, "title": None, "reason": "styled"})
+
+    result = _apply(db, files=[(1, {3: "remove"})])
+
+    assert result["outcomes"] == []
+    assert [e["file_id"] for e in result["errors"]] == [1]
+    assert "Re-check Scanned Files" in result["errors"][0]["error"]
+    db.expire_all()
+    assert db.get(QueueItem, 1).status == "manual_review"
+    assert media.subtitle_overrides is None, "the answer was stored anyway"
+
+
+@pytest.mark.parametrize("entry", [
+    {"stream_index": 3, "codec": "ass", "language": "fre", "is_forced": False},
+    {"stream_index": 3, "codec": "subrip", "language": "eng", "is_forced": False},
+    {"stream_index": 3, "codec": "subrip", "language": "fre", "is_forced": True},
+    {"stream_index": 1, "codec": "aac", "language": "eng", "is_forced": False},
+], ids=["codec", "language", "forced", "not-a-subtitle"])
+def test_any_one_difference_is_enough_to_refuse(db, entry):
+    """Each differs from the track at its stream in one respect only."""
+    result = _apply_after(db, entry)
+    assert result["outcomes"] == [] and [e["file_id"] for e in result["errors"]] == [1]
+
+
+def test_an_older_entry_is_compared_only_on_what_it_records(db):
+    """
+    The entry has no is_forced, and the track is forced: nothing it records
+    has changed, so the answer goes through.
+    """
+    result = _apply_after(db, {"stream_index": 3, "codec": "subrip", "language": "fre"},
+                          forced=(3,))
+    assert result["errors"] == []
+    assert [o["file_id"] for o in result["outcomes"]] == [1]
+
+
+def test_the_preview_refuses_it_as_well(db):
+    """So the card can say so before Apply, as for any answer Apply refuses."""
+    _review_flagging(db, {"stream_index": 3, "codec": "ass", "language": "eng",
+                          "is_forced": False})
+
+    result = _preview(db, files=[(1, {3: "remove"})])
+
+    assert result["outcomes"] == []
+    assert "Re-check Scanned Files" in result["errors"][0]["error"]
+
+
+def _apply_after(db, entry, forced=()):
+    _review_flagging(db, entry, forced=forced)
+    return _apply(db, files=[(1, {entry["stream_index"]: "remove"})])

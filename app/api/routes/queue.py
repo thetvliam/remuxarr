@@ -536,6 +536,16 @@ class ReviewApplyRequest(BaseModel):
     skips: list[int] = []
 
 
+def _flagged_entries(item: QueueItem) -> dict[int, dict]:
+    """The item's flagged tracks, as the page was shown them, by stream."""
+    if not item.review_subtitles:
+        return {}
+    try:
+        return {t["stream_index"]: t for t in json.loads(item.review_subtitles)}
+    except (ValueError, TypeError, KeyError):
+        return {}
+
+
 def _flagged_streams(item: QueueItem) -> set:
     """
     The streams an item is flagged for, as the page was shown them.
@@ -544,12 +554,7 @@ def _flagged_streams(item: QueueItem) -> set:
     different one, which means the card the user answered described tracks
     this file may not have any more.
     """
-    if not item.review_subtitles:
-        return set()
-    try:
-        return {t["stream_index"] for t in json.loads(item.review_subtitles)}
-    except (ValueError, TypeError, KeyError):
-        return set()
+    return set(_flagged_entries(item))
 
 
 PREVIEW_FILE_LIMIT = 500
@@ -1211,6 +1216,20 @@ class ReviewAnswerRefused(Exception):
     """
 
 
+def _track_has_changed(entry: dict, track: Track) -> bool:
+    """Whether a flagged entry no longer describes the track at its stream."""
+    if track.track_type != "subtitle":
+        return True
+    if "codec" in entry and (entry["codec"] or "").lower() != (track.codec or "").lower():
+        return True
+    if "language" in entry and ((entry["language"] or "und").lower()
+                                != (track.language or "und").lower()):
+        return True
+    if "is_forced" in entry and bool(entry["is_forced"]) != bool(track.is_forced):
+        return True
+    return False
+
+
 def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
                                answers: dict[int, str]) -> None:
     """
@@ -1220,7 +1239,33 @@ def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
     a card can say an answer cannot be done while the user is still choosing,
     rather than at Apply. Recording an answer and checking one are the same
     rules, so they are the same code.
+
+    An answer is also refused when the track at its stream number is no
+    longer the one the review was raised for. The callers check that the
+    answers name the flagged streams, but a number can stay while the track
+    behind it changes: a review raised from the tracks a file had before its
+    job named the styled subtitle as stream 3, the job dropped an audio
+    track, and "remove" on that card was stored against the French SRT that
+    had become stream 3. A scan no longer raises a review while a job runs,
+    but a row raised that way before can still be waiting, and a Re-check
+    is what brings it up to date. Compared on what each flagged entry
+    records and the track keeps: type, codec, language and forced. A field
+    an older entry does not carry is not compared. A stream with no track
+    at all is left to the "no such stream" refusal in _answer_subtitle_review.
     """
+    flagged = _flagged_entries(item)
+    tracks = {t.stream_index: t for t in
+              db.query(Track).filter(Track.file_id == media.id)}
+    for stream_index in answers:
+        entry, track = flagged.get(stream_index), tracks.get(stream_index)
+        if entry is not None and track is not None and _track_has_changed(entry, track):
+            raise ReviewAnswerRefused(
+                f"Stream {stream_index} is no longer the "
+                f"{(entry.get('language') or 'und').upper()} "
+                f"{entry.get('codec') or 'subtitle'} track this review asked "
+                f"about: the file has changed since. Run Re-check Scanned "
+                f"Files to bring the review up to date. Nothing was applied.")
+
     for stream_index, choice in answers.items():
         if choice not in ("keep", "remove", "extract"):
             raise ReviewAnswerRefused(
