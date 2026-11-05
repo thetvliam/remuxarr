@@ -60,6 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- Subtitle tracks with no language tag are no longer removed. They used to be removed unless the track was forced or Always Keep Undefined-Language Subtitles was on; that setting is gone, as every untagged subtitle is now kept. With Fix Undefined Subtitle Language Tags on Always Ask, every untagged subtitle now reaches Subtitle Language Review, not only forced ones. A file with an untagged image subtitle (PGS or VobSub) while subtitles are extracted to SRT, or an untagged styled subtitle beside embedded fonts, now goes to Review to ask what to do with it, where the subtitle used to be removed without asking. Subtitles already removed from processed files are not brought back.
+
 ## Fixed
 
 - AC3 Forge undo no longer removes an AC3 5.1 track the file already had. Once a job had removed the forged track, for instance after its language left Keep Audio Languages, undo removed the file's own AC3 instead, and could leave the file with no audio. Tracks forged in MKV and MP4 files from now on carry the handler name AC3 5.1 (Remuxarr), which undo goes by; for tracks forged before this update, and in AVI, TS or WMV files, undo now refuses to remove a file's only audio track. When a job removes the forged track, the file no longer counts as forged, so the Forge page offers it again if it still has an AAC 5.1, without an undo that has nothing to remove. This does not happen for a file forged before this update that has an AC3 5.1 of its own.

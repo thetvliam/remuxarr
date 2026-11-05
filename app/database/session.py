@@ -33,7 +33,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # library. "und" is not a language that failed to match the keep list,
     # it is the absence of one, and which of those two a user means is
     # genuinely their call rather than something to guess.
-    "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
     # Off: a file keeps exactly the audio it kept before the setting existed.
@@ -350,9 +349,30 @@ def init_db() -> None:
     _release_threshold_holds()
     _key_track_answers_by_descriptor()
     _remove_orphaned_planned_actions()
+    _delete_retired_settings()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
+
+
+# Settings that no longer exist. Their stored values were left behind with
+# nothing reading them, and the export carries every stored row, so a backup
+# kept handing them on (the import skips keys it does not know).
+RETIRED_SETTINGS = (
+    # Untagged subtitles are always kept now (decision._sub_is_kept).
+    "keep_undefined_subtitles",
+)
+
+
+def _delete_retired_settings() -> None:
+    """Delete the stored values of RETIRED_SETTINGS. Safe on every start."""
+    with SessionLocal() as db:
+        deleted = (db.query(AppSetting)
+                     .filter(AppSetting.key.in_(RETIRED_SETTINGS))
+                     .delete(synchronize_session=False))
+        db.commit()
+    if deleted:
+        logger.info("Removed %d retired setting(s)", deleted)
 
 
 def _label_subtitle_encoding_reviews() -> None:

@@ -444,8 +444,7 @@ def test_the_old_file_does_not_take_a_name_the_job_writes(lib):
     with lib.Session() as db:
         for key, value in {"fix_undefined_language": "always_fix",
                            "undefined_language_value": "eng",
-                           "undefined_language_mode": "all_undefined",
-                           "keep_undefined_subtitles": True}.items():
+                           "undefined_language_mode": "all_undefined"}.items():
             db.merge(AppSetting(key=key, value=json.dumps(value)))
         db.commit()
 

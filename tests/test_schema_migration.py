@@ -1338,3 +1338,44 @@ def test_existing_forge_jobs_gain_ac3_marked_unset(unmarked):
 
 # Verified by mutation, 1 applied 1 killed, surviving the full 2250-test suite
 # first: the ADD COLUMN removed. Nothing else in the suite noticed it.
+
+
+# ── Retired settings ─────────────────────────────────────────────────────────
+
+def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeypatch):
+    """
+    keep_undefined_subtitles went when untagged subtitles came to be kept
+    in every mode. Its row stayed with nothing reading it, and an export
+    carries every stored row on into the next backup. Any other setting is
+    left as it was.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO app_settings (key, value) VALUES ('keep_undefined_subtitles', 'true')")
+    conn.execute("INSERT INTO app_settings (key, value) VALUES ('keep_forced_subtitles', 'false')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        rows = dict(conn.execute(
+            "SELECT key, value FROM app_settings WHERE key IN "
+            "('keep_undefined_subtitles', 'keep_forced_subtitles')").fetchall())
+    finally:
+        conn.close()
+    assert rows == {"keep_forced_subtitles": "false"}
+
+
+# Verified by mutation, 1 applied 1 killed, surviving the full suite first:
+# the deletion not called at startup.

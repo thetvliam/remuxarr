@@ -541,12 +541,30 @@ def test_an_undefined_subtitle_is_kept_when_undefined_means_a_kept_language(sett
     )
 
 
-def test_an_undefined_subtitle_is_still_dropped_when_left_alone(settings):
+# Untagged subtitles are kept in every mode (decision._sub_is_kept), and
+# Keep Undefined Subtitles, which used to switch that on, is retired. Three
+# tests here pinned the old drop and were rewritten to the new outcome: this
+# one, the mixed set under the per-type rule, and two untagged under
+# single_per_type. The tests that set the retired switch lost that line.
+#
+# Verified by mutation, 4 applied 4 killed, each run against the full suite
+# with the three rewritten tests and the sample-library snapshot deselected,
+# as all four pinned the old drop. Untagged not kept (the old default) and
+# kept only under Ask were already killed by the tests that used to turn the
+# switch on, here and in test_ask_again, and are now killed by the rewritten
+# ones and the snapshot as well. Keeping by the raw tag rather than the
+# language after Fix was already killed by
+# test_an_undefined_subtitle_is_not_kept_when_it_would_still_be_unwanted. The
+# stored value left at startup survived, and is killed in
+# test_schema_migration.
+
+
+def test_an_undefined_subtitle_left_alone_stays_as_it_is(settings):
     """
-    The documented default, unchanged. always_leave means the user has not
-    said what und means, and dropping it is the cheaper mistake: a wrong
-    guess on audio produces a silent file, on a subtitle it loses an
-    optional extra.
+    always_leave means the user has not said what und means, and the track
+    is left as it is, so here the file needs nothing at all. It used to be
+    dropped for matching nothing in the keep list, which made "leave"
+    remove the subtitle a file most often has.
     """
     settings["fix_undefined_language"] = "always_leave"
     settings["keep_subtitle_languages"] = ["eng"]
@@ -563,15 +581,8 @@ def test_an_undefined_subtitle_is_still_dropped_when_left_alone(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    dropped = [a for a in decision.actions
-               if a.track_type == "subtitle" and a.action_type == "drop_track"]
-    assert len(dropped) == 1
-    assert "undefined language" in dropped[0].description, (
-        f"an untagged track reported as unmatched: {dropped[0].description!r}"
-    )
-    assert "Fix Undefined Language" in dropped[0].description, (
-        "the reason does not name the setting that decides it"
-    )
+    assert not decision.should_process, decision.reason
+    assert [a for a in decision.actions if a.track_type == "subtitle"] == []
 
 
 def test_an_undefined_subtitle_is_not_kept_when_it_would_still_be_unwanted(settings):
@@ -605,8 +616,8 @@ def test_a_mixed_subtitle_set_is_not_resolved_under_the_per_type_rule(settings):
     """
     all_undefined_per_type means "only when they are ALL undefined". A
     file with one tagged and one untagged subtitle does not qualify, so
-    the untagged one is dropped as before — the resolver must not be more
-    eager than the pass it mirrors.
+    the untagged one is not resolved — the resolver must not be more eager
+    than the pass it mirrors. It is kept untagged; it used to be dropped.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
@@ -627,18 +638,17 @@ def test_a_mixed_subtitle_set_is_not_resolved_under_the_per_type_rule(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    by_stream = {a.stream_index: a.action_type
-                 for a in decision.actions if a.track_type == "subtitle"}
-    assert by_stream[2] == "copy_track"
-    assert by_stream[3] == "drop_track"
+    # Neither dropped nor resolved, so the file needs nothing.
+    assert not decision.should_process, decision.reason
+    assert [a for a in decision.actions if a.track_type == "subtitle"] == []
 
 
 def test_single_per_type_does_not_resolve_two_undefined_subtitles(settings):
     """
     single_per_type means "only when there is exactly one". Two untagged
     subtitles are genuinely ambiguous — resolving both to the same
-    language would be a guess, not a resolution — so neither is resolved
-    and both are dropped as before.
+    language would be a guess, not a resolution — so neither is resolved.
+    Both are kept untagged; they used to be dropped.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
@@ -660,8 +670,8 @@ def test_single_per_type_does_not_resolve_two_undefined_subtitles(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    kinds = {a.action_type for a in decision.actions if a.track_type == "subtitle"}
-    assert kinds == {"drop_track"}
+    assert not decision.should_process, decision.reason
+    assert [a for a in decision.actions if a.track_type == "subtitle"] == []
 
 
 def test_single_per_type_resolves_a_lone_undefined_subtitle(settings):
@@ -689,12 +699,12 @@ def test_single_per_type_resolves_a_lone_undefined_subtitle(settings):
 
 def test_undefined_subtitles_can_be_kept_without_being_resolved(settings):
     """
-    A user may know they want untagged subtitles without knowing what
-    language to call them. The keep list cannot express that — it is about
-    languages, and this track has not claimed one — so the exemption sits
-    alongside the forced-subtitle one and works the same way.
+    A user may want untagged subtitles without knowing what language to
+    call them. The keep list cannot express that — it is about languages,
+    and this track has not claimed one — so a track still undefined is kept,
+    as the forced exemption keeps a forced one. Keep Undefined Subtitles
+    used to switch this on; it is how every mode behaves now.
     """
-    settings["keep_undefined_subtitles"] = True
     settings["fix_undefined_language"] = "always_leave"
     settings["keep_subtitle_languages"] = ["eng"]
     settings["extract_text_subtitles_to_srt"] = False
@@ -717,10 +727,9 @@ def test_undefined_subtitles_can_be_kept_without_being_resolved(settings):
 
 def test_keeping_undefined_subtitles_does_not_keep_unwanted_languages(settings):
     """
-    The exemption is for the absence of a tag, not a way round the keep
-    list. A subtitle tagged German is still dropped.
+    Keeping untagged subtitles is for the absence of a tag, not a way round
+    the keep list. A subtitle tagged German is still dropped.
     """
-    settings["keep_undefined_subtitles"] = True
     settings["keep_subtitle_languages"] = ["eng"]
     settings["keep_forced_subtitles"] = False
     settings["extract_text_subtitles_to_srt"] = False
@@ -748,7 +757,6 @@ def test_a_kept_undefined_subtitle_is_offered_for_review(settings):
     be asked about it, so always_ask never produced a subtitle review row
     at all — the question was moot because the subject was already gone.
     """
-    settings["keep_undefined_subtitles"] = True
     settings["fix_undefined_language"] = "always_ask"
     settings["keep_subtitle_languages"] = ["eng"]
     settings["extract_text_subtitles_to_srt"] = True
@@ -852,7 +860,6 @@ def test_the_plan_names_the_tag_an_audio_answer_corrects_to(settings):
 
 
 def test_the_plan_names_the_tag_a_subtitle_answer_corrects_to(settings):
-    settings["keep_undefined_subtitles"] = True
     settings["extract_text_subtitles_to_srt"] = False
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
@@ -979,13 +986,10 @@ def test_audio_can_be_fixed_while_subtitles_are_asked(settings):
     settings["fix_undefined_language_audio"] = "always_fix"
     settings["fix_undefined_language"]       = "always_ask"
     settings["extract_text_subtitles_to_srt"] = False
-    # Required for always_ask to mean anything on the subtitle side, and not
-    # obvious: always_ask deliberately does not resolve the tag, so the
-    # track reaches keep/drop still reading "und", matches nothing in
-    # keep_subtitle_languages, and is dropped before the flagging pass can
-    # see it. Verified — without this the file is asked about nothing and
-    # the subtitle is simply gone. Pre-existing, not introduced by the split.
-    settings["keep_undefined_subtitles"] = True
+    # always_ask does not resolve the tag, so the track reaches keep/drop
+    # still reading "und". It used to be dropped there unless Keep Undefined
+    # Subtitles was on, and was never asked about; a track still undefined
+    # is always kept now.
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac", language="und"),

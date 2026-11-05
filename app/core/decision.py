@@ -267,10 +267,10 @@ class ProcessingDecision:
 #   always_fix → always_leave on AUDIO     copy_track, minus a language tag
 #   always_fix → always_leave on SUBTITLE  drop_track — the track is gone
 #
-# (Verified against analyze_file, not inferred: an und subtitle under
-# always_leave is judged on its unresolved "und" tag, matches no entry in
-# keep_subtitle_languages, and is dropped unless keep_undefined_subtitles or
-# forced. This is the same ordering bug _resolve_undefined_subtitle_language
+# (Verified against analyze_file at the time, not inferred: an und subtitle
+# under always_leave was judged on its unresolved "und" tag, matched no
+# entry in keep_subtitle_languages, and was dropped unless the since-retired
+# keep_undefined_subtitles was on or it was forced. This is the same ordering bug _resolve_undefined_subtitle_language
 # exists to prevent, arriving by a different route.)
 #
 # So the subtitle side keeps the old key and every upgrading install keeps
@@ -279,6 +279,12 @@ class ProcessingDecision:
 # the subtitle key to match the audio one would read better and would mean a
 # silent one-way deletion of subtitle tracks on upgrade, with revert_enabled
 # defaulting off and no undo.
+#
+# That was when an undefined subtitle under always_leave was dropped. It is
+# now always kept (_sub_is_kept), so the table's second row reads "copy, no
+# tag" as the first does, and a reset would cost a setting rather than
+# tracks. The keys stay as they are: renaming one still resets every
+# install's chosen mode for that type.
 _UND_MODE_KEYS = {
     "audio":    "fix_undefined_language_audio",
     "subtitle": "fix_undefined_language",
@@ -444,7 +450,6 @@ def analyze_file(
     keep_audio_langs    = {canonical(c) for c in settings.get("keep_audio_languages",   ["eng"])}
     keep_sub_langs      = {canonical(c) for c in settings.get("keep_subtitle_languages", ["eng"])}
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
-    keep_und_subs       = settings.get("keep_undefined_subtitles", False)
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
@@ -630,10 +635,12 @@ def analyze_file(
     def _sub_is_kept(track: dict) -> bool:
         lang      = _effective_sub_lang(track)
         is_forced = track.get("is_forced", False)
-        # The undefined exemption sits alongside the forced one and works
-        # the same way: a reason to keep a track that the keep list cannot
-        # express, because the list is about languages and this track has
-        # not claimed one.
+        # A track still undefined is always kept, as an undefined audio track
+        # is. The keep list is about languages, and this track has not
+        # claimed one: dropping it for not matching removed the subtitle a
+        # file most often has, and under Always Ask removed it before it
+        # could be asked about (Keep Undefined Subtitles was off by
+        # default, and was the only way to keep it).
         #
         # Checked against the EFFECTIVE language, so it only applies to a
         # track still undefined after resolution. Under always_fix an
@@ -642,7 +649,7 @@ def analyze_file(
         return (
             lang in keep_sub_langs
             or (keep_forced_subs and is_forced)
-            or (keep_und_subs and lang == "und")
+            or lang == "und"
         )
 
     # ── Answers that cannot be carried out ───────────────────────────────────
@@ -1119,14 +1126,14 @@ def analyze_file(
         explicit_extract = override == "extract"
 
         if not explicit_extract and not _sub_is_kept(track):
-            # "not in keep list" is accurate for a tagged track and
-            # misleading for an untagged one: "und" is not a language that
-            # failed to match, it is the absence of one. Saying so, and
-            # naming the setting that decides what happens to it, turns a
-            # decision that reads as arbitrary into one the user can change.
+            # A track still undefined never gets here. One that arrived
+            # undefined has been taken as Primary Language by Fix Undefined
+            # Subtitle Language Tags, and that is what the keep list did not
+            # match; saying only "not in keep list" would read as though the
+            # file had tagged it so.
             why = (
-                "undefined language — enable Always Keep Undefined-Language "
-                "Subtitles, or set Fix Undefined Language Tags to resolve them"
+                f"not in keep list (undefined, taken as {lang} by Fix "
+                f"Undefined Subtitle Language Tags)"
                 if (track["language"] or "und") == "und"
                 else "not in keep list"
             )

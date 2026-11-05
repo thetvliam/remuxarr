@@ -328,7 +328,6 @@ KNOWN_KEYS = {
     "original_language_audio",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
-    "keep_undefined_subtitles",
     "keep_default_audio",
     "prefer_mp4_container",
     "dry_run_mode",
@@ -507,15 +506,13 @@ SETTINGS_SCHEMA = [
                        "with the primary language below. Always Ask flags "
                        "them for a human decision in Subtitle Language "
                        "Review without touching the file until resolved. "
-                       "Note that Always Leave is not neutral for "
-                       "subtitles: an untagged track keeps its und tag, "
-                       "which matches nothing in Keep Subtitle Languages, "
-                       "so it is dropped unless Keep Undefined Subtitles is "
-                       "on or the track is forced. Only tracks being kept "
-                       "in the output are considered, and extracted "
-                       "subtitles count as kept — their language lives in "
-                       "the sidecar filename. Audio is controlled "
-                       "separately by the setting below.",
+                       "Always Leave keeps them untagged. An untagged "
+                       "subtitle is never removed for having no language, "
+                       "whichever is chosen; one that Always Fix tags is "
+                       "kept or removed by Keep Subtitle Languages, like any "
+                       "tagged track. Extracted subtitles count as kept — "
+                       "their language lives in the sidecar filename. Audio "
+                       "is controlled separately by the setting below.",
     },
     {
         "key":     "fix_undefined_language_audio",
@@ -540,12 +537,9 @@ SETTINGS_SCHEMA = [
                        "undefined (und). Always Fix tags them automatically "
                        "with the primary language below. Always Ask flags "
                        "them for a human decision in Audio Language Review "
-                       "without touching the file until resolved. Unlike "
-                       "the subtitle setting above, Always Leave here is "
-                       "genuinely a no-op — an undefined audio track is "
-                       "kept either way, it simply stays untagged, because "
-                       "dropping audio on a guess is far more costly than "
-                       "dropping an optional subtitle. Video tracks are "
+                       "without touching the file until resolved. Always "
+                       "Leave keeps them untagged: an undefined audio track "
+                       "is kept either way. Video tracks are "
                        "never affected. Overridden by the separate "
                        "Undefined Audio Track Threshold below: a file with "
                        "too many undefined audio tracks to safely guess "
@@ -707,19 +701,6 @@ SETTINGS_SCHEMA = [
         "label":       "Always Keep Forced Subtitles",
         "type":        "boolean",
         "description": "Retain forced subtitle tracks regardless of language.",
-    },
-    {
-        "key":         "keep_undefined_subtitles",
-        "group":       "Subtitles",
-        "label":       "Always Keep Undefined-Language Subtitles",
-        "type":        "boolean",
-        "description": "Retain subtitle tracks that carry no language tag, "
-                       "which would otherwise be removed for not matching the "
-                       "keep list. An untagged track is often the one you want "
-                       "- it is the absence of a label, not a foreign "
-                       "language. Combine with Fix Undefined Language Tags set "
-                       "to Always Ask to keep them and be prompted to name them "
-                       "in Subtitle Language Review.",
     },
     {
         "key":         "extract_text_subtitles_to_srt",
@@ -1273,7 +1254,6 @@ APPLIES_ON_RESCAN = {
     "und_audio_threshold",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
-    "keep_undefined_subtitles",
     "extract_text_subtitles_to_srt",
     "image_subtitle_handling",
     "font_attachment_handling",
