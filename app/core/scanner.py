@@ -168,15 +168,21 @@ def scan_library(
     scan_label = "full" if force_probe else ("re-check" if recheck else "delta")
     rules    = ExcludeRules.from_settings(app_cfg, paths)
 
-    # Original Language Audio's lookup. Only for a re-check or a full rescan,
-    # the two scans that decide files already seen, and only while the
-    # setting is on: a routine scan sees new and changed files, which an
-    # import's webhook has usually told about already, and asking each
-    # service for its whole library on every scheduled scan was the cost
-    # chosen against. One request per service per scan, before the walk.
+    # The original-language lookup. Only for a re-check or a full rescan,
+    # the two scans that decide files already seen: a routine scan sees new
+    # and changed files, which an import's webhook has usually told about
+    # already, and asking each service for its whole library on every
+    # scheduled scan was the cost chosen against. One request per enabled
+    # service per scan, before the walk, and none without the integration
+    # (original_languages asks only enabled services).
+    #
+    # Whatever Original Language Audio says. It used to ask only while that
+    # setting was on, which left the original language unknown for files
+    # already in a library otherwise. analyze_file reads it only under Keep
+    # both and Keep original only, so a value stored while that setting is
+    # off changes no decision.
     original_language_for = None
-    if ((force_probe or recheck)
-            and app_cfg.get("original_language_audio", "off") != "off"):
+    if force_probe or recheck:
         original_language_for = original_languages(app_cfg)
 
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))

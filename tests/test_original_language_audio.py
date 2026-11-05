@@ -9,7 +9,7 @@ since the original is not always the default-flagged track either.
 Sonarr and Radarr record each series' and movie's original language. An
 import's webhook brings it (stored by the previous commit), and Re-check
 Scanned Files and Force Full Rescan ask each service for its whole list,
-once per scan, while the setting is on (arr_lookup.original_languages).
+once per scan, whatever the setting says (arr_lookup.original_languages).
 Routine and scheduled scans do not ask. The value reaches every decision
 through scanner._file_info_for.
 
@@ -53,8 +53,9 @@ it; the tests here catch it as well.
                 Radarr asked before Sonarr               → Sonarr first
                 a failed request ending the lookup       → one fails
   the scan      asked on routine scans                   → routine scan
-                asked with the setting off               → setting off,
-                                                           e2e off
+                asked with the setting off               → (now the
+                                                           behaviour; see
+                                                           below)
                 the answer not handed to _process_file   → re-check, full,
                                                            e2e both modes
 
@@ -73,6 +74,18 @@ dropped English as "not in keep list" with English in the list: 4 applied,
 The no-original-track test first had English ahead of German, and the
 mutant that applied original_only without the track survived it: the keep
 list emptied, and the fallback kept English anyway. German now comes first.
+
+The lookup no longer waits for the setting: a re-check or a full rescan
+asks whatever Original Language Audio says, so the original language of a
+file already in a library is known with that setting off as well. Two tests
+that pinned the old gate were rewritten, the re-check one and the off case
+of the real run, which now asserts the language is stored while its file
+keeps what off always kept. 3 applied, 3 killed. Putting the gate back is
+the old code, so it passes the old suite by construction; both rewritten
+tests kill it. Asking on routine scans too, and asking a service that is
+switched off, were already killed by the routine-scan test and the
+switched-off tests here and in test_post_job_notify, in a run of the suite
+with the two rewritten tests deselected, and are not claimed here.
 
 Run from the project root:
     pytest tests/test_original_language_audio.py -v
@@ -389,12 +402,19 @@ def test_a_routine_scan_does_not_ask(scanning):
     assert scanning.handed == [None, None]
 
 
-def test_nothing_is_asked_with_the_setting_off(scanning):
+def test_a_recheck_asks_with_the_setting_off_too(scanning):
+    """
+    It used to ask only while Original Language Audio was on, which left the
+    original language unknown for files already in a library otherwise.
+    Stored while the setting is off, it changes no audio decision: the
+    real run below shows that for the off case.
+    """
     scanning.setting("off")
 
     scanning.scan(recheck=True)
 
-    assert scanning.lookups == []
+    assert scanning.lookups == ["off"], "asked once per scan, not per file"
+    assert scanning.handed == ["fre", "fre"]
 
 
 # ── With real FFmpeg ─────────────────────────────────────────────────────────
@@ -479,7 +499,9 @@ def test_a_full_rescan_with_sonarr_keeps_what_each_setting_says(tmp_path, monkey
         stored = db.query(MediaFile).one().original_language
         pending = [q.id for q in db.query(QueueItem).filter(QueueItem.status == "pending")]
 
-    assert stored == (None if mode == "off" else "fre"), "asked although the setting is off"
+    # Stored whatever the setting says. With it off, the audio the job leaves
+    # below is still what off always kept.
+    assert stored == "fre", "the original language was not stored"
 
     async def run_next():
         job_id = worker._claim_next()

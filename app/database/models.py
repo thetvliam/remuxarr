@@ -141,7 +141,7 @@ class MediaFile(Base):
     # it (their originalLanguage, through langcodes.from_arr_language), or
     # null when Remuxarr has not been told. Written from a webhook's payload
     # whatever the settings say, as it costs nothing, and by Re-check Scanned
-    # Files and Force Full Rescan while Original Language Audio is on
+    # Files and Force Full Rescan, likewise whatever the settings say
     # (arr_lookup.original_languages); never cleared by a caller that brings
     # none. Read by analyze_file through scanner._file_info_for.
     original_language = Column(String)
