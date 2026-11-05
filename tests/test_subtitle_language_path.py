@@ -126,8 +126,7 @@ def test_every_und_subtitle_is_flagged_in_a_stable_order():
     changed between scans, and the index is what Apply writes the
     corrected language to.
     """
-    cfg = _prod(fix_undefined_language="always_ask",
-                undefined_language_mode="all_undefined")
+    cfg = _prod(fix_undefined_language="always_ask")
     tracks = [VIDEO, _audio(),
               _sub(18, forced=True), _sub(2, forced=True), _sub(10, forced=True)]
 
@@ -151,7 +150,6 @@ def test_und_audio_flags_are_in_stream_order():
     tracks first: over it they are flagged as its own, not as always_ask's.
     """
     cfg = _prod(fix_undefined_language_audio="always_ask",
-                undefined_language_mode_audio="all_undefined",
                 und_audio_threshold=99)
     tracks = [VIDEO, _audio(si=18, lang="und"), _audio(si=3, lang="und"),
               _audio(si=11, lang="und")]
@@ -332,49 +330,46 @@ def test_always_leave_touches_nothing():
     assert _action_for(d, 2).external_path.endswith("Movie.und.forced.srt")
 
 
-# ── The two previously-unpinned undefined_language_mode values ───────────────
+# ── What Always Ask and Always Fix flag ──────────────────────────────────────
+#
+# These pinned the two Apply To modes that had no tests, and were rewritten
+# when Apply To was retired: Always Ask now flags every untagged subtitle,
+# and Always Fix every one it does not tag, which is any of two or more.
 
-def test_mode_all_undefined_flags_every_und_track():
-    cfg = _prod(fix_undefined_language="always_ask",
-                undefined_language_mode="all_undefined")
+def test_ask_flags_an_untagged_subtitle_beside_a_tagged_one():
+    cfg = _prod(fix_undefined_language="always_ask")
     tracks = [VIDEO, _audio(), _sub(2, forced=True), _sub(3, lang="eng")]
     d = analyze_file(_fmt(), tracks, cfg)
-    # stream 3 is defined, so only 2 qualifies — and it is flagged even though
-    # a defined sibling exists, which is what distinguishes this mode.
+    # stream 3 is defined, so only 2 is flagged — even though a defined
+    # sibling exists.
     assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [2]
     assert d.subtitle_language_mismatches[0]["language"] == "und"
 
 
-def test_mode_single_per_type_requires_exactly_one_und_track():
-    cfg = _prod(fix_undefined_language="always_ask",
-                undefined_language_mode="single_per_type")
+def test_ask_flags_every_one_of_several_untagged_subtitles():
+    cfg = _prod(fix_undefined_language="always_ask")
 
     one = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
-    assert one.subtitle_language_mismatches != []
+    assert [m["stream_index"] for m in one.subtitle_language_mismatches] == [2]
 
     two = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, forced=True)], cfg
     )
-    assert two.subtitle_language_mismatches == [], (
-        "single_per_type flagged a file with two und subtitle tracks"
-    )
+    assert [m["stream_index"] for m in two.subtitle_language_mismatches] == [2, 3]
 
 
-def test_mode_all_undefined_per_type_requires_all_und():
-    """The default mode: tag only when EVERY kept track of the type is und."""
-    cfg = _prod(fix_undefined_language="always_ask",
-                undefined_language_mode="all_undefined_per_type")
+def test_fix_flags_untagged_subtitles_it_does_not_tag():
+    """Two untagged: neither is the file's only one, so both are asked about."""
+    cfg = _prod(fix_undefined_language="always_fix")
 
-    all_und = analyze_file(
+    two = analyze_file(
         _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, forced=True)], cfg
     )
-    assert [m["stream_index"] for m in all_und.subtitle_language_mismatches] == [2, 3]
-    assert all_und.subtitle_language_mismatches[0]["language"] == "und"
+    assert [m["stream_index"] for m in two.subtitle_language_mismatches] == [2, 3]
+    assert two.subtitle_language_mismatches[0]["language"] == "und"
 
-    mixed = analyze_file(
-        _fmt(), [VIDEO, _audio(), _sub(2, forced=True), _sub(3, lang="eng")], cfg
-    )
-    assert mixed.subtitle_language_mismatches == []
+    one = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, forced=True)], cfg)
+    assert one.subtitle_language_mismatches == [], "the only untagged one is tagged, not asked"
 
 
 # ── Config alignment guard ───────────────────────────────────────────────────

@@ -254,8 +254,8 @@ class ProcessingDecision:
 
 # ── Main function ──────────────────────────────────────────────────────────────
 
-# The undefined-language settings are per track type, and the two types do
-# NOT share a storage key. Audio reads fix_undefined_language_audio;
+# The undefined-language mode is per track type, and the two types do NOT
+# share a storage key. Audio reads fix_undefined_language_audio;
 # subtitles read plain fix_undefined_language.
 #
 # That asymmetry is deliberate and is the whole reason the split is safe to
@@ -289,10 +289,6 @@ _UND_MODE_KEYS = {
     "audio":    "fix_undefined_language_audio",
     "subtitle": "fix_undefined_language",
 }
-_UND_APPLY_KEYS = {
-    "audio":    "undefined_language_mode_audio",
-    "subtitle": "undefined_language_mode",
-}
 
 
 def _primary_language(settings: dict) -> str:
@@ -317,54 +313,62 @@ def _resolve_und_mode(settings: dict, track_type: str) -> str:
     return mode
 
 
+def _lone_undefined_track(
+    type_tracks: list[dict],
+    answered: set[int],
+    excluded: frozenset[int] = frozenset(),
+) -> int | None:
+    """
+    The stream of the one untagged track of a type, when the file has only
+    that one to ask about; None otherwise. Pure.
+
+    What is counted is every untagged track plus every track already given a
+    language in Language Review (`answered`, by stream). An answer is stored
+    against what the track is rather than its language, so it still names
+    its track after the job has written the tag; counted, a file whose two
+    untagged tracks the user has started to answer still has two, and the
+    one left is asked about rather than guessed at once the first is
+    written. `excluded` leaves out a track that is a copy of another (the
+    AC3 Forge track), which says nothing new about the file.
+
+    Tracks never leave this count because a job dropped them: an untagged
+    track is always kept (audio by the audio keep rule, subtitles by
+    _sub_is_kept). The rules this replaces counted tagged tracks as well,
+    and a job dropping those changed the answer on the next re-check.
+    """
+    untagged = {t["stream_index"] for t in type_tracks
+                if (t.get("language") or "und") == "und"}
+    counted = (untagged | (answered & {t["stream_index"] for t in type_tracks})) - excluded
+    if len(counted) != 1:
+        return None
+    (only,) = counted
+    return only if only in untagged and only not in answered else None
+
+
 def _resolve_undefined_subtitle_language(
-    sub_tracks: list[dict], settings: dict,
+    sub_tracks: list[dict], settings: dict, answered: set[int],
 ) -> dict[int, str]:
     """
-    Map undefined subtitle streams to the language they will be retagged
-    to, or {} when none will be.
+    Map the undefined subtitle stream Always Fix will tag to Primary
+    Language, or {} when none will be. The fix pass tags exactly what this
+    maps, so the two cannot disagree.
 
-    Mirrors the qualifying rules of the undefined-language fix pass that
-    runs later, with one deliberate difference: it evaluates them over ALL
-    subtitle tracks rather than the surviving ones. It has to — this runs
-    before anything has been dropped, and "all surviving tracks are
-    undefined" cannot be asked yet. For subtitles the two readings only
-    diverge when some subtitles are dropped for a reason unrelated to
-    their tag, which is the case where "all of them are untagged" is the
-    more honest question anyway.
+    Always Fix tags an untagged subtitle only when it is the file's one
+    untagged subtitle (_lone_undefined_track); any other untagged subtitle
+    is sent to Subtitle Language Review by the fix pass. always_leave and
+    always_ask resolve nothing: one has asked for the tag to be left, the
+    other to be asked.
 
-    Only always_fix produces a mapping. always_leave means the user has
-    asked for the documented default, where an undefined subtitle is
-    dropped unless forced. always_ask means they want to be asked, and
-    answering on their behalf here is the opposite of that.
+    It runs before keep/drop, so that a track taken as Primary Language is
+    judged by Keep Subtitle Languages as that language.
     """
     # Subtitle mode, not the audio one — this pre-pass decides which
     # subtitles survive the keep/drop filter, so reading the wrong type
     # here would let an audio setting delete subtitle tracks.
     if _resolve_und_mode(settings, "subtitle") != "always_fix":
         return {}
-
-    # Primary Language stays shared across both types; only the mode and
-    # the Apply To rule are per type.
-    lang_value = _primary_language(settings)
-    lang_mode  = settings.get(
-        _UND_APPLY_KEYS["subtitle"], "all_undefined_per_type",
-    )
-
-    und = [t for t in sub_tracks if (t.get("language") or "und") == "und"]
-    if not und:
-        return {}
-
-    if lang_mode == "all_undefined":
-        qualifying = und
-    elif lang_mode == "all_undefined_per_type":
-        qualifying = und if len(und) == len(sub_tracks) else []
-    elif lang_mode == "single_per_type":
-        qualifying = und if len(und) == 1 else []
-    else:
-        qualifying = []
-
-    return {t["stream_index"]: lang_value for t in qualifying}
+    lone = _lone_undefined_track(sub_tracks, answered)
+    return {} if lone is None else {lone: _primary_language(settings)}
 
 
 def analyze_file(
@@ -582,10 +586,12 @@ def analyze_file(
     # function calls the same layout "mismatch" and refuses. Kept inline
     # rather than imported because this module is deliberately
     # import-light and pure.
+    forge_copy_si: int | None = None
     if forged_ac3_audio_index is not None and audio_tracks:
         last = audio_tracks[-1]
         if (last.get("codec") or "").lower() == "ac3" and last.get("channels") == 6:
             und_audio = [t for t in und_audio if t is not last]
+            forge_copy_si = last["stream_index"]
 
     # At or over the Undefined Audio Track Threshold, the file's undefined
     # tracks are a question for a person. The threshold used to hold the
@@ -626,7 +632,8 @@ def analyze_file(
     # this language". Only always_fix is resolved here: always_leave keeps
     # the documented default of dropping und subtitles, and always_ask is
     # a question rather than an answer.
-    und_sub_language = _resolve_undefined_subtitle_language(sub_tracks, settings)
+    und_sub_language = _resolve_undefined_subtitle_language(
+        sub_tracks, settings, set(subtitle_language_overrides))
 
     def _effective_sub_lang(track: dict) -> str:
         return (und_sub_language.get(track["stream_index"])
@@ -1300,8 +1307,8 @@ def analyze_file(
     has_language_fix    = False   # overall flag — either pass counts for should_process
     und_fixed_indices:      set[int] = set()   # tracks fixed by THIS pass specifically
     override_fixed_indices: set[int] = set()   # tracks fixed by the override pass below
-    # Qualifying-but-not-auto-fixed tracks under always_ask — feed into the
-    # mismatch detection blocks below rather than being tagged directly.
+    # Undefined kept tracks this pass does not tag, under always_ask or
+    # always_fix — fed into the mismatch detection blocks below.
     und_flagged_audio:    set[int] = set()
     und_flagged_subtitle: set[int] = set()
 
@@ -1323,10 +1330,9 @@ def analyze_file(
         for track_type in ("audio", "subtitle"):
             if track_type == "audio" and over_und_threshold:
                 # Over the threshold, the file's undefined audio belongs to
-                # the threshold whatever this setting says. always_fix would
-                # tag every track with the primary language, which is the
-                # guess the threshold exists to stop, and always_ask would
-                # flag the same tracks a second time. Acknowledging the
+                # the threshold whatever this setting says: it flags them
+                # itself, and this pass would flag the same tracks a second
+                # time. Acknowledging the
                 # threshold changes neither: Confirm correct means the tags
                 # are right as they are.
                 continue
@@ -1338,8 +1344,9 @@ def analyze_file(
                 # and the always_ask branch below would then flag them for
                 # review.
                 continue
-            lang_mode = settings.get(
-                _UND_APPLY_KEYS[track_type], "all_undefined_per_type",
+            overrides_for_type = (
+                audio_language_overrides if track_type == "audio"
+                else subtitle_language_overrides
             )
             # Kept tracks of this type. "Kept" includes subtitles bound for
             # extraction: previously extracted_si was excluded here alongside
@@ -1365,20 +1372,40 @@ def analyze_file(
             if not und_kept:
                 continue
 
-            if lang_mode == "all_undefined":
-                qualifying = {t["stream_index"] for t in und_kept}
-            elif lang_mode == "all_undefined_per_type":
-                # Tag only when ALL kept tracks of this type are und
-                qualifying = (
-                    {t["stream_index"] for t in und_kept}
-                    if len(und_kept) == len(type_tracks)
-                    else set()
-                )
-            elif lang_mode == "single_per_type":
-                # Tag only when there is exactly one und kept track of this type
-                qualifying = {und_kept[0]["stream_index"]} if len(und_kept) == 1 else set()
+            # What Always Fix tags; every other undefined kept track of the
+            # type is sent for review, by Always Fix as by Always Ask. Fix
+            # used to leave a track it did not tag as it was and say
+            # nothing, so a file whose tracks it would not guess at was
+            # never asked about either.
+            #
+            # Subtitles: the pre-pass's mapping, so keep/drop and this pass
+            # agree on the one track. Audio: the one untagged audio track,
+            # counted as the pre-pass counts subtitles, provided the film
+            # is in Primary Language or its original language is unknown.
+            # Primary Language is the only language Remuxarr writes on its
+            # own, and a single untagged track in a film made in another
+            # language is most likely in that one. The AC3 Forge copy is
+            # not counted, being a copy of its source, and takes the tag
+            # with it: its source is the only other untagged audio track,
+            # since untagged audio is never dropped.
+            if und_mode != "always_fix":
+                tag_si: set[int] = set()
+            elif track_type == "subtitle":
+                tag_si = set(und_sub_language)
             else:
-                qualifying = set()
+                excluded = frozenset() if forge_copy_si is None else frozenset({forge_copy_si})
+                lone = _lone_undefined_track(
+                    [t for t in tracks if t["track_type"] == "audio"],
+                    set(overrides_for_type), excluded)
+                tag_si = (
+                    set() if lone is None
+                    or original_language not in (None, lang_value)
+                    else {lone}
+                )
+                if tag_si and forge_copy_si is not None and any(
+                        t["stream_index"] == forge_copy_si for t in und_kept):
+                    tag_si.add(forge_copy_si)
+            qualifying = {t["stream_index"] for t in und_kept}
 
             for i, action in enumerate(actions):
                 if (
@@ -1394,13 +1421,9 @@ def analyze_file(
                     # stored language yet) is left alone here entirely —
                     # that specific, deliberate choice takes precedence
                     # over the bulk/automatic pass either way.
-                    overrides_for_type = (
-                        audio_language_overrides if track_type == "audio"
-                        else subtitle_language_overrides
-                    )
                     if action.stream_index in overrides_for_type:
                         continue
-                    if und_mode == "always_fix":
+                    if action.stream_index in tag_si:
                         if action.action_type == "extract_subtitle":
                             # The sidecar's language lives in its filename, so
                             # fixing the tag means renaming the artifact, not
@@ -1422,7 +1445,7 @@ def analyze_file(
                             )
                         has_language_fix = True
                         und_fixed_indices.add(action.stream_index)
-                    else:   # always_ask — flag for review, don't touch the track
+                    else:   # flag for review, don't touch the track
                         if track_type == "audio":
                             und_flagged_audio.add(action.stream_index)
                         else:

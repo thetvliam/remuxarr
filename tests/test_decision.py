@@ -545,7 +545,8 @@ def test_an_undefined_subtitle_is_kept_when_undefined_means_a_kept_language(sett
 # Keep Undefined Subtitles, which used to switch that on, is retired. Three
 # tests here pinned the old drop and were rewritten to the new outcome: this
 # one, the mixed set under the per-type rule, and two untagged under
-# single_per_type. The tests that set the retired switch lost that line.
+# single_per_type (the last two rewritten again since, for the Fix rule). The
+# tests that set the retired switch lost that line.
 #
 # Verified by mutation, 4 applied 4 killed, each run against the full suite
 # with the three rewritten tests and the sample-library snapshot deselected,
@@ -612,16 +613,16 @@ def test_an_undefined_subtitle_is_not_kept_when_it_would_still_be_unwanted(setti
     assert [a.action_type for a in subtitle_actions] == ["drop_track"]
 
 
-def test_a_mixed_subtitle_set_is_not_resolved_under_the_per_type_rule(settings):
+def test_fix_tags_a_lone_untagged_subtitle_beside_a_tagged_one(settings):
     """
-    all_undefined_per_type means "only when they are ALL undefined". A
-    file with one tagged and one untagged subtitle does not qualify, so
-    the untagged one is not resolved — the resolver must not be more eager
-    than the pass it mirrors. It is kept untagged; it used to be dropped.
+    Always Fix counts the untagged subtitles alone, so one untagged track
+    beside a tagged one is the file's only one, and is tagged. The rule
+    this replaces ("only when they are ALL undefined") also counted the
+    tagged track, and a job that dropped it changed the answer on the next
+    re-check.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
-    settings["undefined_language_mode"] = "all_undefined_per_type"
     settings["keep_subtitle_languages"] = ["eng"]
     settings["extract_text_subtitles_to_srt"] = False
 
@@ -638,21 +639,20 @@ def test_a_mixed_subtitle_set_is_not_resolved_under_the_per_type_rule(settings):
         make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
         tracks, settings)
 
-    # Neither dropped nor resolved, so the file needs nothing.
-    assert not decision.should_process, decision.reason
-    assert [a for a in decision.actions if a.track_type == "subtitle"] == []
+    tagged = {a.stream_index: a.target_language for a in decision.actions
+              if a.track_type == "subtitle" and a.target_language}
+    assert tagged == {3: "eng"}
+    assert decision.subtitle_language_mismatches == []
 
-
-def test_single_per_type_does_not_resolve_two_undefined_subtitles(settings):
+def test_fix_sends_two_untagged_subtitles_to_review(settings):
     """
-    single_per_type means "only when there is exactly one". Two untagged
-    subtitles are genuinely ambiguous — resolving both to the same
-    language would be a guess, not a resolution — so neither is resolved.
-    Both are kept untagged; they used to be dropped.
+    Two untagged subtitles are genuinely ambiguous: tagging both with one
+    language would be a guess. Neither is tagged, and both are sent to
+    Subtitle Language Review. Always Fix used to leave such tracks as they
+    were and say nothing; before that, they were dropped.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
-    settings["undefined_language_mode"] = "single_per_type"
     settings["keep_subtitle_languages"] = ["eng"]
     settings["keep_forced_subtitles"] = False
     settings["extract_text_subtitles_to_srt"] = False
@@ -672,13 +672,12 @@ def test_single_per_type_does_not_resolve_two_undefined_subtitles(settings):
 
     assert not decision.should_process, decision.reason
     assert [a for a in decision.actions if a.track_type == "subtitle"] == []
+    assert [m["stream_index"] for m in decision.subtitle_language_mismatches] == [2, 3]
 
-
-def test_single_per_type_resolves_a_lone_undefined_subtitle(settings):
+def test_fix_tags_a_files_only_untagged_subtitle(settings):
     """The other half — one untagged subtitle is exactly the case it is for."""
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
-    settings["undefined_language_mode"] = "single_per_type"
     settings["keep_subtitle_languages"] = ["eng"]
     settings["extract_text_subtitles_to_srt"] = False
 
@@ -1033,28 +1032,21 @@ def test_subtitles_can_be_fixed_while_audio_is_left_alone(settings):
     assert d.audio_language_mismatch is None
 
 
-def test_apply_to_is_read_per_type(settings):
+def test_the_fix_rule_counts_each_type_on_its_own(settings):
     """
-    Apply To is split too, so the qualifying rule can differ by type.
+    One untagged audio track and two untagged subtitles: the audio track is
+    its type's only one and is tagged, the subtitles are not and are sent to
+    review. A count shared across types could not produce this split.
 
-    Audio uses "only when there is exactly one" against two und tracks, so
-    it must not fire. Subtitles use "all undefined" against the same shape,
-    so they must. Both types are all-und here, which means a single shared
-    Apply To could not produce this split outcome at all.
-
-    und_audio_threshold is raised because two und audio tracks otherwise
-    trip the manual-review gate and return before the fix pass runs.
+    und_audio_threshold is raised so the threshold has no part in it.
     """
     settings["fix_undefined_language_audio"]      = "always_fix"
-    settings["undefined_language_mode_audio"]     = "single_per_type"
     settings["fix_undefined_language"]            = "always_fix"
-    settings["undefined_language_mode"]           = "all_undefined"
     settings["und_audio_threshold"]               = 99
     settings["extract_text_subtitles_to_srt"]     = False
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
-        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
         make_track(stream_index=3, track_type="subtitle", codec="subrip",
                    language="und"),
         make_track(stream_index=4, track_type="subtitle", codec="subrip",
@@ -1064,8 +1056,8 @@ def test_apply_to_is_read_per_type(settings):
     d = analyze_file(make_file_info(), tracks, settings)
 
     tagged = {a.stream_index for a in d.actions if a.target_language == "eng"}
-    assert tagged == {3, 4}
-
+    assert tagged == {1}
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [3, 4]
 
 def test_an_upgraded_install_does_not_lose_its_subtitles():
     """
@@ -1596,3 +1588,128 @@ def test_preferring_mkv_blocks_it_too(settings):
     decision = _mkv_with(settings)
 
     assert decision.mp4_blocked_beyond_subtitles is True
+
+
+# ── Always Fix: the one untagged track ───────────────────────────────────────
+#
+# Always Fix tags an untagged track only when it is the file's one untagged
+# track of its type (decision._lone_undefined_track), and sends every other
+# untagged track to Language Review. For audio, only when the film or series
+# was made in Primary Language or its original language is not known:
+# Primary Language is the only language Remuxarr writes on its own. The two
+# Apply To settings this replaces are retired.
+#
+# Verified by mutation, 9 applied, 9 killed. Each was run against the full
+# suite (2288 tests, with the four tests that pinned Apply To outcomes
+# deselected) before these tests existed, and seven survived it:
+#
+#   • answered tracks not counted           → the answered-and-dropped test,
+#                                             the real re-check run in
+#                                             test_language_answer_during_job
+#   • the Forge copy counted                → the Forge copy test
+#   • the Forge copy not tagged along       → the Forge copy test
+#   • audio ignoring the original language  → the foreign original test
+#   • Fix not flagging what it does not tag → six tests: the two-subtitles,
+#                                             per-type, foreign original and
+#                                             answered tests here, the real
+#                                             re-check run, and the Fix test
+#                                             in test_subtitle_language_path
+#   • the fix pass counting kept subtitles
+#     only, not the pre-pass's count        → the answered-and-dropped test
+#   • the retired settings left stored      → test_schema_migration
+#
+# Two were already killed: an unknown original language treated as foreign
+# (five tests that tag a lone untagged audio track with no original
+# language), and Ask flagging only a lone track (the stream-order tests in
+# test_subtitle_language_path). Neither is claimed here.
+
+def _fix_audio(settings, **file_info):
+    settings["fix_undefined_language_audio"] = "always_fix"
+    settings["undefined_language_value"] = "eng"
+    settings["und_audio_threshold"] = 99
+    info = make_file_info(path="/m/Film.mkv", container="mkv", video_codec="h264")
+    info.update(file_info)
+    return info
+
+
+def _audio_tags(decision):
+    return {a.stream_index: a.target_language for a in decision.actions
+            if a.track_type == "audio" and a.target_language}
+
+
+def test_fix_sends_a_lone_untagged_track_in_a_foreign_film_to_review(settings):
+    """
+    The film was made in Japanese. Its one untagged audio track is most
+    likely Japanese, and Remuxarr writes no language but Primary Language
+    on its own, so it asks.
+    """
+    info = _fix_audio(settings, original_language="jpn")
+    tracks = [make_track(stream_index=0, track_type="video", codec="h264"),
+              make_track(stream_index=1, track_type="audio", codec="aac", language="und")]
+
+    d = analyze_file(info, tracks, settings)
+
+    assert _audio_tags(d) == {}
+    assert [f["stream_index"] for f in d.undefined_audio_flags] == [1]
+
+
+@pytest.mark.parametrize("original", ["eng", None], ids=["primary", "unknown"])
+def test_fix_tags_a_lone_untagged_track_in_a_film_in_primary_language(settings, original):
+    info = _fix_audio(settings, original_language=original)
+    tracks = [make_track(stream_index=0, track_type="video", codec="h264"),
+              make_track(stream_index=1, track_type="audio", codec="aac", language="und")]
+
+    d = analyze_file(info, tracks, settings)
+
+    assert _audio_tags(d) == {1: "eng"}
+    assert d.undefined_audio_flags == []
+
+
+def test_an_answered_track_still_counts_after_the_keep_list_drops_it(settings):
+    """
+    Two untagged subtitles; the user named the first French in Subtitle
+    Language Review, the job wrote it, and Keep Subtitle Languages (English)
+    now drops it. The file had two untagged subtitles to ask about, and the
+    second is still asked about rather than taken as English: the answer is
+    stored against the track, so it is counted with it.
+    """
+    settings["fix_undefined_language"] = "always_fix"
+    settings["undefined_language_value"] = "eng"
+    settings["keep_subtitle_languages"] = ["eng"]
+    settings["keep_forced_subtitles"] = False
+    settings["extract_text_subtitles_to_srt"] = False
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="eng"),
+        make_track(stream_index=2, track_type="subtitle", codec="subrip", language="fre"),
+        make_track(stream_index=3, track_type="subtitle", codec="subrip", language=None),
+    ]
+
+    d = analyze_file(make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
+                     tracks, settings, subtitle_language_overrides={2: "fre"})
+
+    assert ("drop_track", 2) in [(a.action_type, a.stream_index) for a in d.actions]
+    assert not [a for a in d.actions if a.track_type == "subtitle" and a.target_language]
+    assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [3]
+
+
+def test_the_forge_copy_is_not_counted_and_takes_its_sources_tag(settings):
+    """
+    An untagged AAC 5.1 and the AC3 the forge built from it, which inherited
+    its missing tag. The copy says nothing new about the file: the AAC is
+    still its one untagged track, and both are tagged so the two copies of
+    one piece of audio agree.
+    """
+    info = _fix_audio(settings)
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und",
+                   channels=6, channel_layout="5.1"),
+        make_track(stream_index=2, track_type="audio", codec="ac3", language="und",
+                   channels=6, channel_layout="5.1"),
+    ]
+
+    d = analyze_file(info, tracks, settings, forged_ac3_audio_index=1)
+
+    assert _audio_tags(d) == {1: "eng", 2: "eng"}
+    assert d.undefined_audio_flags == []

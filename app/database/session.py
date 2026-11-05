@@ -122,12 +122,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # an upgrading install starts at always_leave regardless of what the
     # combined setting said. The cost of that reset is a language tag that
     # was not applied, which reprocessing puts back — chosen over touching
-    # the subtitle key, where the same reset costs tracks.
+    # the subtitle key, where the same reset cost tracks while an untagged
+    # subtitle under always_leave was dropped.
     "fix_undefined_language_audio": "always_leave",
     "undefined_language_value": "eng",
-    # Apply To, per type, same key-naming logic as the pair above.
-    "undefined_language_mode":  "all_undefined_per_type",
-    "undefined_language_mode_audio": "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
     "plex_enabled":        False,
     "plex_url":             "",
@@ -361,6 +359,10 @@ def init_db() -> None:
 RETIRED_SETTINGS = (
     # Untagged subtitles are always kept now (decision._sub_is_kept).
     "keep_undefined_subtitles",
+    # Apply To, per type: Always Fix now tags only a file's one untagged
+    # track of a type (decision._lone_undefined_track).
+    "undefined_language_mode",
+    "undefined_language_mode_audio",
 )
 
 

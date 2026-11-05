@@ -347,8 +347,6 @@ KNOWN_KEYS = {
     "fix_undefined_language",
     "fix_undefined_language_audio",
     "undefined_language_value",
-    "undefined_language_mode",
-    "undefined_language_mode_audio",
     "plex_enabled",
     "plex_url",
     "plex_token",
@@ -502,11 +500,13 @@ SETTINGS_SCHEMA = [
             },
         ],
         "description": "What to do with SUBTITLE tracks whose language is "
-                       "undefined (und). Always Fix tags them automatically "
-                       "with the primary language below. Always Ask flags "
-                       "them for a human decision in Subtitle Language "
-                       "Review without touching the file until resolved. "
-                       "Always Leave keeps them untagged. An untagged "
+                       "undefined (und). Always Fix tags the track with the "
+                       "primary language below when it is the file's only "
+                       "untagged subtitle, and sends untagged subtitles to "
+                       "Subtitle Language Review when there are more than "
+                       "one. Always Ask sends every untagged subtitle there, "
+                       "without touching the file until resolved. Always "
+                       "Leave keeps them untagged. An untagged "
                        "subtitle is never removed for having no language, "
                        "whichever is chosen; one that Always Fix tags is "
                        "kept or removed by Keep Subtitle Languages, like any "
@@ -534,10 +534,15 @@ SETTINGS_SCHEMA = [
             },
         ],
         "description": "What to do with AUDIO tracks whose language is "
-                       "undefined (und). Always Fix tags them automatically "
-                       "with the primary language below. Always Ask flags "
-                       "them for a human decision in Audio Language Review "
-                       "without touching the file until resolved. Always "
+                       "undefined (und). Always Fix tags the track with the "
+                       "primary language below when it is the file's only "
+                       "untagged audio track and the film or series was "
+                       "made in that language, as Sonarr or Radarr records "
+                       "it, or the original language is not known. "
+                       "Otherwise it sends the untagged tracks to Audio "
+                       "Language Review. Always Ask sends every untagged "
+                       "audio track there, without touching the file until "
+                       "resolved. Always "
                        "Leave keeps them untagged: an undefined audio track "
                        "is kept either way. Video tracks are "
                        "never affected. Overridden by the separate "
@@ -557,65 +562,6 @@ SETTINGS_SCHEMA = [
                        "(e.g. eng, fre, jpn). A two-letter code (en) is saved "
                        "as its three-letter form (eng), which is what gets "
                        "written into the file.",
-    },
-    {
-        # Unsuffixed key = subtitles, matching fix_undefined_language above
-        # and for the same reason. This one also feeds the pre-pass that
-        # decides which undefined subtitles survive keep/drop, so a reset
-        # here costs tracks too, not just tags.
-        "key":     "undefined_language_mode",
-        "group":   "Metadata",
-        "label":   "Apply To (Subtitles)",
-        "type":    "select",
-        "options": [
-            {
-                "value": "all_undefined",
-                "label": "All undefined tracks",
-            },
-            {
-                "value": "all_undefined_per_type",
-                "label": "Only when all subtitle tracks are undefined",
-            },
-            {
-                "value": "single_per_type",
-                "label": "Only when there is exactly one undefined subtitle track",
-            },
-        ],
-        "description": "Which undefined subtitle tracks the setting above "
-                       "acts on. 'All undefined' tags every und subtitle. "
-                       "The middle option is safer — it acts only when "
-                       "every subtitle track is und, avoiding guesses on "
-                       "mixed-language files. 'Only when there is exactly "
-                       "one' is the most conservative. Audio has its own "
-                       "Apply To below and is unaffected by this.",
-    },
-    {
-        "key":     "undefined_language_mode_audio",
-        "group":   "Metadata",
-        "label":   "Apply To (Audio)",
-        "type":    "select",
-        "options": [
-            {
-                "value": "all_undefined",
-                "label": "All undefined tracks",
-            },
-            {
-                "value": "all_undefined_per_type",
-                "label": "Only when all audio tracks are undefined",
-            },
-            {
-                "value": "single_per_type",
-                "label": "Only when there is exactly one undefined audio track",
-            },
-        ],
-        "description": "Which undefined audio tracks the audio setting "
-                       "above acts on. 'All undefined' tags every und audio "
-                       "track. The middle option is safer — it acts only "
-                       "when every audio track is und, avoiding guesses on "
-                       "a file that has one tagged track and one untagged "
-                       "one. 'Only when there is exactly one' is the most "
-                       "conservative. Subtitles have their own Apply To "
-                       "above and are unaffected by this.",
     },
     # ── Audio ──────────────────────────────────────────────────────────────
     {
@@ -1246,8 +1192,6 @@ APPLIES_ON_RESCAN = {
     "fix_undefined_language",
     "fix_undefined_language_audio",
     "undefined_language_value",
-    "undefined_language_mode",
-    "undefined_language_mode_audio",
     "keep_audio_languages",
     "keep_default_audio",
     "original_language_audio",

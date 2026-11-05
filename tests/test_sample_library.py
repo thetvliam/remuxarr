@@ -63,7 +63,6 @@ CONFIG = {
     "und_audio_threshold":           2,
     "fix_undefined_language":        "always_leave",
     "undefined_language_value":      "eng",
-    "undefined_language_mode":       "all_undefined_per_type",
     "prefer_mp4_container":          True,
     "extract_text_subtitles_to_srt": True,
     "add_faststart_to_mp4":          True,

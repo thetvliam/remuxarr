@@ -109,8 +109,6 @@ BASE_SETTINGS = {
     "fix_undefined_language":         "always_leave",
     "fix_undefined_language_audio":   "always_leave",
     "undefined_language_value":       "eng",
-    "undefined_language_mode":        "all_undefined_per_type",
-    "undefined_language_mode_audio":  "all_undefined_per_type",
     "prefer_mp4_container":         True,
     "extract_text_subtitles_to_srt": True,
     "existing_srt_handling":        "keep_both",

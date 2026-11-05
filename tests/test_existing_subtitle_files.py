@@ -443,8 +443,7 @@ def test_the_old_file_does_not_take_a_name_the_job_writes(lib):
     _mode(lib, "embedded_first")
     with lib.Session() as db:
         for key, value in {"fix_undefined_language": "always_fix",
-                           "undefined_language_value": "eng",
-                           "undefined_language_mode": "all_undefined"}.items():
+                           "undefined_language_value": "eng"}.items():
             db.merge(AppSetting(key=key, value=json.dumps(value)))
         db.commit()
 

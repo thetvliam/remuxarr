@@ -1345,9 +1345,10 @@ def test_existing_forge_jobs_gain_ac3_marked_unset(unmarked):
 def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeypatch):
     """
     keep_undefined_subtitles went when untagged subtitles came to be kept
-    in every mode. Its row stayed with nothing reading it, and an export
-    carries every stored row on into the next backup. Any other setting is
-    left as it was.
+    in every mode, and the two Apply To settings when Always Fix came to tag
+    only a file's one untagged track. Their rows stayed with nothing reading
+    them, and an export carries every stored row on into the next backup.
+    Any other setting is left as it was.
     """
     from app.database.models import Base
 
@@ -1356,7 +1357,9 @@ def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeyp
     Base.metadata.create_all(engine)
     engine.dispose()
     conn = sqlite3.connect(path)
-    conn.execute("INSERT INTO app_settings (key, value) VALUES ('keep_undefined_subtitles', 'true')")
+    for key in ("keep_undefined_subtitles", "undefined_language_mode",
+                "undefined_language_mode_audio"):
+        conn.execute("INSERT INTO app_settings (key, value) VALUES (?, '\"x\"')", (key,))
     conn.execute("INSERT INTO app_settings (key, value) VALUES ('keep_forced_subtitles', 'false')")
     conn.commit()
     conn.close()
@@ -1371,11 +1374,13 @@ def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeyp
     try:
         rows = dict(conn.execute(
             "SELECT key, value FROM app_settings WHERE key IN "
-            "('keep_undefined_subtitles', 'keep_forced_subtitles')").fetchall())
+            "('keep_undefined_subtitles', 'undefined_language_mode', "
+            "'undefined_language_mode_audio', 'keep_forced_subtitles')").fetchall())
     finally:
         conn.close()
     assert rows == {"keep_forced_subtitles": "false"}
 
 
-# Verified by mutation, 1 applied 1 killed, surviving the full suite first:
-# the deletion not called at startup.
+# Verified by mutation, 2 applied 2 killed, each surviving the full suite
+# first: the deletion not called at startup, and the two Apply To keys left
+# out of RETIRED_SETTINGS.
