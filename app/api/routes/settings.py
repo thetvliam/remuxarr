@@ -335,7 +335,6 @@ KNOWN_KEYS = {
     "skip_extras",
     "exclude_patterns",
     "include_patterns",
-    "und_audio_threshold",
     "extract_text_subtitles_to_srt",
     "existing_srt_handling",
     "image_subtitle_handling",
@@ -545,12 +544,7 @@ SETTINGS_SCHEMA = [
                        "resolved. Always "
                        "Leave keeps them untagged: an undefined audio track "
                        "is kept either way. Video tracks are "
-                       "never affected. Overridden by the separate "
-                       "Undefined Audio Track Threshold below: a file with "
-                       "too many undefined audio tracks to safely guess "
-                       "between has all of them flagged in Audio Language "
-                       "Review and none of them tagged automatically, "
-                       "whatever this setting says.",
+                       "never affected.",
     },
     {
         "key":         "undefined_language_value",
@@ -612,21 +606,6 @@ SETTINGS_SCHEMA = [
                        "Routine scans do not ask, and a file whose original "
                        "language is not known keeps what Keep Audio Languages "
                        "keeps.",
-    },
-    {
-        "key":         "und_audio_threshold",
-        "group":       "Audio",
-        "label":       "Undefined Audio Track Threshold",
-        "type":        "integer",
-        "min":         1,
-        "description": "When a file has this many or more audio tracks with "
-                       "an undefined language, flag every one of them in "
-                       "Audio Language Review rather than guessing: set each "
-                       "track's language there, or confirm they are correct "
-                       "as they are. Processing is not held up either way, "
-                       "since an undefined audio track is always kept. "
-                       "Minimum 1 — a threshold of 0 would match every file, "
-                       "including ones with no undefined tracks at all.",
     },
     # ── Subtitles ──────────────────────────────────────────────────────────
     {
@@ -1195,7 +1174,6 @@ APPLIES_ON_RESCAN = {
     "keep_audio_languages",
     "keep_default_audio",
     "original_language_audio",
-    "und_audio_threshold",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
     "extract_text_subtitles_to_srt",

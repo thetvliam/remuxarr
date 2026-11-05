@@ -60,7 +60,6 @@ CONFIG = {
     "keep_default_audio":            True,
     "keep_subtitle_languages":       ["eng"],
     "keep_forced_subtitles":         True,
-    "und_audio_threshold":           2,
     "fix_undefined_language":        "always_leave",
     "undefined_language_value":      "eng",
     "prefer_mp4_container":          True,

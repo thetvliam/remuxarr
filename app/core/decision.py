@@ -184,13 +184,12 @@ class ProcessingDecision:
     mp4_blocked_beyond_subtitles: bool = False
 
     # Undefined-language audio tracks for Audio Language Review, one entry
-    # per track, in stream order: {"stream_index": int, "origin": str}.
-    #   "threshold" — the file is at or over the Undefined Audio Track
-    #                 Threshold, which is no longer a manual-review gate.
-    #   "mismatch"  — fix_undefined_language_audio=always_ask left the track
-    #                 for a person.
-    # The origin becomes AudioLanguageFlag.origin, which decides the switch
-    # Confirm correct writes. Informational only, like the field above.
+    # per track, in stream order: {"stream_index": int, "origin": str}. The
+    # origin is always "undefined": a track Always Fix did not tag, or any
+    # under Always Ask. It becomes AudioLanguageFlag.origin, which decides
+    # the switch Confirm correct writes (und_audio_threshold_acknowledged,
+    # not the language-mismatch one). Informational only, like the field
+    # above.
     undefined_audio_flags: list[dict] = field(default_factory=list)
 
     # Subtitle-track counterpart to audio_language_mismatch above. Unlike
@@ -420,13 +419,13 @@ def analyze_file(
         Ac3ForgeJob exists for this file — i.e.
         Ac3ForgeJob.audio_track_count, the 0-based audio-track-relative
         index the AC3 was appended at. When set, the forge AC3 is
-        excluded from the "multiple undefined-language audio tracks"
-        threshold count, and from the flags it raises: it's a known, intentional
-        duplicate of an existing audio track (added by the AC3 forge
-        feature for AVR passthrough), not a new genuinely-ambiguous
-        source. Without this exclusion, any file where forge was used on
-        an "und"-language source would trip the threshold on every
-        subsequent scan even though both tracks are always meant to be
+        left out of the undefined-track count, and so out of the flags
+        it raises: it's a known, intentional duplicate of an existing
+        audio track (added by the AC3 forge feature for AVR
+        passthrough), not a new genuinely-ambiguous source. Without
+        this, any file where forge was used on an "und"-language source
+        would count two untagged tracks on every subsequent scan, and be
+        asked about, even though both tracks are always meant to be
         kept — there's nothing for a human to actually decide.
 
         Only its PRESENCE is used, not its value. The track is located
@@ -456,14 +455,6 @@ def analyze_file(
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
-    # Clamped to a minimum of 1 — a threshold of 0 would make "contains 0
-    # or more undefined-language tracks" true for every file, including
-    # ones with none at all, silently flagging every file in the library.
-    # 0 is never a meaningful value for a ">=" comparison
-    # like this one; 1 is the lowest threshold that actually means
-    # something. Same defensive pattern already used for
-    # max_concurrent_jobs in worker.py's dispatch loop.
-    und_threshold       = max(1, int(settings.get("und_audio_threshold", 2)))
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
 
@@ -550,14 +541,12 @@ def analyze_file(
 
     sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
-    # ── Undefined-language audio: the threshold ──────────────────────────────
-    und_audio = [t for t in audio_tracks
-                 if (t["language"] or "und") in ("und", "")]
-
-    # Exclude the forge-derived AC3 track (if any) from the threshold count.
-    # See the forged_ac3_audio_index docstring above for why: it's a known
-    # duplicate, not a new ambiguous source, so it shouldn't count toward
-    # triggering manual review.
+    # ── The AC3 Forge copy ───────────────────────────────────────────────────
+    # Left out of the undefined-track count (_lone_undefined_track, in the
+    # fix pass). See the forged_ac3_audio_index docstring above for why: it
+    # is a known duplicate, not a new ambiguous source. It used to be left
+    # out of the Undefined Audio Track Threshold's count, for the same
+    # reason, while that setting existed.
     #
     # WHICH track is resolved by property, not by the stored index. The
     # index is the track's position at ADD time and is deliberately not
@@ -580,7 +569,7 @@ def analyze_file(
     # something that is not last is if the file GAINED audio tracks,
     # which means the path now holds a different release — and then the
     # ac3/6ch it points at belongs to a file forge never touched, so
-    # exempting it let an unknown file past this gate.
+    # exempting it left an unknown file's track out of the count.
     #
     # This is the rule forge.resolve_forge_ac3_for_undo applies, and that
     # function calls the same layout "mismatch" and refuses. Kept inline
@@ -590,19 +579,7 @@ def analyze_file(
     if forged_ac3_audio_index is not None and audio_tracks:
         last = audio_tracks[-1]
         if (last.get("codec") or "").lower() == "ac3" and last.get("channels") == 6:
-            und_audio = [t for t in und_audio if t is not last]
             forge_copy_si = last["stream_index"]
-
-    # At or over the Undefined Audio Track Threshold, the file's undefined
-    # tracks are a question for a person. The threshold used to hold the
-    # file for manual review right here. It no longer holds anything:
-    # undefined audio is kept unconditionally (the audio keep rule below), so
-    # processing the file first loses no track, and the question goes to
-    # Audio Language Review as a flag on each undefined track instead — see
-    # undefined_audio_flags. The accepted cost is that such a file can be
-    # processed twice, once now and once after its tracks are tagged, which
-    # is what Set language already does.
-    over_und_threshold = len(und_audio) >= und_threshold
 
     # Whether a subtitle track would be retained under the current language/
     # forced settings — shared by the manual-review gate below and the main
@@ -933,8 +910,7 @@ def analyze_file(
     #   an und-only file triggered the fallback and logged a warning saying
     #   its language tag was "likely wrong". The tag was not wrong, it was
     #   absent, which is normal and handled elsewhere entirely
-    #   (fix_undefined_language, und_audio_threshold, Audio Language
-    #   Review). The false alarm was the common case, which made the
+    #   (fix_undefined_language, Audio Language Review). The false alarm was the common case, which made the
     #   warning easy to dismiss on the rare occasion it mattered.
     #
     #   Did not fire when it should have — "not has_default_audio" ignored
@@ -995,9 +971,8 @@ def analyze_file(
             # extra of unknowable relevance. "und" tells us nothing
             # either way, so each side defaults to whichever mistake is
             # cheaper to make: keep the audio, drop the subtitle. The
-            # fix_undefined_language setting and the Undefined Audio Track
-            # Threshold both exist precisely to let und tags be resolved
-            # properly rather than guessed at here.
+            # Fix Undefined Language settings exist precisely to let und
+            # tags be resolved properly rather than guessed at here.
             or lang == "und"
             # Only keep the default-flagged track when no preferred-language
             # track exists — preserves audio on edge-case files without
@@ -1328,14 +1303,6 @@ def analyze_file(
         dropped_si   = {a.stream_index for a in actions if a.action_type == "drop_track"}
 
         for track_type in ("audio", "subtitle"):
-            if track_type == "audio" and over_und_threshold:
-                # Over the threshold, the file's undefined audio belongs to
-                # the threshold whatever this setting says: it flags them
-                # itself, and this pass would flag the same tracks a second
-                # time. Acknowledging the
-                # threshold changes neither: Confirm correct means the tags
-                # are right as they are.
-                continue
             und_mode = und_modes[track_type]
             if und_mode not in ("always_fix", "always_ask"):
                 # This type is always_leave. `continue`, not a narrower
@@ -1485,30 +1452,24 @@ def analyze_file(
     # some OTHER track in the same file already matches a preferred
     # language.
     #
-    # Over the threshold, every undefined track the threshold counted is
-    # flagged, unless the user has acknowledged the threshold for this file
-    # or the track already has a language waiting to be written. That last
-    # skip matters because the count reads the raw tags, and Set language
-    # re-evaluates the file before the job writes the new tag: without it,
-    # the track just answered would be flagged again at once.
+    # The tracks the fix pass left for a person — every one of them, not
+    # only the first, since the flag table holds a row per track. The fix
+    # pass already skipped tracks with a pending language. None once the
+    # user has confirmed this file's undefined audio correct as it is
+    # (und_audio_threshold_acknowledged): that answer is about the file's
+    # untagged audio, not one track. It stops the asking, not the tagging:
+    # Always Fix still tags a lone track that qualifies.
     #
-    # Below the threshold, the tracks always_ask left for a person — every
-    # one of them now, not only the first, since the flag table holds a row
-    # per track. The fix pass above already skipped tracks with a pending
-    # language.
+    # The Undefined Audio Track Threshold used to flag every untagged track
+    # of a file with two or more, whatever the mode, under an origin of its
+    # own. The count in the fix pass sends such a file to review under Fix
+    # and Ask now, and Leave means no question; the setting is retired.
     #
     # Sorted, because these are sets and the order reaches the review page.
-    if over_und_threshold:
-        undefined_audio_flags = [] if file_info.get("und_audio_threshold_acknowledged") else [
-            {"stream_index": si, "origin": "threshold"}
-            for si in sorted(t["stream_index"] for t in und_audio)
-            if si not in audio_language_overrides
-        ]
-    else:
-        undefined_audio_flags = [
-            {"stream_index": si, "origin": "mismatch"}
-            for si in sorted(und_flagged_audio)
-        ]
+    undefined_audio_flags = [] if file_info.get("und_audio_threshold_acknowledged") else [
+        {"stream_index": si, "origin": "undefined"}
+        for si in sorted(und_flagged_audio)
+    ]
 
     # ── Subtitle language mismatch detection (for Subtitle Language Review) ──
     # Subtitle counterpart to the und-flagging half of the block above —

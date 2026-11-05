@@ -145,12 +145,8 @@ def test_und_audio_flags_are_in_stream_order():
     hash order for ints is not ascending — sorted({18, 3, 11}) is the
     difference between a review page listing tracks as a player would and
     listing them arbitrarily.
-
-    und_audio_threshold is raised so the threshold does not claim these
-    tracks first: over it they are flagged as its own, not as always_ask's.
     """
-    cfg = _prod(fix_undefined_language_audio="always_ask",
-                und_audio_threshold=99)
+    cfg = _prod(fix_undefined_language_audio="always_ask")
     tracks = [VIDEO, _audio(si=18, lang="und"), _audio(si=3, lang="und"),
               _audio(si=11, lang="und")]
 
@@ -158,9 +154,9 @@ def test_und_audio_flags_are_in_stream_order():
 
     assert d.audio_language_mismatch is None
     assert d.undefined_audio_flags == [
-        {"stream_index": 3,  "origin": "mismatch"},
-        {"stream_index": 11, "origin": "mismatch"},
-        {"stream_index": 18, "origin": "mismatch"},
+        {"stream_index": 3,  "origin": "undefined"},
+        {"stream_index": 11, "origin": "undefined"},
+        {"stream_index": 18, "origin": "undefined"},
     ]
 
 

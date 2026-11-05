@@ -35,8 +35,8 @@ export function useAppData() {
    * and the badge only ever needs the number.
    *
    * The language flags have to be included: a file can carry one without
-   * ever entering manual review (one undefined audio track under a threshold
-   * of two, an undefined subtitle that gets extracted), so the review count
+   * ever entering manual review (an undefined audio track under Always Ask,
+   * an undefined subtitle that gets extracted), so the review count
    * alone reads zero while the page below has rows waiting. */
   const [manualReviewCount, setManualReviewCount] = useState(0);
   const [languageReviewCount, setLanguageReviewCount] = useState(0);

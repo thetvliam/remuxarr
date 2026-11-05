@@ -1345,10 +1345,11 @@ def test_existing_forge_jobs_gain_ac3_marked_unset(unmarked):
 def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeypatch):
     """
     keep_undefined_subtitles went when untagged subtitles came to be kept
-    in every mode, and the two Apply To settings when Always Fix came to tag
-    only a file's one untagged track. Their rows stayed with nothing reading
-    them, and an export carries every stored row on into the next backup.
-    Any other setting is left as it was.
+    in every mode, the two Apply To settings when Always Fix came to tag
+    only a file's one untagged track, and und_audio_threshold when Fix and
+    Ask came to send several untagged tracks to review themselves. Their
+    rows stayed with nothing reading them, and an export carries every
+    stored row on into the next backup. Any other setting is left as it was.
     """
     from app.database.models import Base
 
@@ -1358,7 +1359,7 @@ def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeyp
     engine.dispose()
     conn = sqlite3.connect(path)
     for key in ("keep_undefined_subtitles", "undefined_language_mode",
-                "undefined_language_mode_audio"):
+                "undefined_language_mode_audio", "und_audio_threshold"):
         conn.execute("INSERT INTO app_settings (key, value) VALUES (?, '\"x\"')", (key,))
     conn.execute("INSERT INTO app_settings (key, value) VALUES ('keep_forced_subtitles', 'false')")
     conn.commit()
@@ -1375,7 +1376,8 @@ def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeyp
         rows = dict(conn.execute(
             "SELECT key, value FROM app_settings WHERE key IN "
             "('keep_undefined_subtitles', 'undefined_language_mode', "
-            "'undefined_language_mode_audio', 'keep_forced_subtitles')").fetchall())
+            "'undefined_language_mode_audio', 'und_audio_threshold', "
+            "'keep_forced_subtitles')").fetchall())
     finally:
         conn.close()
     assert rows == {"keep_forced_subtitles": "false"}
@@ -1383,4 +1385,147 @@ def test_a_retired_settings_stored_value_is_removed_at_startup(tmp_path, monkeyp
 
 # Verified by mutation, 2 applied 2 killed, each surviving the full suite
 # first: the deletion not called at startup, and the two Apply To keys left
-# out of RETIRED_SETTINGS.
+# out of RETIRED_SETTINGS. und_audio_threshold left out of it was a third,
+# killed here too; see the section below for the suite it survived.
+
+
+# ── The undefined-audio origin and confirmation ──────────────────────────────
+#
+# The Undefined Audio Track Threshold went, and with it the origin "threshold"
+# on its flags. Every flag on an untagged audio track is "undefined" now,
+# answered on und_audio_threshold_acknowledged. Two startup steps bring an
+# existing install across: the old rows are renamed, and a Confirm correct
+# Always Ask's untagged-track flags recorded on audio_language_ignored is
+# copied to the new switch, once.
+#
+# Verified by mutation, 7 applied 7 killed, each surviving the 2268-test
+# suite of the time first:
+#
+#   • the rename never run                → the origin test
+#   • the rename leaving "threshold" rows → the origin test
+#   • the copy never run                  → the carried-once test
+#   • the copy run after the row is
+#     deleted, so never                   → the carried-once test
+#   • the copy run on every start         → the carried-once test
+#   • the copy reaching files with no
+#     untagged audio                      → the carried-once test
+#   • und_audio_threshold left out of
+#     RETIRED_SETTINGS                    → the retired-settings test above,
+#                                           and the carried-once test
+#
+# The rename taking tagged mismatch flags too was already killed, by
+# test_existing_audio_flags_survive_the_rebuild_as_mismatches, and is not
+# claimed here.
+
+def _undefined_audio_db(tmp_path, *, threshold_row=True):
+    """
+    A database as an install left it before the threshold went: three
+    files, each with an audio track, and flags of both old origins.
+
+      1  untagged track, Confirm correct on the mismatch switch
+      2  English track, Confirm correct on the mismatch switch
+      3  untagged track, never confirmed
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    conn = sqlite3.connect(path)
+    for file_id, language, ignored in ((1, "und", 1), (2, "eng", 1), (3, "und", 0)):
+        conn.execute(
+            "INSERT INTO media_files (id, path, filename, directory, size, mtime, "
+            "status, audio_language_ignored, und_audio_threshold_acknowledged) "
+            "VALUES (?, ?, 'F.mkv', '/m', 1, 1.0, 'processed', ?, 0)",
+            (file_id, f"/m/{file_id}/F.mkv", ignored))
+        conn.execute(
+            "INSERT INTO tracks (file_id, stream_index, track_type, language) "
+            "VALUES (?, 1, 'audio', ?)", (file_id, language))
+    conn.executemany(
+        "INSERT INTO audio_language_flags (file_id, stream_index, detected_language, origin) "
+        "VALUES (3, ?, ?, ?)",
+        [(1, "und", "threshold"), (2, "und", "mismatch"), (3, "dut", "mismatch")])
+    if threshold_row:
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('und_audio_threshold', '2')")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _start(path, monkeypatch):
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+
+def _query(path, sql, *args):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(sql, args).fetchall()
+    finally:
+        conn.close()
+
+
+def _acknowledged(path):
+    return dict(_query(path, "SELECT id, und_audio_threshold_acknowledged FROM media_files"))
+
+
+def test_untagged_track_flags_get_the_undefined_origin(tmp_path, monkeypatch):
+    """
+    The origin decides which switch Confirm correct writes. A "threshold"
+    row would raise when answered (no switch is paired with it any more),
+    and an untagged-track "mismatch" row would be answered on the
+    language-mismatch switch. A mismatch on a tagged track is a mismatch
+    still, and keeps its origin.
+    """
+    path = _undefined_audio_db(tmp_path)
+
+    _start(path, monkeypatch)
+
+    assert _query(path, "SELECT stream_index, origin FROM audio_language_flags "
+                        "ORDER BY stream_index") == [
+        (1, "undefined"), (2, "undefined"), (3, "mismatch")]
+
+
+def test_an_old_confirm_correct_is_carried_to_the_untagged_audio_once(tmp_path, monkeypatch):
+    """
+    File 1's untagged track was confirmed under Always Ask, on the mismatch
+    switch, and is not asked about again: its answer is copied across. File
+    2 has no untagged audio, so its answer was about a language and stays
+    where it is; file 3 was never confirmed.
+
+    Once, because the step runs only while the threshold's row is stored,
+    and that row is deleted on the same start. A second start after Clear
+    acknowledged must leave the cleared file cleared, or Clear would undo
+    itself at the next restart.
+    """
+    path = _undefined_audio_db(tmp_path)
+
+    _start(path, monkeypatch)
+
+    assert _acknowledged(path) == {1: 1, 2: 0, 3: 0}
+    assert _query(path, "SELECT key FROM app_settings WHERE key = 'und_audio_threshold'") == []
+
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE media_files SET und_audio_threshold_acknowledged = 0 WHERE id = 1")
+    conn.commit()
+    conn.close()
+
+    _start(path, monkeypatch)
+
+    assert _acknowledged(path) == {1: 0, 2: 0, 3: 0}
+
+
+def test_a_database_without_the_threshold_copies_nothing(tmp_path, monkeypatch):
+    """
+    An install that never had the setting, or has been through the step
+    already, has no row, and the step does nothing.
+    """
+    path = _undefined_audio_db(tmp_path, threshold_row=False)
+
+    _start(path, monkeypatch)
+
+    assert _acknowledged(path) == {1: 0, 2: 0, 3: 0}

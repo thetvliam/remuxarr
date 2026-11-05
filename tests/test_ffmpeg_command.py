@@ -18,7 +18,7 @@ from tests.conftest import make_track, make_file_info
 def _flv_settings():
     return {
         "keep_audio_languages": ["eng"], "keep_subtitle_languages": ["eng"],
-        "und_audio_threshold": 2, "fix_undefined_language": "always_leave",
+        "fix_undefined_language": "always_leave",
         "prefer_mp4_container": True,
     }
 

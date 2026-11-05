@@ -23,7 +23,7 @@ one kind of answer cannot undo the other on the same file. Six mutations of
 that survived the full 1547-test suite, and each is killed by the tests in
 the last section:
 
-  • threshold flags answered on audio_language_ignored
+  • undefined flags (then "threshold") answered on audio_language_ignored
   • the audio review configured without origin switches
   • only the first flag's origin counted when confirming a file
   • Set language clearing every switch
@@ -39,6 +39,14 @@ before the last two tests in this file existed:
 
   • audio_language_ignored silencing threshold flags as well as mismatches
   • a row keeping its old origin when the route that flagged it changes
+
+The Undefined Audio Track Threshold has since been retired, and every flag
+on an untagged track has the origin "undefined"; the tests above were
+renamed to it, and they hold the same two lines. Undefined flags answered on
+audio_language_ignored, mutated again for the new origin, survived the
+2268-test suite of the time and is killed by the confirming test.
+audio_language_ignored silencing undefined flags in the scanner was still
+killed, by the ignored-file test, and is not claimed again.
 """
 
 
@@ -263,7 +271,7 @@ def test_facet_counts_also_honour_wildcard_escaping():
 def _upsert(db, media, mismatch, undefined=()):
     """
     Run the scanner's flag update for a decision reporting `mismatch` and
-    `undefined` (the per-track entries the threshold and always_ask raise).
+    `undefined` (the per-track entries for untagged tracks).
     """
     from types import SimpleNamespace
 
@@ -327,7 +335,7 @@ def test_an_ignored_file_keeps_no_audio_flags():
 
 
 def test_each_listed_row_says_where_it_came_from():
-    """The origin is what tells a threshold flag from a mismatch flag."""
+    """The origin is what tells an undefined flag from a mismatch flag."""
     db = _db()
     _flag(db, "Show S01E01.mkv", "dut", 1)
 
@@ -394,16 +402,16 @@ def _choose(db, file, stream_index, monkeypatch):
     db.refresh(file)
 
 
-def test_confirming_a_threshold_flag_sets_the_acknowledgement_only(
+def test_confirming_an_undefined_flag_sets_the_acknowledgement_only(
         tmp_path, monkeypatch):
     """
-    The acknowledgement is the threshold's own switch, the one Clear
+    The acknowledgement is the undefined flags' own switch, the one Clear
     acknowledged takes back. Recorded on audio_language_ignored instead, the
     answer could not be taken back that way, and it would also silence any
     unanswered language-mismatch question on the same file.
     """
     db = _db()
-    file = _flagged_file(db, tmp_path, [(1, "threshold")])
+    file = _flagged_file(db, tmp_path, [(1, "undefined")])
 
     _confirm(db, file, monkeypatch)
 
@@ -414,7 +422,7 @@ def test_confirming_a_threshold_flag_sets_the_acknowledgement_only(
 def test_confirming_a_file_with_both_kinds_sets_both(tmp_path, monkeypatch):
     """Confirm correct acts on the whole file, so every question on it is answered."""
     db = _db()
-    file = _flagged_file(db, tmp_path, [(1, "mismatch"), (2, "threshold")])
+    file = _flagged_file(db, tmp_path, [(1, "mismatch"), (2, "undefined")])
 
     _confirm(db, file, monkeypatch)
 
@@ -427,7 +435,7 @@ def test_choosing_a_language_for_a_mismatch_leaves_the_acknowledgement(
     """
     Choosing a language takes back the switch for the question it answers —
     a more specific, more recent decision. A mismatch answer says nothing
-    about the threshold, so an acknowledgement on the same file stands.
+    about undefined tracks, so an acknowledgement on the same file stands.
     """
     db = _db()
     file = _flagged_file(db, tmp_path, [(1, "mismatch")],
@@ -440,7 +448,7 @@ def test_choosing_a_language_for_a_mismatch_leaves_the_acknowledgement(
     assert file.und_audio_threshold_acknowledged is True
 
 
-def test_choosing_a_language_for_a_threshold_flag_takes_back_only_its_switch(
+def test_choosing_a_language_for_an_undefined_flag_takes_back_only_its_switch(
         tmp_path, monkeypatch):
     """
     The mirror of the test above, and the one that catches Set language
@@ -448,7 +456,7 @@ def test_choosing_a_language_for_a_threshold_flag_takes_back_only_its_switch(
     an origin.
     """
     db = _db()
-    file = _flagged_file(db, tmp_path, [(1, "threshold")],
+    file = _flagged_file(db, tmp_path, [(1, "undefined")],
                          audio_language_ignored=True,
                          und_audio_threshold_acknowledged=True)
 
@@ -458,12 +466,12 @@ def test_choosing_a_language_for_a_threshold_flag_takes_back_only_its_switch(
     assert file.audio_language_ignored is True
 
 
-def test_an_ignored_file_still_gets_its_threshold_flags():
+def test_an_ignored_file_still_gets_its_undefined_flags():
     """
     audio_language_ignored answers language mismatches, and only those. The
-    undefined tracks over the threshold are a different question, so
-    confirming a mismatch must not silence them — the two switches exist
-    precisely so one answer cannot stand in for the other.
+    untagged tracks are a different question, so confirming a mismatch must
+    not silence them — the two switches exist precisely so one answer
+    cannot stand in for the other.
     """
     db = _db()
     media = _flag(db, "Show S01E01.mkv", "dut", 1)
@@ -471,29 +479,30 @@ def test_an_ignored_file_still_gets_its_threshold_flags():
     db.commit()
 
     _upsert(db, media, {"stream_index": 1, "language": "dut"},
-            undefined=[{"stream_index": 2, "origin": "threshold"}])
+            undefined=[{"stream_index": 2, "origin": "undefined"}])
 
-    assert [(r.stream_index, r.origin) for r in _rows(db, 1)] == [(2, "threshold")]
+    assert [(r.stream_index, r.origin) for r in _rows(db, 1)] == [(2, "undefined")]
 
 
 def test_a_rows_origin_follows_the_route_that_flagged_it():
     """
-    always_ask asks about an undefined track below the threshold; the same
-    track belongs to the threshold once the file reaches it. Left on the old
+    A tagged track flagged as a mismatch, and the file back with that track
+    untagged: the same stream is now an undefined question. Left on the old
     origin, the row would be answered on the wrong switch — Confirm correct
-    would write audio_language_ignored for a threshold question.
+    would write audio_language_ignored for an undefined question.
     """
     db = _db()
-    media = _flag(db, "Show S01E01.mkv", "und", 1)
+    media = _flag(db, "Show S01E01.mkv", "dut", 1)
     (before,) = _rows(db, 1)
     assert before.origin == "mismatch"
 
     _upsert(db, media, None,
-            undefined=[{"stream_index": 1, "origin": "threshold"}])
+            undefined=[{"stream_index": 1, "origin": "undefined"}])
 
     (after,) = _rows(db, 1)
     assert after.id == before.id
-    assert after.origin == "threshold"
+    assert after.origin == "undefined"
+    assert after.detected_language == "und"
 
 
 def test_a_flag_whose_track_is_gone_is_reported_not_answered(tmp_path, monkeypatch):

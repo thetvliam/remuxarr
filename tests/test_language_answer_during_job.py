@@ -103,11 +103,12 @@ def database(tmp_path, monkeypatch):
 @pytest.fixture
 def lib(database):
     """
-    Movie.mkv with two untagged audio tracks, scanned: a job is queued to
-    convert it to MP4, and each track is a question in Audio Language Review.
+    Movie.mkv with two untagged audio tracks, scanned under Ask for audio:
+    a job is queued to convert it to MP4, and each track is a question in
+    Audio Language Review. The default, Leave, asks nothing.
     """
     from app.core import scanner
-    from app.database.models import AudioLanguageFlag, QueueItem
+    from app.database.models import AppSetting, AudioLanguageFlag, QueueItem
 
     factory, library = database.Session, database.library
     video = library / "Movie.mkv"
@@ -121,6 +122,9 @@ def lib(database):
         "-c:a", "aac", "-f", "matroska", str(video)], check=True)
 
     with factory() as db:
+        db.merge(AppSetting(key="fix_undefined_language_audio",
+                            value=json.dumps("always_ask")))
+        db.commit()
         scanner.scan_library(db, [str(library)], force_probe=True)
         assert [q.status for q in db.query(QueueItem)] == ["pending"], "no job queued"
         assert db.query(AudioLanguageFlag).count() == 2, "no questions to answer"
@@ -294,7 +298,6 @@ def test_answering_one_of_two_untagged_tracks_leaves_the_other_asked_about(datab
     track and queued a job tagging it English. Mutation-verified; see the
     Fix-rule section of test_decision.
 
-    und_audio_threshold is raised so the threshold has no part in it, and
     Prefer MP4 is off so the only job is the one the answer asks for.
     """
     from app.api.routes._language_review import ApplyRequest
@@ -323,7 +326,6 @@ def test_answering_one_of_two_untagged_tracks_leaves_the_other_asked_about(datab
 
     with factory() as db:
         for key, value in (("fix_undefined_language_audio", "always_fix"),
-                           ("und_audio_threshold", 99),
                            ("prefer_mp4_container", False)):
             db.merge(AppSetting(key=key, value=json.dumps(value)))
         db.commit()

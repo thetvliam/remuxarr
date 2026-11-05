@@ -102,7 +102,6 @@ BASE_SETTINGS = {
     "keep_default_audio":           True,
     "keep_subtitle_languages":      ["eng"],
     "keep_forced_subtitles":        True,
-    "und_audio_threshold":          2,
     # Unsuffixed = subtitles, _audio = audio. Both present and both at the
     # production default, so a test that cares about one type has to say so
     # rather than inheriting the other type's value by accident.

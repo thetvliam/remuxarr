@@ -45,7 +45,7 @@ const IntegerInput = ({ field, value, onChange }) => {
       // stored value on an interaction as innocuous as tabbing past the
       // field. Every integer setting in the schema was affected:
       //
-      //   und_audio_threshold      2   -> 1   (min)
+      //   und_audio_threshold      2   -> 1   (min; since retired)
       //   max_concurrent_jobs      1   -> 0
       //   job_timeout_minutes    120   -> 0
       //   email_smtp_port        587   -> 0
@@ -62,8 +62,9 @@ const IntegerInput = ({ field, value, onChange }) => {
       const parsed = parseInt(draft, 10);
       // Clearing the field, or leaving something non-numeric in it, used to
       // resolve to 0 regardless of what the setting means — for a field like
-      // und_audio_threshold, 0 makes a ">=" comparison true for every file,
-      // including ones with nothing wrong. Fall back to the declared floor.
+      // the since-retired und_audio_threshold, 0 made a ">=" comparison true
+      // for every file, including ones with nothing wrong. Fall back to the
+      // declared floor.
       // This branch is now reachable only when the user actually emptied or
       // mistyped the field, which is what it was written for.
       const fallback = field.min ?? 0;

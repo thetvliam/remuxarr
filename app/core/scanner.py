@@ -504,7 +504,7 @@ def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     Why this exists: a file could hold a pending item AND a
     manual_review item simultaneously. Sequence: a scan queues the file
     (pending, with PlannedActions computed under the then-current
-    settings) → conditions change (settings edit, threshold change) → a
+    settings) → conditions change (a settings edit) → a
     later scan's decision is manual-review, which created its review
     item WITHOUT touching the pending one. The worker would then still
     claim the stale pending item, recompute the decision at pickup, and
@@ -589,15 +589,15 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     # Updated in place rather than deleted and re-added, because the review
     # page selects rows by id: a scan landing while a user is choosing would
     # otherwise replace the ids they had selected. The origin is updated with
-    # the rest, since a track can move between them — an undefined track
-    # asked about under always_ask becomes a threshold flag once the file
-    # reaches the threshold.
+    # the rest, since a track can move between them: a tagged track flagged
+    # as a mismatch becomes an undefined flag if the file comes back with
+    # that track untagged.
     #
     # Each origin is suppressed by its own switch only (AudioLanguageFlag.
     # origin). audio_language_ignored silences mismatch flags here. The
-    # threshold's acknowledgement is applied by the engine, which already
-    # leaves those flags out, so a file confirmed correct on a mismatch is
-    # still asked about its undefined tracks.
+    # undefined-audio acknowledgement is applied by the engine, which
+    # already leaves those flags out, so a file confirmed correct on a
+    # mismatch is still asked about its undefined tracks.
     existing_audio_flags = {
         flag.stream_index: flag
         for flag in db.query(AudioLanguageFlag)
@@ -1565,7 +1565,7 @@ def _process_file(
 # throw away a Keep answer the moment the same file's language was fixed.
 #
 # The ordinal is what tells identical tracks apart — two untitled ASS tracks,
-# or the several undefined audio tracks the threshold exists for. It is also
+# or several untagged audio tracks in one file. It is also
 # the one part of a descriptor that can change while the track itself does
 # not. A job that drops the first of two identical tracks renumbers the
 # second from 2 to 1, and the answer given for the dropped one then matched
@@ -1845,8 +1845,8 @@ def clear_media_answers(media: MediaFile, why: str) -> None:
 
 
 # The three answers that are not about one track: Confirm correct on a
-# language mismatch, audio and subtitle, and on the Undefined Audio Track
-# Threshold. Each stops a whole file being asked about.
+# language mismatch, audio and subtitle, and on a file's undefined audio.
+# Each stops a whole file being asked about.
 CONFIRMATION_COLUMNS = (
     "audio_language_ignored",
     "subtitle_language_ignored",
@@ -2075,9 +2075,8 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     If this file has an AC3 forge job in any state where the added AC3
     track is (or should be treated as) present, return
     Ac3ForgeJob.audio_track_count — the 0-based audio-track-relative
-    index the AC3 was appended at. analyze_file() uses this to exclude
-    that track from the "multiple undefined-language audio tracks"
-    manual-review threshold count.
+    index the AC3 was appended at. analyze_file() uses this to leave
+    that track out of the undefined-track count.
 
     Only whether this is None matters to the caller. Because the index
     is the position at ADD time, analyze_file locates the track by
@@ -2097,9 +2096,8 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         couldn't see this window: "processing" is ambiguous on its own
         (an ADD in flight means the AC3 does NOT exist yet), so the
         is_undo flag is what disambiguates. Without this, a scan landing
-        mid-undo counted the forge track toward the und threshold and
-        could re-flag for manual review a file this feature exists to
-        exempt.
+        mid-undo counted the forge track as an untagged track and could
+        ask about a file this feature exists to exempt.
 
     Excluded: "pending"/"failed" and "processing" with is_undo=False
     (AC3 doesn't exist yet), "undone"/"cancelled" (AC3 already removed

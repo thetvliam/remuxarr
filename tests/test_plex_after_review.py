@@ -268,7 +268,7 @@ def _flagged(db, tmp_path, item_status, *, first_seen=True):
     db.add(Track(file_id=media.id, stream_index=1, track_type="audio",
                  codec="aac", language="und", channels=6, channel_layout="5.1"))
     db.add(AudioLanguageFlag(file_id=media.id, stream_index=1,
-                             detected_language="und", origin="threshold"))
+                             detected_language="und", origin="undefined"))
     db.add(QueueItem(file_id=media.id, status=item_status, reason=item_status,
                      is_new_file=first_seen))
     db.commit()

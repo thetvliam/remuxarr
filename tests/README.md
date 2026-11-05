@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2294 tests across 102 test files, plus 770 frontend tests under
+2301 tests across 103 test files, plus 770 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -189,7 +189,7 @@ nothing.
 `test_subtitle_rename.py`, `test_font_attachment_review.py`,
 `test_font_attachment_pipeline.py`, `test_review_reason.py`,
 `test_answers_follow_tracks.py`, `test_language_answer_during_job.py`,
-`test_review_keeps_language_flags.py`.
+`test_review_keeps_language_flags.py`, `test_undefined_audio_confirmation.py`.
 `test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
@@ -226,6 +226,9 @@ and only a Full Scan applied the answer. It runs the real worker and scanner.
 while it has language questions. The review decision carries no language
 findings, so the scan and the review answer leave the questions alone, and
 the file is then in two sections of the Review page at once.
+`test_undefined_audio_confirmation.py` follows Confirm correct on a file's
+untagged audio, and Clear acknowledged, through a real scan each time: the
+answer has its own switch, kept apart from the one for a wrong language.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

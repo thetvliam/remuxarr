@@ -341,8 +341,13 @@ def test_offered_for_a_review_answered_in_part(lib):
     assert _offered(lib) is True
 
 
-def test_offered_for_a_confirmed_undefined_audio_threshold(lib):
-    _store(lib, _tracks(("audio", "und"), ("audio", "und"), ("audio", "und")),
+def test_offered_for_confirm_correct_on_undefined_audio(lib):
+    """The undefined-audio switch: two untagged tracks, which Ask puts to a
+    person, confirmed as they are."""
+    lib.db.merge(AppSetting(key="fix_undefined_language_audio",
+                            value=json.dumps("always_ask")))
+    lib.db.commit()
+    _store(lib, _tracks(("audio", "und"), ("audio", "und")),
            und_audio_threshold_acknowledged=True)
 
     assert _offered(lib) is True

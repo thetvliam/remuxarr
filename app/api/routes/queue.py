@@ -867,9 +867,9 @@ def list_acknowledged(
 ):
     """
     Files whose undefined audio tracks the user has confirmed are correct
-    as they are: Confirm correct on a threshold flag in Audio Language
-    Review, or a past Approve on a review the threshold raised while it
-    still held files.
+    as they are: Confirm correct on an untagged-track flag in Audio
+    Language Review, or, from before, on a flag of the retired threshold or
+    a past Approve on a review it raised while it still held files.
 
     Bounded like every other list in this codebase. There is no ceiling on
     how many files can carry this — it accumulates for the life of the
@@ -915,7 +915,7 @@ def clear_acknowledged(body: ClearAcknowledgedRequest,
     the scan stamp is invalidated too — the same pairing cancel_item needs,
     via the same helper.
 
-    Only the threshold's answer is taken back. A language mismatch the user
+    Only the undefined-audio answer is taken back. A language mismatch the user
     confirmed on the same file answers to its own switch and is untouched,
     which is why the two are kept apart.
 

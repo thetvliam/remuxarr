@@ -16,8 +16,9 @@ Undo removed tracks by a positional index captured at ADD time:
     already removed, mark undone without touching the file; "mismatch" →
     layout violates the invariant, refuse rather than guess).
 
-    The same stale index also fed analyze_file's und-threshold
-    exclusion, which previously indexed into audio_tracks blindly — a
+    The same stale index also fed analyze_file's exclusion of the forge
+    AC3 from the undefined-track count (then the und threshold's count,
+    now Always Fix's), which previously indexed into audio_tracks blindly — a
     stale in-range index silently excluded whatever unrelated track sat
     there. Checking the index first and only falling back to the last
     track closed most of that, but not all: the index is the audio count
@@ -215,34 +216,41 @@ def test_neither_rule_removes_a_files_only_audio_track():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# analyze_file's und-threshold exclusion validates the index
+# analyze_file's forge exclusion validates the index
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# These read the flags the threshold raises. They asked whether the file went
-# to manual review, which is what the threshold used to do with it; it now
-# flags every undefined track it counted in Audio Language Review instead.
-# An excluded forge AC3 means one und track left, below the threshold of 2,
-# so nothing is flagged — the same distinction, at the same place.
+# The forge AC3 is left out of Always Fix's undefined-track count. These were
+# written for the retired Undefined Audio Track Threshold's count, and first
+# read whether the file went to manual review, then the threshold's flags.
+# Under Always Fix, an excluded forge AC3 leaves one untagged track, which is
+# tagged with the copy and flagged by nothing; counted, there are two, and
+# both are flagged — the same distinction, at the same place.
+#
+# Moved over by mutation: any AC3 last taken for the forge copy, whatever its
+# channels, survived the 2268-test suite with the threshold's tests
+# deselected, and is killed by the AC3 stereo test.
 
-def _threshold_flagged(decision):
-    """The stream indices the threshold flagged, in order."""
+FIX = dict(BASE_SETTINGS, fix_undefined_language_audio="always_fix")
+
+
+def _und_flagged(decision):
+    """The stream indices flagged as undefined, in order."""
     return [f["stream_index"] for f in decision.undefined_audio_flags
-            if f["origin"] == "threshold"]
+            if f["origin"] == "undefined"]
 
 
 def test_stale_forge_index_still_excludes_the_real_forge_track():
     """
-    und-language AAC 5.1 + its und forge AC3, threshold 2. After a drop
+    und-language AAC 5.1 + its und forge AC3. After a drop
     elsewhere the stored index (here: 5, past the end) no longer lands
     on anything — the OLD code then excluded nothing and tripped manual
     review on a file whose second und track is a known, intentional
     duplicate. The validated fallback must exclude the last-track AC3.
     """
-    settings = dict(BASE_SETTINGS)
     tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=5)
-    assert _threshold_flagged(decision) == [], (
+    assert _und_flagged(decision) == [], (
         "Stale forge index defeated the exclusion — the file's undefined "
         "tracks were flagged even though its second und track is the forge AC3."
     )
@@ -253,16 +261,15 @@ def test_stale_index_landing_on_wrong_track_does_not_exclude_it():
     The inverse hazard the validation exists for: two GENUINE und AAC
     tracks and a stored index that happens to land in range. Blind
     indexing excluded whichever unrelated track sat there, silently
-    lowering the und count below threshold. With no ac3/6ch anywhere,
-    nothing may be excluded — the file must reach manual review.
+    lowering the und count. With no ac3/6ch anywhere, nothing may be
+    excluded — both tracks must be asked about.
     """
-    settings = dict(BASE_SETTINGS)
     tracks = [_video(0), _aac51(1, "und"), _aac51(2, "und")]
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=1)
-    assert _threshold_flagged(decision) == [1, 2], (
+    assert _und_flagged(decision) == [1, 2], (
         "An in-range stale index excluded a genuine und track that is "
-        "not the forge AC3 — the threshold was silently bypassed."
+        "not the forge AC3 — the count was silently lowered."
     )
 
 
@@ -281,15 +288,15 @@ def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
     Here the stored index is 1 (the original had one audio track) and a
     replacement release carries three, its own AC3 5.1 sitting at index
     1. That track belongs to a file forge never touched, so excluding it
-    from the threshold lets an unknown file past the manual-review gate.
-    resolve_forge_ac3_for_undo calls this exact layout "mismatch" and
-    refuses; the exclusion must reach the same answer.
+    leaves the release's other untagged track looking like the only one,
+    and Always Fix tags both on a guess. resolve_forge_ac3_for_undo calls
+    this exact layout "mismatch" and refuses; the exclusion must reach the
+    same answer.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=3)
     replacement = [
         _video(0),
         make_track(stream_index=1, track_type="audio", codec="aac",
-                   language="und", channels=2, channel_layout="stereo"),
+                   language="eng", channels=2, channel_layout="stereo"),
         _ac3_forge(2, "und"),    # the REPLACEMENT release's own AC3 5.1
         _aac51(3, "und"),
     ]
@@ -299,13 +306,13 @@ def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
     )
     assert audio[1]["codec"] == "ac3", "fixture: stored index must land on the AC3"
 
-    decision = analyze_file(make_file_info(), replacement, settings,
+    decision = analyze_file(make_file_info(), replacement, FIX,
                             forged_ac3_audio_index=1)
 
-    assert _threshold_flagged(decision), (
-        "an unrelated release's AC3 5.1 was excluded from the und threshold "
-        "because a stale index happened to land on it — the threshold was "
-        "bypassed for a file forge never touched"
+    assert _und_flagged(decision) == [2, 3], (
+        "an unrelated release's AC3 5.1 was excluded from the und count "
+        "because a stale index happened to land on it — a file forge never "
+        "touched was tagged on a guess"
     )
 
 
@@ -320,17 +327,16 @@ def test_an_ac3_stereo_last_track_is_not_mistaken_for_the_forge_ac3():
     test_wrong_shaped_last_track_does_not_match; this is the exclusion's
     own copy of it, which nothing covered.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
     ac3_stereo = make_track(stream_index=2, track_type="audio", codec="ac3",
                             language="und", channels=2, channel_layout="stereo")
     tracks = [_video(0), _aac51(1, "und"), ac3_stereo]
 
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=1)
 
-    assert _threshold_flagged(decision) == [1, 2], (
+    assert _und_flagged(decision) == [1, 2], (
         "an AC3 stereo commentary track was treated as the forge AC3 and "
-        "exempted from the und threshold"
+        "left out of the und count"
     )
 
 
@@ -345,15 +351,14 @@ def test_nothing_is_excluded_for_a_file_with_no_forge_job():
     forged_ac3_audio_index being None is the only thing separating those
     two cases, so it is the guard that carries the whole distinction.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
     tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
 
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=None)
 
-    assert _threshold_flagged(decision) == [1, 2], (
-        "a file with no forge job had its last AC3 5.1 exempted from the "
-        "und threshold — the exemption is supposed to require a forge job"
+    assert _und_flagged(decision) == [1, 2], (
+        "a file with no forge job had its last AC3 5.1 left out of the "
+        "und count — the exemption is supposed to require a forge job"
     )
 
 

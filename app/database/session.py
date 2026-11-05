@@ -8,13 +8,14 @@ import os
 from pathlib import Path
 from typing import Any, Generator
 
-from sqlalchemy import create_engine, inspect, or_, text
+from sqlalchemy import and_, create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.core.langcodes import canonical
 from app.core.timeutil import utcnow
-from app.database.models import AppSetting, Base, MediaFile, PlannedAction, QueueItem
+from app.database.models import (AppSetting, AudioLanguageFlag, Base, MediaFile,
+                                  PlannedAction, QueueItem, Track)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # Overrides both of the above for the files it matches (Always Include).
     "include_patterns": [],
     # How many "und" audio tracks trigger a manual-review flag
-    "und_audio_threshold": 2,
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to
     # an external .srt sidecar file (Plex naming: Movie.en.srt /
     # Movie.en.forced.srt) and remove them from the muxed output. Kept
@@ -347,6 +347,10 @@ def init_db() -> None:
     _release_threshold_holds()
     _key_track_answers_by_descriptor()
     _remove_orphaned_planned_actions()
+    _rename_undefined_audio_flags()
+    # Before _delete_retired_settings: it runs only while the retired
+    # threshold's row is still there, which makes it a one-time step.
+    _copy_undefined_audio_confirmations()
     _delete_retired_settings()
     with SessionLocal() as db:
         _seed_defaults(db)
@@ -363,7 +367,73 @@ RETIRED_SETTINGS = (
     # track of a type (decision._lone_undefined_track).
     "undefined_language_mode",
     "undefined_language_mode_audio",
+    # The Undefined Audio Track Threshold: the undefined-track count sends a
+    # file with two or more to review under Fix and Ask.
+    "und_audio_threshold",
 )
+
+
+def _rename_undefined_audio_flags() -> None:
+    """
+    Give every untagged-track audio flag the one origin they share now,
+    "undefined". Safe on every start.
+
+    They had two: "threshold" when the retired Undefined Audio Track
+    Threshold raised them, and "mismatch" when Always Ask did, which is also
+    the origin of a tagged track whose language looks wrong. The origin
+    decides which switch Confirm correct writes, so a "mismatch" untagged
+    flag answered after the upgrade would have written the language-mismatch
+    one. A "mismatch" flag on a tagged track is left as it is.
+    """
+    with SessionLocal() as db:
+        renamed = (
+            db.query(AudioLanguageFlag)
+            .filter(or_(
+                AudioLanguageFlag.origin == "threshold",
+                and_(AudioLanguageFlag.origin == "mismatch",
+                     AudioLanguageFlag.detected_language == "und"),
+            ))
+            .update({"origin": "undefined"}, synchronize_session=False)
+        )
+        db.commit()
+    if renamed:
+        logger.info("Gave %d untagged-track audio flag(s) the undefined origin", renamed)
+
+
+def _copy_undefined_audio_confirmations() -> None:
+    """
+    Carry a file's old Confirm correct over to its untagged audio, once.
+
+    Confirm correct on an untagged track asked about under Always Ask was
+    recorded on audio_language_ignored, the language-mismatch switch, and
+    that switch is what kept the file's untagged tracks from being asked
+    about again. Untagged tracks answer to und_audio_threshold_acknowledged
+    now, so a file with that old answer and an untagged audio track gets it
+    there too, and is not asked about those tracks again.
+
+    Once per install: only while the retired und_audio_threshold row is
+    still stored. Every install that ran a version with that setting has
+    the row, as _seed_defaults writes any default missing at start, and
+    _delete_retired_settings removes it straight after this. Run on every
+    start, it would set the switch back on a file whose confirmation the
+    user had cleared since.
+    """
+    with SessionLocal() as db:
+        if db.get(AppSetting, "und_audio_threshold") is None:
+            return
+        with_untagged_audio = db.query(Track.file_id).filter(
+            Track.track_type == "audio", Track.language == "und")
+        copied = (
+            db.query(MediaFile)
+            .filter(MediaFile.audio_language_ignored.is_(True),
+                    MediaFile.und_audio_threshold_acknowledged.isnot(True),
+                    MediaFile.id.in_(with_untagged_audio))
+            .update({"und_audio_threshold_acknowledged": True},
+                    synchronize_session=False)
+        )
+        db.commit()
+    if copied:
+        logger.info("Carried Confirm correct over to the untagged audio of %d file(s)", copied)
 
 
 def _delete_retired_settings() -> None:

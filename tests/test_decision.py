@@ -90,8 +90,8 @@ def test_und_only_file_does_not_trigger_absolute_fallback(settings, caplog):
     saying its language tag was "likely wrong".
 
     The tag was not wrong, it was absent — an ordinary condition with its
-    own handling (fix_undefined_language, und_audio_threshold, Audio
-    Language Review). Undefined-language audio is by far the most common
+    own handling (the Fix Undefined Language settings, Audio Language
+    Review). Undefined-language audio is by far the most common
     reason to reach this point, so the false alarm fired constantly, which
     is precisely what teaches people to ignore a warning that does matter
     on the rare occasions it fires for real.
@@ -187,11 +187,14 @@ def test_absolute_fallback_warning_names_the_file_and_the_tag(settings, caplog):
 def test_a_track_with_a_language_waiting_is_not_flagged_again(settings):
     """
     Set language re-evaluates the file straight away, before the job writes
-    the new tag, and the threshold counts the raw tags. Without this skip
-    the track just answered is flagged again at once, and the answer looks
-    like it did nothing. Dropping the skip survived the whole suite.
+    the new tag, so the track still reads "und". Without the fix pass's skip
+    for a track with a language waiting, the track just answered is flagged
+    again at once under Ask, and the answer looks like it did nothing.
+
+    It was written for a skip of the same kind in the retired threshold,
+    where dropping it survived the whole suite.
     """
-    settings["und_audio_threshold"] = 2
+    settings["fix_undefined_language_audio"] = "always_ask"
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
@@ -205,21 +208,20 @@ def test_a_track_with_a_language_waiting_is_not_flagged_again(settings):
 
 
 @pytest.mark.parametrize("acknowledged", [False, True], ids=["asked", "confirmed"])
-def test_always_fix_does_not_guess_over_the_threshold(settings, acknowledged):
+def test_always_fix_does_not_guess_between_two_untagged_tracks(settings, acknowledged):
     """
-    The threshold exists to stop exactly this guess: with several undefined
-    tracks, tagging them all with the primary language is as likely to be
-    wrong as right. Holding the file used to prevent it; nothing holds the
-    file now, so the tagging pass has to leave these tracks alone itself.
+    With several undefined tracks, tagging them all with the primary
+    language is as likely to be wrong as right, so Fix tags only a type's
+    single untagged track and leaves these alone.
 
     Confirming the tracks does not release the guess either. Confirm
     correct says the tags are right as they are, and tagging them
     afterwards would contradict the answer.
 
-    Dropping the skip survived the whole suite: both tracks come back
-    tagged "eng", whichever way the file was answered.
+    This was first written against the retired Undefined Audio Track
+    Threshold, where dropping its skip survived the whole suite: both
+    tracks came back tagged "eng", whichever way the file was answered.
     """
-    settings["und_audio_threshold"] = 2
     settings["fix_undefined_language_audio"] = "always_fix"
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
@@ -241,8 +243,7 @@ def test_always_fix_does_not_guess_over_the_threshold(settings, acknowledged):
 
 # The reason string the threshold used to hold files with is gone, and with
 # it the two tests that pinned its grammar and its naming of the setting.
-# The threshold raises no reason text at all now: it flags the tracks, and
-# the setting it belongs to is named in that setting's own description.
+# The threshold itself has since been retired.
 def test_normal_multi_language_file_unaffected(settings):
     """
     Sanity check: the safety net must never activate when a preferred
@@ -388,46 +389,44 @@ def test_already_faststart_source_preserves_flag_on_unrelated_remux(settings):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# und_audio_threshold — the zero-value trap
+# Several untagged audio tracks
+#
+# The Undefined Audio Track Threshold, retired, flagged these whatever the
+# mode, and its zero-value trap (a cleared input saved 0, and ">= 0" held
+# every file) went with it; SettingInput still clamps every integer setting
+# to its minimum, which the frontend tests pin.
+#
+# Verified by mutation when the threshold went, each mutant surviving the
+# suite as it stood (2268 tests, with the 26 that pinned the threshold
+# deselected) first:
+#
+#   • Leave flagging untagged audio, as the
+#     threshold did                         → the Leave test below
+#   • the flags raised as "mismatch", as
+#     Always Ask's were                     → the flagged-not-held test
+#   • the acknowledgement ignored           → test_ask_again's Confirm
+#                                             correct test, and the
+#                                             acknowledged test further down
+#   • the acknowledgement also stopping
+#     Fix's tag on a lone track             → the asking-not-tagging test
+#                                             further down
+#
+# The forge copy counted as an untagged track was already killed, by the
+# forge-copy test in the Fix-rule section, and is not claimed here.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_und_threshold_zero_does_not_flag_clean_files(settings):
+@pytest.mark.parametrize("mode", ["always_fix", "always_ask"])
+def test_multiple_undefined_audio_is_flagged_rather_than_held(settings, mode):
     """
-    Real incident: clearing the threshold input field (even briefly)
-    silently saved 0. Since "count of undefined tracks >= 0" is true for
-    EVERY file including ones with zero undefined tracks, this put the
-    entire pipeline into manual review. The fix clamps to a minimum of 1
-    — this test uses a file with ZERO undefined tracks specifically,
-    since that's the only input that actually distinguishes "clamped to
-    1" from "still 0": with a genuine 0-track file, >=0 and >=1 disagree,
-    while a 1-track file would pass either way and wouldn't catch a
-    regression.
-    """
-    settings["und_audio_threshold"] = 0
-    tracks = [
-        make_track(stream_index=0, track_type="video", codec="h264"),
-        make_track(stream_index=1, track_type="audio", codec="aac",
-                   language="eng", is_default=True),
-    ]
-    decision = analyze_file(make_file_info(), tracks, settings)
-    assert decision.is_manual_review is False, (
-        "A file with zero undefined tracks was flagged for manual review "
-        "— the threshold=0 trap has regressed."
-    )
-
-
-def test_multiple_undefined_audio_is_flagged_rather_than_held(settings):
-    """
-    The normal, working case the threshold exists for. It used to hold the
-    file for manual review; it flags each undefined track for Audio
-    Language Review instead, and the file goes on being processed, because
-    undefined audio is kept either way and holding it changed nothing about
-    what the job would do.
+    Two untagged tracks: Fix will not guess between them, and Ask never
+    tags, so each is flagged for Audio Language Review and the file goes on
+    being processed. Undefined audio is kept either way, so holding the
+    file would change nothing about what the job does.
 
     Putting the hold back, and flagging only the lowest track, each
     survived the whole suite before this test existed.
     """
-    settings["und_audio_threshold"] = 2
+    settings["fix_undefined_language_audio"] = mode
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
@@ -437,9 +436,30 @@ def test_multiple_undefined_audio_is_flagged_rather_than_held(settings):
 
     assert decision.is_manual_review is False
     assert decision.undefined_audio_flags == [
-        {"stream_index": 1, "origin": "threshold"},
-        {"stream_index": 2, "origin": "threshold"},
+        {"stream_index": 1, "origin": "undefined"},
+        {"stream_index": 2, "origin": "undefined"},
     ]
+
+
+def test_leave_asks_nothing_about_several_untagged_tracks(settings):
+    """
+    Leave means the tags are left as they are and nothing is asked. The
+    threshold used to flag these under Leave as well, which is the one
+    behaviour removing it changes for an existing install.
+    """
+    settings["fix_undefined_language_audio"] = "always_leave"
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=3, track_type="audio", codec="aac", language="und"),
+    ]
+    decision = analyze_file(make_file_info(), tracks, settings)
+
+    assert decision.undefined_audio_flags == []
+    assert decision.is_manual_review is False
+    assert [a.stream_index for a in decision.actions
+            if a.track_type == "audio" and a.action_type == "drop_track"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1037,12 +1057,9 @@ def test_the_fix_rule_counts_each_type_on_its_own(settings):
     One untagged audio track and two untagged subtitles: the audio track is
     its type's only one and is tagged, the subtitles are not and are sent to
     review. A count shared across types could not produce this split.
-
-    und_audio_threshold is raised so the threshold has no part in it.
     """
     settings["fix_undefined_language_audio"]      = "always_fix"
     settings["fix_undefined_language"]            = "always_fix"
-    settings["und_audio_threshold"]               = 99
     settings["extract_text_subtitles_to_srt"]     = False
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
@@ -1429,17 +1446,19 @@ def test_kept_mov_text_still_allows_conversion(settings):
 # Each of these pins a mutation that survived the entire 662-test suite.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_an_acknowledged_threshold_raises_no_flags(settings):
+def test_acknowledged_undefined_audio_raises_no_flags(settings):
     """
-    The other half of the acknowledgement contract: Confirm correct and
-    queue.py's approve endpoint set the column, and this is what setting it
-    is FOR. Without the acknowledgement the same tracks are flagged again on
-    the next scan, and the answer the user gave is worth nothing.
+    The other half of the acknowledgement contract: Confirm correct sets
+    the column, and this is what setting it is FOR. Without the
+    acknowledgement the same tracks are flagged again on the next scan, and
+    the answer the user gave is worth nothing.
 
     Audit ref: DEC-03 — dropping the `and not ...acknowledged` term
-    survived, and dropping it from the flags survived again.
+    survived, and dropping it from the flags survived again. Written for
+    the retired threshold; the acknowledgement now answers the undefined
+    flags Ask and Fix raise.
     """
-    settings["und_audio_threshold"] = 2
+    settings["fix_undefined_language_audio"] = "always_ask"
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
@@ -1451,7 +1470,7 @@ def test_an_acknowledged_threshold_raises_no_flags(settings):
 
     flagged = analyze_file(file_info, tracks, settings)
     assert flagged.undefined_audio_flags, (
-        "the threshold flagged nothing — this test cannot prove the "
+        "Ask flagged nothing — this test cannot prove the "
         "acknowledgement works if there is nothing to be exempt from"
     )
 
@@ -1462,6 +1481,50 @@ def test_an_acknowledged_threshold_raises_no_flags(settings):
         "an acknowledged file was flagged anyway — confirming the tracks in "
         "the UI would be a no-op and they would come back forever"
     )
+
+
+def test_the_acknowledgement_stops_the_asking_not_the_tagging(settings):
+    """
+    Confirm correct on a file's untagged audio says the tags are right as
+    they are, and stops the questions. Always Fix tagging a lone untagged
+    track in a Primary Language film is not a question, so it goes on:
+    the answer was about the tracks Remuxarr asked about, and it asked
+    about none here.
+    """
+    settings["fix_undefined_language_audio"] = "always_fix"
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+    ]
+    file_info = make_file_info(path="/m/Film.mkv", container="mkv",
+                               video_codec="h264")
+    file_info["und_audio_threshold_acknowledged"] = True
+
+    d = analyze_file(file_info, tracks, settings)
+
+    assert {a.stream_index: a.target_language for a in d.actions
+            if a.track_type == "audio"} == {1: "eng"}
+    assert d.undefined_audio_flags == []
+
+
+def test_a_confirmed_mismatch_does_not_answer_the_untagged_tracks(settings):
+    """
+    audio_language_ignored is the language-mismatch switch. The engine reads
+    only the undefined-audio one for these flags, so a file confirmed on a
+    mismatch is still asked about its untagged tracks.
+    """
+    settings["fix_undefined_language_audio"] = "always_ask"
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac", language="und"),
+        make_track(stream_index=2, track_type="audio", codec="aac", language="und"),
+    ]
+    file_info = make_file_info()
+    file_info["audio_language_ignored"] = True
+
+    d = analyze_file(file_info, tracks, settings)
+
+    assert [f["stream_index"] for f in d.undefined_audio_flags] == [1, 2]
 
 
 def test_a_default_flag_does_not_override_the_language_filter(settings):
@@ -1626,7 +1689,6 @@ def test_preferring_mkv_blocks_it_too(settings):
 def _fix_audio(settings, **file_info):
     settings["fix_undefined_language_audio"] = "always_fix"
     settings["undefined_language_value"] = "eng"
-    settings["und_audio_threshold"] = 99
     info = make_file_info(path="/m/Film.mkv", container="mkv", video_codec="h264")
     info.update(file_info)
     return info

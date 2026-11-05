@@ -1091,7 +1091,7 @@ describe("useAppData — revert_complete", () => {
 // The badge was review.length — manual-review QueueItems only — so it read
 // zero while the Audio and Subtitle Language Review sections had rows
 // waiting. A file can carry a language flag without ever entering manual
-// review: one undefined audio track under a threshold of two, or an
+// review: an undefined audio track under Always Ask, or an
 // undefined subtitle that gets extracted. Verified against the decision
 // engine, which returns is_manual_review=False with the mismatch set in
 // both cases.

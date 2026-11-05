@@ -90,9 +90,9 @@ def _switches_for(kind: LanguageReviewKind, flags) -> set[str]:
 
     Audio flags record where they came from (AudioLanguageFlag.origin), and
     each origin has its own switch: a language mismatch answers to
-    audio_language_ignored, the undefined-audio threshold to
+    audio_language_ignored, an untagged track to
     und_audio_threshold_acknowledged. They are kept apart so that taking
-    back one kind of answer — Clear acknowledged, for the threshold — cannot
+    back one kind of answer — Clear acknowledged, for untagged tracks — cannot
     undo the other on the same file, such as a Japanese track confirmed as
     correctly Japanese.
 
@@ -451,7 +451,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # unanswerable from a stream index.
                 "extracted_path":    getattr(flag, "extracted_path", None),
                 # Audio only: where the flag came from, "mismatch" or
-                # "threshold" (AudioLanguageFlag.origin). Subtitle flags have
+                # "undefined" (AudioLanguageFlag.origin). Subtitle flags have
                 # no such column and report None.
                 "origin":            getattr(flag, "origin", None),
             })
@@ -600,7 +600,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
             # Only the switch for the questions answered here: choosing a
-            # language for a mismatch says nothing about the threshold.
+            # language for a mismatch says nothing about undefined tracks.
             for attr in _switches_for(kind, flags):
                 setattr(media, attr, False)
             db.commit()
@@ -834,8 +834,9 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # apply_language is closed by the same action that opens the
             # door. A replacement is a new file rather than a way back, and
             # Ask again takes back every other answer stored for the file
-            # with it. (The threshold's switch has a way back of its own,
-            # Clear acknowledged, but this returns before writing either.)
+            # with it. (The undefined-audio switch has a way back of its
+            # own, Clear acknowledged, but this returns before writing
+            # either.)
             #
             # A one-way door has no business being reachable in the mode that
             # ships ON and promises nothing will change.

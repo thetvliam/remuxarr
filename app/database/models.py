@@ -93,19 +93,18 @@ class MediaFile(Base):
     #
     # Mismatch flags only: a flag records where it came from and answers to
     # its own switch (AudioLanguageFlag.origin), so a file confirmed correct
-    # here is still asked about undefined tracks over the Undefined Audio
-    # Track Threshold, which is a different question with a different
-    # answer.
+    # here is still asked about its untagged tracks, which is a different
+    # question with a different answer.
     audio_language_ignored = Column(Boolean, default=False)
 
-    # Set when the user confirms the undefined tracks of a file at or over
-    # the Undefined Audio Track Threshold are correct as they are: Confirm
-    # correct on a threshold flag in Audio Language Review, or Approve on a
-    # review the threshold raised while it still held files. It suppresses
-    # those flags, and it stops fix_undefined_language_audio=always_fix
-    # guessing at the tracks, which it never does over the threshold
-    # anyway. Clear acknowledged takes it back, and the tracks are flagged
-    # again on the next scan.
+    # Set when the user confirms a file's untagged audio tracks are correct
+    # as they are: Confirm correct on an "undefined" flag in Audio Language
+    # Review, or, from before, on a flag of the retired Undefined Audio
+    # Track Threshold or Approve on a review it raised while it still held
+    # files. It stops those tracks being flagged; Always Fix still tags a
+    # lone track that qualifies. Clear acknowledged takes it back, and the
+    # tracks are flagged again on the next scan. The name is the
+    # threshold's, kept so the column did not have to change.
     #
     # The threshold used to hold the file for manual review, and had no
     # persistence at all: every fresh analyze_file() call, including the
@@ -581,12 +580,15 @@ class AudioLanguageFlag(Base):
     # Where the flag came from, because each origin is confirmed through its
     # own switch on MediaFile:
     #   "mismatch"  — decision.audio_language_mismatch: a defined language
-    #                 that is not a preferred one, or an undefined track
-    #                 fix_undefined_language_audio=always_ask left for a
-    #                 person. Suppressed by audio_language_ignored.
-    #   "threshold" — decision.undefined_audio_flags: the file is at or over
-    #                 the Undefined Audio Track Threshold. Suppressed by
+    #                 that is not a preferred one. Suppressed by
+    #                 audio_language_ignored.
+    #   "undefined" — decision.undefined_audio_flags: an untagged track the
+    #                 fix pass left for a person. Suppressed by
     #                 und_audio_threshold_acknowledged.
+    #
+    # Untagged tracks were "mismatch" under Always Ask, and "threshold" when
+    # the retired Undefined Audio Track Threshold flagged them; a startup
+    # step renames both (session._rename_undefined_audio_flags).
     #
     # The server default is what the table rebuild relies on: it copies only
     # the columns the old shape had, and every row from before this column
