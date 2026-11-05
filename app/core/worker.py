@@ -2241,7 +2241,8 @@ def _finish_job(
                     # FFmpeg work already succeeded and the file is
                     # correctly on disk; this is best-effort bookkeeping,
                     # not something that should turn a real success into
-                    # a failure. Worst case, a future full rescan corrects it.
+                    # a failure. The file is marked to be looked at again
+                    # (see the ProbeError branch below).
                     try:
                         probe_data = probe_file(final_path, app_settings.FFPROBE_PATH)
                         fmt_info   = extract_format_info(probe_data)
@@ -2308,11 +2309,26 @@ def _finish_job(
                     except ProbeError as exc:
                         logger.warning(
                             "Post-job track refresh failed for %s: %s — "
-                            "Track rows may be stale until the next full "
-                            "rescan",
+                            "Track rows may be stale until the file can be "
+                            "probed again",
                             final_path, exc,
                         )
                         clear_media_answers(media, "the processed file could not be probed")
+                        # The rows still describe the file before the job,
+                        # and the size and mtime written above are the new
+                        # file's, so a delta scan saw nothing to look at and
+                        # the record stayed wrong until a Force Full Rescan.
+                        # Marked, the worker looks again straight after this
+                        # successful job, and a scan does after that until a
+                        # probe works (MediaFile.reevaluate_after_job).
+                        #
+                        # Not the -1 stamp a revert writes. With it, the scan
+                        # that re-probed found the stamp changed and the
+                        # tracks unlike the stale rows, read the file as
+                        # replaced (scanner._replaced_on_disk), and forgot
+                        # its Confirm correct answers too, which this branch
+                        # deliberately keeps. Both measured with a real job.
+                        media.reevaluate_after_job = True
             else:
                 media.status = "error"
 
@@ -2476,13 +2492,16 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
 
 def _reevaluate_after_job(job_id: int) -> None:
     """
-    Look at the job's file again if a language was answered while the job
-    ran (MediaFile.reevaluate_after_job), so the answer is applied now.
+    Look at the job's file again if it was marked while the job ran or as it
+    finished (MediaFile.reevaluate_after_job): a language answered, a scan
+    that reached the file, or a post-job probe that failed.
 
-    The job decided before the answer existed, and _finish_job has just
-    recorded the file's new size and mtime, so no delta scan would look.
+    The job decided before the first two, and _finish_job has just recorded
+    the file's new size and mtime, so no delta scan would look; after the
+    third the stored tracks still describe the file before the job.
     queue_single_file re-probes and re-decides the way a webhook does, and
-    _process_file clears the mark; nothing is running for the file any more.
+    _process_file clears the mark once its probe works; nothing is running
+    for the file any more.
     """
     db = SessionLocal()
     try:
@@ -2490,8 +2509,8 @@ def _reevaluate_after_job(job_id: int) -> None:
         media = db.get(MediaFile, job.file_id) if job else None
         if media is None or not media.reevaluate_after_job:
             return
-        logger.info("Job %d: a language was answered while it ran — looking at %s again",
-                    job_id, media.path)
+        logger.info("Job %d: %s was marked to be looked at again after it — "
+                    "looking now", job_id, media.path)
         queue_single_file(db, media.path)
     except Exception:
         db.rollback()

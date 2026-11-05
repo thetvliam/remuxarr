@@ -125,12 +125,16 @@ class MediaFile(Base):
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 
-    # Set when a language answer lands while this file's job is running.
-    # That job decided before the answer existed, and when it ends it
-    # records the file's new size and mtime, so a delta scan finds nothing
-    # to look at. The worker re-checks the file straight after a successful
-    # job (worker._reevaluate_after_job); otherwise a scan does, once no job
-    # is running for it (scanner._process_file), which also clears it.
+    # Set when this file needs deciding again once its job is over, and a
+    # delta scan would not see it: a language answer, or a scan, landing
+    # while the job runs (the job decided before either, and records the
+    # file's new size and mtime when it ends), or the probe after a job
+    # failing (worker._finish_job), which leaves the tracks of the file as
+    # it was before the job beside the new size and mtime. The worker
+    # re-checks the file straight after a successful job
+    # (worker._reevaluate_after_job); otherwise a scan does, once no job is
+    # running for it (scanner._process_file), which clears it once its
+    # probe works.
     reevaluate_after_job = Column(Boolean, default=False)
 
     # The language the film or series was made in, as Sonarr or Radarr knows
