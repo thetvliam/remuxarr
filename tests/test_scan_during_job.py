@@ -187,6 +187,10 @@ def test_a_review_raised_by_a_recheck_during_a_job_names_the_tracks_after_it(lib
     would have asked about the ASS as stream 3, the French SRT's number once
     the job has dropped French audio. Asked after the job, it is stream 2,
     and removing it removes the ASS.
+
+    The job runs with extraction off, which keeps the French SRT in the file
+    so the numbers move. Extraction is switched on with the font question,
+    because the gate asks only when extraction would flatten the ASS.
     """
     from app.api.routes.queue import (ReviewApplyRequest, ReviewFileDecision,
                                       apply_review_decisions)
@@ -199,7 +203,8 @@ def test_a_review_raised_by_a_recheck_during_a_job_names_the_tracks_after_it(lib
     assert _queue(lib) is not None
 
     def ask_about_fonts():
-        _set(lib, font_attachment_handling="always_ask")
+        _set(lib, font_attachment_handling="always_ask",
+             extract_text_subtitles_to_srt=True)
         _recheck(lib)
 
     seen = _during_the_job(lib, monkeypatch, ask_about_fonts)

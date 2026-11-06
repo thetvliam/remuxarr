@@ -740,7 +740,18 @@ def analyze_file(
     #
     # Nothing about that fails. The job succeeds, the sizes look right, and
     # the symptom appears whenever someone next watches the episode.
-    if file_info.get("font_attachments"):
+    #
+    # Extraction is what puts the styling at risk, so the gate needs it on,
+    # as the image gate above does. It flattens a styled track to SRT and
+    # takes it out of the file whether or not the file then converts: with
+    # Prefer MP4 off, or audio or video MP4 cannot hold, the fonts stay in
+    # an MKV with nothing left to use them. With extraction off a kept styled track stays embedded, which
+    # keeps the file MKV, and a Matroska output copies every attachment, so
+    # nothing is lost. The gate used to fire there too, asking a question
+    # whose policies, Always Keep and Always Remove, both leave the file as
+    # it is, and which a styled track with no fonts is never asked. An
+    # Extract answer stored before still applies; see explicit_extract.
+    if file_info.get("font_attachments") and extract_subs_to_srt:
         # Only tracks the file keeps, by the same rule as the image gate
         # above. A styled track in a language the keep list drops is deleted
         # whatever the answer, so asking about it is noise; and under
@@ -782,14 +793,21 @@ def analyze_file(
                     + (f" \u2014 {t['title']}" if t.get("title") else "")
                     for t in styled
                 )
+                # True whether or not the file can convert, which is not
+                # known here: the audio rules that decide it run below. The
+                # loss is extraction's either way, and keeping a styled
+                # track embedded holds the file as MKV either way.
+                them = "them" if len(styled) > 1 else "it"
                 msg = (
                     f"Carries {n_fonts} embedded font"
                     f"{'s' if n_fonts > 1 else ''} used by "
                     f"{len(styled)} styled subtitle track"
-                    f"{'s' if len(styled) > 1 else ''} ({details}). Only MKV "
-                    f"can hold the fonts, so converting to MP4 loses them and "
-                    f"flattens the styling — manual review required to decide "
-                    f"whether to keep the file as MKV or convert it anyway."
+                    f"{'s' if len(styled) > 1 else ''} ({details}). "
+                    f"Extracting {them} to SRT flattens the styling, and the "
+                    f"fonts are lost if the file then converts to MP4 — "
+                    f"manual review required to decide whether to keep {them} "
+                    f"embedded, which keeps the file as MKV, or extract {them} "
+                    f"anyway."
                 )
                 review_messages.append(msg)
                 review_tracks.extend((t, "styled") for t in styled)

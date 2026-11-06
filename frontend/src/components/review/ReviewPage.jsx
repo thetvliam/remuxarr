@@ -98,9 +98,7 @@ const filesOf = group => JSON.stringify(
  * card — what matters is whether answering differently would change the
  * outcome.
  */
-export const outcomeLine = (group, staged, previewed) => {
-    if (!previewed || previewed.length === 0) return null;
-
+const settledLine = (group, staged, previewed) => {
     const total = previewed.length;
     const converting = previewed.filter(
         o => o.target_container === "mp4" && o.current_container !== "mp4").length;
@@ -156,6 +154,30 @@ export const outcomeLine = (group, staged, previewed) => {
     const line = `Converts ${converting} of ${total} to MP4${tail}. `
         + `The other ${total - converting} stay as they are`;
     return stuck ? `${line} whatever you choose here.` : `${line}.`;
+};
+
+/* The outcome line, with the files these answers do not settle set apart.
+ *
+ * A file can still be in review after every flagged track is answered: the
+ * preview decides it again under the current settings, and a change since
+ * the review was raised (a language added to the keep list, say) can give
+ * it a new track to ask about. A decision that holds a file says nothing
+ * about its container, so describing one for it would be invented: such a
+ * file read "Stays MKV, 2 deleted" when nothing would be deleted or done.
+ * Those files are counted and said to need review again, and the line is
+ * worked out from the rest, the way refused files are reported. */
+export const outcomeLine = (group, staged, previewed) => {
+    if (!previewed || previewed.length === 0) return null;
+    const settled = previewed.filter(o => !o.still_in_review);
+    const unsettled = previewed.length - settled.length;
+    if (unsettled === 0) return settledLine(group, staged, previewed);
+    if (settled.length === 0) {
+        return unsettled === 1
+            ? "Still needs review after these answers: there is something else to ask about it"
+            : `All ${unsettled} still need review after these answers: there is something else to ask about them`;
+    }
+    return `${unsettled} of ${previewed.length} files still need review after these answers. `
+        + `The others: ${settledLine(group, staged, settled)}`;
 };
 
 /* The outcome line with the files the preview refused put first.

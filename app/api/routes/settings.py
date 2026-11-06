@@ -715,17 +715,20 @@ SETTINGS_SCHEMA = [
             },
             {
                 "value": "always_remove",
-                "label": "Always remove (convert anyway, lose the styling)",
+                "label": "Always remove (extract to SRT, lose the styling)",
             },
         ],
-        "description": "What to do with a file that carries embedded fonts. "
-                       "Only Matroska can hold them, and the file's styled "
-                       "subtitles reference them by name, so converting to "
-                       "MP4 drops the fonts and flattens ASS subtitles to "
-                       "SRT — losing the positioning that places text over "
-                       "signs in the picture. Always Keep leaves those "
-                       "tracks embedded, which keeps the file as MKV; "
-                       "unwanted audio tracks are still removed.",
+        "description": "What to do with a file that carries embedded fonts "
+                       "while Extract Subtitles to External SRT is on. The "
+                       "file's styled subtitles reference the fonts by name, "
+                       "and extracting them flattens ASS subtitles to SRT — "
+                       "losing the positioning that places text over signs "
+                       "in the picture. Only Matroska can hold the fonts, so "
+                       "they are lost too if the file then converts to MP4. "
+                       "Always Keep leaves those tracks embedded, which keeps "
+                       "the file as MKV; unwanted audio tracks are still "
+                       "removed. With extraction off the tracks stay "
+                       "embedded anyway, and nothing is asked.",
     },
     # ── Recycle Bin ────────────────────────────────────────────────────────
     {

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2301 tests across 103 test files, plus 770 frontend tests under
+2306 tests across 103 test files, plus 773 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -196,9 +196,10 @@ to rename the file on disk rather than re-extract the track, and the filename
 is what Plex reads.
 `test_font_attachment_review.py` covers the third review gate: a file carrying
 embedded fonts, which only Matroska can hold and which its styled subtitles
-reference by name. Converting it to MP4 drops the fonts and flattens ASS to
-SRT, so text positioned over a sign in the picture ends up at the bottom of
-the screen. It tests the gate alone, on dicts built by hand, and that is how
+reference by name. Extracting the styled tracks flattens ASS to SRT, so text
+positioned over a sign in the picture ends up at the bottom of the screen, and
+converting to MP4 then drops the fonts; the gate asks only while extraction is
+on. It tests the gate alone, on dicts built by hand, and that is how
 the gate shipped never firing: the count it keys on was probed and then
 dropped by all three callers. `test_font_attachment_pipeline.py` covers the
 path from the probe to the gate instead — the scanner, the worker at job

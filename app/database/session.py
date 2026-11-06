@@ -84,9 +84,11 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "image_subtitle_handling": "always_ask",
     # What to do with a file carrying embedded FONT attachments, which only
     # Matroska can hold. Its styled subtitles reference those fonts by name,
-    # so converting to MP4 drops the fonts and flattens ASS to SRT — text
-    # that was positioned over a sign in the frame ends up at the bottom of
-    # the screen with the sign still visible behind it. Nothing fails.
+    # so extracting them flattens ASS to SRT — text that was positioned over
+    # a sign in the frame ends up at the bottom of the screen with the sign
+    # still visible behind it — and converting to MP4 then drops the fonts.
+    # Nothing fails. Only consulted while extract_text_subtitles_to_srt is
+    # on; with it off the tracks stay embedded and nothing is lost.
     #   "always_ask"     — flag for manual review (the default)
     #   "always_keep"    — leave the ASS/SSA tracks embedded, which keeps the
     #                      file in Matroska and so keeps the fonts. Audio
