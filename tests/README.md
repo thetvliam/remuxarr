@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2306 tests across 103 test files, plus 773 frontend tests under
+2314 tests across 103 test files, plus 773 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -151,6 +151,9 @@ untouched.
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
 `test_plex_on_import.py`, `test_plex_after_review.py`, `test_email_notify.py`,
 `test_post_job_notify.py`.
+`test_rename_tracking.py` covers a file Sonarr or Radarr renames keeping its
+record, and the sidecars renamed with it being followed: in its review flags,
+and in its revert points, where a revert finds the sidecars it takes away.
 `test_arr_quality_restore.py` covers putting a file's quality back after a
 container change replaces it, and its fixture is the real history of one
 movie that this happened to — two deletion records newer than the import

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.config import settings as app_settings
 from app.core.decision import analyze_file
 from app.core.exclude import ExcludeRules
+from app.core.revert_capture import repoint_created_file
 from app.core.probe import (
     ProbeError,
     extract_format_info,
@@ -989,11 +990,14 @@ def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
     a fresh record with no history, for the same file. It goes through
     _delete_media_file_and_related so nothing it owns is orphaned.
 
-    Extracted subtitle paths on the file's SubtitleLanguageFlags follow
-    the file when the sidecar is found under the new name and not under
-    the old. _build_srt_path names a sidecar after the media file's stem,
-    so the new name is the same suffix on the new stem. Whether the
-    service renamed the sidecar at all is not assumed either way.
+    Extracted subtitle paths follow the file when the sidecar is found
+    under the new name and not under the old (_renamed_sidecar): on the
+    file's SubtitleLanguageFlags, and in the created_files of its revert
+    points, which a revert uses to take the sidecars away again. Left on
+    the old names there, the revert found nothing to remove and the user
+    had each extracted subtitle twice, embedded and beside the file.
+    Whether the service renamed the sidecar at all is not assumed either
+    way.
 
     Returns "moved" or one of the reasons above. Commits only on "moved".
     """
@@ -1030,16 +1034,57 @@ def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
                        SubtitleLanguageFlag.extracted_path.isnot(None))
                .all())
     for flag in flags:
-        if not flag.extracted_path.startswith(old_stem):
-            continue
-        renamed = new_stem + flag.extracted_path[len(old_stem):]
-        if os.path.exists(renamed) and not os.path.exists(flag.extracted_path):
+        renamed = _renamed_sidecar(flag.extracted_path, old_stem, new_stem)
+        if renamed:
             flag.extracted_path = renamed
+
+    for created in _created_file_paths(db, media.id):
+        renamed = _renamed_sidecar(created, old_stem, new_stem)
+        if renamed:
+            repoint_created_file(db, media.id, created, renamed)
 
     db.commit()
     logger.info("Renamed: record %d now points at %s (was %s)",
                 media.id, new_path, old_path)
     return "moved"
+
+
+def _renamed_sidecar(path: str, old_stem: str, new_stem: str) -> str | None:
+    """
+    Where a sidecar of a renamed media file is now, or None if it did not
+    move with it.
+
+    _build_srt_path names a sidecar after the media file's stem, so the new
+    name is the same suffix on the new stem: "X.en.srt" for "X.mkv" becomes
+    "Y.en.srt" for "Y.mkv". The suffix must start with a dot, or renaming
+    "X.mkv" would carry off "X2.en.srt", the sidecar of another file in the
+    same folder. A name the service changed beyond the stem is not
+    followed.
+
+    Followed only when the disk agrees: something at the new name and
+    nothing left at the old.
+    """
+    if not path.startswith(old_stem + "."):
+        return None
+    renamed = new_stem + path[len(old_stem):]
+    if os.path.exists(renamed) and not os.path.exists(path):
+        return renamed
+    return None
+
+
+def _created_file_paths(db: Session, file_id: int) -> list[str]:
+    """Every created_files path the file's revert points record, once each."""
+    paths: list[str] = []
+    for (manifest,) in db.query(RevertPoint.manifest).filter(RevertPoint.file_id == file_id):
+        try:
+            entries = json.loads(manifest).get("created_files") or []
+        except (TypeError, ValueError, AttributeError):
+            continue
+        for entry in entries:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if isinstance(path, str) and path not in paths:
+                paths.append(path)
+    return paths
 
 
 def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
