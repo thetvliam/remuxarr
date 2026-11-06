@@ -491,6 +491,71 @@ def _clear_stale_status_records(
     db.query(QueueItem).filter(*which).delete(synchronize_session=False)
 
 
+def _standing_encoding_review(db: Session, file_id: int, track_list: list[dict],
+                              decision) -> QueueItem | None:
+    """
+    The file's unanswered subtitle-encoding review, if a new decision must
+    leave it as it is; otherwise None, and the decision applies as usual.
+
+    worker._flag_subtitle_encoding_review raises this review after an
+    extraction fails on text that is not UTF-8. The decision engine knows
+    nothing of the failure, so it plans the same extraction whenever it
+    decides the file again. Once the review is answered, Keep or Remove is
+    stored per track and the engine extracts neither, so only the
+    unanswered review needs this.
+
+    It stands while both hold:
+
+      • the tracks it asks about are still in the file: the same stream
+        number, codec and language. Otherwise the file has changed and the
+        question is about tracks it no longer has; if the new file fails
+        the same way, the worker asks again.
+      • the decision would meet the failure again: it extracts one of those
+        tracks, or it is a review of its own, which would replace the
+        question and, once answered, extract the track. That review comes
+        when this one is answered, since answering decides the file again.
+
+    A decision that no longer extracts the tracks (extraction turned off,
+    or the language taken off the keep list) has nothing left to protect
+    the question from, and replaces it.
+    """
+    item = (db.query(QueueItem)
+              .filter(QueueItem.file_id == file_id,
+                      QueueItem.status == "manual_review",
+                      QueueItem.review_reason == "subtitle_encoding")
+              .first())
+    if item is None:
+        return None
+    try:
+        flagged = json.loads(item.review_subtitles or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(flagged, list) or not flagged:
+        return None
+
+    subtitles = {t["stream_index"]: t for t in track_list
+                 if t.get("track_type") == "subtitle"}
+    failed: set[int] = set()
+    for entry in flagged:
+        if not isinstance(entry, dict):
+            return None
+        track = subtitles.get(entry.get("stream_index"))
+        if track is None:
+            return None
+        if (track.get("codec") or "").lower() != (entry.get("codec") or "").lower():
+            return None
+        if (track.get("language") or "und") != (entry.get("language") or "und"):
+            return None
+        failed.add(entry["stream_index"])
+
+    if decision.is_manual_review:
+        return item
+    if any(a.action_type == "extract_subtitle" and a.stream_index in failed
+           for a in decision.actions):
+        return item
+    return None
+
+
 def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     """
     Delete any PENDING QueueItem(s) for this file — called from the
@@ -1375,6 +1440,22 @@ def _process_file(
         running.sonarr_series_id = sonarr_series_id
         running.radarr_movie_id  = radarr_movie_id
         media_file.reevaluate_after_job = True
+        db.commit()
+        return
+
+    # ── An unanswered subtitle-encoding review ─────────────────────────────
+    # Raised by the worker when an extraction failed, so the decision above
+    # cannot see it. Left to the branches below, a Re-check planned the same
+    # extraction, the review went back to the queue, the job failed the same
+    # way and the file came back here; and a review from a gate replaced the
+    # question, so answering that one extracted the track again.
+    standing = _standing_encoding_review(db, media_file.id, track_list, decision)
+    if standing:
+        media_file.status = "manual_review"
+        if sonarr_series_id is not None:
+            standing.sonarr_series_id = sonarr_series_id
+        if radarr_movie_id is not None:
+            standing.radarr_movie_id = radarr_movie_id
         db.commit()
         return
 
