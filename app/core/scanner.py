@@ -633,7 +633,7 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     a scan. Extracted into a shared helper specifically so worker.py can
     also call it right after computing its own fresh decision at
     job-pickup time (_load_job_data) — without that, a file whose
-    manual-review cause gets resolved via Approve (rather than being
+    manual-review cause gets answered on the Review page (rather than being
     re-discovered by a normal scan) would compute the correct
     audio_language_mismatch/subtitle_language_mismatch the whole time,
     at every single point along the way (approval, worker pickup), but
@@ -1488,7 +1488,7 @@ def _process_file(
             # alters WHY the file needs review, and a file replaced on disk
             # alters WHICH subtitle tracks are flagged.
             #
-            # review_subtitles is the one that matters. resolve_subtitles acts
+            # review_subtitles is the one that matters. /review/apply acts
             # on the STREAM INDICES stored here, so leaving them stale means a
             # user's Keep/Remove choice is applied against indices that no
             # longer describe the file — silently operating on the wrong track.
@@ -2142,9 +2142,9 @@ def _track_to_dict(t: Track) -> dict:
     analyze_file() and the decision engine.
 
     Single source of truth for this mapping — previously duplicated in
-    worker.py (_load_job_data) and queue.py (resolve_subtitles). Both now
-    call this function so any future Track field addition only needs to be
-    made here.
+    worker.py (_load_job_data) and queue.py (resolve_subtitles, since
+    replaced by _build_analysis_inputs). Both now call this function so any
+    future Track field addition only needs to be made here.
     """
     return {
         "stream_index":        t.stream_index,

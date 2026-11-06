@@ -568,18 +568,18 @@ def _release_threshold_holds() -> None:
     """
     Let files the undefined-audio threshold held be re-decided.
 
-    The threshold no longer holds a file for manual review; it flags the
-    file's undefined tracks in Audio Language Review instead. The files it
-    held before that sit in manual review until something re-decides them,
-    and a scan on its own never would: their bytes have not changed, so the
-    delta check skips them. Clearing the scan stamp (size and mtime, as
-    queue._force_rescan does) makes the next scan of any kind re-probe them,
-    and that re-decision drops the review row and raises the flags.
+    The threshold stopped holding files for manual review, flagging their
+    undefined tracks in Audio Language Review instead, and has since been
+    retired. The files it held before that sit in manual review until
+    something re-decides them, and a scan on its own never would: their
+    bytes have not changed, so the delta check skips them. Clearing the scan
+    stamp (size and mtime, as queue._force_rescan does) makes the next scan
+    of any kind re-probe them, and that re-decision drops the review row and
+    raises whatever flags the Fix Undefined Language settings call for.
 
-    A threshold hold is a manual_review row with no review_subtitles, the
-    same test approve_manual_review relies on: every subtitle review writes
-    its flagged tracks. The review row itself is left alone, so Approve goes
-    on working on it until then.
+    A threshold hold is a manual_review row with no review_subtitles: every
+    subtitle review writes its flagged tracks. The review row itself is left
+    alone until the re-decision.
 
     Files already stamped for a rescan are left untouched, so this writes
     nothing on later startups, or on a fresh install.

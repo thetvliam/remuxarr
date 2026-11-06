@@ -972,9 +972,10 @@ def _flag_subtitle_encoding_review(
     #
     # Each entry names its own problem, as the gates' entries do. "encoding"
     # marks a track that must not be offered Extract, because extracting it
-    # is exactly what just failed. resolve_subtitles enforces that from the
-    # item-level review_reason set below, which is exact for this review: it
-    # only ever holds the tracks whose extraction failed.
+    # is exactly what just failed. /review/apply (queue._answer_subtitle_
+    # review) enforces that from the item-level review_reason set below,
+    # which is exact for this review: it only ever holds the tracks whose
+    # extraction failed.
     flagged = [
         {
             "stream_index": t["stream_index"],
@@ -1019,10 +1020,11 @@ def _flag_subtitle_encoding_review(
                 #    nonsense "Contains 0 subtitle track () with non-UTF-8
                 #    encoded characters".
                 #
-                # 2. It corrupts an unrelated signal. review_subtitles IS NULL
-                #    is the established discriminator for "this review came
-                #    from the undefined-audio-count gate" — resolve_subtitles_
-                #    bulk and approve_manual_review both rely on it. Writing a
+                # 2. It corrupted an unrelated signal. review_subtitles IS NULL
+                #    was the discriminator for "this review came from the
+                #    undefined-audio-count gate" — the bulk resolver and the
+                #    approve endpoint, both since removed, relied on it, and
+                #    session._release_threshold_holds still does. Writing a
                 #    NULL here made a subtitle-encoding review indistinguishable
                 #    from a threshold review, so approving it set
                 #    und_audio_threshold_acknowledged on a file that never
@@ -1853,7 +1855,7 @@ def _load_job_data(job_id: int):
     The first two outcomes were previously unhandled entirely — any
     decision was returned for execution unconditionally. A pending item
     whose circumstances changed between queuing and pickup (settings
-    edited, a threshold crossed, an override landing mid-queue) could
+    edited, an answer given, an override landing mid-queue) could
     compute a manual-review or nothing-to-do decision here, and instead
     of transitioning cleanly, the job would "execute" it: no-op decisions
     carry target_container=None, which build_ffmpeg_command now
@@ -1876,7 +1878,7 @@ def _load_job_data(job_id: int):
     flags (the exact hazard this function previously had — it called the
     upsert unconditionally, on every decision including manual-review
     ones). For the other two outcomes the upsert is what makes
-    corrections resolved via Approve show up in Language Review without
+    corrections answered on the Review page show up in Language Review without
     waiting for a later full scan (reported directly, fixed earlier);
     that behavior is preserved, now correctly guarded.
     """
@@ -2015,8 +2017,11 @@ def _load_job_data(job_id: int):
         if media.font_attachments is None and probe_data is not None:
             media.font_attachments = count_font_attachments(probe_data)
 
+        # In stream order: analyze_file reads position (the last audio
+        # track is the forge copy), and the FFmpeg map follows the list.
         tracks_raw: list[Track] = (
-            db.query(Track).filter(Track.file_id == media.id).all()
+            db.query(Track).filter(Track.file_id == media.id)
+              .order_by(Track.stream_index).all()
         )
         tracks = [_track_to_dict(t) for t in tracks_raw]
 

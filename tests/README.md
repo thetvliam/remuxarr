@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2334 tests across 105 test files, plus 773 frontend tests under
+2336 tests across 106 test files, plus 773 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -20,6 +20,8 @@ see each docstring. `test_language_codes.py` covers language codes in any of
 their spellings (en, eng, and deu beside ger): the tables in
 `app/core/langcodes.py`, the engine comparing them as one, settings saved in
 the one form, and two-letter tags written in full when a file is processed.
+`test_track_order.py` checks that the worker at pickup and an answered review
+hand the engine a file's stored tracks in stream order, since it reads position.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,

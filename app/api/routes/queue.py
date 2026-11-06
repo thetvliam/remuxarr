@@ -183,8 +183,9 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     scanner._process_file and worker._load_job_data construct for the
     same file, in one place.
 
-    Extracted from three near-identical inline copies in
-    resolve_subtitles / resolve_subtitles_bulk / approve_manual_review.
+    Extracted from three near-identical inline copies in endpoints since
+    replaced by /review/apply (resolve_subtitles, resolve_subtitles_bulk
+    and approve_manual_review); _answer_subtitle_review is the caller now.
     Independent review confirmed the triplication had already produced
     real divergence: all three copies were missing has_faststart (which
     scanner and worker both pass), so an MP4 in manual review whose only
@@ -194,7 +195,10 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     file stayed un-optimised until a forced full rescan. A scan of the
     identical file would have queued it.
     """
-    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+    # In stream order, as the scanner's probe gives them: analyze_file reads
+    # position (the last audio track is the forge copy).
+    tracks_raw = (db.query(Track).filter(Track.file_id == media.id)
+                    .order_by(Track.stream_index).all())
     tracks = [_track_to_dict(t) for t in tracks_raw]
     file_info = _file_info_for(media)
     faststart = (
@@ -277,8 +281,8 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.review_subtitles = (
             json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
         )
-        # Which gate fired, so the bulk resolvers do not have to work it out
-        # from review_subtitles — see QueueItem.review_reason.
+        # Which gate fired, so the Review page and /review/apply do not have
+        # to work it out from review_subtitles — see QueueItem.review_reason.
         item.review_reason = decision.review_reason
         return
 
@@ -1574,10 +1578,9 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
         "completed_at":   _iso(item.completed_at),
         "error_message":  item.error_message,
         "flagged_subtitles": flagged_subtitles,
-        # Which gate raised the review, so the UI can phrase it and offer
-        # the matching bulk action. Null on items not in review, and on
-        # rows written before the column existed — the UI reads a null
-        # alongside a flagged payload the same way the bulk resolver does.
+        # Which gate raised the review, so the UI can phrase it. Null on
+        # items not in review, and on rows written before the column
+        # existed.
         "review_reason":     item.review_reason,
         "file": {
             "id":        media.id,
