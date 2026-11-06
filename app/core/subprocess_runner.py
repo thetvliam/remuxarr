@@ -259,6 +259,7 @@ async def run_staged_subprocess(
     on_staging_progress: Callable[[float], Awaitable[None]] | None = None,
     timeout_label: str = "Job",
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
+    on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
@@ -293,15 +294,31 @@ async def run_staged_subprocess(
     Fractions are of the total across all outputs, so one bar covers a main
     file and its sidecars rather than restarting per file.
 
+    on_swap_ready: called after before_swap has let the run go on, with
+    each output's (staged .part, final path) in the order they are about to
+    be swapped. The worker records them, so startup recovery can tell
+    afterwards whether a job cut off by a crash replaced anything
+    (worker._write_swap_record). Same contract as before_swap: None
+    continues, an error string aborts with every original untouched.
+
     Staging is two-pass, so a failure while copying leaves every original
     untouched and every output unswapped.  The swap pass itself is a loop of
     per-file os.replace calls: each one is atomic, but the loop is not, so a
     failure part-way through leaves the earlier finals swapped and the rest
     not.  That window is the residual the two-pass design deliberately trades
     down to — same-filesystem metadata renames rather than gigabytes of
-    copying with no original — not one it removes.  Any failure cleans up all
-    temp paths.  On exception temp paths are cleaned and the exception is
-    re-raised so the caller's job-failure logic runs normally.
+    copying with no original — not one it removes.
+
+    The first output is swapped last. It is the main file wherever there is
+    one, and extracted subtitles are taken out of it, so swapped first a
+    crash part-way through left a subtitle only in its .part, which the
+    startup clean-up deletes. Swapped last, the outputs before it land
+    beside an original that still holds everything, and the main file's
+    rename is the one moment the run counts as done.
+
+    Any failure cleans up all temp paths.  On exception temp paths are
+    cleaned and the exception is re-raised so the caller's job-failure
+    logic runs normally.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -564,20 +581,31 @@ async def run_staged_subprocess(
         # swapped. Declining here costs the copy and nothing else, and the
         # cleanup is the same as a staging failure's. A hook that RAISES
         # falls to the outer handler, as before_staging's does.
+        def decline(error: str) -> SubprocessRunResult:
+            for p in part_paths + [staged_part_path(o) for o in outputs]:
+                cleanup_temp_file(p)
+            for o in outputs:
+                cleanup_temp_file(o.temp_path)
+            return SubprocessRunResult(
+                success=False,
+                error=error,
+                returncode=proc.returncode,
+            )
+
         if before_swap is not None:
             swap_error = await before_swap()
             if swap_error:
-                for p in part_paths + [staged_part_path(o) for o in outputs]:
-                    cleanup_temp_file(p)
-                for o in outputs:
-                    cleanup_temp_file(o.temp_path)
-                return SubprocessRunResult(
-                    success=False,
-                    error=swap_error,
-                    returncode=proc.returncode,
-                )
+                return decline(swap_error)
 
-        for o in outputs:
+        # The first output last: see the docstring.
+        swap_order = outputs[1:] + outputs[:1]
+        if on_swap_ready is not None:
+            ready_error = await on_swap_ready(
+                [(staged_part_path(o), o.final_path) for o in swap_order])
+            if ready_error:
+                return decline(ready_error)
+
+        for o in swap_order:
             os.replace(staged_part_path(o), o.final_path)
 
         # Temps are no longer consumed by a move — remove them explicitly.

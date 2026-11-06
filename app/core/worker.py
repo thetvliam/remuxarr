@@ -11,6 +11,7 @@ Key controls (set at runtime, no restart needed):
 """
 import asyncio
 import functools
+import dataclasses
 import json
 import logging
 import os
@@ -161,7 +162,7 @@ def abort_job(job_id: int) -> bool:
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
-def recover_interrupted_jobs(db) -> tuple[int, int]:
+def recover_interrupted_jobs(db, finished: list[int] | None = None) -> tuple[int, int]:
     """
     Reset every job left at "processing" by an unclean shutdown.
 
@@ -171,17 +172,48 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
     after it had to transcribe a copy to reach it, which meant deleting the
     block from start_worker broke nothing in the suite.
 
-    Returns (queue_items_reset, forge_jobs_reset).
+    A job whose swap record shows its output is already in place is
+    finished instead, as the success it was (_recover_from_swap_record),
+    and its id appended to `finished`, so the caller can run what follows
+    a success: the Sonarr, Radarr and Plex notices, and the re-check.
+
+    Returns (queue_items_reset, forge_jobs_reset); a job finished is not
+    counted as reset.
     """
     # Jobs still in "processing" were left behind by a crash, SIGKILL, or an
     # unclean container restart. Without this they stay in "processing"
     # forever and block the UI.
     stuck = db.query(QueueItem).filter(QueueItem.status == "processing").all()
+    records = [(job.id, job.file_id, job.swap_record) for job in stuck
+               if job.swap_record]
+    if records:
+        # Nothing changed yet: this only ends the read, so the sessions the
+        # recovery opens can write while this one is still open.
+        db.commit()
+    done: set[int] = set()
+    unswapped: set[int] = set()
+    for job_id, file_id, record in records:
+        try:
+            if _recover_from_swap_record(job_id, file_id, record):
+                done.add(job_id)
+            else:
+                unswapped.add(job_id)
+        except Exception:
+            logger.exception("Could not recover job %d from its swap record", job_id)
+    if done:
+        db.expire_all()
+        stuck = [job for job in stuck if job.id not in done]
+        if finished is not None:
+            finished.extend(sorted(done))
     if stuck:
         for job in stuck:
             job.status        = "failed"
-            job.error_message = "Interrupted by container restart or crash"
+            job.error_message = (
+                "Interrupted by container restart or crash, before its output "
+                "replaced anything" if job.id in unswapped
+                else "Interrupted by container restart or crash")
             job.completed_at  = utcnow()
+            job.swap_record   = None
             if job.media_file:
                 job.media_file.status = "error"
         db.commit()
@@ -238,6 +270,11 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
     return len(stuck), len(stuck_forge)
 
 
+# The after-job steps of jobs startup recovery finished, held so they are
+# not collected while they run.
+_startup_tasks: set[asyncio.Task] = set()
+
+
 async def start_worker() -> None:
     global _worker_task, _running, _paused, _auto_start_seen
     _running = True
@@ -250,10 +287,154 @@ async def start_worker() -> None:
         _auto_start_seen = bool(cfg.get("auto_start_jobs", True))
         _paused = not _auto_start_seen
 
-        recover_interrupted_jobs(db)
+        finished: list[int] = []
+        recover_interrupted_jobs(db, finished=finished)
+
+    if finished:
+        from app.api.ws_manager import ws_manager   # avoid circular import
+        loop = asyncio.get_running_loop()
+        for job_id in finished:
+            task = asyncio.create_task(_after_job(job_id, ws_manager, loop),
+                                       name=f"remuxarr-after-job-{job_id}")
+            _startup_tasks.add(task)
+            task.add_done_callback(_startup_tasks.discard)
 
     _worker_task = asyncio.create_task(_loop(), name="remuxarr-worker")
     logger.info("Background worker started (paused=%s)", _paused)
+
+
+def _write_swap_record(job_id: int, record: str) -> str | None:
+    """
+    Store what a job is about to swap into place (QueueItem.swap_record).
+
+    Returns an error that declines the swap when it cannot be stored: a
+    job that swapped without its record would leave a crash straight after
+    as unrecoverable as it was before the record existed.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(QueueItem, job_id)
+        if job is None:
+            return "The job is no longer in the queue. Nothing was replaced."
+        job.swap_record = record
+        db.commit()
+        return None
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Job %d: could not record the swap", job_id)
+        return f"Could not record the swap: {exc}. Nothing was replaced."
+    finally:
+        db.close()
+
+
+def _matches(path: str | None, size, mtime) -> bool:
+    """Whether the file at `path` is the one recorded: same size and mtime."""
+    if not path or size is None or mtime is None:
+        return False
+    print_ = _fingerprint(path)
+    return (print_ is not None and print_[0] == size
+            and abs(print_[1] - mtime) < 0.001)
+
+
+def _recover_from_swap_record(job_id: int, file_id: int, record_json: str) -> bool:
+    """
+    Finish, or clean up after, a job a crash stopped at its swap.
+
+    The record is written just before the swap (_write_swap_record), and
+    the main file is swapped last (run_staged_subprocess), so whether the
+    job happened comes down to one question: is the main output at its
+    final path, the same size and mtime as the copy staged for it? A
+    rename keeps both, and nothing else writes a file to match them.
+
+    If it is, every other output went in before it, and the job is finished
+    as a success with what its own finish would have done: the revert point
+    recorded, the original removed after a container change while it is
+    still the file the job read, then _finish_job, which carries the
+    answers across and stores the new tracks, size and mtime. Before this a
+    crash in that window failed the job, and the next scan read the new
+    file as a replacement and forgot its answers; a conversion left the old
+    MKV beside the new MP4.
+
+    If it is not, nothing was replaced, and what the job did put in place
+    is taken out again, as undo_own_files does on any other ending short of
+    success: the subtitles it swapped in, only while each is still the file
+    it wrote, and the files moved aside for them back to their names. Its
+    staged copies still waiting go too, and the revert copy nothing will
+    record is deleted. Returns False, and the caller fails the job.
+
+    Returns True when the job was finished.
+    """
+    try:
+        record = json.loads(record_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    main = record.get("main")
+    outputs = {e.get("path"): e for e in record.get("outputs") or []
+               if isinstance(e, dict)}
+    revert = record.get("revert") if isinstance(record.get("revert"), dict) else None
+
+    main_entry = outputs.get(main)
+    if main_entry and _matches(main, main_entry.get("size"), main_entry.get("mtime")):
+        source = record.get("source") or {}
+        original = source.get("path")
+        if (original and original != main and os.path.exists(original)
+                and _matches(original, source.get("size"), source.get("mtime"))):
+            try:
+                os.remove(original)
+                logger.info("Job %d: removed the original after the container "
+                            "change, finishing at startup: %s", job_id, original)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove the original %s: %s",
+                               job_id, original, exc)
+        if revert:
+            with SessionLocal() as db:
+                recorded = (db.query(RevertPoint.id)
+                              .filter(RevertPoint.sidecar_path == revert.get("sidecar_path"))
+                              .first())
+            if not recorded:
+                try:
+                    _record_revert_point(file_id, CapturedRevertPoint(**revert), main,
+                                         record.get("created_files") or [])
+                except TypeError:
+                    logger.warning("Job %d: the revert point in its swap record "
+                                   "could not be read", job_id)
+        _finish_job(job_id, True, main, main_entry.get("size"), None)
+        logger.info(
+            "Job %d finished at startup: Remuxarr stopped after its output "
+            "replaced %s and before the job was recorded", job_id, main)
+        return True
+
+    for path, entry in outputs.items():
+        if path != main and _matches(path, entry.get("size"), entry.get("mtime")):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        # A staged copy the crash left: the startup clean-up only takes one
+        # five minutes old, so a quick restart left it in the library.
+        part = entry.get("part")
+        if part and _matches(part, entry.get("size"), entry.get("mtime")):
+            try:
+                os.remove(part)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, part, exc)
+    for pair in reversed(record.get("moved_aside") or []):
+        try:
+            old, new = pair
+            if not os.path.exists(old) and os.path.exists(new):
+                os.rename(new, old)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Job %d: could not move %r back: %s", job_id, pair, exc)
+    if revert and revert.get("sidecar_path"):
+        with SessionLocal() as db:
+            recorded = (db.query(RevertPoint.id)
+                          .filter(RevertPoint.sidecar_path == revert["sidecar_path"])
+                          .first())
+        if not recorded:
+            delete_sidecar(revert["sidecar_path"])
+    return False
 
 
 # How long a clean stop waits for running jobs to wind down. Docker gives a
@@ -279,8 +460,9 @@ async def stop_worker() -> None:
     _requeue_cut_off_job); one whose output was already swapped in finishes
     its bookkeeping first (_run_job), so it is recorded as the success it
     was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
-    kill, and recover_interrupted_jobs fails it on the next start, as a
-    crash is.
+    kill, and recover_interrupted_jobs deals with it on the next start, as
+    with a crash: finished if its output was already in place, failed if
+    not (_recover_from_swap_record).
 
     A forge run is stopped the same way and in the same wait. Cut off before
     it replaced the file, it goes back to the forge queue
@@ -486,91 +668,103 @@ async def _run_and_broadcast(
         # not take it for a job whose finalisation failed.
         if cancelled:
             await loop.run_in_executor(None, _requeue_cut_off_job, job_id)
-        post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
-        if post_job:
-            final = post_job["final"]
-            # Safety net: if the job is still "processing" after _run_job
-            # returned (e.g. _finish_job's commit failed and the rollback
-            # left the row unchanged), force it to "failed" via a minimal
-            # fresh session so the frontend doesn't stay stuck at 100%.
-            if final.get("status") == "processing":
-                logger.warning(
-                    "Job %d still in 'processing' state after completion — "
-                    "forcing to 'failed' via emergency cleanup",
-                    job_id,
-                )
-                await loop.run_in_executor(
-                    None, _emergency_fail_job, job_id,
-                    "Job did not complete cleanly (finalisation failed)",
-                )
-                final = final.copy()
-                final["status"] = "failed"
-                final["error"]  = "Finalisation failed — check container logs"
+        await _after_job(job_id, ws_manager, loop)
 
-            await ws_manager.broadcast_json({
-                "event":    "job_completed",
-                "job_id":   job_id,
-                "status":   final["status"],
-                "filename": final["filename"],
-                "error":    final["error"],
-            })
 
-            # Post-job *arr notifications — only for real successes.
-            # sonarr/radarr data was already read in the same session as
-            # `final` above (see _load_post_job_data) rather than each
-            # opening its own separate connection here.
-            if final.get("status") == "success":
-                if post_job["sonarr"]:
-                    asyncio.create_task(
-                        _trigger_arr_notify(
-                            post_job["sonarr"], loop, notify_sonarr,
-                            restore_episode_quality, "Sonarr",
-                        )
+async def _after_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> None:
+    """
+    What follows a job's end: the completed broadcast, and after a success
+    the Sonarr, Radarr and Plex notices and the re-check, then the email.
+
+    Run by _run_and_broadcast for every job, and by start_worker for a job
+    startup recovery finished (_recover_from_swap_record), which would
+    otherwise leave Sonarr unaware that Movie.mkv had become Movie.mp4.
+    """
+    post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
+    if post_job:
+        final = post_job["final"]
+        # Safety net: if the job is still "processing" after _run_job
+        # returned (e.g. _finish_job's commit failed and the rollback
+        # left the row unchanged), force it to "failed" via a minimal
+        # fresh session so the frontend doesn't stay stuck at 100%.
+        if final.get("status") == "processing":
+            logger.warning(
+                "Job %d still in 'processing' state after completion — "
+                "forcing to 'failed' via emergency cleanup",
+                job_id,
+            )
+            await loop.run_in_executor(
+                None, _emergency_fail_job, job_id,
+                "Job did not complete cleanly (finalisation failed)",
+            )
+            final = final.copy()
+            final["status"] = "failed"
+            final["error"]  = "Finalisation failed — check container logs"
+
+        await ws_manager.broadcast_json({
+            "event":    "job_completed",
+            "job_id":   job_id,
+            "status":   final["status"],
+            "filename": final["filename"],
+            "error":    final["error"],
+        })
+
+        # Post-job *arr notifications — only for real successes.
+        # sonarr/radarr data was already read in the same session as
+        # `final` above (see _load_post_job_data) rather than each
+        # opening its own separate connection here.
+        if final.get("status") == "success":
+            if post_job["sonarr"]:
+                asyncio.create_task(
+                    _trigger_arr_notify(
+                        post_job["sonarr"], loop, notify_sonarr,
+                        restore_episode_quality, "Sonarr",
                     )
-                if post_job["radarr"]:
-                    asyncio.create_task(
-                        _trigger_arr_notify(
-                            post_job["radarr"], loop, notify_radarr,
-                            restore_movie_quality, "Radarr",
-                        )
-                    )
-                # A file that came with neither ID: a scan found it.
-                if post_job["lookup"]:
-                    asyncio.create_task(
-                        _find_then_notify(
-                            post_job["lookup"], loop,
-                            functools.partial(_remember_arr_id_on_job, job_id),
-                            f"job {job_id}",
-                        )
-                    )
-
-                # Plex — independent of Sonarr/Radarr. Fires a lightweight
-                # refresh for every successful job; reprocessed files
-                # additionally get queued for a delayed explicit Analyze
-                # (see _load_plex_notify_data for why both are needed).
-                plex_data = await loop.run_in_executor(
-                    None, _load_plex_notify_data, job_id,
                 )
-                if plex_data:
-                    asyncio.create_task(_trigger_plex_notify(plex_data, loop))
-
-                # A language answered while this job ran. Only after a
-                # success: a failed or aborted job leaves it to the next scan
-                # or a retry, rather than queueing a job nobody asked for.
-                await loop.run_in_executor(None, _reevaluate_after_job, job_id)
-
-            # Email — runs for BOTH success and failure, unlike the blocks
-            # above. A success quietly resets the consecutive-failure
-            # breaker (even if email is currently disabled, so the state
-            # stays accurate if it's re-enabled later); a failure may
-            # trigger an email depending on the breaker's current state.
-            # See _load_email_notify_data's docstring for the full logic.
-            if final.get("status") in ("success", "failed", "dry_run"):
-                email_data = await loop.run_in_executor(
-                    None, _load_email_notify_data, job_id,
+            if post_job["radarr"]:
+                asyncio.create_task(
+                    _trigger_arr_notify(
+                        post_job["radarr"], loop, notify_radarr,
+                        restore_movie_quality, "Radarr",
+                    )
                 )
-                if email_data:
-                    asyncio.create_task(_trigger_email_notify(email_data, loop))
+            # A file that came with neither ID: a scan found it.
+            if post_job["lookup"]:
+                asyncio.create_task(
+                    _find_then_notify(
+                        post_job["lookup"], loop,
+                        functools.partial(_remember_arr_id_on_job, job_id),
+                        f"job {job_id}",
+                    )
+                )
+
+            # Plex — independent of Sonarr/Radarr. Fires a lightweight
+            # refresh for every successful job; reprocessed files
+            # additionally get queued for a delayed explicit Analyze
+            # (see _load_plex_notify_data for why both are needed).
+            plex_data = await loop.run_in_executor(
+                None, _load_plex_notify_data, job_id,
+            )
+            if plex_data:
+                asyncio.create_task(_trigger_plex_notify(plex_data, loop))
+
+            # A language answered while this job ran. Only after a
+            # success: a failed or aborted job leaves it to the next scan
+            # or a retry, rather than queueing a job nobody asked for.
+            await loop.run_in_executor(None, _reevaluate_after_job, job_id)
+
+        # Email — runs for BOTH success and failure, unlike the blocks
+        # above. A success quietly resets the consecutive-failure
+        # breaker (even if email is currently disabled, so the state
+        # stays accurate if it's re-enabled later); a failure may
+        # trigger an email depending on the breaker's current state.
+        # See _load_email_notify_data's docstring for the full logic.
+        if final.get("status") in ("success", "failed", "dry_run"):
+            email_data = await loop.run_in_executor(
+                None, _load_email_notify_data, job_id,
+            )
+            if email_data:
+                asyncio.create_task(_trigger_email_notify(email_data, loop))
 
 
 def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
@@ -989,6 +1183,37 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         return stop_if_changed() or make_room(
             [p for p in extraction_targets if p not in written_here])
 
+    # ── The swap record ────────────────────────────────────────────────────
+    # Written just before each swap, so a crash after it leaves startup
+    # recovery what it needs to tell whether this job replaced anything,
+    # and to finish it if it did: see _recover_from_swap_record. The
+    # two-pass path swaps each extracted subtitle in its own run and the
+    # remux last, so the record gathers the outputs of every run.
+    swap_record: dict = {
+        "main": output_path,
+        "source": ({"path": input_path, "size": source_print[0],
+                    "mtime": source_print[1]} if source_print else None),
+        "outputs": [],
+    }
+
+    async def on_swap_ready(staged: list[tuple[str, str]]) -> str | None:
+        for part, final in staged:
+            print_ = _fingerprint(part)
+            if print_ is None:
+                return (f"The staged copy of {os.path.basename(final)} is "
+                        f"missing. Nothing was replaced.")
+            swap_record["outputs"] = [e for e in swap_record["outputs"]
+                                      if e["path"] != final]
+            swap_record["outputs"].append(
+                {"path": final, "part": part,
+                 "size": print_[0], "mtime": print_[1]})
+        swap_record["revert"] = (dataclasses.asdict(captured[0])
+                                 if captured else None)
+        swap_record["created_files"] = sorted(will_create)
+        swap_record["moved_aside"] = [list(m) for m in moved_aside]
+        return await loop.run_in_executor(
+            None, _write_swap_record, job_id, json.dumps(swap_record))
+
     def undo_own_files() -> None:
         # A job that ends without success leaves the video as it was, every
         # subtitle still in it. The two-pass path has by then extracted some
@@ -1226,6 +1451,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds     = timeout_seconds,
                 before_staging      = on_before_staging,
                 before_swap         = on_before_swap,
+                on_swap_ready       = on_swap_ready,
             )
 
             if not result.success and _is_subtitle_encoding_failure(result.error):
@@ -1282,6 +1508,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds      = timeout_seconds,
                     before_staging       = on_before_staging,
                     before_swap          = on_before_swap,
+                    on_swap_ready        = on_swap_ready,
                 )
 
             # All-or-nothing staging: result.success now guarantees every
@@ -1346,6 +1573,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id         = job_id,
                     timeout_seconds= timeout_seconds,
                     before_swap    = room_for_this_one,
+                    on_swap_ready  = on_swap_ready,
                 )
                 if ext_result.success:
                     written_here.add(action.external_path)
@@ -1405,6 +1633,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds   = timeout_seconds,
                 before_staging    = on_before_staging,
                 before_swap       = on_before_swap,
+                on_swap_ready     = on_swap_ready,
             )
 
             if _needs_audio_transcode_retry(result):
@@ -1427,6 +1656,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds   = timeout_seconds,
                     before_staging    = on_before_staging,
                     before_swap       = on_before_swap,
+                    on_swap_ready     = on_swap_ready,
                 )
 
     except asyncio.CancelledError:
@@ -1579,6 +1809,9 @@ def _claim_next_locked() -> int | None:
 
         job.status     = "processing"
         job.started_at = utcnow()
+        # An earlier attempt's record describes outputs this run has not
+        # made; recovery reading it would act on the wrong files.
+        job.swap_record = None
         db.commit()
         return job.id
     except Exception:
@@ -2137,6 +2370,7 @@ def _finish_job(
         job.output_path   = output_path
         job.output_size   = output_size
         job.error_message = error
+        job.swap_record   = None   # only a job left at processing needs it
 
         media: MediaFile | None = db.get(MediaFile, job.file_id)
         if media:

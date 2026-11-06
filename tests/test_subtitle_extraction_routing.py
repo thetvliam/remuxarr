@@ -65,6 +65,10 @@ existing subtitle aside under existing_srt_handling="embedded_first". The
 two tests after that cover it here, and the last one covers a subtitle
 arriving at an extraction's name under keep_both, which cancels the job.
 Their mutants are recorded in test_existing_subtitle_files.py.
+
+It gained on_swap_ready the same way, when every swap came to be recorded
+first for startup recovery (worker._write_swap_record), and the rig takes
+that record as written, having no database to write it to.
 """
 import asyncio
 import threading
@@ -147,7 +151,8 @@ def rig(monkeypatch, tmp_path):
         )
 
     async def fake_extraction(*, input_path, stream_index, output_srt_path,
-                              job_id, timeout_seconds, before_swap=None):
+                              job_id, timeout_seconds, before_swap=None,
+                              on_swap_ready=None):
         rig.extraction_calls.append((stream_index, output_srt_path))
         rig.extraction_timeouts.append(timeout_seconds)
         success, error = rig.results.get(stream_index, (True, None))
@@ -169,6 +174,9 @@ def rig(monkeypatch, tmp_path):
                         lambda *args: rig.finish_calls.append(args))
     monkeypatch.setattr(worker, "_update_progress",
                         lambda *args: rig.progress_calls.append(args))
+    # The rig has no database, so the record each swap writes for startup
+    # recovery is taken as stored, the way the steps above are faked.
+    monkeypatch.setattr(worker, "_write_swap_record", lambda *args: None)
     return rig
 
 

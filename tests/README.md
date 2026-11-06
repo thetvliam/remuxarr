@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2322 tests across 104 test files, plus 773 frontend tests under
+2334 tests across 105 test files, plus 773 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -75,9 +75,13 @@ and the endpoint that lists excluded files, which a scan only counts.
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
+`test_crash_after_swap.py`,
 `test_clean_shutdown.py`, `test_background_tasks.py`,
 `test_retry_unreadable_file.py`, `test_ask_again.py`, `test_scan_during_job.py`,
 `test_encoding_review_rescan.py`.
+`test_crash_after_swap.py` stops a real job with a crash after its swap,
+part-way through it and before it, then runs startup recovery: a job whose
+output was in place used to be failed, and the next scan forgot its answers.
 `test_encoding_review_rescan.py` follows an unanswered subtitle-encoding review
 through the scans that decide its file again: Re-check queued the extraction
 that had failed, and a gate's review replaced the question.

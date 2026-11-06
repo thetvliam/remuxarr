@@ -1529,3 +1529,37 @@ def test_a_database_without_the_threshold_copies_nothing(tmp_path, monkeypatch):
     _start(path, monkeypatch)
 
     assert _acknowledged(path) == {1: 0, 2: 0, 3: 0}
+
+
+# ── The swap record ──────────────────────────────────────────────────────────
+#
+# Verified by mutation: the column's ADD COLUMN left out survived the whole
+# 2322-test suite, the general check above included, whose database holds
+# only the legacy revert_points table and so gets every other table, with
+# today's columns, from create_all. Killed by the test below.
+
+def test_queue_items_gain_the_swap_record(tmp_path, monkeypatch):
+    """
+    A database from before the swap record: the queue_items table without
+    the column, and a job in it. Recovery reads the column at every start,
+    so without the upgrade step the first start after updating failed.
+    """
+    from app.database.models import Base
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE queue_items DROP COLUMN swap_record")
+    conn.execute("INSERT INTO media_files (id, path, filename, directory, size, mtime, status) "
+                 "VALUES (1, '/m/F.mkv', 'F.mkv', '/m', 1, 1.0, 'queued')")
+    conn.execute("INSERT INTO queue_items (file_id, status) VALUES (1, 'pending')")
+    conn.commit()
+    conn.close()
+
+    _start(path, monkeypatch)
+
+    columns = [row[1] for row in _query(path, "PRAGMA table_info(queue_items)")]
+    assert "swap_record" in columns
+    assert _query(path, "SELECT status, swap_record FROM queue_items") == [("pending", None)]

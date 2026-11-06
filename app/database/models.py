@@ -224,6 +224,14 @@ class QueueItem(Base):
     # appears here — the reason counts tracks, it does not name them.
     reason         = Column(Text)
     error_message  = Column(Text)
+    # What a running job is about to swap into place, written just before
+    # the swap (worker._write_swap_record): each output's path with the size
+    # and mtime of its staged copy, which the rename keeps, the source's
+    # path and fingerprint, and the revert point waiting to be recorded.
+    # Startup recovery reads it for a job a crash left at "processing" to
+    # tell whether the output replaced anything, and finishes the job if it
+    # did (worker._recover_from_swap_record). Cleared when the job finishes.
+    swap_record    = Column(Text)
     progress       = Column(Float, default=0.0)  # 0–100
     # One of the four strings ffmpeg._describe_action returns, e.g.
     # "Remuxing to MP4" or "Remuxing tracks". The old example here,

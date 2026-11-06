@@ -749,6 +749,7 @@ async def execute_ffmpeg(
     timeout_seconds: float | None = None,
     before_staging: Callable[[str], Awaitable[str | None]] | None = None,
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
+    on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
@@ -822,6 +823,7 @@ async def execute_ffmpeg(
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
         before_swap=before_swap,
+        on_swap_ready=on_swap_ready,
     )
 
     if not result.success:
@@ -860,6 +862,7 @@ async def execute_subtitle_extraction(
     job_id: int,
     timeout_seconds: float | None = None,
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
+    on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
 ) -> ExtractionResult:
     """
     Extract a single subtitle stream to an external .srt file.
@@ -911,6 +914,7 @@ async def execute_subtitle_extraction(
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             before_swap=before_swap,
+            on_swap_ready=on_swap_ready,
         )
 
         if not result.success:
@@ -1036,6 +1040,7 @@ async def execute_ffmpeg_combined(
     timeout_seconds:      float | None = None,
     before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
     before_swap:          Callable[[], Awaitable[str | None]] | None = None,
+    on_swap_ready:        Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
     Single-pass combined remux + subtitle extraction.
@@ -1161,6 +1166,7 @@ async def execute_ffmpeg_combined(
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=_staging_progress(progress_callback, duration),
         before_swap=before_swap,
+        on_swap_ready=on_swap_ready,
     )
 
     if not result.success:
