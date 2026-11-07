@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2336 tests across 106 test files, plus 773 frontend tests under
+2362 tests across 107 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -27,7 +27,7 @@ hand the engine a file's stored tracks in stream order, since it reads position.
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
-`test_settings_schema.py`, `test_backup_restore.py`,
+`test_settings_schema.py`, `test_setting_values.py`, `test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
 `test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
 `test_replaced_file_answers.py`. Real
@@ -40,6 +40,9 @@ unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
+`test_setting_values.py` covers values of the wrong kind: the settings routes
+refuse them, an import skips and reports them, and a stored one, which a full
+backup restore or a hand edit can leave, is read as the default.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan

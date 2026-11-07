@@ -114,11 +114,15 @@ ARR_ON = {
     "radarr_api_key": "RADARR-KEY",
 }
 
+# The mappings are "local=plex" strings, as the Settings page saves them and
+# plex.translate_path_to_plex reads them. They were dicts here, which the
+# loaders passed through untouched and nothing would have translated; reading
+# settings now ignores a list setting holding anything but text.
 PLEX_ON = {
     "plex_enabled":       True,
     "plex_url":           "http://plex:32400/",
     "plex_token":         "PLEX-TOKEN",
-    "plex_path_mappings": [{"local": "/media", "plex": "/data"}],
+    "plex_path_mappings": ["/media=/data"],
 }
 
 
@@ -380,7 +384,7 @@ def test_plex_gets_the_refresh_payload_for_a_new_file(db):
     assert worker._load_plex_notify_data(1) == {
         "url":        "http://plex:32400",
         "token":      "PLEX-TOKEN",
-        "mappings":   [{"local": "/media", "plex": "/data"}],
+        "mappings":   ["/media=/data"],
         "local_path": "/media/New.mkv",
     }
 
@@ -520,7 +524,7 @@ def test_a_forge_job_gets_the_refresh_payload_for_its_media_path(db):
     assert worker._load_forge_plex_notify_data(1) == {
         "url":        "http://plex:32400",
         "token":      "PLEX-TOKEN",
-        "mappings":   [{"local": "/media", "plex": "/data"}],
+        "mappings":   ["/media=/data"],
         "local_path": "/media/Forged.mkv",
     }
 

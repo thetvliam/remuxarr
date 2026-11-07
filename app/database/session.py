@@ -1006,15 +1006,60 @@ def get_app_settings(db: Session) -> dict[str, Any]:
 
     Only the row that is missing from the DB falls back to a default, so this
     copies at most a handful of short lists per call.
+
+    A stored value of the wrong type falls back to the default too
+    (_stored_value_fits), with a warning the first time. The settings routes
+    check what they write, but a full backup restore replaces the database
+    file with whatever it holds, and a row can be edited by hand; either way
+    the engine took a list setting stored as "eng" as {"e", "n", "g"}, and a
+    flag stored as "false" as true. One install's rows also predate a type
+    change: fix_undefined_language was true or false before it took three
+    values, and nothing converted the stored one. Read as its default, which
+    is also how the engine treated it, the Settings page saves a valid value.
     """
     rows = db.query(AppSetting).all()
     result = deepcopy(DEFAULT_APP_SETTINGS)      # fall back to defaults
     for row in rows:
         try:
-            result[row.key] = json.loads(row.value)
+            value = json.loads(row.value)
         except json.JSONDecodeError:
-            result[row.key] = row.value          # store as raw string if broken
+            value = row.value                    # store as raw string if broken
+        if row.key in DEFAULT_APP_SETTINGS and not _stored_value_fits(row.key, value):
+            if row.key not in _ignored_settings:
+                _ignored_settings.add(row.key)
+                logger.warning(
+                    "Setting %s holds %r, which is not the kind of value it takes; "
+                    "using the default, %r, until it is saved again",
+                    row.key, value, DEFAULT_APP_SETTINGS[row.key])
+            continue
+        result[row.key] = value
     return result
+
+
+# Settings already warned about this run, so a bad row is logged once rather
+# than at every read.
+_ignored_settings: set[str] = set()
+
+
+def _stored_value_fits(key: str, value: Any) -> bool:
+    """
+    Whether a stored value has the basic type of the setting's default.
+
+    Only the basic type: true or false, a whole number, text, or a list of
+    text. A select's options, and an integer's range, are checked where
+    values are written (settings.setting_problem), from the schema this
+    module does not import.
+    """
+    default = DEFAULT_APP_SETTINGS[key]
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(default, list):
+        return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if isinstance(default, str):
+        return isinstance(value, str)
+    return True
 
 
 # Saved in one form, ISO 639-2/B (app.core.langcodes), whichever of en, eng,

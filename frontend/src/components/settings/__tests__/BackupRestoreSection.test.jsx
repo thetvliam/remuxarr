@@ -175,6 +175,45 @@ describe("BackupRestoreSection — import confirmation", () => {
   });
 });
 
+/* An import skips a value of the wrong kind, as it skips a key it does not
+ * know, and applies the rest (settings.setting_problem). The toast says which
+ * were skipped and turns to a warning, since a setting the file meant to
+ * change has not. Verified by mutation, 2 applied 2 killed, each surviving
+ * the 773-test suite first: the invalid values left out of the toast, and the
+ * toast staying a success. */
+describe("BackupRestoreSection — the import's summary", () => {
+  const importReplying = async (reply) => {
+    vi.stubGlobal("fetch", vi.fn(async () => (
+      { ok: true, status: 200, json: async () => reply })));
+    const { toast } = setup();
+    pickFile();
+    await act(async () => { fireEvent.click(importBtn()); });
+    return toast;
+  };
+
+  it("names the values it skipped as invalid, as a warning", async () => {
+    const toast = await importReplying({
+      applied: 2, skipped: 1, invalid: 2,
+      invalid_keys: {
+        keep_subtitle_languages: "keep_subtitle_languages must be a list of text",
+        prefer_mp4_container: "prefer_mp4_container must be true or false",
+      },
+    });
+
+    expect(toast).toHaveBeenCalledWith(
+      "Imported 2 settings — 1 unrecognized key skipped — 2 invalid values skipped "
+      + "(keep_subtitle_languages, prefer_mp4_container)",
+      "warning",
+    );
+  });
+
+  it("stays a success when nothing was invalid", async () => {
+    const toast = await importReplying({ applied: 3, skipped: 0, invalid: 0, invalid_keys: {} });
+
+    expect(toast).toHaveBeenCalledWith("Imported 3 settings", "success");
+  });
+});
+
 describe("BackupRestoreSection — on a phone and on a desktop", () => {
   /* Both rows are ActionRows. They used to keep EXPORT and IMPORT… beside
    * their text at every width, which at 320px squeezed the descriptions to

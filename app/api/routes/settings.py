@@ -32,7 +32,12 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.database.session import get_app_settings, get_db, update_app_setting
+from app.database.session import (
+    DEFAULT_APP_SETTINGS,
+    get_app_settings,
+    get_db,
+    update_app_setting,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -92,9 +97,18 @@ def update_bulk(
     updates: dict[str, Any] = Body(..., description="Map of setting key → new value"),
     db: Session = Depends(get_db),
 ):
-    """Update multiple settings in one request."""
+    """
+    Update multiple settings in one request.
+
+    All or nothing: every key and value is checked before any is written,
+    so one bad value cannot leave half a save behind.
+    """
     for key in updates:
         _validate_key(key)
+    problems = [p for key, value in updates.items()
+                if (p := setting_problem(key, value))]
+    if problems:
+        raise HTTPException(400, "Nothing was saved. " + "; ".join(problems) + ".")
     for key, value in updates.items():
         update_app_setting(db, key, value)
     return updates
@@ -161,6 +175,11 @@ async def import_settings(file: UploadFile = File(...), db: Session = Depends(ge
     hard-reject used elsewhere, since schema drift between versions is a
     realistic, expected scenario for this specific endpoint. Skipped
     keys are reported back in the response so nothing is lost silently.
+
+    A value of the wrong type (setting_problem) is skipped the same way, and
+    reported apart from the unknown keys, with what is wrong with each:
+    the rest of the file still applies, as a key this version does not
+    know does not stop the others.
     """
     try:
         raw = await file.read()
@@ -181,18 +200,23 @@ async def import_settings(file: UploadFile = File(...), db: Session = Depends(ge
 
     applied: list[str] = []
     skipped: list[str] = []
+    invalid: dict[str, str] = {}
     for key, value in settings_in.items():
-        if key in KNOWN_KEYS:
+        if key not in KNOWN_KEYS:
+            skipped.append(key)
+        elif problem := setting_problem(key, value):
+            invalid[key] = problem
+        else:
             update_app_setting(db, key, value)
             applied.append(key)
-        else:
-            skipped.append(key)
 
     return {
         "applied":      len(applied),
         "applied_keys": sorted(applied),
         "skipped":      len(skipped),
         "skipped_keys": sorted(skipped),
+        "invalid":      len(invalid),
+        "invalid_keys": dict(sorted(invalid.items())),
     }
 
 
@@ -250,6 +274,9 @@ def get_one(key: str, db: Session = Depends(get_db)):
 def update_one(key: str, body: SettingValue, db: Session = Depends(get_db)):
     """Update a single setting."""
     _validate_key(key)
+    problem = setting_problem(key, body.value)
+    if problem:
+        raise HTTPException(400, f"Not saved: {problem}.")
     setting = update_app_setting(db, key, body.value)
     return {"key": setting.key, "value": body.value}
 
@@ -386,6 +413,64 @@ def _validate_key(key: str) -> None:
     if key not in KNOWN_KEYS:
         raise HTTPException(400, f"Unknown setting key: {key!r}. "
                                  f"Valid keys: {sorted(KNOWN_KEYS)}")
+
+
+def setting_problem(key: str, value: Any) -> str | None:
+    """
+    What is wrong with `value` for the setting `key`, or None if nothing is.
+
+    Values arrive as arbitrary JSON, and nothing checked them. The engine
+    takes a list setting as a set, so keep_subtitle_languages saved as
+    "eng" became {"e", "n", "g"} and the English subtitle was dropped;
+    "eng,ger" for audio dropped the German track; and any non-empty
+    string is true, so prefer_mp4_container saved as "false" converted
+    anyway. The Settings page always sends the right type. An import from
+    a hand-edited file, or a script calling the API, need not.
+
+    The schema says what each setting is (SETTINGS_SCHEMA "type"), and for a
+    select which values it takes, and for an integer any minimum. The few
+    settings with no schema entry are held to their default's type. Nothing
+    is coerced: "eng" could be meant as ["eng"], but "eng,ger" cannot be
+    split safely, so a wrong type is reported rather than guessed at.
+    """
+    entry = _SCHEMA_BY_KEY.get(key)
+    kind = entry["type"] if entry else _DEFAULT_KINDS.get(key)
+    if kind is None:
+        return None
+    if kind in ("string", "select") and not isinstance(value, str):
+        return f"{key} must be text, not {_json_kind(value)}"
+    if kind == "select":
+        allowed = [o["value"] for o in entry.get("options", [])]
+        if value not in allowed:
+            return f"{key} must be one of {', '.join(allowed)}, not {value!r}"
+    if kind == "boolean" and not isinstance(value, bool):
+        return f"{key} must be true or false, not {_json_kind(value)}"
+    if kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"{key} must be a whole number, not {_json_kind(value)}"
+        if entry and entry.get("min") is not None and value < entry["min"]:
+            return f"{key} must be at least {entry['min']}, not {value}"
+    if kind == "string_list":
+        if not isinstance(value, list):
+            return f"{key} must be a list of text, not {_json_kind(value)}"
+        if not all(isinstance(item, str) for item in value):
+            return f"{key} must be a list of text, and holds something else"
+    return None
+
+
+def _json_kind(value: Any) -> str:
+    """The JSON name of a value's type, for a message."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true or false"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return f"the text {value!r}"
+    if isinstance(value, list):
+        return "a list"
+    return "an object"
 
 
 # ── Schema (consumed by the config UI) ────────────────────────────────────────
@@ -1167,6 +1252,18 @@ RESCAN_NOTE = (
     "on. Files scanned before, including ones held in Review, keep their "
     "result until you run Force Full Rescan (Settings, Maintenance & Logs)."
 )
+
+_SCHEMA_BY_KEY = {entry["key"]: entry for entry in SETTINGS_SCHEMA}
+
+# The type of the settings with no schema entry, from their defaults.
+_DEFAULT_KINDS = {
+    key: ("boolean" if isinstance(default, bool)
+          else "integer" if isinstance(default, int)
+          else "string_list" if isinstance(default, list)
+          else "string")
+    for key, default in DEFAULT_APP_SETTINGS.items()
+    if key not in _SCHEMA_BY_KEY
+}
 
 APPLIES_ON_RESCAN = {
     "prefer_mp4_container",
