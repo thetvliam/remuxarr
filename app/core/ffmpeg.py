@@ -185,9 +185,23 @@ def build_ffmpeg_command(
     audio_tracks = [t for t in all_tracks if t["track_type"] == "audio"]
     sub_tracks   = [t for t in all_tracks if t["track_type"] == "subtitle"]
 
+    # Track titles are written out for MP4. In an MP4 FFmpeg reads a title
+    # as the tag "name", and writing one it takes a title only from
+    # "title", so a stream copy from MP4 to MP4 dropped every title: video,
+    # audio and subtitles, on a job that only removed one track. Players
+    # show these names, and probe reads forced, SDH, dub and commentary
+    # hints from them. Matroska keeps titles through a copy, and from
+    # Matroska the key is already "title", so only MP4 needs this.
+    write_titles = _CONTAINER_FORMAT.get(decision.target_container) == "mp4"
+
+    def title_of(t: dict, spec: str) -> list[str]:
+        title = t.get("title")
+        return [f"-metadata:s:{spec}", f"title={title}"] if write_titles and title else []
+
     # ── Video: always copy ─────────────────────────────────────────────────
-    for t in video_tracks:
+    for out_idx, t in enumerate(video_tracks):
         cmd += ["-map", f"0:{t['stream_index']}"]
+        cmd += title_of(t, f"v:{out_idx}")
     if video_tracks:
         cmd += ["-c:v", "copy"]
 
@@ -208,6 +222,7 @@ def build_ffmpeg_command(
             cmd += [f"-c:a:{out_idx}", "copy"]
         if si in language_map:
             cmd += [f"-metadata:s:a:{out_idx}", f"language={language_map[si]}"]
+        cmd += title_of(t, f"a:{out_idx}")
 
     # ── Subtitles ──────────────────────────────────────────────────────────
     # Anything dropped or extracted to external SRT is excluded from the
@@ -221,6 +236,7 @@ def build_ffmpeg_command(
         cmd += ["-map", f"0:{t['stream_index']}"]
         if t["stream_index"] in language_map:
             cmd += [f"-metadata:s:s:{out_idx}", f"language={language_map[t['stream_index']]}"]
+        cmd += title_of(t, f"s:{out_idx}")
     if kept_subs:
         cmd += ["-c:s", "copy"]
 

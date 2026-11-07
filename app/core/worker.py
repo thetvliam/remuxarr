@@ -3585,6 +3585,7 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
                 temp_path               = temp_path,
                 container               = job_data["container"],
                 add_faststart           = job_data["add_faststart"],
+                titles                  = job_data.get("titles"),
             )
         else:
             action_label = "Adding AC3 5.1 track"
@@ -3595,6 +3596,7 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
                 audio_track_count = job_data["audio_track_count"],
                 container         = job_data["container"],
                 add_faststart     = job_data["add_faststart"],
+                titles            = job_data.get("titles"),
             )
 
         result = await run_forge_command(

@@ -60,8 +60,9 @@ logger = logging.getLogger(__name__)
 # handler_name because it is the stream tag that survives every rewrite the
 # marker must outlive, measured with the FFmpeg 8.1 the image ships: a job
 # from Matroska to Matroska, Matroska to MP4 and MP4 to MP4, and a revert,
-# which writes back the tags it recorded. A title is lost when a job
-# rewrites an MP4, and a tag of our own when Matroska becomes MP4. AVI,
+# which writes back the tags it recorded. A title was lost whenever an MP4
+# was rewritten (titles are now written back for MP4: ffmpeg's title_of and
+# _title_args here), and a tag of our own is lost when Matroska becomes MP4. AVI,
 # MPEG-TS and ASF keep no handler_name at all, which is why an add only
 # counts as marked once the probe after it has found the marker
 # (finish_forge_job).
@@ -105,6 +106,50 @@ class ForgeResult:
 
 # ── Command builders ───────────────────────────────────────────────────────────
 
+def _title_args(fmt: str, titles: dict[int, str] | None) -> list[str]:
+    """
+    -metadata arguments writing each title back, for an MP4 output.
+
+    Both forge commands copy every stream, and in an MP4 FFmpeg reads a
+    title as the tag "name" but writes one only from "title", so an add or
+    an undo on an MP4 dropped every track's title. `titles` maps an output
+    stream index to its title (titles_after_forge). Matroska keeps titles
+    through a copy, so nothing is written for it.
+    """
+    if fmt != "mp4" or not titles:
+        return []
+    args: list[str] = []
+    for index, title in sorted(titles.items()):
+        args += [f"-metadata:s:{index}", f"title={title}"]
+    return args
+
+
+def titles_after_forge(tracks: list[dict],
+                       removed_audio_index: int | None = None) -> dict[int, str]:
+    """
+    Where each titled track will be in a forge command's output, with its
+    title.
+
+    Both commands map every input stream in order, so a stream keeps its
+    index; an undo removes one audio stream, and every stream after it
+    moves down one. `removed_audio_index` is that stream's position among
+    the audio tracks (the -0:a:N of build_undo_command). The AC3 an add
+    appends goes last and has no title.
+    """
+    removed: int | None = None
+    if removed_audio_index is not None:
+        audio = sorted(t["stream_index"] for t in tracks if t["track_type"] == "audio")
+        if 0 <= removed_audio_index < len(audio):
+            removed = audio[removed_audio_index]
+    out: dict[int, str] = {}
+    for t in tracks:
+        index, title = t["stream_index"], t.get("title")
+        if not title or index == removed:
+            continue
+        out[index - 1 if removed is not None and index > removed else index] = title
+    return out
+
+
 def build_add_ac3_command(
     input_path:        str,
     temp_path:         str,
@@ -112,6 +157,7 @@ def build_add_ac3_command(
     audio_track_count: int,     # number of audio tracks BEFORE adding AC3
     container:         str = "mkv",
     add_faststart:     bool = True,
+    titles:            dict[int, str] | None = None,
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -153,6 +199,7 @@ def build_add_ac3_command(
         # replaces any handler name the copy inherits from the AAC. See
         # FORGE_AC3_HANDLER_NAME.
         f"-metadata:s:a:{ac3_idx}", f"handler_name={FORGE_AC3_HANDLER_NAME}",
+        *_title_args(fmt, titles),
         # ── Output ────────────────────────────────────────────────────────
         "-f", fmt,
     ]
@@ -182,6 +229,7 @@ def build_undo_command(
     ac3_audio_output_index: int,   # resolved at UNDO time by resolve_forge_ac3_for_undo
     container:             str = "mkv",
     add_faststart:         bool = True,
+    titles:                dict[int, str] | None = None,
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
@@ -210,6 +258,7 @@ def build_undo_command(
         "-map", "0",
         "-map", f"-0:a:{ac3_audio_output_index}",   # strip the AC3 we added
         "-c", "copy",
+        *_title_args(fmt, titles),
         "-f", fmt,
     ]
 
@@ -920,6 +969,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,
+            # Each track's title by its index in the output, which the
+            # commands write back for an MP4 (_title_args).
+            "titles":             titles_after_forge(fresh_tracks, undo_audio_output_index),
             "original_size":      job.original_size,
             "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
             # Read here for the same reason as job_timeout_minutes above:
