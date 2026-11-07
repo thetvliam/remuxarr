@@ -9,6 +9,12 @@ The file count is the modules `pytest` collects, not the `.py` files under
 and a helper script, contain no tests, and are not counted. Both readings were
 in use at once until this was written down.
 
+Two runs can go side by side, a mutation run beside the suite, say:
+`conftest.py` gives each run a directory of its own for the database and for
+`TEMP_DIR`, removed when it ends, unless `REMUXARR_DATABASE_PATH` or
+`REMUXARR_TEMP_DIR` is set. Tests that look for their own processes match on an
+argument unique to the run.
+
 ## What's here
 
 **The decision engine** — `test_decision.py`, `test_subtitle_language_path.py`,

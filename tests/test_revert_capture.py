@@ -79,6 +79,7 @@ discard; "never discarding" was the mutant it killed before the rewrite
 and is the one it kills after.
 """
 import asyncio
+import gc
 import json
 import os
 import time
@@ -668,7 +669,18 @@ def test_capture_does_not_block_the_event_loop(recycle, enabled, monkeypatch,
         stop.set()
         await beat
 
-    asyncio.run(run())
+    # Garbage collection paused for the measurement. A full collection
+    # anywhere in the process holds up the loop for as long as it runs:
+    # measured at up to 412 ms late in a full suite, against the 150 ms this
+    # allows, which is why this failed about once in a hundred full runs and
+    # never alone. Nothing else changes: the slowed call still takes 250 ms,
+    # so run on the loop it still stalls it past the limit.
+    gc.collect()
+    gc.disable()
+    try:
+        asyncio.run(run())
+    finally:
+        gc.enable()
 
     gaps = [b - a for a, b in zip(ticks, ticks[1:])]
     assert gaps, "the heartbeat never ran — the measurement is broken"

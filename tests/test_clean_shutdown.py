@@ -55,7 +55,11 @@ from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 from app.database.models import AppSetting, Base, NotificationState, QueueItem
 
 
-SLEEP = "29.123"     # an argument no other process on the box will have
+# An argument no other process on the box will have: the process id makes
+# it this run's own. It was a fixed "29.123", which another run of this file
+# has too, so sleeping() saw that run's job: started early, or reported
+# "FFmpeg was left running" after a stop that had ended its own.
+SLEEP = f"29.{os.getpid()}"
 
 
 def _probe():
