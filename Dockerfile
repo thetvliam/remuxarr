@@ -23,84 +23,66 @@ RUN npm run build          # outputs to /ui/dist
 
 
 # ── Stage 2: download static FFmpeg binaries ──────────────────────────────────
-# We use BtbN's stable *release* build for FFmpeg 8.1, NOT the nightly master.
-#   • master-latest = unreleased nightly commits → sometimes unstable (SIGSEGV)
-#   • n8.1-latest   = the FFmpeg 8.1.x stable branch → same version as Fedora
+# We use BtbN's build of the FFmpeg 8.1 stable branch, NOT the nightly master.
+#   • master builds = unreleased nightly commits → sometimes unstable (SIGSEGV)
+#   • n8.1 builds   = the FFmpeg 8.1.x stable branch → same version as Fedora
 #     8.x, which correctly reads MP4 track name atoms (©nam / udta metadata)
 #     needed for SDH subtitle detection.  7.x builds (John Van Sickle static)
 #     lack this parsing and fall back to the atom parser for SDH detection.
 FROM debian:bookworm-slim AS ffmpeg-downloader
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends wget xz-utils ca-certificates jq \
+ && apt-get install -y --no-install-recommends wget xz-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# FFmpeg 8.1 static binaries, downloaded WITHOUT depending on the GitHub
-# API. The previous approach hit the API first (to resolve a dated
-# autobuild asset) and 404'd on a hardcoded dated fallback — both failed
-# together in a real build: the unauthenticated API returned 403 "rate
-# limit exceeded" (60 req/hr/IP, and CI runners share pooled egress IPs)
-# so the asset lookup came back empty, and BtbN had already pruned the
-# pinned "autobuild-2026-06-30" release off its ~14-day retention window.
+# FFmpeg is pinned to ONE exact build, checked by its SHA-256, so every
+# image (and every CI run) gets the same bytes.
 #
-# Fix: BtbN maintains a PERMANENT "latest" release whose asset filenames
-# are version-pinned but NOT date-stamped —
-#   .../releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
-# The "latest" tag never rolls off and the file is re-uploaded in place as
-# new 8.1.x point builds ship (verified: currently serves n8.1.2), so this
-# URL needs no API call (no rate limit) and no dated tag (no retention
-# 404). We try two forms of that same stable asset (direct /download/ and
-# the /releases/latest/download/ redirect), each with wget retries for
-# transient blips, and only fall back to the rate-limited API as a LAST
-# resort. Finally we verify the binary actually runs and reports 8.1
-# before the stage succeeds, so a truncated/corrupt archive fails HERE
-# (loud, at build time) rather than at container runtime.
+# Why this tag. BtbN keeps "the last build of each month for two years" and
+# every other daily build for only 14 days. An earlier pin to a daily tag
+# (autobuild-2026-06-30) was pruned inside that window and broke a real
+# build. The floating "latest" release that replaced it never 404s, but it
+# is rebuilt every day from the tip of the 8.1 branch, so no two builds
+# were guaranteed to ship the same FFmpeg. A MONTH-END tag is the one kind
+# that stays put: autobuild-2026-10-31-12-59 is the last build of October
+# 2026, so BtbN keeps it until about 31 October 2028.
 #
-# If this ever needs bumping to a new major FFmpeg line, change the "8.1"
-# in the two URLs (and the grep check) to the new version — the "latest"
-# tag itself stays the same. CI installs the same asset in
-# .github/workflows/ci.yml so the tests run against this build; change it
-# there too.
+# Before then, move to a newer month-end build (tests/test_deployment_config.py
+# starts failing 90 days ahead as a reminder):
+#   1. Pick the LAST autobuild-YYYY-MM-DD-* tag of a finished month at
+#      https://github.com/BtbN/FFmpeg-Builds/tags - never a mid-month one,
+#      which is deleted after 14 days.
+#   2. In that release's checksums.sha256, find the
+#      ffmpeg-n8.1...-linux64-gpl-8.1.tar.xz line: the part between
+#      "ffmpeg-" and "-linux64" is FFMPEG_VERSION, the hash is FFMPEG_SHA256.
+#   3. Change all three values here AND in .github/workflows/ci.yml, which
+#      installs the same build so the tests run against what ships.
+#
+# The download goes straight to the release asset, with no GitHub API call
+# (the unauthenticated API is rate limited and CI runners share IPs). The
+# checksum makes a truncated or substituted download fail HERE, at build
+# time, and the version check confirms the binary runs.
 RUN set -eu; \
-    STABLE_ASSET="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"; \
-    URLS="\
-https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${STABLE_ASSET} \
-https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/${STABLE_ASSET}"; \
-    ok=""; \
-    for url in $URLS; do \
-      echo "Trying FFmpeg download: $url"; \
-      if wget --tries=3 --waitretry=5 --retry-connrefused \
-              --timeout=30 -q -O /tmp/ffmpeg.tar.xz "$url"; then \
-        ok=1; break; \
-      fi; \
-      echo "  → failed, trying next source" >&2; \
-    done; \
-    if [ -z "$ok" ]; then \
-      echo "Stable URLs failed — falling back to GitHub API lookup" >&2; \
-      api_url=$(wget -qO- --header="Accept: application/vnd.github+json" \
-          https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest 2>/dev/null \
-        | jq -r '.assets[]? | select(.name | test("-linux64-gpl-8\\.1\\.tar\\.xz$")) | .browser_download_url' \
-        | head -1); \
-      if [ -n "$api_url" ] && [ "$api_url" != "null" ]; then \
-        echo "API resolved: $api_url"; \
-        wget --tries=3 --waitretry=5 --retry-connrefused \
-             --timeout=30 -q -O /tmp/ffmpeg.tar.xz "$api_url" && ok=1; \
-      fi; \
-    fi; \
-    if [ -z "$ok" ]; then \
-      echo "ERROR: could not download FFmpeg 8.1 from any source." >&2; \
-      echo "Check https://github.com/BtbN/FFmpeg-Builds/releases/tag/latest for the current linux64-gpl-8.1 asset name." >&2; \
-      exit 1; \
-    fi; \
+    FFMPEG_TAG="autobuild-2026-10-31-12-59"; \
+    FFMPEG_VERSION="n8.1.3-27-g8dca1586f4"; \
+    FFMPEG_SHA256="41e9c565594c390622cf968d82fa4135d9e9a11d06c1515644288cbc844e3380"; \
+    asset="ffmpeg-${FFMPEG_VERSION}-linux64-gpl-8.1.tar.xz"; \
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${asset}"; \
+    echo "Downloading FFmpeg: $url"; \
+    wget --tries=3 --waitretry=5 --retry-connrefused \
+         --timeout=30 -q -O /tmp/ffmpeg.tar.xz "$url" \
+      || { echo "ERROR: could not download $url. If BtbN has pruned ${FFMPEG_TAG}, move to a newer month-end build (see the comment above)." >&2; exit 1; }; \
+    echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
+      || { echo "ERROR: the FFmpeg download does not match its pinned SHA-256" >&2; exit 1; }; \
     tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
     find /tmp -name ffmpeg  -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffmpeg \; ; \
     find /tmp -name ffprobe -type f ! -name '*.so' -exec cp {} /usr/local/bin/ffprobe \; ; \
     chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe; \
     rm -rf /tmp/ffmpeg*; \
-    /usr/local/bin/ffmpeg  -version | head -1 | grep -q 'version n8.1' \
-      || { echo "ERROR: downloaded ffmpeg is not the expected 8.1 build" >&2; exit 1; }; \
-    /usr/local/bin/ffprobe -version >/dev/null \
-      || { echo "ERROR: ffprobe failed to run" >&2; exit 1; }; \
+    /usr/local/bin/ffmpeg  -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-" \
+      || { echo "ERROR: ffmpeg does not report the pinned version ${FFMPEG_VERSION}" >&2; exit 1; }; \
+    /usr/local/bin/ffprobe -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-" \
+      || { echo "ERROR: ffprobe does not report the pinned version ${FFMPEG_VERSION}" >&2; exit 1; }; \
     echo "FFmpeg installed: $(/usr/local/bin/ffmpeg -version | head -1)"
 
 
