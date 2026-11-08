@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2380 tests across 108 test files, plus 775 frontend tests under
+2389 tests across 108 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -129,7 +129,9 @@ skip when the binaries are absent (CI installs them, so they always run
 there).
 `test_attachment_preservation.py` pins the `-map` arguments against the bug
 that let every remux, including a pure language re-tag, silently destroy a
-file's fonts and cover art while reporting success.
+file's fonts while reporting success. It also covers Matroska cover art, which
+that map never caught: FFmpeg reports it as a video stream, so a job copies it
+out and attaches it again, and fails rather than drop it.
 `test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.

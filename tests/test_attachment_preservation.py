@@ -31,7 +31,9 @@ Verified by mutation, 4 applied, 4 killed:
 
 No equivalent mutants.
 """
+import asyncio
 import json
+import os
 import shutil
 import subprocess
 
@@ -389,3 +391,367 @@ def test_the_font_count_travels_with_the_container_and_duration():
 
     assert info["container"] == "mkv"
     assert info["font_attachments"] == 2
+
+
+# ── Matroska cover art ───────────────────────────────────────────────────────
+#
+# Matroska stores cover art as an image attachment, but FFmpeg's demuxer
+# reports it as a video stream marked attached_pic. "0:t?" therefore never
+# matched it and extract_tracks skips it, so every job that left a file as
+# MKV dropped its cover. Mapping that stream back is no fix: the muxer
+# writes it as a real still-image video track. The executors copy each
+# cover out and re-attach it instead. Found by tools/testlib/explore.py.
+#
+# Verified by mutation against the whole suite, 9 applied, 9 killed:
+#
+#   • covers copied out and attached for MP4 output too
+#   • attachment numbering ignoring the attachments already mapped
+#   • covers copied out but none handed to the command
+#   • cleanup of the copied-out covers removed
+#   • every cover copied from the first cover stream
+#   • filename and mimetype swapped on the attach
+#   • a failed copy carrying on without the cover
+#   • the combined pass not cleaning up its covers
+#   • a probe failure failing the job
+
+def _image(tmp_path, name, colour):
+    path = tmp_path / name
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", f"color=c={colour}:s=64x48", "-frames:v", "1", str(path)],
+        check=True,
+    )
+    return path
+
+
+def _source_with_covers(tmp_path, covers, fonts=1, subtitle=False):
+    """
+    Video, eng and fre audio, optionally an eng SubRip track, `fonts` font
+    attachments and then each (filename, mimetype, image path) in `covers`
+    attached as Matroska stores cover art.
+    """
+    video = tmp_path / "v.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "testsrc=size=160x120:rate=10:duration=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True,
+    )
+    audio = tmp_path / "a.m4a"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=2", "-c:a", "aac", str(audio)],
+        check=True,
+    )
+    inputs = ["-i", str(video), "-i", str(audio), "-i", str(audio)]
+    maps = ["-map", "0:v", "-map", "1:a", "-map", "2:a"]
+    if subtitle:
+        srt = tmp_path / "s.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        inputs += ["-i", str(srt)]
+        maps += ["-map", "3:s", "-metadata:s:s:0", "language=eng"]
+
+    attach = []
+    entries = [(f"Font{n}.ttf", "application/x-truetype-font", None)
+               for n in range(fonts)] + list(covers)
+    for i, (filename, mimetype, image) in enumerate(entries):
+        if image is None:
+            image = tmp_path / filename
+            image.write_bytes(bytes([i]) * 1024)
+        attach += ["-attach", str(image),
+                   f"-metadata:s:t:{i}", f"mimetype={mimetype}",
+                   f"-metadata:s:t:{i}", f"filename={filename}"]
+
+    source = tmp_path / "source.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", *inputs, *maps,
+         "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=fre",
+         "-c", "copy", *attach, "-f", "matroska", str(source)],
+        check=True,
+    )
+    return source
+
+
+def _cover_streams(path):
+    return [s for s in _streams(path) if s["codec_type"] == "video"
+            and (s.get("disposition") or {}).get("attached_pic")]
+
+
+def _bytes_of(path, stream_index, tmp_path):
+    dest = tmp_path / f"stream_{stream_index}.bin"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(path),
+         "-map", f"0:{stream_index}", "-c", "copy", "-f", "rawvideo", str(dest)],
+        check=True,
+    )
+    return dest.read_bytes()
+
+
+def _tag(stream, key):
+    tags = stream.get("tags") or {}
+    return tags.get(key, tags.get(key.upper()))
+
+
+def _job(source, settings, subtitle=False):
+    """A decision that keeps the file as MKV and drops the fre track."""
+    settings["prefer_mp4_container"] = False
+    settings["extract_text_subtitles_to_srt"] = subtitle
+    tracks = [
+        make_track(stream_index=0, track_type="video", codec="h264"),
+        make_track(stream_index=1, track_type="audio", codec="aac",
+                   language="eng", is_default=True),
+        make_track(stream_index=2, track_type="audio", codec="aac",
+                   language="fre"),
+    ]
+    if subtitle:
+        tracks.append(make_track(stream_index=3, track_type="subtitle",
+                                 codec="subrip", language="eng"))
+    decision = analyze_file(
+        make_file_info(path=str(source), container="mkv", video_codec="h264"),
+        tracks, settings,
+    )
+    assert decision.should_process, "fixture no longer produces work"
+    assert decision.target_container == "mkv"
+    return decision, tracks
+
+
+def _cover_temps(source, job_id):
+    from app.core.ffmpeg import _pick_temp_dir
+    folder = _pick_temp_dir(str(source))
+    return [name for name in os.listdir(folder)
+            if name.startswith(f"job_{job_id}_cover_")] if os.path.isdir(folder) else []
+
+
+def _run(source, decision, tracks, job_id, **kw):
+    from app.core.ffmpeg import execute_ffmpeg
+    return asyncio.run(execute_ffmpeg(
+        str(source), str(source), decision, tracks, job_id=job_id, **kw))
+
+
+def _assert_cover_kept(out, image, filename, mimetype, tmp_path):
+    covers = [s for s in _cover_streams(out) if _tag(s, "filename") == filename]
+    assert len(covers) == 1, f"{filename} is not in the output as cover art"
+    assert _tag(covers[0], "mimetype") == mimetype
+    assert _bytes_of(out, covers[0]["index"], tmp_path) == image.read_bytes(), \
+        f"{filename} came back with different bytes"
+
+
+@ffmpeg_required
+def test_a_job_that_keeps_a_file_as_mkv_keeps_its_cover_art(tmp_path, settings):
+    """
+    The reproduction, through the executor a job uses. The cover stays an
+    attachment: one real video stream, not two, and the font survives too.
+    """
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    decision, tracks = _job(source, settings)
+
+    result = _run(source, decision, tracks, job_id=9101)
+
+    assert result.success is True, result.error
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    streams = _streams(source)
+    real_video = [s for s in streams if s["codec_type"] == "video"
+                  and not (s.get("disposition") or {}).get("attached_pic")]
+    assert len(real_video) == 1, "the cover came back as a second video track"
+    assert len([s for s in streams if s["codec_type"] == "audio"]) == 1
+    fonts = [s for s in streams if s["codec_type"] == "attachment"]
+    assert [_tag(s, "filename") for s in fonts] == ["Font0.ttf"]
+
+
+@ffmpeg_required
+def test_the_combined_pass_keeps_cover_art_too(tmp_path, settings):
+    """
+    A job that also extracts a subtitle runs execute_ffmpeg_combined, which
+    builds its own call. The cover must survive there as well.
+    """
+    from app.core.ffmpeg import execute_ffmpeg_combined
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)],
+                                 subtitle=True)
+    decision, tracks = _job(source, settings, subtitle=True)
+    assert any(a.action_type == "extract_subtitle" for a in decision.actions)
+    srt = tmp_path / "source.en.srt"
+
+    result, srts = asyncio.run(execute_ffmpeg_combined(
+        str(source), str(source), decision, tracks, [(3, str(srt))], job_id=9102))
+
+    assert result.success is True, result.error
+    assert srts[0].success and srt.exists()
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    assert not [s for s in _streams(source) if s["codec_type"] == "subtitle"]
+    assert _cover_temps(source, 9102) == []
+
+
+@ffmpeg_required
+def test_each_cover_keeps_its_own_name_and_type_beside_fonts(tmp_path, settings):
+    """
+    Re-attached covers are numbered after the attachments already mapped,
+    so with fonts in the file a wrong count puts a cover's name on a font.
+    Two covers of different types catch a swap between them as well.
+    """
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    png = _image(tmp_path, "cover_land.png", "blue")
+    source = _source_with_covers(
+        tmp_path, [("cover.jpg", "image/jpeg", jpeg),
+                   ("cover_land.png", "image/png", png)], fonts=2)
+    decision, tracks = _job(source, settings)
+
+    result = _run(source, decision, tracks, job_id=9103)
+
+    assert result.success is True, result.error
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    _assert_cover_kept(source, png, "cover_land.png", "image/png", tmp_path)
+    fonts = [s for s in _streams(source) if s["codec_type"] == "attachment"]
+    assert sorted((_tag(s, "filename"), _tag(s, "mimetype")) for s in fonts) == [
+        ("Font0.ttf", "application/x-truetype-font"),
+        ("Font1.ttf", "application/x-truetype-font"),
+    ]
+
+
+@ffmpeg_required
+def test_a_conversion_to_mp4_is_unchanged(tmp_path, settings):
+    """
+    MP4 cannot take an attachment: re-attaching there would fail the mux
+    at header write. A conversion must still succeed, without the cover,
+    and without copying it out first.
+    """
+    from app.core import ffmpeg as ffmpeg_module
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    decision, tracks = _job(source, settings)
+    settings["prefer_mp4_container"] = True
+    decision = analyze_file(
+        make_file_info(path=str(source), container="mkv", video_codec="h264"),
+        tracks, settings,
+    )
+    assert decision.target_container == "mp4"
+    out = tmp_path / "source.mp4"
+
+    result = asyncio.run(ffmpeg_module.execute_ffmpeg(
+        str(source), str(out), decision, tracks, job_id=9104))
+
+    assert result.success is True, result.error
+    assert _cover_streams(out) == []
+    assert _cover_temps(source, 9104) == []
+
+
+@ffmpeg_required
+def test_a_file_without_cover_art_copies_nothing_out(tmp_path, settings, monkeypatch):
+    """No cover, no extraction: the job runs exactly as it did before."""
+    from app.core import ffmpeg as ffmpeg_module
+
+    def no_extraction(*a, **k):
+        raise AssertionError("a cover was extracted from a file with none")
+    monkeypatch.setattr(ffmpeg_module, "_cover_extraction_command", no_extraction)
+
+    source = _source_with_covers(tmp_path, [])
+    decision, tracks = _job(source, settings)
+
+    result = _run(source, decision, tracks, job_id=9105)
+
+    assert result.success is True, result.error
+    assert [_tag(s, "filename") for s in _streams(source)
+            if s["codec_type"] == "attachment"] == ["Font0.ttf"]
+
+
+def test_the_command_attaches_only_the_covers_it_is_given(settings):
+    """argv: no covers, no -attach; covers come after the attachment map."""
+    from app.core.ffmpeg import CoverArt
+
+    decision, tracks = _drop_foreign_audio("/media/m.mkv", "mkv", {
+        **settings, "prefer_mp4_container": False})
+    plain = build_ffmpeg_command("/media/m.mkv", "/tmp/o", decision, tracks)
+    assert "-attach" not in plain
+
+    cover = CoverArt(path="/tmp/c", filename="cover.jpg", mimetype="image/jpeg", ordinal=2)
+    cmd = build_ffmpeg_command("/media/m.mkv", "/tmp/o", decision, tracks, covers=[cover])
+    i = cmd.index("-attach")
+    assert cmd.index("0:t?") < i < len(cmd) - 1
+    assert cmd[i:i + 5] == ["-attach", "/tmp/c", "-metadata:s:t:2", "mimetype=image/jpeg",
+                            "-metadata:s:t:2"]
+    assert cmd[i + 5] == "filename=cover.jpg"
+    assert cmd[-1] == "/tmp/o"
+
+
+@ffmpeg_required
+def test_cover_temps_are_removed_when_the_run_is_stopped(tmp_path, settings):
+    """
+    The copied-out covers are inputs, not outputs, so the staged runner does
+    not know them. They must go however the run ends; here it is stopped at
+    the swap, after FFmpeg has read them.
+    """
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    decision, tracks = _job(source, settings)
+    original = source.read_bytes()
+
+    async def refuse():
+        return "stopped for the test"
+
+    result = _run(source, decision, tracks, job_id=9107, before_swap=refuse)
+
+    assert result.success is False
+    assert source.read_bytes() == original
+    assert _cover_temps(source, 9107) == []
+
+    result = _run(source, decision, tracks, job_id=9108)
+    assert result.success is True, result.error
+    assert _cover_temps(source, 9108) == []
+
+
+@ffmpeg_required
+def test_a_cover_that_cannot_be_copied_out_fails_the_job_first(
+        tmp_path, settings, monkeypatch):
+    """
+    Carrying on would drop the cover, the bug this fixes. The job fails
+    before the main FFmpeg run starts, with the source untouched and the
+    cover named in the error.
+    """
+    from app.core import ffmpeg as ffmpeg_module
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    decision, tracks = _job(source, settings)
+    original = source.read_bytes()
+
+    monkeypatch.setattr(ffmpeg_module, "_cover_extraction_command",
+                        lambda src, index, dest: ["ffmpeg", "-v", "error", "-i",
+                                                  str(tmp_path / "missing.mkv"), dest])
+
+    async def never(*a, **k):
+        raise AssertionError("the main FFmpeg run started anyway")
+    monkeypatch.setattr(ffmpeg_module, "run_staged_subprocess", never)
+
+    result = _run(source, decision, tracks, job_id=9109)
+
+    assert result.success is False
+    assert "cover.jpg" in result.error
+    assert source.read_bytes() == original
+    assert _cover_temps(source, 9109) == []
+
+
+@ffmpeg_required
+def test_a_probe_failure_runs_the_job_as_before(tmp_path, settings, monkeypatch):
+    """
+    The worker already decides from stored tracks when a probe fails rather
+    than fail the job over it, and this follows suit: the job runs, without
+    re-attaching anything.
+    """
+    from app.core import ffmpeg as ffmpeg_module
+    from app.core.probe import ProbeError
+
+    def fail(*a, **k):
+        raise ProbeError("unreadable for the test")
+    monkeypatch.setattr(ffmpeg_module, "probe_file", fail)
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _source_with_covers(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    decision, tracks = _job(source, settings)
+
+    result = _run(source, decision, tracks, job_id=9110)
+
+    assert result.success is True, result.error
+    assert _cover_temps(source, 9110) == []

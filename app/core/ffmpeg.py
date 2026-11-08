@@ -8,15 +8,17 @@ execute_subtitle_extraction()    — runs a single subtitle extraction to a side
 determine_output_path()       — decides where to write the output file
 """
 
+import asyncio
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
+from app.core.probe import ProbeError, probe_file
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -32,6 +34,19 @@ logger = logging.getLogger(__name__)
 
 
 # ── Data classes ───────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CoverArt:
+    """
+    A Matroska cover image copied out of the source to be attached again.
+    See _prepare_cover_art for why. ordinal is its place among the output's
+    attachments, which is what -metadata:s:t:N addresses.
+    """
+    path: str
+    filename: str
+    mimetype: str
+    ordinal: int
 
 
 @dataclass
@@ -132,9 +147,13 @@ def build_ffmpeg_command(
     output_path: str,
     decision: ProcessingDecision,
     all_tracks: list[dict],
+    covers: Sequence[CoverArt] = (),
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
+
+    covers are Matroska cover images already copied out of the source by
+    _prepare_cover_art, which hands over none unless the output is Matroska.
 
     Strategy
     --------
@@ -269,7 +288,10 @@ def build_ffmpeg_command(
     )
     cmd += ["-f", out_fmt]
 
-    # Attachments — fonts for styled subtitles, cover art, posters.
+    # Attachments: fonts for styled subtitles, and any other file attached.
+    # Not Matroska cover art, though FFmpeg stores it as an attachment: its
+    # demuxer reports an image attachment as an attached_pic video stream,
+    # which "0:t" does not match. The covers argument puts those back.
     #
     # Without this map they are silently destroyed on every single remux,
     # including a pure metadata fix that changes nothing else. The maps
@@ -293,6 +315,14 @@ def build_ffmpeg_command(
     # than something to work around here.
     if out_fmt in ("matroska", "webm"):
         cmd += ["-map", "0:t?"]
+
+    # Attached after every mapped stream, so FFmpeg numbers them after the
+    # attachments "0:t?" brought across. Matroska needs a mimetype on every
+    # attachment, and the copied-out file's name tells FFmpeg nothing.
+    for cover in covers:
+        cmd += ["-attach", cover.path,
+                f"-metadata:s:t:{cover.ordinal}", f"mimetype={cover.mimetype}",
+                f"-metadata:s:t:{cover.ordinal}", f"filename={cover.filename}"]
 
     # Apply +faststart when the output is MP4 AND the add_faststart_to_mp4
     # setting is on. The setting is an absolute off switch: with it disabled
@@ -802,13 +832,21 @@ async def execute_ffmpeg(
     tmp_dir     = _pick_temp_dir(input_path)
     temp_output = os.path.join(tmp_dir, f"job_{job_id}.remuxarr_tmp")
     os.makedirs(tmp_dir, exist_ok=True)
-    cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks)
 
-    logger.info("FFmpeg command:\n  %s", " ".join(cmd))
-
-    # Get duration once for percentage calculation
+    # Get duration once for percentage calculation. Before the covers are
+    # copied out, so nothing awaits between that and the try that removes
+    # them: a job cancelled in between would leave them behind.
     duration = await probe_duration(input_path)
     current_action = _describe_action(decision)
+
+    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
+    if cover_error:
+        return FFmpegResult(success=False, output_path=None, error=cover_error,
+                            output_size=None)
+    cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
+                               covers=covers)
+
+    logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
     async def on_progress_line(progress_kv: dict[str, str]) -> None:
         if not progress_callback or not duration:
@@ -830,17 +868,20 @@ async def execute_ffmpeg(
     async def _before_staging() -> str | None:
         return await before_staging(temp_output)
 
-    result = await run_staged_subprocess(
-        cmd,
-        [StagedOutput(temp_path=temp_output, final_path=output_path)],
-        on_progress_line=on_progress_line,
-        stderr_tail_lines=30,
-        timeout_seconds=timeout_seconds,
-        before_staging=_before_staging if before_staging else None,
-        on_staging_progress=_staging_progress(progress_callback, duration),
-        before_swap=before_swap,
-        on_swap_ready=on_swap_ready,
-    )
+    try:
+        result = await run_staged_subprocess(
+            cmd,
+            [StagedOutput(temp_path=temp_output, final_path=output_path)],
+            on_progress_line=on_progress_line,
+            stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
+            before_staging=_before_staging if before_staging else None,
+            on_staging_progress=_staging_progress(progress_callback, duration),
+            before_swap=before_swap,
+            on_swap_ready=on_swap_ready,
+        )
+    finally:
+        _discard_cover_art(covers)
 
     if not result.success:
         # Original only logged the genuine-FFmpeg-failure case (non-zero
@@ -1114,8 +1155,21 @@ async def execute_ffmpeg_combined(
     # rather than the destination filename.
     temp_main = os.path.join(tmp_dir, f"job_{job_id}.remuxarr_tmp")
 
+    # Before the covers are copied out; see execute_ffmpeg.
+    duration       = await probe_duration(input_path)
+    current_action = _describe_action(decision)
+
+    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
+    if cover_error:
+        return (
+            FFmpegResult(success=False, output_path=None, error=cover_error,
+                         output_size=None),
+            [ExtractionResult(success=False, output_path=None, error=cover_error)
+             for _ in subtitle_extractions],
+        )
     # Base command up to (and including) the format/movflags flags
-    main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks)
+    main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
+                                    covers=covers)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1136,9 +1190,6 @@ async def execute_ffmpeg_combined(
     logger.info("FFmpeg command (combined):\n  %s", " ".join(main_cmd))
 
     # ── Progress adapter ───────────────────────────────────────────────────
-    duration       = await probe_duration(input_path)
-    current_action = _describe_action(decision)
-
     async def on_progress_line(progress_kv: dict[str, str]) -> None:
         if not progress_callback or not duration:
             return
@@ -1158,7 +1209,8 @@ async def execute_ffmpeg_combined(
     # then swaps them into place — so any missing/unstageable output
     # (including an SRT) fails the whole run with every original
     # untouched, and its cleanup paths (failure, timeout, cancellation,
-    # exception) already cover the SRT temps too. No local cleanup needed.
+    # exception) already cover the SRT temps too. The copied-out covers are
+    # inputs it does not know about, so they are discarded here instead.
     staged_outputs = [StagedOutput(temp_path=temp_main, final_path=output_path)]
     staged_outputs += [
         StagedOutput(temp_path=srt_tmp, final_path=srt_dest)
@@ -1173,17 +1225,20 @@ async def execute_ffmpeg_combined(
     async def _before_staging() -> str | None:
         return await before_staging(temp_main)
 
-    result = await run_staged_subprocess(
-        main_cmd,
-        staged_outputs,
-        on_progress_line=on_progress_line,
-        stderr_tail_lines=30,
-        timeout_seconds=timeout_seconds,
-        before_staging=_before_staging if before_staging else None,
-        on_staging_progress=_staging_progress(progress_callback, duration),
-        before_swap=before_swap,
-        on_swap_ready=on_swap_ready,
-    )
+    try:
+        result = await run_staged_subprocess(
+            main_cmd,
+            staged_outputs,
+            on_progress_line=on_progress_line,
+            stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
+            before_staging=_before_staging if before_staging else None,
+            on_staging_progress=_staging_progress(progress_callback, duration),
+            before_swap=before_swap,
+            on_swap_ready=on_swap_ready,
+        )
+    finally:
+        _discard_cover_art(covers)
 
     if not result.success:
         # Log only for genuine FFmpeg failures (rc != 0), not for the
@@ -1224,6 +1279,106 @@ async def execute_ffmpeg_combined(
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
+
+
+# Generous for copying one image out; it only guards against a hung FFmpeg,
+# which the job's own time limit would not cover, since that starts later.
+_COVER_EXTRACTION_TIMEOUT = 120
+
+
+def _cover_extraction_command(input_path: str, stream_index: int, dest: str) -> list[str]:
+    # rawvideo with -c copy writes the stream's one packet as it is, which
+    # for an attached picture is the image file itself, byte for byte.
+    return [app_settings.FFMPEG_PATH, "-nostdin", "-v", "error", "-y",
+            "-i", input_path, "-map", f"0:{stream_index}", "-c", "copy",
+            "-f", "rawvideo", dest]
+
+
+def _discard_cover_art(covers: Sequence[CoverArt]) -> None:
+    for cover in covers:
+        cleanup_temp_file(cover.path)
+
+
+async def _prepare_cover_art(
+    input_path: str,
+    decision: ProcessingDecision,
+    tmp_dir: str,
+    job_id: int,
+) -> tuple[list[CoverArt], str | None]:
+    """
+    Copy each Matroska cover image out of the source so the remux can attach
+    it again. Returns the covers and an error, at most one of them non-empty.
+
+    Matroska stores cover art as an image attachment, but FFmpeg's demuxer
+    reports one as a video stream with the attached_pic disposition and its
+    filename and mimetype as tags. "-map 0:t?" matches attachment streams
+    only, so it never caught one, and every job that kept a file as MKV
+    dropped its cover. Mapping the stream does not help: the muxer writes
+    it as a real still-image video track, which a player can offer as a
+    second video. Copying the image out and attaching that file restores it
+    exactly. Only for Matroska output: MP4 cannot hold an attachment.
+
+    A probe failure returns no covers and no error, so the job runs as it
+    did before this existed: the worker already decides from stored tracks
+    when a probe fails rather than fail the job over it. A cover that is
+    there but cannot be copied out is an error, returned before the main
+    run starts, so the job fails with the source untouched rather than
+    dropping the cover.
+    """
+    if _CONTAINER_FORMAT.get(decision.target_container) != "matroska":
+        return [], None
+    loop = asyncio.get_running_loop()
+    try:
+        probe = await loop.run_in_executor(
+            None, probe_file, input_path, app_settings.FFPROBE_PATH)
+    except ProbeError as exc:
+        logger.warning("Job %d: could not probe %s for cover art (%s); "
+                       "running without it", job_id, input_path, exc)
+        return [], None
+
+    streams = probe.get("streams") or []
+    attachments = sum(1 for s in streams if s.get("codec_type") == "attachment")
+    found = []
+    for s in streams:
+        tags = s.get("tags") or {}
+        if (s.get("codec_type") == "video"
+                and (s.get("disposition") or {}).get("attached_pic")
+                and tags.get("filename") and tags.get("mimetype")):
+            found.append((s["index"], tags["filename"], tags["mimetype"]))
+
+    covers: list[CoverArt] = []
+    for n, (index, filename, mimetype) in enumerate(found):
+        dest = os.path.join(tmp_dir, f"job_{job_id}_cover_{index}.remuxarr_tmp")
+        error = await _copy_cover_out(input_path, index, dest)
+        if error:
+            _discard_cover_art(covers)
+            cleanup_temp_file(dest)
+            name = os.path.basename(input_path)
+            logger.error("Job %d: could not copy cover art %s out of %s: %s",
+                         job_id, filename, name, error)
+            return [], (f"Could not copy the cover art {filename} out of {name} "
+                        f"to keep it, so nothing was done to the file: {error}")
+        covers.append(CoverArt(path=dest, filename=filename, mimetype=mimetype,
+                               ordinal=attachments + n))
+    return covers, None
+
+
+async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:
+    """Run the extraction; None on success, otherwise what went wrong."""
+    proc = await asyncio.create_subprocess_exec(
+        *_cover_extraction_command(input_path, stream_index, dest),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), _COVER_EXTRACTION_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return f"FFmpeg did not finish within {_COVER_EXTRACTION_TIMEOUT} seconds"
+    if proc.returncode != 0:
+        return stderr.decode(errors="replace").strip()[-500:] or f"exit {proc.returncode}"
+    if not os.path.exists(dest) or not os.path.getsize(dest):
+        return "FFmpeg wrote nothing"
+    return None
 
 
 def _describe_action(decision: ProcessingDecision) -> str:
