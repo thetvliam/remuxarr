@@ -85,10 +85,14 @@ jobs:
       # rounds of review without anything noticing — a one-second check that
       # nobody was running. Kept separate from the test step so a lint failure
       # reads as a lint failure.
+      #
+      # tools/ is linted too: nothing in the suite imports it, so this is the
+      # only check its scripts get on a push. It catches a name the script
+      # misspells, not one the app renames.
       - name: Lint (pyflakes)
         run: |
           pip install pyflakes
-          pyflakes app tests
+          pyflakes app tests tools
 
       - name: Import check
         # DATABASE_PATH/TEMP_DIR default to /config and /tmp/remuxarr, which
