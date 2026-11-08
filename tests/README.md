@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2389 tests across 108 test files, plus 775 frontend tests under
+2399 tests across 108 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -131,7 +131,9 @@ there).
 that let every remux, including a pure language re-tag, silently destroy a
 file's fonts while reporting success. It also covers Matroska cover art, which
 that map never caught: FFmpeg reports it as a video stream, so a job copies it
-out and attaches it again, and fails rather than drop it.
+out and attaches it again, and fails rather than drop it. AC3 Forge does the
+same, and maps attachments after the AC3 it encodes: ahead of it, the Matroska
+muxer refused every add on an MKV with fonts.
 `test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.

@@ -3464,15 +3464,71 @@ def _requeue_cut_off_forge_job(job_id: int) -> None:
         logger.info("Forge job %d was cut off by shutdown — back in the queue", job_id)
 
 
+
+async def _forge_run(job_data, input_path, temp_path, covers,
+                     on_progress, on_before_staging, timeout_seconds):
+    """
+    Build a forge job's command and run it, for _run_forge_job.
+
+    Called inside _run_forge_job's try deliberately: the builders raise
+    ValueError on containers their format map doesn't know (instead of
+    silently corrupting the file with a matroska default), and that failure
+    must mark the forge job failed via the handler there, not escape it.
+    """
+    from app.core.forge import (
+        build_add_ac3_command, build_undo_command, run_forge_command,
+    )
+    if job_data["is_undo"]:
+        action_label = "Removing AC3 5.1 track"
+        cmd = build_undo_command(
+            input_path              = input_path,
+            # Resolved against a fresh probe at load time — NOT the
+            # stored add-time audio_track_count. After any pipeline
+            # drop that index points past the end, and FFmpeg
+            # silently ignores an unmatched negative map: the old
+            # undo rewrote the file unchanged and recorded a false
+            # "undone" with the AC3 still embedded. See
+            # resolve_forge_ac3_for_undo.
+            ac3_audio_output_index  = job_data["undo_audio_output_index"],
+            temp_path               = temp_path,
+            container               = job_data["container"],
+            add_faststart           = job_data["add_faststart"],
+            titles                  = job_data.get("titles"),
+            covers                  = covers,
+        )
+    else:
+        action_label = "Adding AC3 5.1 track"
+        cmd = build_add_ac3_command(
+            input_path        = input_path,
+            temp_path         = temp_path,
+            aac_stream_index  = job_data["aac_stream_index"],
+            audio_track_count = job_data["audio_track_count"],
+            container         = job_data["container"],
+            add_faststart     = job_data["add_faststart"],
+            titles            = job_data.get("titles"),
+            covers            = covers,
+        )
+
+    result = await run_forge_command(
+        cmd           = cmd,
+        input_path    = input_path,
+        output_path   = input_path,   # overwrite in-place
+        temp_path     = temp_path,
+        action_label  = action_label,
+        progress_callback = on_progress,
+        timeout_seconds   = timeout_seconds,
+        before_staging    = on_before_staging,
+    )
+    return result
+
 async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> bool:
     """Run a claimed forge job. Returns True, as it was claimed."""
     from app.core.forge import (
-        load_forge_job_data,
-        build_add_ac3_command, build_undo_command,
-        run_forge_command, ForgeProgress,
+        load_forge_job_data, ForgeProgress, ForgeResult,
         update_forge_progress, finish_forge_job, load_forge_final_state,
         probe_tracks_after_forge,
     )
+    from app.core.ffmpeg import copy_out_cover_art, discard_cover_art
 
     logger.info("Forge worker picked up job %d", job_id)
     await ws_manager.broadcast_json({"event": "forge_job_started", "job_id": job_id})
@@ -3565,50 +3621,28 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
         })
 
     try:
-        # Command building sits INSIDE the try deliberately — the builders
-        # now raise ValueError on containers their format map doesn't know
-        # (instead of silently corrupting the file with a matroska
-        # default), and that failure must mark the forge job failed via
-        # the handler below, not escape this function uncaught.
-        if job_data["is_undo"]:
-            action_label = "Removing AC3 5.1 track"
-            cmd = build_undo_command(
-                input_path              = input_path,
-                # Resolved against a fresh probe at load time — NOT the
-                # stored add-time audio_track_count. After any pipeline
-                # drop that index points past the end, and FFmpeg
-                # silently ignores an unmatched negative map: the old
-                # undo rewrote the file unchanged and recorded a false
-                # "undone" with the AC3 still embedded. See
-                # resolve_forge_ac3_for_undo.
-                ac3_audio_output_index  = job_data["undo_audio_output_index"],
-                temp_path               = temp_path,
-                container               = job_data["container"],
-                add_faststart           = job_data["add_faststart"],
-                titles                  = job_data.get("titles"),
-            )
-        else:
-            action_label = "Adding AC3 5.1 track"
-            cmd = build_add_ac3_command(
-                input_path        = input_path,
-                temp_path         = temp_path,
-                aac_stream_index  = job_data["aac_stream_index"],
-                audio_track_count = job_data["audio_track_count"],
-                container         = job_data["container"],
-                add_faststart     = job_data["add_faststart"],
-                titles            = job_data.get("titles"),
-            )
-
-        result = await run_forge_command(
-            cmd           = cmd,
-            input_path    = input_path,
-            output_path   = input_path,   # overwrite in-place
-            temp_path     = temp_path,
-            action_label  = action_label,
-            progress_callback = on_progress,
-            timeout_seconds   = timeout_seconds,
-            before_staging    = on_before_staging,
+        # The file's Matroska covers, found by load_forge_job_data in the
+        # probe it makes, copied out so the command can attach them again
+        # rather than copy each as a video track (build_add_ac3_command). A
+        # cover that cannot be copied fails the run here, before FFmpeg
+        # starts. It removes its own copies if cancelled, and nothing awaits
+        # between its return and the finally that removes them after.
+        found, attachments = job_data.get("cover_art") or ([], 0)
+        covers, cover_error = await copy_out_cover_art(
+            input_path, found, attachments, tmp_dir,
+            f"forge_{job_id}", ".forge_tmp", f"Forge job {job_id}",
         )
+        try:
+            if cover_error:
+                result = ForgeResult(success=False, output_path=None,
+                                     output_size=None, error=cover_error)
+            else:
+                result = await _forge_run(
+                    job_data, input_path, temp_path, covers,
+                    on_progress, on_before_staging, timeout_seconds,
+                )
+        finally:
+            discard_cover_art(covers)
     except asyncio.CancelledError:
         # Stopped before the file was replaced: run_staged_subprocess swaps
         # and returns with no await in between. A revert point captured

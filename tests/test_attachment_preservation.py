@@ -666,7 +666,8 @@ def test_the_command_attaches_only_the_covers_it_is_given(settings):
     plain = build_ffmpeg_command("/media/m.mkv", "/tmp/o", decision, tracks)
     assert "-attach" not in plain
 
-    cover = CoverArt(path="/tmp/c", filename="cover.jpg", mimetype="image/jpeg", ordinal=2)
+    cover = CoverArt(path="/tmp/c", filename="cover.jpg", mimetype="image/jpeg",
+                     ordinal=2, stream_index=5)
     cmd = build_ffmpeg_command("/media/m.mkv", "/tmp/o", decision, tracks, covers=[cover])
     i = cmd.index("-attach")
     assert cmd.index("0:t?") < i < len(cmd) - 1
@@ -755,3 +756,374 @@ def test_a_probe_failure_runs_the_job_as_before(tmp_path, settings, monkeypatch)
 
     assert result.success is True, result.error
     assert _cover_temps(source, 9110) == []
+
+
+# ── Matroska cover art through AC3 Forge ─────────────────────────────────────
+#
+# Both forge commands copy every stream with "-map 0", which takes the
+# attached_pic stream FFmpeg reports for a Matroska cover and writes it as a
+# real still-image video track. They now leave each cover out of the map and
+# attach it again, from the covers load_forge_job_data finds in the probe it
+# already makes. An MP4's cover survives "-map 0" as cover art, so MP4 is
+# left alone.
+#
+# The add also maps attachments after the AC3 it encodes. Copied ahead of
+# it, an attachment made the Matroska muxer stop with "Received a packet for
+# an attachment stream" (FFmpeg 8.1 and 6.1), so every add on an MKV with
+# fonts failed. The undo only copies and was never affected.
+#
+# Verified by mutation against the whole suite, 15 applied, 15 killed:
+#
+#   • covers left in the add's "-map 0" / the undo's
+#   • covers not attached again by the add / the undo
+#   • attachments not held back from the add's "-map 0"
+#   • attachments mapped back before the AC3 / never mapped back
+#   • the worker not giving covers to the add builder / the undo builder
+#   • the worker not removing the copies
+#   • the worker running the command after a failed copy
+#   • the finder taking an MP4's cover, which has no filename or mimetype
+#   • covers unmapped by attachment number rather than stream index
+#   • the loader recording no covers
+#   • copying out not cleaning up when cancelled
+#
+# The main pipeline's nine above were rerun after the helper was split and
+# all killed again.
+
+def _forge_source(tmp_path, covers, fonts=1, container="mkv"):
+    """Video and an eng AAC 5.1, then fonts and covers as Matroska keeps them."""
+    video = tmp_path / "v.mkv"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "testsrc=size=160x120:rate=10:duration=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)],
+        check=True,
+    )
+    audio = tmp_path / "a51.m4a"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:duration=2", "-ac", "6", "-c:a", "aac", str(audio)],
+        check=True,
+    )
+    source = tmp_path / f"source.{container}"
+    if container == "mp4":
+        image = covers[0][2]
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+             "-i", str(image), "-map", "0:v", "-map", "1:a", "-map", "2:v",
+             "-c", "copy", "-disposition:v:1", "attached_pic",
+             "-metadata:s:a:0", "language=eng", str(source)],
+            check=True,
+        )
+        return source
+    attach = []
+    entries = [(f"Font{n}.ttf", "application/x-truetype-font", None)
+               for n in range(fonts)] + list(covers)
+    for i, (filename, mimetype, image) in enumerate(entries):
+        if image is None:
+            image = tmp_path / filename
+            image.write_bytes(bytes([i]) * 1024)
+        attach += ["-attach", str(image),
+                   f"-metadata:s:t:{i}", f"mimetype={mimetype}",
+                   f"-metadata:s:t:{i}", f"filename={filename}"]
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+         "-map", "0:v", "-map", "1:a", "-metadata:s:a:0", "language=eng",
+         "-c", "copy", *attach, "-f", "matroska", str(source)],
+        check=True,
+    )
+    return source
+
+
+def _forge_job_data(source, is_undo=False, job_id=1):
+    from app.core.ffmpeg import find_matroska_covers
+    from app.core.probe import probe_file
+    container = source.suffix.lstrip(".")
+    return {
+        "job_id": job_id, "file_id": 1, "is_undo": is_undo,
+        "file_path": str(source), "filename": source.name, "container": container,
+        "aac_stream_index": 1, "audio_track_count": 1,
+        "undo_audio_output_index": 1 if is_undo else None,
+        "titles": {}, "original_size": os.path.getsize(source),
+        "job_timeout_minutes": 5, "add_faststart": False,
+        "app_cfg": {"revert_enabled": False},
+        "cover_art": find_matroska_covers(probe_file(str(source))),
+    }
+
+
+def _run_forge(monkeypatch, job_data):
+    """_run_forge_job on a real file; returns finish_forge_job's arguments."""
+    import app.core.forge as forge
+    import app.core.worker as worker
+
+    finished = {}
+
+    def finish(job_id, success, size, error, **kwargs):
+        finished.update(success=success, error=error)
+
+    with monkeypatch.context() as m:
+        m.setattr(forge, "load_forge_job_data", lambda _id: dict(job_data))
+        m.setattr(forge, "finish_forge_job", finish)
+        m.setattr(forge, "load_forge_final_state", lambda _id: None)
+
+        class _WS:
+            async def broadcast_json(self, *_a, **_k):
+                pass
+
+        async def go():
+            await worker._run_forge_job(job_data["job_id"], _WS(),
+                                        asyncio.get_running_loop())
+        asyncio.run(go())
+    return finished
+
+
+def _forge_temps(source, job_id):
+    from app.core.ffmpeg import _pick_temp_dir
+    folder = _pick_temp_dir(str(source))
+    return [n for n in os.listdir(folder)
+            if n.startswith(f"forge_{job_id}_cover_")] if os.path.isdir(folder) else []
+
+
+def _audio_codecs(path):
+    return [s["codec_name"] for s in _streams(path) if s["codec_type"] == "audio"]
+
+
+def _real_video(path):
+    return [s for s in _streams(path) if s["codec_type"] == "video"
+            and not (s.get("disposition") or {}).get("attached_pic")]
+
+
+@ffmpeg_required
+def test_a_forge_add_on_an_mkv_keeps_its_cover_art(tmp_path, monkeypatch):
+    """
+    The reproduction: the cover stays cover art, not a second video track.
+    No fonts, so this is the cover alone; fonts are the test after next's.
+    """
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)], fonts=0)
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9201))
+
+    assert done["success"] is True, done["error"]
+    assert _audio_codecs(source) == ["aac", "ac3"]
+    assert len(_real_video(source)) == 1, "the cover came back as a video track"
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    assert _forge_temps(source, 9201) == []
+
+
+@ffmpeg_required
+def test_a_forge_undo_keeps_cover_art(tmp_path, monkeypatch):
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)], fonts=0)
+    assert _run_forge(monkeypatch, _forge_job_data(source, job_id=9202))["success"]
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, is_undo=True, job_id=9203))
+
+    assert done["success"] is True, done["error"]
+    assert _audio_codecs(source) == ["aac"]
+    assert len(_real_video(source)) == 1, "the cover came back as a video track"
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    assert _forge_temps(source, 9203) == []
+
+
+@ffmpeg_required
+def test_a_forge_add_keeps_each_cover_beside_fonts(tmp_path, monkeypatch):
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    png = _image(tmp_path, "cover_land.png", "blue")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg),
+                                      ("cover_land.png", "image/png", png)], fonts=2)
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9204))
+
+    assert done["success"] is True, done["error"]
+    assert len(_real_video(source)) == 1
+    _assert_cover_kept(source, jpeg, "cover.jpg", "image/jpeg", tmp_path)
+    _assert_cover_kept(source, png, "cover_land.png", "image/png", tmp_path)
+    assert sorted(_tag(s, "filename") for s in _streams(source)
+                  if s["codec_type"] == "attachment") == ["Font0.ttf", "Font1.ttf"]
+
+
+@ffmpeg_required
+def test_a_forge_add_on_an_mp4_is_unchanged(tmp_path, monkeypatch):
+    """
+    An MP4's cover survives "-map 0" as cover art already and carries no
+    filename, so nothing is copied out and the cover is still there.
+    """
+    from app.core import ffmpeg as ffmpeg_module
+
+    def no_extraction(*a, **k):
+        raise AssertionError("a cover was copied out of an MP4")
+    monkeypatch.setattr(ffmpeg_module, "_cover_extraction_command", no_extraction)
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)], container="mp4")
+    assert len(_cover_streams(source)) == 1
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9205))
+
+    assert done["success"] is True, done["error"]
+    assert _audio_codecs(source) == ["aac", "ac3"]
+    covers = _cover_streams(source)
+    assert len(covers) == 1
+    assert _bytes_of(source, covers[0]["index"], tmp_path) == jpeg.read_bytes()
+
+
+@ffmpeg_required
+def test_a_forge_cover_that_cannot_be_copied_out_fails_first(tmp_path, monkeypatch):
+    import app.core.forge as forge
+    from app.core import ffmpeg as ffmpeg_module
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    original = source.read_bytes()
+    monkeypatch.setattr(ffmpeg_module, "_cover_extraction_command",
+                        lambda src, index, dest: ["ffmpeg", "-v", "error", "-i",
+                                                  str(tmp_path / "missing.mkv"), dest])
+
+    async def never(*a, **k):
+        raise AssertionError("the forge FFmpeg run started anyway")
+    monkeypatch.setattr(forge, "run_forge_command", never)
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9206))
+
+    assert done["success"] is False
+    assert "cover.jpg" in done["error"]
+    assert source.read_bytes() == original
+    assert _forge_temps(source, 9206) == []
+
+
+@ffmpeg_required
+def test_forge_cover_temps_go_when_the_run_fails(tmp_path, monkeypatch):
+    """The copies are inputs the staged runner does not know; they go anyway."""
+    import app.core.forge as forge
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)])
+    seen = []
+
+    async def failing(**kwargs):
+        seen.append(_forge_temps(source, 9207))
+        return forge.ForgeResult(success=False, output_path=None,
+                                 output_size=None, error="failed for the test")
+    monkeypatch.setattr(forge, "run_forge_command", failing)
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9207))
+
+    assert done["success"] is False
+    assert seen and seen[0], "the cover was not copied out before the run"
+    assert _forge_temps(source, 9207) == []
+
+
+def test_the_forge_commands_leave_covers_out_of_the_copy():
+    """
+    argv: each cover unmapped from "-map 0" and attached again. The add also
+    holds attachments back until after the AC3; the undo, a copy, need not.
+    """
+    from app.core.ffmpeg import CoverArt
+    from app.core.forge import build_add_ac3_command, build_undo_command
+
+    cover = CoverArt(path="/t/c", filename="cover.jpg", mimetype="image/jpeg",
+                     ordinal=1, stream_index=4)
+    attach = ["-attach", "/t/c", "-metadata:s:t:1", "mimetype=image/jpeg",
+              "-metadata:s:t:1", "filename=cover.jpg"]
+
+    add = build_add_ac3_command("/m/in.mkv", "/m/t.tmp", 1, 1, container="mkv",
+                                covers=[cover])
+    i = add.index("0")
+    assert add[i - 1:i + 5] == ["-map", "0", "-map", "-0:t", "-map", "-0:4"]
+    ac3 = add.index("ac3")
+    t = add.index("0:t?")
+    assert ac3 < t and add[t - 1] == "-map"
+    assert add[t + 1:t + 7] == attach
+    assert t < add.index("-f") and add[-1] == "/m/t.tmp"
+
+    undo = build_undo_command("/m/in.mkv", "/m/t.tmp", 1, container="mkv",
+                              covers=[cover])
+    i = undo.index("0")
+    assert undo[i - 1:i + 5] == ["-map", "0", "-map", "-0:a:1", "-map", "-0:4"]
+    j = undo.index("-attach")
+    assert undo[j:j + 6] == attach and j < undo.index("-f")
+
+    for plain in (build_add_ac3_command("/m/in.mkv", "/m/t.tmp", 1, 1, container="mkv"),
+                  build_undo_command("/m/in.mkv", "/m/t.tmp", 1, container="mkv")):
+        assert "-attach" not in plain and "-0:4" not in plain
+
+
+@ffmpeg_required
+def test_a_forge_add_on_an_mkv_with_fonts_succeeds(tmp_path, monkeypatch):
+    """
+    The second reproduction, no cover involved: an attachment copied ahead of
+    the encoded AC3 made the Matroska muxer stop with "Received a packet for
+    an attachment stream", so every add on an MKV with fonts failed.
+    """
+    source = _forge_source(tmp_path, [], fonts=2)
+
+    done = _run_forge(monkeypatch, _forge_job_data(source, job_id=9208))
+
+    assert done["success"] is True, done["error"]
+    assert _audio_codecs(source) == ["aac", "ac3"]
+    assert sorted(_tag(s, "filename") for s in _streams(source)
+                  if s["codec_type"] == "attachment") == ["Font0.ttf", "Font1.ttf"]
+
+
+@ffmpeg_required
+def test_a_forge_job_loads_the_cover_art_of_the_file(tmp_path, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    import app.core.forge as forge
+    from app.core.ffmpeg import CoverStream
+    from app.database.models import Ac3ForgeJob, Base, MediaFile
+    from tests.conftest import memory_engine
+
+    jpeg = _image(tmp_path, "cover.jpg", "red")
+    source = _forge_source(tmp_path, [("cover.jpg", "image/jpeg", jpeg)], fonts=2)
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(forge, "SessionLocal", factory)
+    with factory() as db:
+        media = MediaFile(path=str(source), filename=source.name,
+                          directory=str(tmp_path), container="mkv",
+                          size=os.path.getsize(source), mtime=0.0)
+        db.add(media)
+        db.flush()
+        job = Ac3ForgeJob(file_id=media.id, status="processing", is_undo=False,
+                          aac_stream_index=1, audio_track_count=1)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    data = forge.load_forge_job_data(job_id)
+
+    assert data is not None
+    covers, attachments = data["cover_art"]
+    assert attachments == 2
+    assert covers == [CoverStream(index=4, filename="cover.jpg", mimetype="image/jpeg")]
+
+
+def test_copying_covers_out_leaves_nothing_when_cancelled(tmp_path, monkeypatch):
+    """
+    Cancelled between two covers, the first copy is removed before the
+    cancellation goes on: no caller has the list yet to clean up after.
+    """
+    from app.core import ffmpeg as ffmpeg_module
+    from app.core.ffmpeg import CoverStream, copy_out_cover_art
+
+    calls = []
+
+    async def copy(input_path, stream_index, dest):
+        calls.append(dest)
+        if len(calls) == 2:
+            raise asyncio.CancelledError()
+        with open(dest, "wb") as f:
+            f.write(b"jpeg")
+        return None
+    monkeypatch.setattr(ffmpeg_module, "_copy_cover_out", copy)
+
+    found = [CoverStream(index=3, filename="a.jpg", mimetype="image/jpeg"),
+             CoverStream(index=4, filename="b.png", mimetype="image/png")]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(copy_out_cover_art("/m/in.mkv", found, 0, str(tmp_path),
+                                       "job_1", ".remuxarr_tmp", "Job 1"))
+
+    assert len(calls) == 2
+    assert os.listdir(tmp_path) == []

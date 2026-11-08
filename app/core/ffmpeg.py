@@ -37,16 +37,26 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class CoverStream:
+    """A Matroska cover image as ffprobe reports it; see find_matroska_covers."""
+    index: int
+    filename: str
+    mimetype: str
+
+
+@dataclass(frozen=True)
 class CoverArt:
     """
     A Matroska cover image copied out of the source to be attached again.
     See _prepare_cover_art for why. ordinal is its place among the output's
-    attachments, which is what -metadata:s:t:N addresses.
+    attachments, which is what -metadata:s:t:N addresses; stream_index is
+    the source stream it came from, which AC3 Forge leaves out of its copy.
     """
     path: str
     filename: str
     mimetype: str
     ordinal: int
+    stream_index: int
 
 
 @dataclass
@@ -316,13 +326,7 @@ def build_ffmpeg_command(
     if out_fmt in ("matroska", "webm"):
         cmd += ["-map", "0:t?"]
 
-    # Attached after every mapped stream, so FFmpeg numbers them after the
-    # attachments "0:t?" brought across. Matroska needs a mimetype on every
-    # attachment, and the copied-out file's name tells FFmpeg nothing.
-    for cover in covers:
-        cmd += ["-attach", cover.path,
-                f"-metadata:s:t:{cover.ordinal}", f"mimetype={cover.mimetype}",
-                f"-metadata:s:t:{cover.ordinal}", f"filename={cover.filename}"]
+    cmd += cover_attach_args(covers)
 
     # Apply +faststart when the output is MP4 AND the add_faststart_to_mp4
     # setting is on. The setting is an absolute off switch: with it disabled
@@ -881,7 +885,7 @@ async def execute_ffmpeg(
             on_swap_ready=on_swap_ready,
         )
     finally:
-        _discard_cover_art(covers)
+        discard_cover_art(covers)
 
     if not result.success:
         # Original only logged the genuine-FFmpeg-failure case (non-zero
@@ -1238,7 +1242,7 @@ async def execute_ffmpeg_combined(
             on_swap_ready=on_swap_ready,
         )
     finally:
-        _discard_cover_art(covers)
+        discard_cover_art(covers)
 
     if not result.success:
         # Log only for genuine FFmpeg failures (rc != 0), not for the
@@ -1294,9 +1298,88 @@ def _cover_extraction_command(input_path: str, stream_index: int, dest: str) -> 
             "-f", "rawvideo", dest]
 
 
-def _discard_cover_art(covers: Sequence[CoverArt]) -> None:
+def discard_cover_art(covers: Sequence[CoverArt]) -> None:
     for cover in covers:
         cleanup_temp_file(cover.path)
+
+
+def cover_attach_args(covers: Sequence[CoverArt]) -> list[str]:
+    """
+    -attach arguments putting each copied-out cover back. Attached after
+    every mapped stream, so FFmpeg numbers them after the attachments the
+    command maps, which is what CoverArt.ordinal counts on. Matroska needs a
+    mimetype on every attachment, and the copied-out file's name tells
+    FFmpeg nothing.
+    """
+    args: list[str] = []
+    for cover in covers:
+        args += ["-attach", cover.path,
+                 f"-metadata:s:t:{cover.ordinal}", f"mimetype={cover.mimetype}",
+                 f"-metadata:s:t:{cover.ordinal}", f"filename={cover.filename}"]
+    return args
+
+
+def find_matroska_covers(probe: dict) -> tuple[list[CoverStream], int]:
+    """
+    The cover images in a probe result, and how many attachment streams the
+    file has. A cover is how FFmpeg's Matroska demuxer reports an image
+    attachment: a video stream with the attached_pic disposition and its
+    filename and mimetype as tags. An MP4's cover carries no filename, so it
+    is not one; "-map 0" keeps that as cover art already.
+    """
+    streams = probe.get("streams") or []
+    attachments = sum(1 for s in streams if s.get("codec_type") == "attachment")
+    found = []
+    for s in streams:
+        tags = s.get("tags") or {}
+        if (s.get("codec_type") == "video"
+                and (s.get("disposition") or {}).get("attached_pic")
+                and tags.get("filename") and tags.get("mimetype")):
+            found.append(CoverStream(index=s["index"], filename=tags["filename"],
+                                     mimetype=tags["mimetype"]))
+    return found, attachments
+
+
+async def copy_out_cover_art(
+    input_path: str,
+    found: Sequence[CoverStream],
+    attachments: int,
+    tmp_dir: str,
+    temp_stem: str,
+    temp_suffix: str,
+    label: str,
+) -> tuple[list[CoverArt], str | None]:
+    """
+    Copy each cover in `found` to {temp_stem}_cover_{index}{temp_suffix} in
+    tmp_dir. Returns the covers and an error, at most one of them non-empty.
+
+    A cover that cannot be copied out is an error, returned before the
+    caller's FFmpeg run starts, so the job fails with the file untouched
+    rather than losing the cover. Nothing copied is left behind on an error
+    or a cancellation; after a success the caller removes the copies with
+    discard_cover_art once its run is over.
+    """
+    covers: list[CoverArt] = []
+    try:
+        for n, cover in enumerate(found):
+            dest = os.path.join(tmp_dir, f"{temp_stem}_cover_{cover.index}{temp_suffix}")
+            error = await _copy_cover_out(input_path, cover.index, dest)
+            if error:
+                cleanup_temp_file(dest)
+                discard_cover_art(covers)
+                name = os.path.basename(input_path)
+                logger.error("%s: could not copy cover art %s out of %s: %s",
+                             label, cover.filename, name, error)
+                return [], (f"Could not copy the cover art {cover.filename} out of "
+                            f"{name} to keep it, so nothing was done to the file: "
+                            f"{error}")
+            covers.append(CoverArt(path=dest, filename=cover.filename,
+                                   mimetype=cover.mimetype, ordinal=attachments + n,
+                                   stream_index=cover.index))
+    except BaseException:
+        discard_cover_art(covers)
+        raise
+    return covers, None
 
 
 async def _prepare_cover_art(
@@ -1321,9 +1404,7 @@ async def _prepare_cover_art(
     A probe failure returns no covers and no error, so the job runs as it
     did before this existed: the worker already decides from stored tracks
     when a probe fails rather than fail the job over it. A cover that is
-    there but cannot be copied out is an error, returned before the main
-    run starts, so the job fails with the source untouched rather than
-    dropping the cover.
+    there but cannot be copied out is an error; see copy_out_cover_art.
     """
     if _CONTAINER_FORMAT.get(decision.target_container) != "matroska":
         return [], None
@@ -1336,31 +1417,9 @@ async def _prepare_cover_art(
                        "running without it", job_id, input_path, exc)
         return [], None
 
-    streams = probe.get("streams") or []
-    attachments = sum(1 for s in streams if s.get("codec_type") == "attachment")
-    found = []
-    for s in streams:
-        tags = s.get("tags") or {}
-        if (s.get("codec_type") == "video"
-                and (s.get("disposition") or {}).get("attached_pic")
-                and tags.get("filename") and tags.get("mimetype")):
-            found.append((s["index"], tags["filename"], tags["mimetype"]))
-
-    covers: list[CoverArt] = []
-    for n, (index, filename, mimetype) in enumerate(found):
-        dest = os.path.join(tmp_dir, f"job_{job_id}_cover_{index}.remuxarr_tmp")
-        error = await _copy_cover_out(input_path, index, dest)
-        if error:
-            _discard_cover_art(covers)
-            cleanup_temp_file(dest)
-            name = os.path.basename(input_path)
-            logger.error("Job %d: could not copy cover art %s out of %s: %s",
-                         job_id, filename, name, error)
-            return [], (f"Could not copy the cover art {filename} out of {name} "
-                        f"to keep it, so nothing was done to the file: {error}")
-        covers.append(CoverArt(path=dest, filename=filename, mimetype=mimetype,
-                               ordinal=attachments + n))
-    return covers, None
+    found, attachments = find_matroska_covers(probe)
+    return await copy_out_cover_art(input_path, found, attachments, tmp_dir,
+                                    f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

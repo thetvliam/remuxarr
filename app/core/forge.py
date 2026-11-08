@@ -30,13 +30,14 @@ FFmpeg strategy
 """
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
+from app.core.ffmpeg import CoverArt, cover_attach_args, find_matroska_covers
 from app.core.probe import ProbeError, extract_tracks, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
@@ -124,17 +125,26 @@ def _title_args(fmt: str, titles: dict[int, str] | None) -> list[str]:
     return args
 
 
+def _cover_unmaps(covers: Sequence[CoverArt]) -> list[str]:
+    """Negative maps leaving each Matroska cover out of a "-map 0" copy."""
+    args: list[str] = []
+    for cover in covers:
+        args += ["-map", f"-0:{cover.stream_index}"]
+    return args
+
+
 def titles_after_forge(tracks: list[dict],
                        removed_audio_index: int | None = None) -> dict[int, str]:
     """
     Where each titled track will be in a forge command's output, with its
     title.
 
-    Both commands map every input stream in order, so a stream keeps its
-    index; an undo removes one audio stream, and every stream after it
-    moves down one. `removed_audio_index` is that stream's position among
-    the audio tracks (the -0:a:N of build_undo_command). The AC3 an add
-    appends goes last and has no title.
+    Titles are written only for an MP4 (_title_args), which has no
+    attachments or Matroska covers, so both commands map its streams in
+    order and a stream keeps its index; an undo removes one audio stream,
+    and every stream after it moves down one. `removed_audio_index` is that
+    stream's position among the audio tracks (the -0:a:N of
+    build_undo_command). The AC3 an add appends goes last and has no title.
     """
     removed: int | None = None
     if removed_audio_index is not None:
@@ -158,6 +168,7 @@ def build_add_ac3_command(
     container:         str = "mkv",
     add_faststart:     bool = True,
     titles:            dict[int, str] | None = None,
+    covers:            Sequence[CoverArt] = (),
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -165,6 +176,16 @@ def build_add_ac3_command(
 
     The new AC3 always ends up at output audio index audio_track_count
     (0-based), making the undo index deterministic.
+
+    Attachments are mapped after the AC3, not with the rest of "-map 0":
+    an attachment copied ahead of an encoded stream makes the Matroska
+    muxer stop with "Received a packet for an attachment stream" (FFmpeg
+    8.1 and 6.1 alike), so every add on an MKV with fonts used to fail.
+    The main pipeline maps them last too (build_ffmpeg_command).
+
+    covers are the file's Matroska cover images, copied out by the worker
+    (copy_out_cover_art). "-map 0" would take each as a real still-image
+    video track, so each is left out of the map and attached again.
     """
     # Hard-fail on unknown containers rather than silently defaulting to
     # matroska — same file-corruption pattern just fixed in
@@ -188,7 +209,10 @@ def build_add_ac3_command(
         "-i", input_path,
         "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
         # ── Keep every existing stream unchanged ───────────────────────────
+        # Attachments and covers come back after the AC3; see the docstring.
         "-map", "0",
+        "-map", "-0:t",
+        *_cover_unmaps(covers),
         "-c", "copy",
         # ── Map the AAC 5.1 a second time and transcode it to AC3 ─────────
         "-map", f"0:{aac_stream_index}",
@@ -199,6 +223,8 @@ def build_add_ac3_command(
         # replaces any handler name the copy inherits from the AAC. See
         # FORGE_AC3_HANDLER_NAME.
         f"-metadata:s:a:{ac3_idx}", f"handler_name={FORGE_AC3_HANDLER_NAME}",
+        "-map", "0:t?",
+        *cover_attach_args(covers),
         *_title_args(fmt, titles),
         # ── Output ────────────────────────────────────────────────────────
         "-f", fmt,
@@ -230,11 +256,14 @@ def build_undo_command(
     container:             str = "mkv",
     add_faststart:         bool = True,
     titles:                dict[int, str] | None = None,
+    covers:                Sequence[CoverArt] = (),
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
-    stream N from the selection.
+    stream N from the selection. covers are left out and attached again,
+    as for build_add_ac3_command; a copy alone does not trip the muxer over
+    attachments, so they stay where "-map 0" puts them.
 
     ac3_audio_output_index comes from resolve_forge_ac3_for_undo's fresh
     probe of the file, NOT from Ac3ForgeJob.audio_track_count — the
@@ -257,7 +286,9 @@ def build_undo_command(
         "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
         "-map", "0",
         "-map", f"-0:a:{ac3_audio_output_index}",   # strip the AC3 we added
+        *_cover_unmaps(covers),
         "-c", "copy",
+        *cover_attach_args(covers),
         *_title_args(fmt, titles),
         "-f", fmt,
     ]
@@ -972,6 +1003,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
             # Each track's title by its index in the output, which the
             # commands write back for an MP4 (_title_args).
             "titles":             titles_after_forge(fresh_tracks, undo_audio_output_index),
+            # The Matroska covers and the attachment count, from the same
+            # probe, for the worker to copy out (copy_out_cover_art).
+            "cover_art":          find_matroska_covers(probe_data),
             "original_size":      job.original_size,
             "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
             # Read here for the same reason as job_timeout_minutes above:
