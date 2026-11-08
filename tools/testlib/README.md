@@ -11,8 +11,8 @@ Two tools for finding behaviour nobody planned, outside the test suite:
   output name that is already taken. The comment above each `fNN` function
   says what that file is built to exercise.
 - `explore.py` runs a library through Remuxarr's real scan, queue and worker
-  under many settings profiles and reports anything that breaks a rule that
-  should hold whatever the settings are.
+  under many settings profiles, reverts every file it can, and reports
+  anything that breaks a rule that should hold whatever the settings are.
 
 `tests/sample_library` is a different thing: an ffprobe snapshot of real
 files that the suite checks decisions against on every run. Nothing here
@@ -36,7 +36,8 @@ copy rather than only those with findings. Results go to
 otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
-16 seconds and all 18 profiles ran in about 80 seconds at `-j 2`. It has
+16 seconds and all 18 profiles, reverts included, ran in about two minutes
+at `-j 2`. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -70,7 +71,7 @@ Each profile is checked against the app's settings schema before it runs,
 so a setting or value the app no longer has stops the run instead of being
 stored and ignored.
 
-Not covered yet: answering reviews, revert and AC3 Forge; Original Language
+Not covered yet: answering reviews and AC3 Forge; Original Language
 Audio, which needs an original language from Sonarr or Radarr; more than one
 job at a time; and the Plex, Sonarr, Radarr and email paths.
 
@@ -92,6 +93,29 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
 8. No temp file is left behind, and the source is gone only when the
    container changed.
 
+Then, in each profile with revert on (12 of the 18; pairwise, so every value
+of every other setting meets revert on at least once), every revert point is
+restored through the app's own `restore_revert_point`, and:
+
+9. A file has a revert point exactly when its job lost a track a point can
+   hold, which is anything but an attachment. With revert off, no file has
+   one.
+10. Every restore succeeds, onto the original name and extension, and a
+    converted output goes away.
+11. The restored file matches the original stream for stream (type, codec,
+    language and title tags, disposition flags, attachment filename and
+    mimetype, order), and an MP4's fast-start layout matches too.
+12. The restored file probes and decodes cleanly.
+13. The job's other files are back as they were: extracted subtitle files
+    gone, everything else byte for byte, and nothing else touched.
+14. A full rescan plans the restored file exactly as it planned the original.
+15. The point is spent: no row left, its sidecar gone from the recycle
+    folder, and no temp file left behind.
+
+A file the rescan in check 7 queued again is not reverted, since the revert
+route refuses a queued file; `summary.json` marks it `revert_skipped`. Each
+profile's `run.log` holds the app's own log.
+
 Findings are grouped across profiles, so one cause reads as one line with
 the profiles it appeared in. `summary.json` holds every profile's settings,
 scan counts, findings and per-file outcome.
@@ -102,8 +126,11 @@ and turn a real bug into a normal test in `tests/`.
 ## Accepted losses
 
 Some outcomes are decisions the project has already made: attachments and
-cover art do not go into MP4, and a conversion onto a name another file
-already holds is refused. These are listed under "Accepted losses" with
+cover art do not go into MP4, a conversion onto a name another file already
+holds is refused, a revert gives Matroska cover art back as a video track,
+an existing subtitle file a job replaced or moved stays that way after a
+revert, and a job goes ahead without a revert point when capture reports one
+unavailable and Require Revert Point is off. These are listed under "Accepted losses" with
 where each decision is recorded, and do not count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down
 somewhere a reader can check.

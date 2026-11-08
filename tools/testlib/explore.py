@@ -27,6 +27,22 @@ Each profile is checked against invariants instead:
   8. No temp file is left behind, and the source is gone only when the
      container changed.
 
+Then, with revert on, every revert point is restored through the app's own
+restore_revert_point (a file check 7 found queued again is skipped, as the
+revert route refuses one), and:
+
+  9. A file has a revert point exactly when its job lost a track a point
+     can hold: anything but an attachment. With revert off, none has one.
+ 10. Every restore succeeds, onto the original name and extension, and a
+     converted output goes away.
+ 11. The restored file matches the original stream for stream, and an
+     MP4's fast-start layout matches too.
+ 12. The restored file probes and decodes cleanly.
+ 13. The job's other files are back as they were, and nothing else moved.
+ 14. A full rescan plans the restored file exactly as it planned the
+     original.
+ 15. The point is spent: no row, no sidecar, no temp file left.
+
 A broken rule is a lead, not a verdict. Reproduce it with the real code
 before calling it a bug, and turn a real one into a normal test in tests/.
 
@@ -72,8 +88,8 @@ DEFAULT_APP = HERE.parent.parent
 # on, and nothing would be processed with it. scan_paths is filled in per run.
 FORCED = {"dry_run_mode": False, "auto_start_jobs": True}
 
-# The settings the profiles vary: every one the decision engine or the job
-# path reads that can be set without Sonarr, Radarr or Plex. Left out:
+# The settings the profiles vary: every one the decision engine, the job path
+# or revert reads that can be set without Sonarr, Radarr or Plex. Left out:
 # original_language_audio, which needs an original language from Sonarr or
 # Radarr, and max_concurrent_jobs, since jobs here run one at a time.
 # Each list starts with the app's default.
@@ -256,18 +272,24 @@ def run_child(spec_path: str) -> None:
 
     class Collect(logging.Handler):
         def __init__(self):
-            super().__init__(logging.ERROR)
+            super().__init__(logging.WARNING)
             self.records = []
 
         def emit(self, record):
             self.records.append({
                 "logger": record.name,
+                "level": record.levelname,
                 "message": record.getMessage()[:500],
                 "exception": bool(record.exc_info),
             })
 
     collect = Collect()
     logging.getLogger().addHandler(collect)
+    # The app's own log, to run.log, for reading a finding back.
+    to_log = logging.StreamHandler(sys.stderr)
+    to_log.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(to_log)
+    logging.getLogger().setLevel(logging.INFO)
 
     from app.config import settings as app_paths
     for name, want in (("DATABASE_PATH", scratch / "remuxarr.db"),
@@ -287,6 +309,10 @@ def run_child(spec_path: str) -> None:
 
     before = inventory(lib)
     probes_before = {rel: probe(str(lib / rel)) for rel in before}
+    # For check 11: whether each MP4 starts with its moov, before any job.
+    from app.core.probe import is_faststart_mp4
+    faststart_before = {r: is_faststart_mp4(str(lib / r)) for r, info in probes_before.items()
+                        if info is not None and is_mp4(info)}
 
     S.init_db()
     timings = {}
@@ -368,9 +394,11 @@ def run_child(spec_path: str) -> None:
                         .order_by(PlannedAction.order).all()
             entry["output"] = rel(media.path)
             entry["actions"] = [f"{a.action_type}:{a.stream_index}" for a in actions]
+            entry["source"] = source
+            entry["plan"] = _plan_of(actions)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
-                             cfg, canonical, allowed_changes)
+                             cfg, canonical, allowed_changes, entry)
 
     # 6. Nothing else changed.
     for path in sorted(set(before) | set(after)):
@@ -404,17 +432,258 @@ def run_child(spec_path: str) -> None:
                 media = db.get(MediaFile, q.file_id)
                 find(7, media.path, f"queued again by a rescan: {q.reason or ''}")
 
+    reverts = _revert_round_trips(
+        find, known, lib, scratch, cfg, files, before, probes_before,
+        faststart_before, rel, collect,
+    )
+
     result = {
         "profile": spec["name"], "settings": spec["settings"],
+        "reverts": reverts,
         "scan": {k: getattr(scan, k) for k in ("total", "queued", "manual_review",
                                                 "skipped", "errors", "excluded")},
         "rescan_queued": rescan.queued, "jobs_run": ran, "timings": timings,
         "findings": findings, "known_losses": known,
         "temp_left": {k: v for k, v in temp_left.items() if v},
-        "files": [{k: v for k, v in e.items() if k != "id"} for e in files],
-        "logged_errors": [r for r in collect.records if not r["exception"]],
+        "files": [{k: v for k, v in e.items() if k not in ("id", "source", "plan", "touched")}
+                  for e in files],
+        "logged_errors": [r for r in collect.records
+                          if r["level"] in ("ERROR", "CRITICAL") and not r["exception"]],
     }
     Path(spec["result"]).write_text(json.dumps(result, indent=1))
+
+
+def _plan_of(actions) -> list[list]:
+    """A job's planned actions, as check 14 compares them."""
+    return [[a.action_type, a.track_type, a.stream_index, a.target_language]
+            for a in actions]
+
+
+def _signature(stream: dict) -> tuple:
+    """What a revert promises to put back about one stream (check 11)."""
+    tags = {k.lower(): v for k, v in (stream.get("tags") or {}).items()}
+    flags = sorted(k for k, v in (stream.get("disposition") or {}).items() if v == 1)
+    return (stream.get("codec_type"), stream.get("codec_name"), tags.get("language"),
+            tags.get("title"), tags.get("filename"), tags.get("mimetype"), tuple(flags))
+
+
+def _is_matroska_cover(sig: tuple) -> bool:
+    return sig[0] == "video" and sig[4] is not None and "attached_pic" in sig[6]
+
+
+def _without_attached_pic(sig: tuple) -> tuple:
+    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),)
+
+
+def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
+                        probes_before, faststart_before, rel, collect) -> int:
+    """
+    Phase 2: restore every revert point through the app's own
+    restore_revert_point, then check the round trip (checks 9 to 15).
+    Returns how many points were restored.
+    """
+    import asyncio
+
+    from app.api.routes.revert import _ACTIVE_QUEUE_STATES
+    from app.core import scanner
+    from app.core.probe import is_faststart_mp4
+    from app.core.revert_restore import restore_revert_point
+    from app.database import session as S
+    from app.database.models import PlannedAction, QueueItem, RevertPoint
+
+    enabled = bool(cfg.get("revert_enabled"))
+    by_id = {e["id"]: e for e in files}
+    with S.SessionLocal() as db:
+        points = [(p.id, p.file_id, p.sidecar_path)
+                  for p in db.query(RevertPoint).order_by(RevertPoint.id)]
+    with_point = {file_id for _, file_id, _ in points}
+
+    # 9. A point exactly when one should be.
+    for e in files:
+        processed = bool(e["jobs"]) and e["jobs"][-1] == "success"
+        has = e["id"] in with_point
+        if not enabled:
+            if has:
+                find(9, e["file"], "a revert point was recorded with revert off")
+        elif processed and "lost_tracks" in e and e["lost_tracks"] != has:
+            why = _point_unavailable(collect, e["source"]) if e["lost_tracks"] else None
+            if why:
+                known.append({"file": e["file"], "lost": "no revert point",
+                              "why": f"capture reported it unavailable ({why}); "
+                                     "app/core/revert_capture.py, Two kinds of "
+                                     "\"no revert point\""})
+            else:
+                find(9, e["file"], "a track was lost but no revert point was recorded"
+                     if e["lost_tracks"] else
+                     "a revert point was recorded though no track was lost")
+        elif has and not processed:
+            find(9, e["file"], f"a revert point for a file whose job ended {e['jobs'][-1:]}")
+    if not points:
+        return 0
+
+    pre_revert = inventory(lib)
+    first_record = len(collect.records)
+    reverted = []
+    for point_id, file_id, sidecar in points:
+        e = by_id.get(file_id)
+        if e is None or "source" not in e:
+            continue
+        source = e["source"]
+        # The revert route refuses a file that is queued, and check 7's
+        # rescan can have queued it again; that is reported there.
+        with S.SessionLocal() as db:
+            queued = db.query(QueueItem).filter(
+                QueueItem.file_id == file_id,
+                QueueItem.status.in_(_ACTIVE_QUEUE_STATES)).first()
+        if queued:
+            e["revert_skipped"] = f"queued ({queued.status}), which the revert route refuses"
+            continue
+        outcome = asyncio.run(restore_revert_point(point_id))
+
+        # 10. The restore succeeds, onto the original name.
+        if not outcome.success:
+            find(10, source, f"revert failed: {(outcome.error or '')[:300]}")
+            continue
+        reverted.append(e)
+        if outcome.restored_path != source:
+            find(10, source, f"restored to {rel(outcome.restored_path)}, not the original name")
+        output = str(lib / e["output"])
+        if output != source and os.path.exists(output):
+            find(10, source, f"the processed {e['output']} is still there after the revert")
+
+        # 15. The point is spent.
+        with S.SessionLocal() as db:
+            left = db.query(RevertPoint).filter(RevertPoint.file_id == file_id).count()
+        if left:
+            find(15, source, f"{left} revert point(s) still recorded after the revert")
+        if os.path.exists(sidecar):
+            find(15, source, "the sidecar is still in the recycle folder")
+
+        restored = outcome.restored_path if os.path.exists(outcome.restored_path or "") else None
+        info = probe(restored) if restored else None
+        # 12. Readable.
+        if info is None:
+            find(12, source, "the restored file does not probe")
+            continue
+        errors = decode_errors(restored)
+        if errors:
+            find(12, source, f"decoding the restored file: {errors[:300]}")
+
+        # 11. Stream for stream, the original.
+        original = probes_before.get(rel(source))
+        if original is None:
+            continue
+        want = [_signature(s) for s in original["streams"]]
+        got = [_signature(s) for s in info["streams"]]
+        if want != got:
+            covers_only = (len(want) == len(got) and all(
+                w == g or (_is_matroska_cover(w) and _without_attached_pic(w) == g)
+                for w, g in zip(want, got)))
+            if covers_only:
+                known.append({"file": rel(source), "lost": "cover comes back as video",
+                              "why": "README, Reverting a processed file: Two "
+                                     "limitations worth knowing"})
+            else:
+                find(11, source, _first_difference(want, got))
+        # The layout too, where the README's "exact original state" can
+        # differ without a stream changing: an MP4's moov before or after
+        # its media data.
+        was = faststart_before.get(rel(source))
+        if was is not None:
+            now_fs = is_faststart_mp4(restored)
+            if was != now_fs:
+                find(11, source, f"fast-start {'on' if was else 'off'} in the original, "
+                                 f"{'on' if now_fs else 'off'} after the revert")
+
+    for rec in collect.records[first_record:]:
+        if rec["exception"]:
+            find(10, "", f"exception logged by {rec['logger']}: {rec['message']}")
+
+    # 13. Everything else is back as it was. The restored media differs in
+    # bytes (check 11 judges it); the job's other paths must match the
+    # original library, and nothing else may have moved since the reverts
+    # began.
+    now = inventory(lib)
+    mode = cfg.get("existing_srt_handling")
+    mine: set[str] = set()
+    for e in reverted:
+        source_rel = rel(e["source"])
+        mine.update(e.get("touched", []))
+        if source_rel not in now:
+            find(13, e["source"], "the restored file is not at its original path")
+        sidecars_before = {p: before[p] for p in e.get("touched", [])
+                           if p != source_rel and p in before}
+        for p in e.get("touched", []):
+            if p == source_rel or before.get(p) == now.get(p):
+                continue
+            if p in sidecars_before and mode == "replace":
+                known.append({"file": source_rel, "lost": f"{Path(p).name} stays replaced",
+                              "why": "README, Reverting a processed file: Extracted "
+                                     "subtitle files"})
+                continue
+            if mode == "embedded_first" and p not in before and \
+                    now.get(p) in sidecars_before.values():
+                known.append({"file": source_rel, "lost": f"{Path(p).name} stays moved",
+                              "why": "README, Reverting a processed file: Extracted "
+                                     "subtitle files"})
+                continue
+            if mode == "embedded_first" and p in sidecars_before and p not in now and \
+                    sidecars_before[p] in now.values():
+                continue    # the moved file, counted on its new name above
+            what = ("left behind" if p not in before else
+                    "missing" if p not in now else "changed")
+            find(13, e["source"], f"{Path(p).name} {what} after the revert")
+    for p in sorted(set(pre_revert) | set(now)):
+        if p not in mine and pre_revert.get(p) != now.get(p):
+            find(13, str(lib / p), "changed by a revert of another file")
+
+    tmp = scratch / "tmp"
+    if tmp.exists() and any(p.is_file() for p in tmp.rglob("*")):
+        find(15, "temp folder", "temp file(s) left behind after the reverts")
+
+    # 14. A rescan decides each restored file as it decided the original.
+    with S.SessionLocal() as db:
+        queued_before = {q.id for q in db.query(QueueItem)}
+        scanner.scan_library(db, [str(lib)], force_probe=True)
+        for e in reverted:
+            fresh = [q for q in db.query(QueueItem).filter(QueueItem.file_id == e["id"])
+                     .order_by(QueueItem.id) if q.id not in queued_before]
+            if not fresh:
+                find(14, e["source"], "a rescan did not queue the restored file again")
+                continue
+            actions = db.query(PlannedAction).filter(
+                PlannedAction.queue_item_id == fresh[-1].id
+            ).order_by(PlannedAction.order).all()
+            if fresh[-1].status != "pending":
+                find(14, e["source"], f"a rescan made the restored file {fresh[-1].status}")
+            elif _plan_of(actions) != e["plan"]:
+                find(14, e["source"], f"a rescan plans {_plan_of(actions)}, "
+                                      f"the original was planned {e['plan']}")
+    return len(reverted)
+
+
+def _point_unavailable(collect, source: str) -> str | None:
+    """
+    Why capture went ahead without a revert point for `source`, if it said
+    so: the UNAVAILABLE case revert_capture documents, which with Require
+    Revert Point off lets the job proceed. The reason is cut at its first
+    colon-separated detail, so one cause groups as one line.
+    """
+    marker = f"proceeding without a revert point for {source} \u2014 "
+    for rec in collect.records:
+        if rec["logger"] == "app.core.revert_capture" and marker in rec["message"]:
+            reason = rec["message"].split(marker, 1)[1]
+            return re.sub(r" @ 0x[0-9a-f]+", "", reason).splitlines()[0][:160]
+    return None
+
+
+def _first_difference(want: list, got: list) -> str:
+    if len(want) != len(got):
+        return f"{len(got)} streams after the revert, {len(want)} in the original"
+    for i, (w, g) in enumerate(zip(want, got)):
+        if w != g:
+            return f"stream {i} is {g}, was {w}"
+    return "streams differ"
 
 
 def _refused_name(error: str) -> str | None:
@@ -428,11 +697,16 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
-                     before, after, cfg, canonical, allowed_changes):
+                     before, after, cfg, canonical, allowed_changes, entry):
     out_dir = Path(output).parent
     stem = Path(output).stem
-    for p in (source, output):
-        allowed_changes.add(Path(p).relative_to(lib).as_posix())
+    prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
+    srt_before = {p: h for p, h in before.items() if p.startswith(prefix) and p.endswith(".srt")}
+    srt_after = {p: h for p, h in after.items() if p.startswith(prefix) and p.endswith(".srt")}
+    touched = {Path(p).relative_to(lib).as_posix() for p in (source, output)}
+    touched.update(srt_before, srt_after)
+    allowed_changes.update(touched)
+    entry["touched"] = sorted(touched)
 
     by_stream = {a.stream_index: a for a in actions if a.stream_index is not None}
     types = {a.action_type for a in actions}
@@ -457,6 +731,14 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
         find(2, source, f"decoding {Path(output).name}: {errors[:300]}")
     if info_before is None:
         return
+
+    # For check 9: did the job lose a stream a revert point can hold? An
+    # attachment cannot be held on its own, and a data stream is an MP4's
+    # chapter track, which the muxer writes afresh.
+    held = ("video", "cover", "audio", "text-sub", "image-sub")
+    was = Counter(kind(s) for s in info_before["streams"])
+    now = Counter(kind(s) for s in info_after["streams"])
+    entry["lost_tracks"] = any(was[k] > now[k] for k in held)
 
     # 3. Every stream accounted for.
     expected: list[tuple[str, dict]] = []
@@ -501,10 +783,6 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
             find(4, source, f"{k} languages {actual}, planned {planned}")
 
     # 5. Sidecars.
-    prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
-    srt_before = {p: h for p, h in before.items() if p.startswith(prefix) and p.endswith(".srt")}
-    srt_after = {p: h for p, h in after.items() if p.startswith(prefix) and p.endswith(".srt")}
-    allowed_changes.update(srt_before, srt_after)
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")
     new_text = Counter(srt_after.values()) - Counter(srt_before.values())
     if sum(new_text.values()) != extracts:
