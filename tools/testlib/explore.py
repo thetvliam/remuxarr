@@ -27,6 +27,32 @@ Each profile is checked against invariants instead:
   8. No temp file is left behind, and the source is gone only when the
      container changed.
 
+Every question is answered as the profile's runner choices say, through
+the app's own route functions: after the scan and after each queue run,
+until none is left. Then:
+
+ 16. What the review preview refuses, apply refuses; for an answer it
+     accepts, the preview's outcome is what apply did.
+ 17. A processed file's job plans what its subtitle answers said, and a
+     file whose every question was answered is not still waiting.
+ 18. An applied language is the planned language of its track; an ignored
+     one plans none.
+ 19. After a rescan, nothing answered is asked again.
+
+Then every AC3 Forge candidate is queued through the app's own route
+function and the worker runs the Forge jobs:
+
+ 20. Every add succeeds, and nothing logs an exception.
+ 21. The file gains exactly one AC3 5.1 carrying Forge's marker, after the
+     last audio track, and every other stream is as it was.
+ 22. The forged file probes and decodes cleanly.
+ 23. A full rescan queues nothing for a forged file that had nothing left
+     to do before the forge.
+ 24. With the runner's _forge_undo choice, every add is undone the same
+     way, and the file is back to exactly the streams it had before.
+ 25. No Forge temp file or unfinished Forge job is left, and nothing in
+     the library changed but the forged files.
+
 Then, with revert on, every revert point is restored through the app's own
 restore_revert_point (a file check 7 found queued again is skipped, as the
 revert route refuses one), and:
@@ -41,7 +67,8 @@ revert route refuses one), and:
  13. The job's other files are back as they were, and nothing else moved.
  14. A full rescan plans the restored file exactly as it planned the
      original.
- 15. The point is spent: no row, no sidecar, no temp file left.
+ 15. The point is spent: no row, no sidecar, no temp file left, and no
+     Forge job on the file still marked a success.
 
 A broken rule is a lead, not a verdict. Reproduce it with the real code
 before calling it a bug, and turn a real one into a normal test in tests/.
@@ -110,6 +137,20 @@ VARIED = {
     "revert_enabled":                [True, False],
 }
 
+# Choices the runner makes for the user, varied with the settings so every
+# setting value meets every answer at least once. Not app settings: they
+# are kept out of the settings each profile writes. The first of each is
+# the default profile's. See _answer_reviews.
+RUNNER_CHOICES = {
+    # Every flagged track of a subtitle review (image, styled, encoding)
+    # gets this; an answer the app refuses falls back to keep.
+    "_subtitle_answer": ["keep", "remove", "extract"],
+    # Every audio and subtitle language question: ignore, or this code.
+    "_language_answer": ["ignore", "eng", "jpn"],
+    # Whether every successful AC3 Forge add is then undone.
+    "_forge_undo": [False, True],
+}
+
 IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
                     "dvb_subtitle", "vobsub", "xsub"}
 
@@ -132,7 +173,8 @@ def _pairwise_profiles() -> list[dict]:
     settings appears together at least once. Greedy and seeded, so the same
     VARIED gives the same profiles; the coverage is checked, not assumed.
     """
-    keys = list(VARIED)
+    dims = {**VARIED, **RUNNER_CHOICES}
+    keys = list(dims)
     order = {k: i for i, k in enumerate(keys)}
 
     def pair(a, va, b, vb):
@@ -145,7 +187,7 @@ def _pairwise_profiles() -> list[dict]:
 
     need = {pair(a, va, b, vb)
             for a, b in itertools.combinations(keys, 2)
-            for va in VARIED[a] for vb in VARIED[b]}
+            for va in dims[a] for vb in dims[b]}
     everything = set(need)
     rng = random.Random(0)
     rows: list[dict] = []
@@ -154,12 +196,12 @@ def _pairwise_profiles() -> list[dict]:
         seed_pair = min(need)
         for _ in range(60):
             a, va, b, vb = seed_pair
-            row = {k: rng.choice(VARIED[k]) for k in keys}
+            row = {k: rng.choice(dims[k]) for k in keys}
             row[a], row[b] = json.loads(va), json.loads(vb)
             for k in rng.sample(keys, len(keys)):
                 if k in (a, b):
                     continue
-                row[k] = max(VARIED[k], key=lambda v, k=k: sum(
+                row[k] = max(dims[k], key=lambda v, k=k: sum(
                     pair(k, v, x, row[x]) in need for x in keys if x != k))
             got = pairs_of(row) & need
             if best is None or len(got) > len(best[1]):
@@ -304,8 +346,10 @@ def run_child(spec_path: str) -> None:
     from app.database import session as S
     from app.database.models import MediaFile, PlannedAction, QueueItem
 
-    settings = {**FORCED, **spec["settings"], "scan_paths": [str(lib)]}
-    _check_profile_against_app(spec["settings"])
+    app_settings = {k: v for k, v in spec["settings"].items() if k not in RUNNER_CHOICES}
+    choices = {k: spec["settings"].get(k, v[0]) for k, v in RUNNER_CHOICES.items()}
+    settings = {**FORCED, **app_settings, "scan_paths": [str(lib)]}
+    _check_profile_against_app(app_settings)
 
     before = inventory(lib)
     probes_before = {rel: probe(str(lib / rel)) for rel in before}
@@ -332,11 +376,6 @@ def run_child(spec_path: str) -> None:
             ran += 1
         return ran
 
-    t = time.monotonic()
-    ran = asyncio.run(drain())
-    timings["jobs"] = round(time.monotonic() - t, 2)
-
-    after = inventory(lib)
     findings: list[dict] = []
     known: list[dict] = []
     files: list[dict] = []
@@ -352,6 +391,24 @@ def run_child(spec_path: str) -> None:
         # them, one cause in several profiles groups as one line.
         detail = re.sub(r" @ 0x[0-9a-f]+", "", detail)
         findings.append({"check": check, "file": rel(path), "detail": detail})
+
+    # Every question the scan raised answered, then the queue, then any new
+    # question (a job can raise one, as an undecodable subtitle does) and
+    # the queue again, until none comes up. Answered before the first run,
+    # as a user can: a question answered after its file's job starts a
+    # second job on the processed file, which the per-job checks below are
+    # not built to judge (a file with two is marked in summary.json).
+    t = time.monotonic()
+    answered: dict[int, dict] = {}
+    _answer_reviews(S, choices, answered, find, canonical)
+    ran = asyncio.run(drain())
+    for _ in range(4):
+        if not _answer_reviews(S, choices, answered, find, canonical):
+            break
+        ran += asyncio.run(drain())
+    timings["jobs"] = round(time.monotonic() - t, 2)
+
+    after = inventory(lib)
 
     # 1. Outcomes.
     unreadable = sum(1 for r in before if probes_before[r] is None
@@ -372,6 +429,8 @@ def run_child(spec_path: str) -> None:
                      .order_by(QueueItem.id).all()
             entry = {"id": media.id, "file": rel(source), "status": media.status,
                      "jobs": [j.status for j in jobs]}
+            if media.id in answered:
+                entry["answered"] = answered[media.id]
             files.append(entry)
             for j in jobs:
                 if j.status in ("success", "manual_review", "skipped"):
@@ -390,6 +449,12 @@ def run_child(spec_path: str) -> None:
             if not done:
                 continue
             job = done[-1]
+            # A question raised by a job and answered after it starts a
+            # second job on the processed file. The checks below judge one
+            # job against the original, so they leave such a file out.
+            several = len(done) > 1
+            if several:
+                entry["several_jobs"] = len(done)
             actions = db.query(PlannedAction).filter(PlannedAction.queue_item_id == job.id) \
                         .order_by(PlannedAction.order).all()
             entry["output"] = rel(media.path)
@@ -398,7 +463,11 @@ def run_child(spec_path: str) -> None:
             entry["plan"] = _plan_of(actions)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
-                             cfg, canonical, allowed_changes, entry)
+                             cfg, canonical, allowed_changes, entry, several)
+            if not several:
+                _check_answers_carried_out(find, source, actions, entry.get("answered"),
+                                           canonical, probes_before.get(rel(source)))
+        _check_answered_left_review(find, db, files, source_of)
 
     # 6. Nothing else changed.
     for path in sorted(set(before) | set(after)):
@@ -431,6 +500,11 @@ def run_child(spec_path: str) -> None:
             if q.id not in known_jobs and q.file_id in settled:
                 media = db.get(MediaFile, q.file_id)
                 find(7, media.path, f"queued again by a rescan: {q.reason or ''}")
+        # 19. Answers stick: the rescan asks nothing already answered.
+        _check_answers_stick(find, db, files, source_of)
+
+    forge = _forge_round_trips(find, lib, scratch, files, rel, collect,
+                               choices["_forge_undo"])
 
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
@@ -440,17 +514,376 @@ def run_child(spec_path: str) -> None:
     result = {
         "profile": spec["name"], "settings": spec["settings"],
         "reverts": reverts,
+        "forge": forge,
         "scan": {k: getattr(scan, k) for k in ("total", "queued", "manual_review",
                                                 "skipped", "errors", "excluded")},
         "rescan_queued": rescan.queued, "jobs_run": ran, "timings": timings,
         "findings": findings, "known_losses": known,
         "temp_left": {k: v for k, v in temp_left.items() if v},
+        "choices": choices,
+        "several_jobs": [e["file"] for e in files if e.get("several_jobs")],
         "files": [{k: v for k, v in e.items() if k not in ("id", "source", "plan", "touched")}
                   for e in files],
         "logged_errors": [r for r in collect.records
                           if r["level"] in ("ERROR", "CRITICAL") and not r["exception"]],
     }
     Path(spec["result"]).write_text(json.dumps(result, indent=1))
+
+
+# ── AC3 Forge (checks 20 to 25) ──────────────────────────────────────────────
+
+def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> dict:
+    """
+    Queue every Forge candidate through the app's own route function, run
+    the Forge jobs through the worker, and check the result (20 to 23);
+    with `undo`, undo every add the same way and check that (24). Then 25.
+    Returns counts for summary.json.
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.api.routes.forge import QueueForgeRequest, add_to_queue, undo_job
+    from app.api.ws_manager import ws_manager
+    from app.core import scanner, worker
+    from app.core.forge import FORGE_AC3_HANDLER_NAME, get_candidates
+    from app.database import session as S
+    from app.database.models import Ac3ForgeJob, MediaFile, QueueItem
+
+    async def run_forge_jobs():
+        while await worker._process_next_forge(ws_manager):
+            pass
+
+    first_record = len(collect.records)
+    untouched_before = inventory(lib)
+    added: dict[int, dict] = {}
+    with S.SessionLocal() as db:
+        for item in get_candidates(db, limit=10000)["items"]:
+            media = db.get(MediaFile, item["id"])
+            pre = probe(media.path)
+            try:
+                job = add_to_queue(QueueForgeRequest(file_id=media.id), db)
+            except HTTPException as exc:
+                find(20, media.path, f"a Forge candidate was refused: {exc.detail}")
+                continue
+            added[media.id] = {"job": job["id"], "path": media.path, "pre": pre}
+    asyncio.run(run_forge_jobs())
+
+    forged = []
+    with S.SessionLocal() as db:
+        for file_id, j in added.items():
+            job = db.get(Ac3ForgeJob, j["job"])
+            # 20. Every add succeeds.
+            if job.status != "success":
+                find(20, j["path"], f"Forge add {job.status}: {(job.error_message or '')[:200]}")
+                continue
+            forged.append(file_id)
+            post = probe(j["path"])
+            # 22. Readable.
+            if post is None:
+                find(22, j["path"], "the forged file does not probe")
+                continue
+            errors = decode_errors(j["path"])
+            if errors:
+                find(22, j["path"], f"decoding the forged file: {errors[:300]}")
+            if j["pre"] is None:
+                continue
+            # 21. Every stream as it was, plus one marked AC3 5.1 after the
+            # last audio track.
+            marked = [i for i, st in enumerate(post["streams"])
+                      if st.get("codec_name") == "ac3" and st.get("channels") == 6
+                      and {k.lower(): v for k, v in (st.get("tags") or {}).items()}
+                      .get("handler_name") == FORGE_AC3_HANDLER_NAME]
+            if len(marked) != 1:
+                find(21, j["path"], f"{len(marked)} AC3 5.1 tracks carry the Forge marker")
+                continue
+            ac3 = post["streams"][marked[0]]
+            audio_before = sum(1 for st in j["pre"]["streams"] if st.get("codec_type") == "audio")
+            audio_at = [st["index"] for st in post["streams"]
+                        if st.get("codec_type") == "audio"].index(ac3["index"])
+            if audio_at != audio_before:
+                find(21, j["path"], f"the AC3 is audio track {audio_at}, "
+                                    f"not {audio_before} after the last")
+            rest = [_signature(st) for i, st in enumerate(post["streams"]) if i != marked[0]]
+            was = [_signature(st) for st in j["pre"]["streams"]]
+            if rest != was:
+                find(21, j["path"], "beside the AC3: " + _first_difference(
+                    was, rest, now="after the add", was="before"))
+            j["post"] = post
+
+    # 23. A rescan queues nothing for a forged file that had nothing left to
+    # do before the forge.
+    settled = {e["id"] for e in files
+               if e["jobs"] and e["jobs"][-1] in ("success", "skipped")}
+    with S.SessionLocal() as db:
+        queued = {q.file_id for q in db.query(QueueItem)
+                  .filter(QueueItem.status.in_(("pending", "processing")))}
+        known_jobs = {q.id for q in db.query(QueueItem)}
+        scanner.scan_library(db, [str(lib)], force_probe=True)
+        for q in db.query(QueueItem).filter(QueueItem.status == "pending"):
+            if (q.id not in known_jobs and q.file_id in forged
+                    and q.file_id in settled and q.file_id not in queued):
+                find(23, added[q.file_id]["path"],
+                     f"queued by a rescan after the forge: {q.reason or ''}")
+
+    # 24. An undo gives back exactly the streams from before the add.
+    undone = 0
+    if undo and forged:
+        with S.SessionLocal() as db:
+            for file_id in forged:
+                try:
+                    undo_job(added[file_id]["job"], db)
+                except HTTPException as exc:
+                    find(24, added[file_id]["path"], f"the undo was refused: {exc.detail}")
+        asyncio.run(run_forge_jobs())
+        with S.SessionLocal() as db:
+            for file_id in forged:
+                j = added[file_id]
+                job = db.get(Ac3ForgeJob, j["job"])
+                if job.status != "undone":
+                    find(24, j["path"], f"Forge undo {job.status}: {(job.error_message or '')[:200]}")
+                    continue
+                undone += 1
+                post = probe(j["path"])
+                if post is None:
+                    find(24, j["path"], "the undone file does not probe")
+                    continue
+                errors = decode_errors(j["path"])
+                if errors:
+                    find(24, j["path"], f"decoding the undone file: {errors[:300]}")
+                if j["pre"] is not None:
+                    was = [_signature(st) for st in j["pre"]["streams"]]
+                    now = [_signature(st) for st in post["streams"]]
+                    if now != was:
+                        find(24, j["path"], _first_difference(
+                            was, now, now="after the undo", was="before the add"))
+
+    # 25. Nothing left over: no Forge temp file, no job still on its way,
+    # and nothing in the library changed but the forged files.
+    tmp = scratch / "tmp"
+    left = [p.name for p in tmp.rglob("*") if p.is_file()] if tmp.exists() else []
+    left += [p.name for p in lib.rglob("*.forge_tmp")]
+    if left:
+        find(25, "temp folder", f"{len(left)} temp file(s) left behind by Forge")
+    with S.SessionLocal() as db:
+        busy = db.query(Ac3ForgeJob).filter(Ac3ForgeJob.status.in_(
+            ("pending", "processing", "undo_pending"))).count()
+    if busy:
+        find(25, "", f"{busy} Forge job(s) never finished")
+    mine = {rel(j["path"]) for j in added.values()}
+    now_inventory = inventory(lib)
+    for p in sorted(set(untouched_before) | set(now_inventory)):
+        if p not in mine and untouched_before.get(p) != now_inventory.get(p):
+            find(25, str(lib / p), "changed by AC3 Forge, which only touches the forged file")
+    for rec in collect.records[first_record:]:
+        if rec["exception"]:
+            find(20, "", f"exception logged by {rec['logger']}: {rec['message']}")
+    return {"candidates": len(added), "forged": len(forged), "undone": undone}
+
+
+# ── Review answers (checks 16 to 19) ────────────────────────────────────────
+
+def _language_routes():
+    """The audio and subtitle language review's apply and ignore functions."""
+    from app.api.routes import audio_language, subtitle_language
+    from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
+    out = []
+    for kind, router, flag in (("audio", audio_language.router, AudioLanguageFlag),
+                               ("subtitle", subtitle_language.router, SubtitleLanguageFlag)):
+        ends = {r.path.rsplit("/", 1)[-1]: r.endpoint for r in router.routes
+                if "POST" in getattr(r, "methods", ())}
+        out.append((kind, flag, ends["apply"], ends["ignore"]))
+    return out
+
+
+def _answer_reviews(S, choices, answered, find, canonical) -> int:
+    """
+    Answer every question waiting, through the app's own route functions
+    called with a session, which is the request path less HTTP. Returns how
+    many were answered; a question answered once is not answered again.
+
+    Subtitle reviews go through the preview first and then apply, and the
+    two are held to each other (check 16). Language questions get ignore or
+    the profile's code.
+    """
+    from app.api.routes._language_review import ApplyRequest, IgnoreRequest
+    from app.api.routes.queue import (
+        ReviewApplyRequest, ReviewFileDecision, _flagged_entries,
+        apply_review_decisions, preview_review_decisions,
+    )
+    from app.database.models import QueueItem
+
+    count = 0
+    with S.SessionLocal() as db:
+        items = db.query(QueueItem).filter(QueueItem.status == "manual_review") \
+                  .order_by(QueueItem.id).all()
+        for item in items:
+            flagged = _flagged_entries(item)
+            if not flagged:
+                continue
+            record = answered.setdefault(item.file_id, {})
+            if set(flagged) <= set(record.get("subtitle", {})):
+                continue
+            path = item.media_file.path
+            choice = choices["_subtitle_answer"]
+            want = {si: choice for si in flagged}
+
+            def ask(answers):
+                body = ReviewApplyRequest(files=[ReviewFileDecision(
+                    file_id=item.file_id, answers=answers)])
+                return body, preview_review_decisions(body, db)
+
+            body, preview = ask(want)
+            if preview["errors"]:
+                refused = preview["errors"][0]["error"]
+                # 16. What the preview refuses, apply refuses.
+                applied = apply_review_decisions(body, db)
+                if not applied["errors"]:
+                    find(16, path, f"the preview refused {choice} but apply took it: "
+                                   f"{refused[:160]}")
+                    record["subtitle"] = want
+                    count += 1
+                    continue
+                record.setdefault("refused", []).append(f"{choice}: {refused[:160]}")
+                want = {si: "keep" for si in flagged}
+                body, preview = ask(want)
+                if preview["errors"]:
+                    find(16, path, f"the preview refused keep as well: "
+                                   f"{preview['errors'][0]['error'][:160]}")
+                    continue
+            applied = apply_review_decisions(body, db)
+            if applied["errors"]:
+                find(16, path, f"the preview accepted {sorted(set(want.values()))} but apply "
+                               f"refused: {applied['errors'][0]['error'][:160]}")
+                continue
+            # 16. And for an accepted answer, the preview's outcome is the
+            # outcome apply produced.
+            said, did = preview["outcomes"][0], applied["outcomes"][0]
+            if said["still_in_review"] != (did["status"] == "manual_review") or \
+                    said["will_process"] != (did["status"] == "pending"):
+                find(16, path, f"the preview said will_process={said['will_process']}, "
+                               f"still_in_review={said['still_in_review']}; apply left the "
+                               f"file {did['status']}")
+            record["subtitle"] = {**record.get("subtitle", {}), **want}
+            record["preview"] = said
+            count += 1
+
+        language = choices["_language_answer"]
+        for kind, flag_model, apply_route, ignore_route in _language_routes():
+            by_file: dict[int, list] = {}
+            for flag in db.query(flag_model).order_by(flag_model.id):
+                by_file.setdefault(flag.file_id, []).append(flag)
+            for file_id, flags in by_file.items():
+                record = answered.setdefault(file_id, {})
+                done = record.setdefault(f"{kind}_language", {})
+                new = [f for f in flags if str(f.stream_index) not in done]
+                if not new:
+                    continue
+                for f in new:
+                    done[str(f.stream_index)] = language
+                if language == "ignore":
+                    result = ignore_route(IgnoreRequest(file_ids=[file_id]), db)
+                else:
+                    result = apply_route(ApplyRequest(flag_ids=[f.id for f in new],
+                                                      target_language=language), db)
+                errors = result.get("errors") if isinstance(result, dict) else None
+                if errors:
+                    find(18, str(file_id), f"{kind} language {language} not applied: "
+                                           f"{str(errors[0])[:160]}")
+                count += 1
+    return count
+
+
+def _check_answers_carried_out(find, source, actions, answers, canonical, original):
+    """
+    17 and 18: a processed file's job plans what its answers said. Keep
+    means neither dropped nor extracted; remove, dropped; extract,
+    extracted. An applied language is the planned target of its track,
+    unless the track is dropped or already carries it; ignore plans no new
+    language.
+    """
+    if not answers:
+        return
+    tag = {s["index"]: canonical((s.get("tags") or {}).get("language")) or "und"
+           for s in (original or {}).get("streams", [])}
+    by_stream = {a.stream_index: a for a in actions if a.stream_index is not None}
+    meant = {"keep": None, "remove": "drop_track", "extract": "extract_subtitle"}
+    for si, choice in (answers.get("subtitle") or {}).items():
+        a = by_stream.get(int(si))
+        kind = a.action_type if a is not None else None
+        if choice == "keep":
+            if kind in ("drop_track", "extract_subtitle"):
+                find(17, source, f"stream {si} answered keep, planned {kind}")
+        elif kind != meant[choice]:
+            find(17, source, f"stream {si} answered {choice}, planned {kind}")
+    for kind in ("audio", "subtitle"):
+        for si, choice in (answers.get(f"{kind}_language") or {}).items():
+            a = by_stream.get(int(si))
+            if a is None or a.action_type == "drop_track":
+                continue
+            if a.action_type == "extract_subtitle":
+                # An extracted subtitle's language is its file name's, which
+                # the job page shows as "Extract subtitle [lang]"; the row
+                # has no column for it.
+                m = re.match(r"Extract subtitle \[([a-z]+)\]", a.description or "")
+                target = canonical(m.group(1)) if m else None
+            else:
+                target = canonical(a.target_language) if a.target_language else None
+            if choice == "ignore":
+                # A two-letter tag written in its three-letter form is not a
+                # new language, and neither is "und" for a tag that says
+                # "undefined" in words.
+                was = tag.get(int(si))
+                if target and target != was and {target, was} != {"und", "undefined"}:
+                    find(18, source, f"{kind} stream {si} ignored, planned language {target}")
+            elif target is None and tag.get(int(si)) == canonical(choice):
+                continue
+            elif target != canonical(choice):
+                find(18, source, f"{kind} stream {si} answered {choice}, planned "
+                                 f"language {target}")
+
+
+def _check_answered_left_review(find, db, files, source_of):
+    """17: a file whose every question was answered is not still waiting."""
+    from app.api.routes.queue import _flagged_entries
+    from app.database.models import QueueItem
+    for e in files:
+        subtitle = (e.get("answered") or {}).get("subtitle")
+        if not subtitle:
+            continue
+        item = db.query(QueueItem).filter(QueueItem.file_id == e["id"]) \
+                 .order_by(QueueItem.id.desc()).first()
+        if item is not None and item.status == "manual_review":
+            again = set(_flagged_entries(item)) & {int(s) for s in subtitle}
+            if again:
+                find(17, source_of.get(e["id"], e["file"]),
+                     f"still in review for answered stream(s) {sorted(again)}")
+
+
+def _check_answers_stick(find, db, files, source_of):
+    """19: after a rescan, nothing answered is asked again."""
+    from app.api.routes.queue import _flagged_entries
+    from app.database.models import AudioLanguageFlag, QueueItem, SubtitleLanguageFlag
+    for e in files:
+        answers = e.get("answered") or {}
+        path = source_of.get(e["id"], e["file"])
+        subtitle = {int(s) for s in answers.get("subtitle") or {}}
+        if subtitle:
+            item = db.query(QueueItem).filter(QueueItem.file_id == e["id"]) \
+                     .order_by(QueueItem.id.desc()).first()
+            if item is not None and item.status == "manual_review":
+                again = set(_flagged_entries(item)) & subtitle
+                if again:
+                    find(19, path, f"a rescan asked again about stream(s) {sorted(again)}")
+        for kind, model in (("audio", AudioLanguageFlag), ("subtitle", SubtitleLanguageFlag)):
+            asked = {int(s) for s in answers.get(f"{kind}_language") or {}}
+            if not asked:
+                continue
+            again = {f.stream_index for f in db.query(model).filter(model.file_id == e["id"])}
+            again &= asked
+            if again:
+                find(19, path, f"a rescan asked the {kind} language of stream(s) "
+                               f"{sorted(again)} again")
 
 
 def _plan_of(actions) -> list[list]:
@@ -463,8 +896,10 @@ def _signature(stream: dict) -> tuple:
     """What a revert promises to put back about one stream (check 11)."""
     tags = {k.lower(): v for k, v in (stream.get("tags") or {}).items()}
     flags = sorted(k for k, v in (stream.get("disposition") or {}).items() if v == 1)
+    # FFmpeg reads an MP4 track's title back as "name" (forge._title_args).
+    title = tags.get("title") or tags.get("name")
     return (stream.get("codec_type"), stream.get("codec_name"), tags.get("language"),
-            tags.get("title"), tags.get("filename"), tags.get("mimetype"), tuple(flags))
+            title, tags.get("filename"), tags.get("mimetype"), tuple(flags))
 
 
 def _is_matroska_cover(sig: tuple) -> bool:
@@ -484,19 +919,20 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     """
     import asyncio
 
+    from app.api.routes.queue import _flagged_entries
     from app.api.routes.revert import _ACTIVE_QUEUE_STATES
     from app.core import scanner
     from app.core.probe import is_faststart_mp4
     from app.core.revert_restore import restore_revert_point
     from app.database import session as S
-    from app.database.models import PlannedAction, QueueItem, RevertPoint
+    from app.database.models import Ac3ForgeJob, PlannedAction, QueueItem, RevertPoint
 
     enabled = bool(cfg.get("revert_enabled"))
     by_id = {e["id"]: e for e in files}
     with S.SessionLocal() as db:
-        points = [(p.id, p.file_id, p.sidecar_path)
+        points = [(p.id, p.file_id, p.sidecar_path, p.manifest)
                   for p in db.query(RevertPoint).order_by(RevertPoint.id)]
-    with_point = {file_id for _, file_id, _ in points}
+    with_point = {file_id for _, file_id, _, _ in points}
 
     # 9. A point exactly when one should be.
     for e in files:
@@ -524,11 +960,16 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     pre_revert = inventory(lib)
     first_record = len(collect.records)
     reverted = []
-    for point_id, file_id, sidecar in points:
+    for point_id, file_id, sidecar, manifest in points:
         e = by_id.get(file_id)
         if e is None or "source" not in e:
             continue
         source = e["source"]
+        # For check 14: answered tracks the revert brings back from the
+        # sidecar. Their answers do not come back with them, by design.
+        from_sidecar = {s["index"] for s in json.loads(manifest or "{}").get("streams", [])
+                        if s.get("processed_index") is None}
+        e["answers_dropped"] = sorted(from_sidecar & _answered_streams(e))
         # The revert route refuses a file that is queued, and check 7's
         # rescan can have queued it again; that is reported there.
         with S.SessionLocal() as db:
@@ -558,6 +999,13 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             find(15, source, f"{left} revert point(s) still recorded after the revert")
         if os.path.exists(sidecar):
             find(15, source, "the sidecar is still in the recycle folder")
+        # An AC3 forged after processing is not part of the original, so the
+        # revert takes it away and settles its job (forge.settle_forge_jobs).
+        with S.SessionLocal() as db:
+            still = db.query(Ac3ForgeJob).filter(Ac3ForgeJob.file_id == file_id,
+                                                 Ac3ForgeJob.status == "success").count()
+        if still:
+            find(15, source, "a Forge job still says success after the revert")
 
         restored = outcome.restored_path if os.path.exists(outcome.restored_path or "") else None
         info = probe(restored) if restored else None
@@ -576,9 +1024,10 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         want = [_signature(s) for s in original["streams"]]
         got = [_signature(s) for s in info["streams"]]
         if want != got:
-            covers_only = (len(want) == len(got) and all(
-                w == g or (_is_matroska_cover(w) and _without_attached_pic(w) == g)
-                for w, g in zip(want, got)))
+            # A Matroska cover comes back as a video track, which can also
+            # move it ahead of the attachments that followed it.
+            covers_only = sorted((_without_attached_pic(w) if _is_matroska_cover(w) else w
+                                  for w in want), key=repr) == sorted(got, key=repr)
             if covers_only:
                 known.append({"file": rel(source), "lost": "cover comes back as video",
                               "why": "README, Reverting a processed file: Two "
@@ -654,11 +1103,25 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             actions = db.query(PlannedAction).filter(
                 PlannedAction.queue_item_id == fresh[-1].id
             ).order_by(PlannedAction.order).all()
-            if fresh[-1].status != "pending":
+            dropped = set(e.get("answers_dropped", []))
+            plan = _plan_of(actions)
+            if fresh[-1].status == "manual_review":
+                asked = set(_flagged_entries(fresh[-1])) or dropped
+                if dropped and asked <= dropped:
+                    known.append({"file": rel(e["source"]), "lost": "answer asked again",
+                                  "why": _ANSWERS_FROM_SIDECAR})
+                else:
+                    find(14, e["source"], "a rescan made the restored file manual_review")
+            elif fresh[-1].status != "pending":
                 find(14, e["source"], f"a rescan made the restored file {fresh[-1].status}")
-            elif _plan_of(actions) != e["plan"]:
-                find(14, e["source"], f"a rescan plans {_plan_of(actions)}, "
-                                      f"the original was planned {e['plan']}")
+            elif plan != e["plan"]:
+                differs = _differing_streams(plan, e["plan"])
+                if dropped and differs - {None} and differs - {None} <= dropped:
+                    known.append({"file": rel(e["source"]), "lost": "answer not carried back",
+                                  "why": _ANSWERS_FROM_SIDECAR})
+                else:
+                    find(14, e["source"], f"a rescan plans {plan}, "
+                                          f"the original was planned {e['plan']}")
     return len(reverted)
 
 
@@ -677,9 +1140,37 @@ def _point_unavailable(collect, source: str) -> str | None:
     return None
 
 
-def _first_difference(want: list, got: list) -> str:
+_ANSWERS_FROM_SIDECAR = ("a track the revert brings back from the sidecar has its "
+                         "question asked again: app/core/revert_restore.py, _apply; "
+                         "look-alike tracks are stored whole, app/core/revert.py, "
+                         "match_streams")
+
+
+def _answered_streams(e: dict) -> set[int]:
+    answers = e.get("answered") or {}
+    return {int(s) for key in ("subtitle", "audio_language", "subtitle_language")
+            for s in answers.get(key) or {}}
+
+
+def _differing_streams(a: list, b: list) -> set:
+    """Stream indices whose planned actions differ between two plans."""
+    def by_stream(plan):
+        out: dict = {}
+        for action in plan:
+            out.setdefault(action[2], []).append(action)
+        return out
+    x, y = by_stream(a), by_stream(b)
+    return {k for k in set(x) | set(y) if x.get(k) != y.get(k)}
+
+
+def _first_difference(want: list, got: list, now: str = "after the revert",
+                      was: str = "in the original") -> str:
     if len(want) != len(got):
-        return f"{len(got)} streams after the revert, {len(want)} in the original"
+        extra = Counter(g[0] for g in got) - Counter(w[0] for w in want)
+        missing = Counter(w[0] for w in want) - Counter(g[0] for g in got)
+        what = ", ".join([f"+{n} {k}" for k, n in sorted(extra.items())]
+                         + [f"-{n} {k}" for k, n in sorted(missing.items())])
+        return f"{len(got)} streams {now}, {len(want)} {was} ({what})"
     for i, (w, g) in enumerate(zip(want, got)):
         if w != g:
             return f"stream {i} is {g}, was {w}"
@@ -697,7 +1188,7 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
-                     before, after, cfg, canonical, allowed_changes, entry):
+                     before, after, cfg, canonical, allowed_changes, entry, several=False):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -711,8 +1202,10 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     by_stream = {a.stream_index: a for a in actions if a.stream_index is not None}
     types = {a.action_type for a in actions}
 
-    # 8. The source goes only when the container changed.
-    if "change_container" in types:
+    # 8. The source goes only when the container changed (by this job).
+    if several:
+        pass
+    elif "change_container" in types:
         if source != output and os.path.exists(source):
             find(8, source, "container changed but the source is still there")
     elif source != output:
@@ -739,6 +1232,8 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     was = Counter(kind(s) for s in info_before["streams"])
     now = Counter(kind(s) for s in info_after["streams"])
     entry["lost_tracks"] = any(was[k] > now[k] for k in held)
+    if several:
+        return
 
     # 3. Every stream accounted for.
     expected: list[tuple[str, dict]] = []

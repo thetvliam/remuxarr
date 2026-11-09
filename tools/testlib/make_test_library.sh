@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  26 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (42 files, about 22 MB, at the
+#  28 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (44 files, about 23 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -443,8 +443,29 @@ f25() {  # No video stream at all: two FLAC tracks, one to drop.
 f26() {  # A zero-byte .mkv (an interrupted copy): ffprobe fails, the scan records an error.
   : > "$OUT/26 - unreadable empty file.mkv"
 }
+f27() {  # AC3 Forge on an MKV: AAC 5.1 beside a stereo commentary, a font, cover art and chapters.
+  local a=(); add a video_in "27 forge mkv"; add a tone_in 440; add a tone_in 300
+  a+=(-i "$A/eng.srt" -i "$A/chapters.txt")
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map 3 -map_chapters 4 "${H264[@]}" \
+    -c:a aac -ac:a:0 6 -ac:a:1 2 -c:s srt \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=eng -metadata:s:a:1 title=Commentary \
+    -metadata:s:s:0 language=eng \
+    -disposition:a:0 default -disposition:a:1 comment -disposition:s:0 0 \
+    -attach "$FONT" -metadata:s:t:0 mimetype=application/x-truetype-font -metadata:s:t:0 filename="Forge.$FONT_EXT" \
+    -attach "$A/cover.jpg" -metadata:s:t:1 mimetype=image/jpeg -metadata:s:t:1 filename=cover.jpg \
+    "${MKV[@]}" "$OUT/27 - forge mkv.mkv"
+}
+f28() {  # AC3 Forge on an MP4: AAC 5.1 with a title, a second language, mov_text, cover art and chapters.
+  local a=(); add a video_in "28 forge mp4"; add a tone_in 440; add a tone_in 330
+  a+=(-i "$A/eng.srt" -i "$A/cover.jpg" -i "$A/chapters.txt")
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map 3 -map 4 -map_chapters 5 \
+    "${H264[@]}" -c:v:1 copy -disposition:v:1 attached_pic -c:a aac -ac:a:0 6 -ac:a:1 2 -c:s mov_text \
+    -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=fre \
+    -metadata:s:s:0 language=eng -disposition:a:0 default -disposition:a:1 0 -disposition:s:0 0 \
+    -movflags +faststart -f mp4 "$OUT/28 - forge mp4.mp4"
+}
 
-for n in $(seq -w 1 26); do
+for n in $(seq -w 1 28); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done
