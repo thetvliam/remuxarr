@@ -72,6 +72,13 @@ without Always Include; the job cancelled rather than skipped; the record's
 size and mtime left as they were; and the check moved ahead of the on-disk
 checks. All five are killed here, each by its own test. 26 applied, 26
 killed.
+
+The file's other skipped and review rows cleared when pickup turns its job
+into one. Four more mutations, each against the whole 2272-test suite
+before the three tests at the end, all four survived: no clearing on the
+skip, on the review, or on the exclusion, and clearing skipped rows alone.
+The first three are killed each by its own test, the fourth by all three.
+30 applied, 30 killed.
 """
 import json
 import os
@@ -739,3 +746,56 @@ def test_an_excluded_file_in_a_library_that_is_not_mounted_still_fails(rig, tmp_
     assert worker._load_job_data(1) is None
     assert rig.finish_calls == [(1, False, None, None, MISSING_LIBRARY)]
     assert job(rig).status == "processing"
+
+
+# ── Leftover skipped and review rows ─────────────────────────────────────────
+#
+# A job that pickup turns skipped or manual_review becomes the file's skipped
+# or review row. Any other such row for the file was left beside it, and the
+# History tabs listed the file twice. The scanner clears them when it records
+# either outcome (scanner._clear_stale_status_records); pickup did not. The
+# old scanner left a waiting job beside a skipped row whenever a Re-check
+# turned a queued conversion into a skip, so such pairs can be in a database
+# from before that was fixed, and the claim race _supersede_stale_pending_items
+# describes can still make one.
+
+def _leftovers(rig):
+    """A skipped row and a review row beside job 1, from earlier scans."""
+    queue_row(rig, job_id=2, status="skipped", reason="earlier scan")
+    queue_row(rig, job_id=3, status="manual_review", reason="earlier scan")
+
+
+def _statuses(rig):
+    rig.db.expire_all()
+    return {q.id: q.status for q in rig.db.query(QueueItem).all()}
+
+
+def test_a_job_pickup_skips_takes_the_place_of_the_files_other_skip(rig):
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _leftovers(rig)
+    rig.decision = nothing_to_do()
+
+    assert worker._load_job_data(1) is None
+    assert _statuses(rig) == {1: "skipped"}
+
+
+def test_a_job_pickup_sends_to_review_takes_the_place_of_the_files_other_rows(rig):
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _leftovers(rig)
+    rig.decision = manual_review()
+
+    assert worker._load_job_data(1) is None
+    assert _statuses(rig) == {1: "manual_review"}
+
+
+def test_a_job_pickup_finds_excluded_takes_the_place_of_the_files_other_rows(rig, tmp_path):
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, status="processing")
+    _leftovers(rig)
+    _setting(rig, "exclude_patterns", ["Kids"])
+
+    assert worker._load_job_data(1) is None
+    assert _statuses(rig) == {1: "skipped"}

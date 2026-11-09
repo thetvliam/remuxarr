@@ -1584,11 +1584,16 @@ def test_a_revert_that_brings_the_forged_track_back_leaves_its_job(forge_lib):
     """
     Forged before processing, the AC3 is part of the original: the revert
     puts it back, and the forge job's "success" is still the truth.
+
+    The job is marked, so the revert settles it by the marker, and "success"
+    holds only if the restore wrote the forged track's handler_name back
+    with the rest of its recorded tags.
     """
     from app.database.models import Ac3ForgeJob
 
     lib = forge_lib
     forged = _forge(lib)
+    assert forged.ac3_marked is True
     _run_job(lib, ["-map", "0", "-map", "-0:1", "-c", "copy"], job_id=1)
 
     outcome = _revert(lib)
@@ -1789,7 +1794,8 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
     import json
 
     from app.core.probe import extract_tracks, probe_file
-    from app.core.scanner import _track_to_dict, descriptors_by_stream, resolve_track_answers
+    from app.core.scanner import (_track_to_dict, descriptors_by_stream,
+                                  replace_track_rows, resolve_track_answers)
     from app.database.models import MediaFile, Track
 
     # Drop the English audio: the processed file is video, fre, ger subtitle.
@@ -1800,8 +1806,9 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
     assert [(td["stream_index"], td["language"]) for td in processed][1:] == [(1, "fre"), (2, "ger")]
     keys = descriptors_by_stream(processed)
     media = db.get(MediaFile, lib["media"].id)
-    for td in processed:
-        db.add(Track(file_id=media.id, **td))
+    # Written the way _finish_job writes them. Unpacked straight into Track,
+    # the probe's dict fails on any key no column holds (handler_name).
+    replace_track_rows(db, media.id, processed)
     media.audio_language_overrides = json.dumps({keys[1]: "ita"})
     media.subtitle_overrides = json.dumps({keys[2]: "keep"})
     db.commit()
@@ -1815,3 +1822,129 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
     assert resolve_track_answers(json.loads(media.audio_language_overrides), restored) == {2: "ita"}, (
         "the French track's answer is on another track after the revert")
     assert resolve_track_answers(json.loads(media.subtitle_overrides), restored) == {3: "keep"}
+
+
+# ── An MP4's fast-start layout ───────────────────────────────────────────────
+#
+# A fast-start MP4 keeps its index (moov) before the media, so it can play
+# while it downloads. Restore never asked for that layout, so a fast-start
+# original came back with the index at the end, and with fast-start on the
+# next scan wanted to process the file again. Capture now records the
+# original's layout on a file's first job, beside its tags, and restore
+# writes it back. Found by tools/testlib/explore.py (file 17).
+#
+# Verified by mutation against the whole suite, 5 applied, 5 killed: restore
+# ignoring the recorded layout, restore always asking for fast-start,
+# capture always recording it, a later job re-reading it from its own input,
+# and restore asking for it on a Matroska original.
+
+def _mp4_library(tmp_path, monkeypatch, *, faststart):
+    """_library's file as an MP4 original, with or without fast-start."""
+    from app.core.probe import is_faststart_mp4
+
+    lib = _library(tmp_path, monkeypatch, audio=[(440, "eng"), (880, "fre")])
+    mp4 = lib["path"].with_suffix(".mp4")
+    flags = ["-movflags", "+faststart"] if faststart else []
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lib["path"]),
+                    "-map", "0", "-c", "copy", *flags, "-f", "mp4", str(mp4)], check=True)
+    os.remove(lib["path"])
+    lib["path"] = mp4
+    stat = mp4.stat()
+    lib["media"].path, lib["media"].filename = str(mp4), mp4.name
+    lib["media"].container = "mp4"
+    lib["media"].size, lib["media"].mtime = stat.st_size, stat.st_mtime
+    lib["db"].commit()
+    assert is_faststart_mp4(str(mp4)) is faststart, "fixture layout is wrong"
+    return lib
+
+
+_DROP_FRENCH = ["-map", "0:0", "-map", "0:1", "-c", "copy"]
+
+
+def test_a_fast_start_mp4_comes_back_fast_start(tmp_path, monkeypatch):
+    """The reproduction: the job's output is not fast-start, the original was."""
+    from app.core.probe import is_faststart_mp4
+
+    lib = _mp4_library(tmp_path, monkeypatch, faststart=True)
+    _run_job_into(lib, _DROP_FRENCH, job_id=1, fmt="mp4", suffix=".mp4")
+    assert not is_faststart_mp4(str(lib["path"]))
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert is_faststart_mp4(outcome.restored_path) is True
+
+
+def test_an_mp4_without_fast_start_comes_back_without_it(tmp_path, monkeypatch):
+    """Restore writes the original's layout, not fast-start for everything."""
+    from app.core.probe import is_faststart_mp4
+
+    lib = _mp4_library(tmp_path, monkeypatch, faststart=False)
+    _run_job_into(lib, _DROP_FRENCH + ["-movflags", "+faststart"], job_id=1,
+                  fmt="mp4", suffix=".mp4")
+    assert is_faststart_mp4(str(lib["path"]))
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert is_faststart_mp4(outcome.restored_path) is False
+
+
+def test_the_layout_comes_from_the_original_not_the_last_job(tmp_path, monkeypatch):
+    """
+    Two fast-start jobs on an original without it. The second capture
+    extends the point and must keep the original's layout, not record
+    its fast-start input in its place.
+    """
+    from app.core.probe import is_faststart_mp4
+
+    lib = _mp4_library(tmp_path, monkeypatch, faststart=False)
+    _run_job_into(lib, _DROP_FRENCH + ["-movflags", "+faststart"], job_id=1,
+                  fmt="mp4", suffix=".mp4")
+    _run_job_into(lib, ["-map", "0", "-c", "copy", "-metadata:s:a:0", "language=ger",
+                        "-movflags", "+faststart"], job_id=2, fmt="mp4", suffix=".mp4")
+
+    outcome = _revert(lib)
+
+    assert outcome.success is True, outcome.error
+    assert is_faststart_mp4(outcome.restored_path) is False
+
+
+def test_the_manifest_records_the_layout_of_an_mp4_only(tmp_path, monkeypatch):
+    from app.database.models import RevertPoint
+
+    for faststart in (True, False):
+        (tmp_path / str(faststart)).mkdir()
+        lib = _mp4_library(tmp_path / str(faststart), monkeypatch, faststart=faststart)
+        _run_job_into(lib, _DROP_FRENCH, job_id=1, fmt="mp4", suffix=".mp4")
+        manifest = json.loads(lib["db"].query(RevertPoint).one().manifest)
+        assert manifest["faststart"] is faststart
+
+    (tmp_path / "mkv").mkdir()
+    lib = _library(tmp_path / "mkv", monkeypatch, audio=[(440, "eng"), (880, "fre")])
+    _run_job(lib, _DROP_FRENCH, job_id=1)
+    manifest = json.loads(lib["db"].query(RevertPoint).one().manifest)
+    assert manifest.get("faststart") is None
+
+
+def test_the_restore_command_asks_for_fast_start_only_where_recorded():
+    """
+    argv: an MP4 recorded as fast-start gets it; one recorded without, a
+    point from before the layout was recorded, and a Matroska original
+    never do.
+    """
+    from app.core.ffmpeg import build_restore_command
+
+    stream = {"index": 0, "type": "video", "codec": "h264", "processed_index": 0,
+              "tags": {}, "disposition": []}
+
+    def cmd(container, **extra):
+        manifest = {"container": container, "streams": [stream], **extra}
+        return build_restore_command("/m/p", "/m/s", "/m/o", manifest)
+
+    on = cmd("mp4", faststart=True)
+    i = on.index("-movflags")
+    assert on[i + 1] == "+faststart" and i < on.index("-f")
+    assert "-movflags" not in cmd("mp4", faststart=False)
+    assert "-movflags" not in cmd("mp4")
+    assert "-movflags" not in cmd("mkv", faststart=True)

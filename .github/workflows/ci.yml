@@ -37,41 +37,41 @@ jobs:
       # tests reach: when muxing from two inputs, 6.1 and 8.1 schedule their
       # reads differently, and 8.1 reports progress on a short clip
       # differently. Tests passing against a binary nobody runs prove little.
-      # Same asset, same two URLs, same version check as the Dockerfile —
-      # keep them in step when the FFmpeg line is bumped.
+      # Same tag, version and SHA-256 as the Dockerfile, which explains why
+      # it is a month-end build and how to move it. Change all three in both
+      # files together; tests/test_deployment_config.py fails if they differ.
       - name: Install FFmpeg (the build the Docker image ships)
+        env:
+          FFMPEG_TAG: autobuild-2026-10-31-12-59
+          FFMPEG_VERSION: n8.1.3-27-g8dca1586f4
+          FFMPEG_SHA256: 41e9c565594c390622cf968d82fa4135d9e9a11d06c1515644288cbc844e3380
         run: |
           set -eu
-          asset="ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz"
-          ok=""
-          for url in \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${asset}" \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/${asset}"; do
-            echo "Trying FFmpeg download: $url"
-            if curl -fsSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ffmpeg.tar.xz" "$url"; then
-              ok=1; break
-            fi
-            echo "  failed, trying the next source" >&2
-          done
-          if [ -z "$ok" ]; then
-            echo "Could not download FFmpeg 8.1 from any source." >&2
-            exit 1
-          fi
+          asset="ffmpeg-${FFMPEG_VERSION}-linux64-gpl-8.1.tar.xz"
+          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${asset}"
+          echo "Downloading FFmpeg: $url"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ffmpeg.tar.xz" "$url" \
+            || { echo "Could not download $url. If BtbN has pruned ${FFMPEG_TAG}, move to a newer month-end build (see the Dockerfile)." >&2; exit 1; }
+          echo "${FFMPEG_SHA256}  $RUNNER_TEMP/ffmpeg.tar.xz" | sha256sum -c - \
+            || { echo "The FFmpeg download does not match its pinned SHA-256" >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/ffmpeg"
           tar -xJf "$RUNNER_TEMP/ffmpeg.tar.xz" -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
-          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1 | grep -q 'version n8.1' \
-            || { echo "Downloaded ffmpeg is not the expected 8.1 build" >&2; exit 1; }
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-" \
+            || { echo "Downloaded ffmpeg is not the pinned ${FFMPEG_VERSION} build" >&2; exit 1; }
           echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+          echo "FFMPEG_VERSION=${FFMPEG_VERSION}" >> "$GITHUB_ENV"
 
       # A separate step because $GITHUB_PATH only applies to the steps after
       # the one that writes it. The runner image may carry its own ffmpeg in
       # /usr/bin; this fails if that one, not ours, is what the tests will find.
+      # FFMPEG_VERSION comes from the step above, through $GITHUB_ENV.
       - name: Confirm the tests will use that FFmpeg
         run: |
+          set -u
           ffmpeg -version | head -1
           ffprobe -version | head -1
-          ffmpeg -version | head -1 | grep -q 'version n8.1'
-          ffprobe -version | head -1 | grep -q 'version n8.1'
+          ffmpeg -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-"
+          ffprobe -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-"
 
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app
@@ -85,10 +85,14 @@ jobs:
       # rounds of review without anything noticing — a one-second check that
       # nobody was running. Kept separate from the test step so a lint failure
       # reads as a lint failure.
+      #
+      # tools/ is linted too: nothing in the suite imports it, so this is the
+      # only check its scripts get on a push. It catches a name the script
+      # misspells, not one the app renames.
       - name: Lint (pyflakes)
         run: |
           pip install pyflakes
-          pyflakes app tests
+          pyflakes app tests tools
 
       - name: Import check
         # DATABASE_PATH/TEMP_DIR default to /config and /tmp/remuxarr, which

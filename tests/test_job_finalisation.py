@@ -83,9 +83,12 @@ probe_file is stubbed per test. What is under test is what _finish_job DOES
 with a probe result; the probe itself is covered by the ffprobe-backed tests
 in test_scan_stats_and_subtitle_classifier.py.
 """
+import json
 import os
 
 import pytest
+
+from tests import test_forge_keeps_tracks_current as _kept
 
 
 @pytest.fixture
@@ -509,7 +512,8 @@ def test_a_probe_failure_leaves_the_job_successful(worker, Session, media_dir,
     )
     assert _media(Session, media_id).status == "processed"
     # The old rows survive rather than being wiped — a stale description is
-    # more useful than none, and the next full rescan corrects it.
+    # more useful than none. The file is marked to be looked at again, which
+    # is what corrects them: see the real runs at the end of this file.
     with Session() as db:
         assert db.query(Track).filter(Track.file_id == media_id).count() == 1
 
@@ -1128,3 +1132,146 @@ def test_a_second_extraction_does_not_clash_with_the_first(worker, Session,
     assert all(si < 0 for si, _path in rows.values())
     with Session() as db:
         assert db.query(Track).filter(Track.file_id == media_id).count() == 2
+
+
+# ── A post-job probe that fails, through the real pipeline ───────────────────
+#
+# _finish_job stores the new size and mtime before it probes. When the probe
+# failed, the Track rows kept describing the file before the job, a delta
+# scan saw nothing changed, and the record stayed wrong until a Force Full
+# Rescan. Reproduced with a real job before these tests. The file is now
+# marked (MediaFile.reevaluate_after_job): the worker looks again straight
+# after the job, and a scan does until a probe works.
+#
+# The review that found this proposed the -1 stamp a revert writes instead.
+# Measured with a real job, the scan that re-probed then read the file as
+# replaced (scanner._replaced_on_disk: a changed stamp and tracks unlike the
+# stale rows) and forgot its Confirm correct answers, which this path keeps.
+#
+# Verified by mutation, 4 applied, 4 killed, each surviving the full suite
+# (2284 tests) first: no mark (killed by both failure runs, on the stale
+# tracks), the -1 in place of the mark (the same), the -1 as well as the mark
+# (both failure runs, on the Confirm correct alone: the re-probe that put the
+# tracks right read the file as replaced), and the mark set after every
+# successful job, whose extra look leaves a skipped row beside every job
+# (the working-probe run).
+
+# That file's real-FFmpeg fixture, bound by assignment for the reason
+# test_forge_undo_identity gives.
+lib = _kept.lib
+
+
+def _record(lib):
+    """The stored tracks, the mark, and the audio Confirm correct."""
+    from app.database.models import MediaFile, Track
+
+    with lib.Session() as db:
+        media = db.query(MediaFile).one()
+        tracks = [(t.track_type, t.codec, t.language) for t in
+                  db.query(Track).filter(Track.file_id == media.id)
+                                 .order_by(Track.stream_index)]
+        return tracks, media.reevaluate_after_job, media.audio_language_ignored
+
+
+def _statuses(lib):
+    from app.database.models import QueueItem
+
+    with lib.Session() as db:
+        return [q.status for q in db.query(QueueItem).order_by(QueueItem.id)]
+
+
+def _probe_fails_inside(monkeypatch, module, function_owner, function_name):
+    """Make `module.probe_file` raise while `function_owner.function_name` runs."""
+    from app.core.probe import ProbeError
+
+    real_probe = module.probe_file
+    real_function = getattr(function_owner, function_name)
+    inside = []
+
+    def probe(*args, **kwargs):
+        if inside:
+            raise ProbeError("simulated: the file could not be read")
+        return real_probe(*args, **kwargs)
+
+    def function(*args, **kwargs):
+        inside.append(1)
+        try:
+            return real_function(*args, **kwargs)
+        finally:
+            inside.pop()
+
+    monkeypatch.setattr(module, "probe_file", probe)
+    monkeypatch.setattr(function_owner, function_name, function)
+
+
+def _queue_dropping_french(lib):
+    """Video, English 5.1 and French stereo AAC, and a French SRT, queued to
+    drop the French audio, with the audio Confirm correct given."""
+    from app.database.models import AppSetting, MediaFile
+
+    with lib.Session() as db:
+        db.merge(AppSetting(key="extract_text_subtitles_to_srt", value=json.dumps(False)))
+        db.commit()
+    _kept._video(lib.video, audio=[_kept.ENGLISH_51, ("fre", 2, None)])
+    _kept._queue(lib)
+    _kept._drop_french(lib, "keep_audio_languages")
+    assert _kept._queue(lib) is not None
+    with lib.Session() as db:
+        db.query(MediaFile).one().audio_language_ignored = True
+        db.commit()
+
+
+BEFORE_THE_JOB = [("video", "h264", "und"), ("audio", "aac", "eng"),
+                  ("audio", "aac", "fre"), ("subtitle", "subrip", "fre")]
+AFTER_THE_JOB = [("video", "h264", "und"), ("audio", "aac", "eng"),
+                 ("subtitle", "subrip", "fre")]
+
+
+@_kept.needs_ffmpeg
+def test_tracks_a_failed_post_job_probe_left_are_corrected_by_the_next_scan(lib, monkeypatch):
+    """
+    The probe fails after the job and again when the worker looks straight
+    after it. A plain delta scan then puts the record right, and keeps the
+    Confirm correct.
+    """
+    import app.core.scanner as scanner
+    from app.core.scanner import scan_library
+
+    _queue_dropping_french(lib)
+    _probe_fails_inside(monkeypatch, lib.worker, lib.worker, "_finish_job")
+    _probe_fails_inside(monkeypatch, scanner, lib.worker, "_reevaluate_after_job")
+
+    assert _kept._run_queued(lib) == ("success", None)
+    assert _record(lib) == (BEFORE_THE_JOB, True, True)
+
+    monkeypatch.undo()
+    with lib.Session() as db:
+        scan_library(db, [str(lib.video.parent)])
+
+    assert _record(lib) == (AFTER_THE_JOB, False, True)
+
+
+@_kept.needs_ffmpeg
+def test_a_post_job_probe_that_fails_once_is_put_right_straight_after_the_job(lib, monkeypatch):
+    """No scan needed: the worker's look after the job probes again."""
+    _queue_dropping_french(lib)
+    _probe_fails_inside(monkeypatch, lib.worker, lib.worker, "_finish_job")
+
+    assert _kept._run_queued(lib) == ("success", None)
+
+    assert _record(lib) == (AFTER_THE_JOB, False, True)
+
+
+@_kept.needs_ffmpeg
+def test_a_job_whose_probe_works_is_not_looked_at_again(lib):
+    """
+    The look after a job is for a file that needs it. Run after every job,
+    it decides each file again at once, and a file the job finished with
+    gains a skipped row beside its success.
+    """
+    _queue_dropping_french(lib)
+
+    assert _kept._run_queued(lib) == ("success", None)
+
+    assert _statuses(lib) == ["success"]
+    assert _record(lib) == (AFTER_THE_JOB, False, True)

@@ -11,6 +11,7 @@ Key controls (set at runtime, no restart needed):
 """
 import asyncio
 import functools
+import dataclasses
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -161,7 +162,7 @@ def abort_job(job_id: int) -> bool:
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
-def recover_interrupted_jobs(db) -> tuple[int, int]:
+def recover_interrupted_jobs(db, finished: list[int] | None = None) -> tuple[int, int]:
     """
     Reset every job left at "processing" by an unclean shutdown.
 
@@ -171,17 +172,48 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
     after it had to transcribe a copy to reach it, which meant deleting the
     block from start_worker broke nothing in the suite.
 
-    Returns (queue_items_reset, forge_jobs_reset).
+    A job whose swap record shows its output is already in place is
+    finished instead, as the success it was (_recover_from_swap_record),
+    and its id appended to `finished`, so the caller can run what follows
+    a success: the Sonarr, Radarr and Plex notices, and the re-check.
+
+    Returns (queue_items_reset, forge_jobs_reset); a job finished is not
+    counted as reset.
     """
     # Jobs still in "processing" were left behind by a crash, SIGKILL, or an
     # unclean container restart. Without this they stay in "processing"
     # forever and block the UI.
     stuck = db.query(QueueItem).filter(QueueItem.status == "processing").all()
+    records = [(job.id, job.file_id, job.swap_record) for job in stuck
+               if job.swap_record]
+    if records:
+        # Nothing changed yet: this only ends the read, so the sessions the
+        # recovery opens can write while this one is still open.
+        db.commit()
+    done: set[int] = set()
+    unswapped: set[int] = set()
+    for job_id, file_id, record in records:
+        try:
+            if _recover_from_swap_record(job_id, file_id, record):
+                done.add(job_id)
+            else:
+                unswapped.add(job_id)
+        except Exception:
+            logger.exception("Could not recover job %d from its swap record", job_id)
+    if done:
+        db.expire_all()
+        stuck = [job for job in stuck if job.id not in done]
+        if finished is not None:
+            finished.extend(sorted(done))
     if stuck:
         for job in stuck:
             job.status        = "failed"
-            job.error_message = "Interrupted by container restart or crash"
+            job.error_message = (
+                "Interrupted by container restart or crash, before its output "
+                "replaced anything" if job.id in unswapped
+                else "Interrupted by container restart or crash")
             job.completed_at  = utcnow()
+            job.swap_record   = None
             if job.media_file:
                 job.media_file.status = "error"
         db.commit()
@@ -238,6 +270,11 @@ def recover_interrupted_jobs(db) -> tuple[int, int]:
     return len(stuck), len(stuck_forge)
 
 
+# The after-job steps of jobs startup recovery finished, held so they are
+# not collected while they run.
+_startup_tasks: set[asyncio.Task] = set()
+
+
 async def start_worker() -> None:
     global _worker_task, _running, _paused, _auto_start_seen
     _running = True
@@ -250,10 +287,154 @@ async def start_worker() -> None:
         _auto_start_seen = bool(cfg.get("auto_start_jobs", True))
         _paused = not _auto_start_seen
 
-        recover_interrupted_jobs(db)
+        finished: list[int] = []
+        recover_interrupted_jobs(db, finished=finished)
+
+    if finished:
+        from app.api.ws_manager import ws_manager   # avoid circular import
+        loop = asyncio.get_running_loop()
+        for job_id in finished:
+            task = asyncio.create_task(_after_job(job_id, ws_manager, loop),
+                                       name=f"remuxarr-after-job-{job_id}")
+            _startup_tasks.add(task)
+            task.add_done_callback(_startup_tasks.discard)
 
     _worker_task = asyncio.create_task(_loop(), name="remuxarr-worker")
     logger.info("Background worker started (paused=%s)", _paused)
+
+
+def _write_swap_record(job_id: int, record: str) -> str | None:
+    """
+    Store what a job is about to swap into place (QueueItem.swap_record).
+
+    Returns an error that declines the swap when it cannot be stored: a
+    job that swapped without its record would leave a crash straight after
+    as unrecoverable as it was before the record existed.
+    """
+    db = SessionLocal()
+    try:
+        job = db.get(QueueItem, job_id)
+        if job is None:
+            return "The job is no longer in the queue. Nothing was replaced."
+        job.swap_record = record
+        db.commit()
+        return None
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Job %d: could not record the swap", job_id)
+        return f"Could not record the swap: {exc}. Nothing was replaced."
+    finally:
+        db.close()
+
+
+def _matches(path: str | None, size, mtime) -> bool:
+    """Whether the file at `path` is the one recorded: same size and mtime."""
+    if not path or size is None or mtime is None:
+        return False
+    print_ = _fingerprint(path)
+    return (print_ is not None and print_[0] == size
+            and abs(print_[1] - mtime) < 0.001)
+
+
+def _recover_from_swap_record(job_id: int, file_id: int, record_json: str) -> bool:
+    """
+    Finish, or clean up after, a job a crash stopped at its swap.
+
+    The record is written just before the swap (_write_swap_record), and
+    the main file is swapped last (run_staged_subprocess), so whether the
+    job happened comes down to one question: is the main output at its
+    final path, the same size and mtime as the copy staged for it? A
+    rename keeps both, and nothing else writes a file to match them.
+
+    If it is, every other output went in before it, and the job is finished
+    as a success with what its own finish would have done: the revert point
+    recorded, the original removed after a container change while it is
+    still the file the job read, then _finish_job, which carries the
+    answers across and stores the new tracks, size and mtime. Before this a
+    crash in that window failed the job, and the next scan read the new
+    file as a replacement and forgot its answers; a conversion left the old
+    MKV beside the new MP4.
+
+    If it is not, nothing was replaced, and what the job did put in place
+    is taken out again, as undo_own_files does on any other ending short of
+    success: the subtitles it swapped in, only while each is still the file
+    it wrote, and the files moved aside for them back to their names. Its
+    staged copies still waiting go too, and the revert copy nothing will
+    record is deleted. Returns False, and the caller fails the job.
+
+    Returns True when the job was finished.
+    """
+    try:
+        record = json.loads(record_json)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    main = record.get("main")
+    outputs = {e.get("path"): e for e in record.get("outputs") or []
+               if isinstance(e, dict)}
+    revert = record.get("revert") if isinstance(record.get("revert"), dict) else None
+
+    main_entry = outputs.get(main)
+    if main_entry and _matches(main, main_entry.get("size"), main_entry.get("mtime")):
+        source = record.get("source") or {}
+        original = source.get("path")
+        if (original and original != main and os.path.exists(original)
+                and _matches(original, source.get("size"), source.get("mtime"))):
+            try:
+                os.remove(original)
+                logger.info("Job %d: removed the original after the container "
+                            "change, finishing at startup: %s", job_id, original)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove the original %s: %s",
+                               job_id, original, exc)
+        if revert:
+            with SessionLocal() as db:
+                recorded = (db.query(RevertPoint.id)
+                              .filter(RevertPoint.sidecar_path == revert.get("sidecar_path"))
+                              .first())
+            if not recorded:
+                try:
+                    _record_revert_point(file_id, CapturedRevertPoint(**revert), main,
+                                         record.get("created_files") or [])
+                except TypeError:
+                    logger.warning("Job %d: the revert point in its swap record "
+                                   "could not be read", job_id)
+        _finish_job(job_id, True, main, main_entry.get("size"), None)
+        logger.info(
+            "Job %d finished at startup: Remuxarr stopped after its output "
+            "replaced %s and before the job was recorded", job_id, main)
+        return True
+
+    for path, entry in outputs.items():
+        if path != main and _matches(path, entry.get("size"), entry.get("mtime")):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, path, exc)
+        # A staged copy the crash left: the startup clean-up only takes one
+        # five minutes old, so a quick restart left it in the library.
+        part = entry.get("part")
+        if part and _matches(part, entry.get("size"), entry.get("mtime")):
+            try:
+                os.remove(part)
+            except OSError as exc:
+                logger.warning("Job %d: could not remove %s: %s", job_id, part, exc)
+    for pair in reversed(record.get("moved_aside") or []):
+        try:
+            old, new = pair
+            if not os.path.exists(old) and os.path.exists(new):
+                os.rename(new, old)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Job %d: could not move %r back: %s", job_id, pair, exc)
+    if revert and revert.get("sidecar_path"):
+        with SessionLocal() as db:
+            recorded = (db.query(RevertPoint.id)
+                          .filter(RevertPoint.sidecar_path == revert["sidecar_path"])
+                          .first())
+        if not recorded:
+            delete_sidecar(revert["sidecar_path"])
+    return False
 
 
 # How long a clean stop waits for running jobs to wind down. Docker gives a
@@ -279,8 +460,9 @@ async def stop_worker() -> None:
     _requeue_cut_off_job); one whose output was already swapped in finishes
     its bookkeeping first (_run_job), so it is recorded as the success it
     was. A job still going after SHUTDOWN_JOB_GRACE_SECONDS is left to the
-    kill, and recover_interrupted_jobs fails it on the next start, as a
-    crash is.
+    kill, and recover_interrupted_jobs deals with it on the next start, as
+    with a crash: finished if its output was already in place, failed if
+    not (_recover_from_swap_record).
 
     A forge run is stopped the same way and in the same wait. Cut off before
     it replaced the file, it goes back to the forge queue
@@ -486,91 +668,103 @@ async def _run_and_broadcast(
         # not take it for a job whose finalisation failed.
         if cancelled:
             await loop.run_in_executor(None, _requeue_cut_off_job, job_id)
-        post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
-        if post_job:
-            final = post_job["final"]
-            # Safety net: if the job is still "processing" after _run_job
-            # returned (e.g. _finish_job's commit failed and the rollback
-            # left the row unchanged), force it to "failed" via a minimal
-            # fresh session so the frontend doesn't stay stuck at 100%.
-            if final.get("status") == "processing":
-                logger.warning(
-                    "Job %d still in 'processing' state after completion — "
-                    "forcing to 'failed' via emergency cleanup",
-                    job_id,
-                )
-                await loop.run_in_executor(
-                    None, _emergency_fail_job, job_id,
-                    "Job did not complete cleanly (finalisation failed)",
-                )
-                final = final.copy()
-                final["status"] = "failed"
-                final["error"]  = "Finalisation failed — check container logs"
+        await _after_job(job_id, ws_manager, loop)
 
-            await ws_manager.broadcast_json({
-                "event":    "job_completed",
-                "job_id":   job_id,
-                "status":   final["status"],
-                "filename": final["filename"],
-                "error":    final["error"],
-            })
 
-            # Post-job *arr notifications — only for real successes.
-            # sonarr/radarr data was already read in the same session as
-            # `final` above (see _load_post_job_data) rather than each
-            # opening its own separate connection here.
-            if final.get("status") == "success":
-                if post_job["sonarr"]:
-                    asyncio.create_task(
-                        _trigger_arr_notify(
-                            post_job["sonarr"], loop, notify_sonarr,
-                            restore_episode_quality, "Sonarr",
-                        )
+async def _after_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> None:
+    """
+    What follows a job's end: the completed broadcast, and after a success
+    the Sonarr, Radarr and Plex notices and the re-check, then the email.
+
+    Run by _run_and_broadcast for every job, and by start_worker for a job
+    startup recovery finished (_recover_from_swap_record), which would
+    otherwise leave Sonarr unaware that Movie.mkv had become Movie.mp4.
+    """
+    post_job = await loop.run_in_executor(None, _load_post_job_data, job_id)
+    if post_job:
+        final = post_job["final"]
+        # Safety net: if the job is still "processing" after _run_job
+        # returned (e.g. _finish_job's commit failed and the rollback
+        # left the row unchanged), force it to "failed" via a minimal
+        # fresh session so the frontend doesn't stay stuck at 100%.
+        if final.get("status") == "processing":
+            logger.warning(
+                "Job %d still in 'processing' state after completion — "
+                "forcing to 'failed' via emergency cleanup",
+                job_id,
+            )
+            await loop.run_in_executor(
+                None, _emergency_fail_job, job_id,
+                "Job did not complete cleanly (finalisation failed)",
+            )
+            final = final.copy()
+            final["status"] = "failed"
+            final["error"]  = "Finalisation failed — check container logs"
+
+        await ws_manager.broadcast_json({
+            "event":    "job_completed",
+            "job_id":   job_id,
+            "status":   final["status"],
+            "filename": final["filename"],
+            "error":    final["error"],
+        })
+
+        # Post-job *arr notifications — only for real successes.
+        # sonarr/radarr data was already read in the same session as
+        # `final` above (see _load_post_job_data) rather than each
+        # opening its own separate connection here.
+        if final.get("status") == "success":
+            if post_job["sonarr"]:
+                asyncio.create_task(
+                    _trigger_arr_notify(
+                        post_job["sonarr"], loop, notify_sonarr,
+                        restore_episode_quality, "Sonarr",
                     )
-                if post_job["radarr"]:
-                    asyncio.create_task(
-                        _trigger_arr_notify(
-                            post_job["radarr"], loop, notify_radarr,
-                            restore_movie_quality, "Radarr",
-                        )
-                    )
-                # A file that came with neither ID: a scan found it.
-                if post_job["lookup"]:
-                    asyncio.create_task(
-                        _find_then_notify(
-                            post_job["lookup"], loop,
-                            functools.partial(_remember_arr_id_on_job, job_id),
-                            f"job {job_id}",
-                        )
-                    )
-
-                # Plex — independent of Sonarr/Radarr. Fires a lightweight
-                # refresh for every successful job; reprocessed files
-                # additionally get queued for a delayed explicit Analyze
-                # (see _load_plex_notify_data for why both are needed).
-                plex_data = await loop.run_in_executor(
-                    None, _load_plex_notify_data, job_id,
                 )
-                if plex_data:
-                    asyncio.create_task(_trigger_plex_notify(plex_data, loop))
-
-                # A language answered while this job ran. Only after a
-                # success: a failed or aborted job leaves it to the next scan
-                # or a retry, rather than queueing a job nobody asked for.
-                await loop.run_in_executor(None, _reevaluate_after_job, job_id)
-
-            # Email — runs for BOTH success and failure, unlike the blocks
-            # above. A success quietly resets the consecutive-failure
-            # breaker (even if email is currently disabled, so the state
-            # stays accurate if it's re-enabled later); a failure may
-            # trigger an email depending on the breaker's current state.
-            # See _load_email_notify_data's docstring for the full logic.
-            if final.get("status") in ("success", "failed", "dry_run"):
-                email_data = await loop.run_in_executor(
-                    None, _load_email_notify_data, job_id,
+            if post_job["radarr"]:
+                asyncio.create_task(
+                    _trigger_arr_notify(
+                        post_job["radarr"], loop, notify_radarr,
+                        restore_movie_quality, "Radarr",
+                    )
                 )
-                if email_data:
-                    asyncio.create_task(_trigger_email_notify(email_data, loop))
+            # A file that came with neither ID: a scan found it.
+            if post_job["lookup"]:
+                asyncio.create_task(
+                    _find_then_notify(
+                        post_job["lookup"], loop,
+                        functools.partial(_remember_arr_id_on_job, job_id),
+                        f"job {job_id}",
+                    )
+                )
+
+            # Plex — independent of Sonarr/Radarr. Fires a lightweight
+            # refresh for every successful job; reprocessed files
+            # additionally get queued for a delayed explicit Analyze
+            # (see _load_plex_notify_data for why both are needed).
+            plex_data = await loop.run_in_executor(
+                None, _load_plex_notify_data, job_id,
+            )
+            if plex_data:
+                asyncio.create_task(_trigger_plex_notify(plex_data, loop))
+
+            # A language answered while this job ran. Only after a
+            # success: a failed or aborted job leaves it to the next scan
+            # or a retry, rather than queueing a job nobody asked for.
+            await loop.run_in_executor(None, _reevaluate_after_job, job_id)
+
+        # Email — runs for BOTH success and failure, unlike the blocks
+        # above. A success quietly resets the consecutive-failure
+        # breaker (even if email is currently disabled, so the state
+        # stays accurate if it's re-enabled later); a failure may
+        # trigger an email depending on the breaker's current state.
+        # See _load_email_notify_data's docstring for the full logic.
+        if final.get("status") in ("success", "failed", "dry_run"):
+            email_data = await loop.run_in_executor(
+                None, _load_email_notify_data, job_id,
+            )
+            if email_data:
+                asyncio.create_task(_trigger_email_notify(email_data, loop))
 
 
 def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
@@ -778,9 +972,10 @@ def _flag_subtitle_encoding_review(
     #
     # Each entry names its own problem, as the gates' entries do. "encoding"
     # marks a track that must not be offered Extract, because extracting it
-    # is exactly what just failed. resolve_subtitles enforces that from the
-    # item-level review_reason set below, which is exact for this review: it
-    # only ever holds the tracks whose extraction failed.
+    # is exactly what just failed. /review/apply (queue._answer_subtitle_
+    # review) enforces that from the item-level review_reason set below,
+    # which is exact for this review: it only ever holds the tracks whose
+    # extraction failed.
     flagged = [
         {
             "stream_index": t["stream_index"],
@@ -825,10 +1020,11 @@ def _flag_subtitle_encoding_review(
                 #    nonsense "Contains 0 subtitle track () with non-UTF-8
                 #    encoded characters".
                 #
-                # 2. It corrupts an unrelated signal. review_subtitles IS NULL
-                #    is the established discriminator for "this review came
-                #    from the undefined-audio-count gate" — resolve_subtitles_
-                #    bulk and approve_manual_review both rely on it. Writing a
+                # 2. It corrupted an unrelated signal. review_subtitles IS NULL
+                #    was the discriminator for "this review came from the
+                #    undefined-audio-count gate" — the bulk resolver and the
+                #    approve endpoint, both since removed, relied on it, and
+                #    session._release_threshold_holds still does. Writing a
                 #    NULL here made a subtitle-encoding review indistinguishable
                 #    from a threshold review, so approving it set
                 #    und_audio_threshold_acknowledged on a file that never
@@ -988,6 +1184,37 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     async def on_before_swap() -> str | None:
         return stop_if_changed() or make_room(
             [p for p in extraction_targets if p not in written_here])
+
+    # ── The swap record ────────────────────────────────────────────────────
+    # Written just before each swap, so a crash after it leaves startup
+    # recovery what it needs to tell whether this job replaced anything,
+    # and to finish it if it did: see _recover_from_swap_record. The
+    # two-pass path swaps each extracted subtitle in its own run and the
+    # remux last, so the record gathers the outputs of every run.
+    swap_record: dict = {
+        "main": output_path,
+        "source": ({"path": input_path, "size": source_print[0],
+                    "mtime": source_print[1]} if source_print else None),
+        "outputs": [],
+    }
+
+    async def on_swap_ready(staged: list[tuple[str, str]]) -> str | None:
+        for part, final in staged:
+            print_ = _fingerprint(part)
+            if print_ is None:
+                return (f"The staged copy of {os.path.basename(final)} is "
+                        f"missing. Nothing was replaced.")
+            swap_record["outputs"] = [e for e in swap_record["outputs"]
+                                      if e["path"] != final]
+            swap_record["outputs"].append(
+                {"path": final, "part": part,
+                 "size": print_[0], "mtime": print_[1]})
+        swap_record["revert"] = (dataclasses.asdict(captured[0])
+                                 if captured else None)
+        swap_record["created_files"] = sorted(will_create)
+        swap_record["moved_aside"] = [list(m) for m in moved_aside]
+        return await loop.run_in_executor(
+            None, _write_swap_record, job_id, json.dumps(swap_record))
 
     def undo_own_files() -> None:
         # A job that ends without success leaves the video as it was, every
@@ -1226,6 +1453,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds     = timeout_seconds,
                 before_staging      = on_before_staging,
                 before_swap         = on_before_swap,
+                on_swap_ready       = on_swap_ready,
             )
 
             if not result.success and _is_subtitle_encoding_failure(result.error):
@@ -1282,6 +1510,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds      = timeout_seconds,
                     before_staging       = on_before_staging,
                     before_swap          = on_before_swap,
+                    on_swap_ready        = on_swap_ready,
                 )
 
             # All-or-nothing staging: result.success now guarantees every
@@ -1346,6 +1575,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     job_id         = job_id,
                     timeout_seconds= timeout_seconds,
                     before_swap    = room_for_this_one,
+                    on_swap_ready  = on_swap_ready,
                 )
                 if ext_result.success:
                     written_here.add(action.external_path)
@@ -1405,6 +1635,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 timeout_seconds   = timeout_seconds,
                 before_staging    = on_before_staging,
                 before_swap       = on_before_swap,
+                on_swap_ready     = on_swap_ready,
             )
 
             if _needs_audio_transcode_retry(result):
@@ -1427,6 +1658,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     timeout_seconds   = timeout_seconds,
                     before_staging    = on_before_staging,
                     before_swap       = on_before_swap,
+                    on_swap_ready     = on_swap_ready,
                 )
 
     except asyncio.CancelledError:
@@ -1579,6 +1811,9 @@ def _claim_next_locked() -> int | None:
 
         job.status     = "processing"
         job.started_at = utcnow()
+        # An earlier attempt's record describes outputs this run has not
+        # made; recovery reading it would act on the wrong files.
+        job.swap_record = None
         db.commit()
         return job.id
     except Exception:
@@ -1589,16 +1824,29 @@ def _claim_next_locked() -> int | None:
         db.close()
 
 
+def _clear_leftover_rows(db, file_id: int) -> None:
+    """
+    Clear the file's other skipped and review rows before pickup turns its
+    job into one, as the scanner clears them before it records either
+    outcome. Left, History listed the file twice. The job itself is still
+    "processing" here, so it is not among them.
+    """
+    _clear_stale_status_records(db, file_id, ("skipped", "manual_review"))
+
+
 def _load_job_data(job_id: int):
     """
     Load everything _run_job needs, re-running the decision engine fresh —
-    and APPLY that fresh decision's outcome, exactly as queue.py's
-    _apply_decision_to_item does for its three call sites:
+    and APPLY that fresh decision's outcome, as queue.py's
+    _apply_decision_to_item does when a review is answered:
 
       • is_manual_review  → item transitions to "manual_review" (with the
         fresh reason and flagged subtitles), returns None — no execution.
       • should_process=False → item transitions to "skipped" (+ completed_at),
         returns None — no execution.
+      Either way the file's other skipped and review rows are cleared
+      first (_clear_leftover_rows), and so they are for a job skipped
+      because the file has been excluded since it was queued.
       • otherwise → PlannedActions refreshed to the FRESH decision's
         actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
         for execution. Everything returned is plain Python — no ORM
@@ -1607,7 +1855,7 @@ def _load_job_data(job_id: int):
     The first two outcomes were previously unhandled entirely — any
     decision was returned for execution unconditionally. A pending item
     whose circumstances changed between queuing and pickup (settings
-    edited, a threshold crossed, an override landing mid-queue) could
+    edited, an answer given, an override landing mid-queue) could
     compute a manual-review or nothing-to-do decision here, and instead
     of transitioning cleanly, the job would "execute" it: no-op decisions
     carry target_container=None, which build_ffmpeg_command now
@@ -1630,7 +1878,7 @@ def _load_job_data(job_id: int):
     flags (the exact hazard this function previously had — it called the
     upsert unconditionally, on every decision including manual-review
     ones). For the other two outcomes the upsert is what makes
-    corrections resolved via Approve show up in Language Review without
+    corrections answered on the Review page show up in Language Review without
     waiting for a later full scan (reported directly, fixed earlier);
     that behavior is preserved, now correctly guarded.
     """
@@ -1700,6 +1948,7 @@ def _load_job_data(job_id: int):
         # Full Rescan.
         excluded_by = ExcludeRules.from_settings(app_cfg).reason(media.path)
         if excluded_by:
+            _clear_leftover_rows(db, media.id)
             job.status           = "skipped"
             job.reason           = f"Excluded: {excluded_by}"
             job.review_subtitles = None
@@ -1768,8 +2017,11 @@ def _load_job_data(job_id: int):
         if media.font_attachments is None and probe_data is not None:
             media.font_attachments = count_font_attachments(probe_data)
 
+        # In stream order: analyze_file reads position (the last audio
+        # track is the forge copy), and the FFmpeg map follows the list.
         tracks_raw: list[Track] = (
-            db.query(Track).filter(Track.file_id == media.id).all()
+            db.query(Track).filter(Track.file_id == media.id)
+              .order_by(Track.stream_index).all()
         )
         tracks = [_track_to_dict(t) for t in tracks_raw]
 
@@ -1793,6 +2045,7 @@ def _load_job_data(job_id: int):
         )
 
         if decision.is_manual_review:
+            _clear_leftover_rows(db, media.id)
             job.status = "manual_review"
             job.reason = decision.reason
             job.review_subtitles = (
@@ -1811,6 +2064,7 @@ def _load_job_data(job_id: int):
         _upsert_language_flags(db, media, decision)
 
         if not decision.should_process:
+            _clear_leftover_rows(db, media.id)
             job.status = "skipped"
             job.reason = decision.reason
             job.review_subtitles = None
@@ -2121,6 +2375,7 @@ def _finish_job(
         job.output_path   = output_path
         job.output_size   = output_size
         job.error_message = error
+        job.swap_record   = None   # only a job left at processing needs it
 
         media: MediaFile | None = db.get(MediaFile, job.file_id)
         if media:
@@ -2225,7 +2480,8 @@ def _finish_job(
                     # FFmpeg work already succeeded and the file is
                     # correctly on disk; this is best-effort bookkeeping,
                     # not something that should turn a real success into
-                    # a failure. Worst case, a future full rescan corrects it.
+                    # a failure. The file is marked to be looked at again
+                    # (see the ProbeError branch below).
                     try:
                         probe_data = probe_file(final_path, app_settings.FFPROBE_PATH)
                         fmt_info   = extract_format_info(probe_data)
@@ -2264,6 +2520,15 @@ def _finish_job(
 
                         replace_track_rows(db, media.id, track_list)
 
+                        # A job can drop a forged AC3 with the AAC it was
+                        # built from, as the two share a language. Its forge
+                        # job kept saying "success", which kept the file off
+                        # the Forge page's candidates until an undo found
+                        # nothing to remove. From the same probe, in the
+                        # same commit, as a revert does it.
+                        from app.core.forge import settle_forge_jobs
+                        settle_forge_jobs(db, media.id, track_list, after="job")
+
                         primary_video_codec = next(
                             (t["codec"] for t in track_list if t["track_type"] == "video"),
                             None,
@@ -2283,11 +2548,26 @@ def _finish_job(
                     except ProbeError as exc:
                         logger.warning(
                             "Post-job track refresh failed for %s: %s — "
-                            "Track rows may be stale until the next full "
-                            "rescan",
+                            "Track rows may be stale until the file can be "
+                            "probed again",
                             final_path, exc,
                         )
                         clear_media_answers(media, "the processed file could not be probed")
+                        # The rows still describe the file before the job,
+                        # and the size and mtime written above are the new
+                        # file's, so a delta scan saw nothing to look at and
+                        # the record stayed wrong until a Force Full Rescan.
+                        # Marked, the worker looks again straight after this
+                        # successful job, and a scan does after that until a
+                        # probe works (MediaFile.reevaluate_after_job).
+                        #
+                        # Not the -1 stamp a revert writes. With it, the scan
+                        # that re-probed found the stamp changed and the
+                        # tracks unlike the stale rows, read the file as
+                        # replaced (scanner._replaced_on_disk), and forgot
+                        # its Confirm correct answers too, which this branch
+                        # deliberately keeps. Both measured with a real job.
+                        media.reevaluate_after_job = True
             else:
                 media.status = "error"
 
@@ -2451,13 +2731,16 @@ def _emergency_fail_job(job_id: int, reason: str) -> None:
 
 def _reevaluate_after_job(job_id: int) -> None:
     """
-    Look at the job's file again if a language was answered while the job
-    ran (MediaFile.reevaluate_after_job), so the answer is applied now.
+    Look at the job's file again if it was marked while the job ran or as it
+    finished (MediaFile.reevaluate_after_job): a language answered, a scan
+    that reached the file, or a post-job probe that failed.
 
-    The job decided before the answer existed, and _finish_job has just
-    recorded the file's new size and mtime, so no delta scan would look.
+    The job decided before the first two, and _finish_job has just recorded
+    the file's new size and mtime, so no delta scan would look; after the
+    third the stored tracks still describe the file before the job.
     queue_single_file re-probes and re-decides the way a webhook does, and
-    _process_file clears the mark; nothing is running for the file any more.
+    _process_file clears the mark once its probe works; nothing is running
+    for the file any more.
     """
     db = SessionLocal()
     try:
@@ -2465,8 +2748,8 @@ def _reevaluate_after_job(job_id: int) -> None:
         media = db.get(MediaFile, job.file_id) if job else None
         if media is None or not media.reevaluate_after_job:
             return
-        logger.info("Job %d: a language was answered while it ran — looking at %s again",
-                    job_id, media.path)
+        logger.info("Job %d: %s was marked to be looked at again after it — "
+                    "looking now", job_id, media.path)
         queue_single_file(db, media.path)
     except Exception:
         db.rollback()
@@ -3181,15 +3464,71 @@ def _requeue_cut_off_forge_job(job_id: int) -> None:
         logger.info("Forge job %d was cut off by shutdown — back in the queue", job_id)
 
 
+
+async def _forge_run(job_data, input_path, temp_path, covers,
+                     on_progress, on_before_staging, timeout_seconds):
+    """
+    Build a forge job's command and run it, for _run_forge_job.
+
+    Called inside _run_forge_job's try deliberately: the builders raise
+    ValueError on containers their format map doesn't know (instead of
+    silently corrupting the file with a matroska default), and that failure
+    must mark the forge job failed via the handler there, not escape it.
+    """
+    from app.core.forge import (
+        build_add_ac3_command, build_undo_command, run_forge_command,
+    )
+    if job_data["is_undo"]:
+        action_label = "Removing AC3 5.1 track"
+        cmd = build_undo_command(
+            input_path              = input_path,
+            # Resolved against a fresh probe at load time — NOT the
+            # stored add-time audio_track_count. After any pipeline
+            # drop that index points past the end, and FFmpeg
+            # silently ignores an unmatched negative map: the old
+            # undo rewrote the file unchanged and recorded a false
+            # "undone" with the AC3 still embedded. See
+            # resolve_forge_ac3_for_undo.
+            ac3_audio_output_index  = job_data["undo_audio_output_index"],
+            temp_path               = temp_path,
+            container               = job_data["container"],
+            add_faststart           = job_data["add_faststart"],
+            titles                  = job_data.get("titles"),
+            covers                  = covers,
+        )
+    else:
+        action_label = "Adding AC3 5.1 track"
+        cmd = build_add_ac3_command(
+            input_path        = input_path,
+            temp_path         = temp_path,
+            aac_stream_index  = job_data["aac_stream_index"],
+            audio_track_count = job_data["audio_track_count"],
+            container         = job_data["container"],
+            add_faststart     = job_data["add_faststart"],
+            titles            = job_data.get("titles"),
+            covers            = covers,
+        )
+
+    result = await run_forge_command(
+        cmd           = cmd,
+        input_path    = input_path,
+        output_path   = input_path,   # overwrite in-place
+        temp_path     = temp_path,
+        action_label  = action_label,
+        progress_callback = on_progress,
+        timeout_seconds   = timeout_seconds,
+        before_staging    = on_before_staging,
+    )
+    return result
+
 async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> bool:
     """Run a claimed forge job. Returns True, as it was claimed."""
     from app.core.forge import (
-        load_forge_job_data,
-        build_add_ac3_command, build_undo_command,
-        run_forge_command, ForgeProgress,
+        load_forge_job_data, ForgeProgress, ForgeResult,
         update_forge_progress, finish_forge_job, load_forge_final_state,
         probe_tracks_after_forge,
     )
+    from app.core.ffmpeg import copy_out_cover_art, discard_cover_art
 
     logger.info("Forge worker picked up job %d", job_id)
     await ws_manager.broadcast_json({"event": "forge_job_started", "job_id": job_id})
@@ -3282,48 +3621,28 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
         })
 
     try:
-        # Command building sits INSIDE the try deliberately — the builders
-        # now raise ValueError on containers their format map doesn't know
-        # (instead of silently corrupting the file with a matroska
-        # default), and that failure must mark the forge job failed via
-        # the handler below, not escape this function uncaught.
-        if job_data["is_undo"]:
-            action_label = "Removing AC3 5.1 track"
-            cmd = build_undo_command(
-                input_path              = input_path,
-                # Resolved against a fresh probe at load time — NOT the
-                # stored add-time audio_track_count. After any pipeline
-                # drop that index points past the end, and FFmpeg
-                # silently ignores an unmatched negative map: the old
-                # undo rewrote the file unchanged and recorded a false
-                # "undone" with the AC3 still embedded. See
-                # resolve_forge_ac3_for_undo.
-                ac3_audio_output_index  = job_data["undo_audio_output_index"],
-                temp_path               = temp_path,
-                container               = job_data["container"],
-                add_faststart           = job_data["add_faststart"],
-            )
-        else:
-            action_label = "Adding AC3 5.1 track"
-            cmd = build_add_ac3_command(
-                input_path        = input_path,
-                temp_path         = temp_path,
-                aac_stream_index  = job_data["aac_stream_index"],
-                audio_track_count = job_data["audio_track_count"],
-                container         = job_data["container"],
-                add_faststart     = job_data["add_faststart"],
-            )
-
-        result = await run_forge_command(
-            cmd           = cmd,
-            input_path    = input_path,
-            output_path   = input_path,   # overwrite in-place
-            temp_path     = temp_path,
-            action_label  = action_label,
-            progress_callback = on_progress,
-            timeout_seconds   = timeout_seconds,
-            before_staging    = on_before_staging,
+        # The file's Matroska covers, found by load_forge_job_data in the
+        # probe it makes, copied out so the command can attach them again
+        # rather than copy each as a video track (build_add_ac3_command). A
+        # cover that cannot be copied fails the run here, before FFmpeg
+        # starts. It removes its own copies if cancelled, and nothing awaits
+        # between its return and the finally that removes them after.
+        found, attachments = job_data.get("cover_art") or ([], 0)
+        covers, cover_error = await copy_out_cover_art(
+            input_path, found, attachments, tmp_dir,
+            f"forge_{job_id}", ".forge_tmp", f"Forge job {job_id}",
         )
+        try:
+            if cover_error:
+                result = ForgeResult(success=False, output_path=None,
+                                     output_size=None, error=cover_error)
+            else:
+                result = await _forge_run(
+                    job_data, input_path, temp_path, covers,
+                    on_progress, on_before_staging, timeout_seconds,
+                )
+        finally:
+            discard_cover_art(covers)
     except asyncio.CancelledError:
         # Stopped before the file was replaced: run_staged_subprocess swaps
         # and returns with no await in between. A revert point captured

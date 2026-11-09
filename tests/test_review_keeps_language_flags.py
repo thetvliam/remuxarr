@@ -50,7 +50,9 @@ def lib(tmp_path):
     """
     Show.mkv with two untagged audio tracks and two styled subtitles, one
     English and one French, scanned: a job is queued to convert it to MP4,
-    and each audio track is a question in Audio Language Review.
+    and each audio track is a question in Audio Language Review. Audio is
+    set to Ask, which puts both untagged tracks to a person; the default,
+    Leave, asks nothing.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -85,6 +87,7 @@ def lib(tmp_path):
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     db.add(AppSetting(key="dry_run_mode", value=json.dumps(False)))
+    db.add(AppSetting(key="fix_undefined_language_audio", value=json.dumps("always_ask")))
     db.commit()
 
     write(with_font=False)

@@ -8,13 +8,14 @@ import os
 from pathlib import Path
 from typing import Any, Generator
 
-from sqlalchemy import create_engine, inspect, or_, text
+from sqlalchemy import and_, create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.core.langcodes import canonical
 from app.core.timeutil import utcnow
-from app.database.models import AppSetting, Base, MediaFile, PlannedAction, QueueItem
+from app.database.models import (AppSetting, AudioLanguageFlag, Base, MediaFile,
+                                  PlannedAction, QueueItem, Track)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # library. "und" is not a language that failed to match the keep list,
     # it is the absence of one, and which of those two a user means is
     # genuinely their call rather than something to guess.
-    "keep_undefined_subtitles": False,
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
     # Off: a file keeps exactly the audio it kept before the setting existed.
@@ -59,7 +59,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # Overrides both of the above for the files it matches (Always Include).
     "include_patterns": [],
     # How many "und" audio tracks trigger a manual-review flag
-    "und_audio_threshold": 2,
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to
     # an external .srt sidecar file (Plex naming: Movie.en.srt /
     # Movie.en.forced.srt) and remove them from the muxed output. Kept
@@ -85,9 +84,11 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "image_subtitle_handling": "always_ask",
     # What to do with a file carrying embedded FONT attachments, which only
     # Matroska can hold. Its styled subtitles reference those fonts by name,
-    # so converting to MP4 drops the fonts and flattens ASS to SRT — text
-    # that was positioned over a sign in the frame ends up at the bottom of
-    # the screen with the sign still visible behind it. Nothing fails.
+    # so extracting them flattens ASS to SRT — text that was positioned over
+    # a sign in the frame ends up at the bottom of the screen with the sign
+    # still visible behind it — and converting to MP4 then drops the fonts.
+    # Nothing fails. Only consulted while extract_text_subtitles_to_srt is
+    # on; with it off the tracks stay embedded and nothing is lost.
     #   "always_ask"     — flag for manual review (the default)
     #   "always_keep"    — leave the ASS/SSA tracks embedded, which keeps the
     #                      file in Matroska and so keeps the fonts. Audio
@@ -123,12 +124,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # an upgrading install starts at always_leave regardless of what the
     # combined setting said. The cost of that reset is a language tag that
     # was not applied, which reprocessing puts back — chosen over touching
-    # the subtitle key, where the same reset costs tracks.
+    # the subtitle key, where the same reset cost tracks while an untagged
+    # subtitle under always_leave was dropped.
     "fix_undefined_language_audio": "always_leave",
     "undefined_language_value": "eng",
-    # Apply To, per type, same key-naming logic as the pair above.
-    "undefined_language_mode":  "all_undefined_per_type",
-    "undefined_language_mode_audio": "all_undefined_per_type",
     # ── Plex ───────────────────────────────────────────────────────────────
     "plex_enabled":        False,
     "plex_url":             "",
@@ -350,9 +349,104 @@ def init_db() -> None:
     _release_threshold_holds()
     _key_track_answers_by_descriptor()
     _remove_orphaned_planned_actions()
+    _rename_undefined_audio_flags()
+    # Before _delete_retired_settings: it runs only while the retired
+    # threshold's row is still there, which makes it a one-time step.
+    _copy_undefined_audio_confirmations()
+    _delete_retired_settings()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
+
+
+# Settings that no longer exist. Their stored values were left behind with
+# nothing reading them, and the export carries every stored row, so a backup
+# kept handing them on (the import skips keys it does not know).
+RETIRED_SETTINGS = (
+    # Untagged subtitles are always kept now (decision._sub_is_kept).
+    "keep_undefined_subtitles",
+    # Apply To, per type: Always Fix now tags only a file's one untagged
+    # track of a type (decision._lone_undefined_track).
+    "undefined_language_mode",
+    "undefined_language_mode_audio",
+    # The Undefined Audio Track Threshold: the undefined-track count sends a
+    # file with two or more to review under Fix and Ask.
+    "und_audio_threshold",
+)
+
+
+def _rename_undefined_audio_flags() -> None:
+    """
+    Give every untagged-track audio flag the one origin they share now,
+    "undefined". Safe on every start.
+
+    They had two: "threshold" when the retired Undefined Audio Track
+    Threshold raised them, and "mismatch" when Always Ask did, which is also
+    the origin of a tagged track whose language looks wrong. The origin
+    decides which switch Confirm correct writes, so a "mismatch" untagged
+    flag answered after the upgrade would have written the language-mismatch
+    one. A "mismatch" flag on a tagged track is left as it is.
+    """
+    with SessionLocal() as db:
+        renamed = (
+            db.query(AudioLanguageFlag)
+            .filter(or_(
+                AudioLanguageFlag.origin == "threshold",
+                and_(AudioLanguageFlag.origin == "mismatch",
+                     AudioLanguageFlag.detected_language == "und"),
+            ))
+            .update({"origin": "undefined"}, synchronize_session=False)
+        )
+        db.commit()
+    if renamed:
+        logger.info("Gave %d untagged-track audio flag(s) the undefined origin", renamed)
+
+
+def _copy_undefined_audio_confirmations() -> None:
+    """
+    Carry a file's old Confirm correct over to its untagged audio, once.
+
+    Confirm correct on an untagged track asked about under Always Ask was
+    recorded on audio_language_ignored, the language-mismatch switch, and
+    that switch is what kept the file's untagged tracks from being asked
+    about again. Untagged tracks answer to und_audio_threshold_acknowledged
+    now, so a file with that old answer and an untagged audio track gets it
+    there too, and is not asked about those tracks again.
+
+    Once per install: only while the retired und_audio_threshold row is
+    still stored. Every install that ran a version with that setting has
+    the row, as _seed_defaults writes any default missing at start, and
+    _delete_retired_settings removes it straight after this. Run on every
+    start, it would set the switch back on a file whose confirmation the
+    user had cleared since.
+    """
+    with SessionLocal() as db:
+        if db.get(AppSetting, "und_audio_threshold") is None:
+            return
+        with_untagged_audio = db.query(Track.file_id).filter(
+            Track.track_type == "audio", Track.language == "und")
+        copied = (
+            db.query(MediaFile)
+            .filter(MediaFile.audio_language_ignored.is_(True),
+                    MediaFile.und_audio_threshold_acknowledged.isnot(True),
+                    MediaFile.id.in_(with_untagged_audio))
+            .update({"und_audio_threshold_acknowledged": True},
+                    synchronize_session=False)
+        )
+        db.commit()
+    if copied:
+        logger.info("Carried Confirm correct over to the untagged audio of %d file(s)", copied)
+
+
+def _delete_retired_settings() -> None:
+    """Delete the stored values of RETIRED_SETTINGS. Safe on every start."""
+    with SessionLocal() as db:
+        deleted = (db.query(AppSetting)
+                     .filter(AppSetting.key.in_(RETIRED_SETTINGS))
+                     .delete(synchronize_session=False))
+        db.commit()
+    if deleted:
+        logger.info("Removed %d retired setting(s)", deleted)
 
 
 def _label_subtitle_encoding_reviews() -> None:
@@ -474,18 +568,18 @@ def _release_threshold_holds() -> None:
     """
     Let files the undefined-audio threshold held be re-decided.
 
-    The threshold no longer holds a file for manual review; it flags the
-    file's undefined tracks in Audio Language Review instead. The files it
-    held before that sit in manual review until something re-decides them,
-    and a scan on its own never would: their bytes have not changed, so the
-    delta check skips them. Clearing the scan stamp (size and mtime, as
-    queue._force_rescan does) makes the next scan of any kind re-probe them,
-    and that re-decision drops the review row and raises the flags.
+    The threshold stopped holding files for manual review, flagging their
+    undefined tracks in Audio Language Review instead, and has since been
+    retired. The files it held before that sit in manual review until
+    something re-decides them, and a scan on its own never would: their
+    bytes have not changed, so the delta check skips them. Clearing the scan
+    stamp (size and mtime, as queue._force_rescan does) makes the next scan
+    of any kind re-probe them, and that re-decision drops the review row and
+    raises whatever flags the Fix Undefined Language settings call for.
 
-    A threshold hold is a manual_review row with no review_subtitles, the
-    same test approve_manual_review relies on: every subtitle review writes
-    its flagged tracks. The review row itself is left alone, so Approve goes
-    on working on it until then.
+    A threshold hold is a manual_review row with no review_subtitles: every
+    subtitle review writes its flagged tracks. The review row itself is left
+    alone until the re-decision.
 
     Files already stamped for a rescan are left untouched, so this writes
     nothing on later startups, or on a fresh install.
@@ -807,6 +901,8 @@ def _migrate_schema() -> None:
          "ALTER TABLE queue_items ADD COLUMN radarr_movie_id INTEGER"),
         ("queue_items", "is_new_file",
          "ALTER TABLE queue_items ADD COLUMN is_new_file BOOLEAN DEFAULT 1"),
+        ("queue_items", "swap_record",
+         "ALTER TABLE queue_items ADD COLUMN swap_record TEXT"),
         ("planned_actions", "target_language",
          "ALTER TABLE planned_actions ADD COLUMN target_language TEXT"),
         ("plex_analyze_backlog", "expected_language",
@@ -822,6 +918,10 @@ def _migrate_schema() -> None:
          "ALTER TABLE media_files ADD COLUMN original_language TEXT"),
         ("webhook_intake", "original_language",
          "ALTER TABLE webhook_intake ADD COLUMN original_language TEXT"),
+        # DEFAULT 0: every existing add predates the forge marker, so none
+        # of their AC3 tracks carries it.
+        ("ac3_forge_jobs", "ac3_marked",
+         "ALTER TABLE ac3_forge_jobs ADD COLUMN ac3_marked BOOLEAN DEFAULT 0"),
     ]
 
     inspector = inspect(engine)
@@ -906,15 +1006,60 @@ def get_app_settings(db: Session) -> dict[str, Any]:
 
     Only the row that is missing from the DB falls back to a default, so this
     copies at most a handful of short lists per call.
+
+    A stored value of the wrong type falls back to the default too
+    (_stored_value_fits), with a warning the first time. The settings routes
+    check what they write, but a full backup restore replaces the database
+    file with whatever it holds, and a row can be edited by hand; either way
+    the engine took a list setting stored as "eng" as {"e", "n", "g"}, and a
+    flag stored as "false" as true. One install's rows also predate a type
+    change: fix_undefined_language was true or false before it took three
+    values, and nothing converted the stored one. Read as its default, which
+    is also how the engine treated it, the Settings page saves a valid value.
     """
     rows = db.query(AppSetting).all()
     result = deepcopy(DEFAULT_APP_SETTINGS)      # fall back to defaults
     for row in rows:
         try:
-            result[row.key] = json.loads(row.value)
+            value = json.loads(row.value)
         except json.JSONDecodeError:
-            result[row.key] = row.value          # store as raw string if broken
+            value = row.value                    # store as raw string if broken
+        if row.key in DEFAULT_APP_SETTINGS and not _stored_value_fits(row.key, value):
+            if row.key not in _ignored_settings:
+                _ignored_settings.add(row.key)
+                logger.warning(
+                    "Setting %s holds %r, which is not the kind of value it takes; "
+                    "using the default, %r, until it is saved again",
+                    row.key, value, DEFAULT_APP_SETTINGS[row.key])
+            continue
+        result[row.key] = value
     return result
+
+
+# Settings already warned about this run, so a bad row is logged once rather
+# than at every read.
+_ignored_settings: set[str] = set()
+
+
+def _stored_value_fits(key: str, value: Any) -> bool:
+    """
+    Whether a stored value has the basic type of the setting's default.
+
+    Only the basic type: true or false, a whole number, text, or a list of
+    text. A select's options, and an integer's range, are checked where
+    values are written (settings.setting_problem), from the schema this
+    module does not import.
+    """
+    default = DEFAULT_APP_SETTINGS[key]
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(default, list):
+        return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if isinstance(default, str):
+        return isinstance(value, str)
+    return True
 
 
 # Saved in one form, ISO 639-2/B (app.core.langcodes), whichever of en, eng,

@@ -55,22 +55,22 @@ def db():
 def test_an_empty_database_yields_the_defaults(db):
     cfg = get_app_settings(db)
     assert cfg["keep_audio_languages"] == DEFAULT_APP_SETTINGS["keep_audio_languages"]
-    assert cfg["und_audio_threshold"] == DEFAULT_APP_SETTINGS["und_audio_threshold"]
+    assert cfg["job_timeout_minutes"] == DEFAULT_APP_SETTINGS["job_timeout_minutes"]
 
 
 def test_a_stored_row_overrides_the_default(db):
-    db.add(AppSetting(key="und_audio_threshold", value=json.dumps(7)))
+    db.add(AppSetting(key="job_timeout_minutes", value=json.dumps(7)))
     db.commit()
 
-    assert get_app_settings(db)["und_audio_threshold"] == 7
+    assert get_app_settings(db)["job_timeout_minutes"] == 7
 
 
 def test_unset_keys_still_fall_back_while_others_are_overridden(db):
-    db.add(AppSetting(key="und_audio_threshold", value=json.dumps(7)))
+    db.add(AppSetting(key="job_timeout_minutes", value=json.dumps(7)))
     db.commit()
 
     cfg = get_app_settings(db)
-    assert cfg["und_audio_threshold"] == 7
+    assert cfg["job_timeout_minutes"] == 7
     assert cfg["keep_audio_languages"] == DEFAULT_APP_SETTINGS["keep_audio_languages"]
 
 
@@ -133,9 +133,9 @@ def test_every_mutable_default_is_returned_as_a_fresh_object(db, key):
 # ── Writing ──────────────────────────────────────────────────────────────────
 
 def test_a_new_setting_is_inserted_and_reads_back(db):
-    update_app_setting(db, "und_audio_threshold", 5)
+    update_app_setting(db, "job_timeout_minutes", 5)
 
-    assert get_app_settings(db)["und_audio_threshold"] == 5
+    assert get_app_settings(db)["job_timeout_minutes"] == 5
 
 
 def test_writing_the_same_key_twice_updates_rather_than_duplicating(db):
@@ -144,15 +144,15 @@ def test_writing_the_same_key_twice_updates_rather_than_duplicating(db):
     but only when something actually saves the same setting twice, which no
     other test did.
     """
-    update_app_setting(db, "und_audio_threshold", 5)
-    update_app_setting(db, "und_audio_threshold", 9)
+    update_app_setting(db, "job_timeout_minutes", 5)
+    update_app_setting(db, "job_timeout_minutes", 9)
 
-    assert db.query(AppSetting).filter_by(key="und_audio_threshold").count() == 1
-    assert get_app_settings(db)["und_audio_threshold"] == 9
+    assert db.query(AppSetting).filter_by(key="job_timeout_minutes").count() == 1
+    assert get_app_settings(db)["job_timeout_minutes"] == 9
 
 
 @pytest.mark.parametrize("key,value", [
-    ("und_audio_threshold",    3),
+    ("job_timeout_minutes",    3),
     ("keep_default_audio",     True),
     ("prefer_mp4_container",   False),
     ("keep_audio_languages",   ["eng", "jpn"]),
@@ -240,12 +240,12 @@ def test_seeding_never_overwrites_a_value_the_user_has_set(db):
     configuration back to defaults — and nothing would report it, because
     resetting to a valid default looks exactly like a working app.
     """
-    update_app_setting(db, "und_audio_threshold", 9)
+    update_app_setting(db, "job_timeout_minutes", 9)
 
     from app.database.session import _seed_defaults
     _seed_defaults(db)
 
-    assert get_app_settings(db)["und_audio_threshold"] == 9, (
+    assert get_app_settings(db)["job_timeout_minutes"] == 9, (
         "startup seeding overwrote a user-configured setting"
     )
 
@@ -265,12 +265,12 @@ def test_seeding_is_idempotent(db):
 
 def test_seeding_fills_only_the_gaps(db):
     """A partially-populated table gets the missing keys and keeps the rest."""
-    update_app_setting(db, "und_audio_threshold", 9)
+    update_app_setting(db, "job_timeout_minutes", 9)
 
     from app.database.session import _seed_defaults
     _seed_defaults(db)
 
     cfg = get_app_settings(db)
-    assert cfg["und_audio_threshold"] == 9
+    assert cfg["job_timeout_minutes"] == 9
     assert cfg["keep_audio_languages"] == DEFAULT_APP_SETTINGS["keep_audio_languages"]
     assert db.query(AppSetting).count() == len(DEFAULT_APP_SETTINGS)

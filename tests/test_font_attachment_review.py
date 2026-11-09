@@ -78,6 +78,16 @@ Labelling image tracks "styled", or styled tracks "image", was already
 killed by the tests that check which gate a review names, because the
 review's summary is worked out from those labels.
 
+Three for the gate needing extraction on, and the reason it gives, each
+run against the full 2300-test suite before its test existed (one test
+that needed a font review with extraction off was reworked, and
+deselected), and all three survived:
+
+  the gate      asking with extraction off                      killed
+  the reason    the old wording, about a conversion that may
+                not happen                                      killed
+                "them" for a single track                       killed
+
 Run from the project root:
     pytest tests/test_font_attachment_review.py -v
 """
@@ -146,6 +156,41 @@ def test_the_review_reason_names_the_font_count_and_the_tracks(settings):
     assert "17 embedded fonts" in decision.reason
     assert "Signs and Songs [Saiki]" in decision.reason
     assert [f["stream_index"] for f in decision.flagged_subtitles] == [3, 4]
+
+
+@pytest.mark.parametrize("why", ["prefer_mp4_off", "dts_audio"])
+def test_a_file_that_cannot_convert_is_still_asked_and_told_why(settings, why):
+    """
+    With Prefer MP4 off, or audio MP4 cannot hold, the file stays MKV
+    whatever the answer, but extraction still flattens the ASS to SRT and
+    takes it out of the file, leaving the fonts with nothing to use them.
+    So the question stands; what was wrong was its reason. It said
+    converting to MP4 loses the fonts and offered to keep the file as MKV,
+    about a conversion that cannot happen. The loss is extraction's in
+    every case, and that is what the reason says now.
+    """
+    tracks = _anime_tracks()
+    if why == "prefer_mp4_off":
+        settings["prefer_mp4_container"] = False
+    else:
+        tracks[1] = make_track(1, "audio", codec="dts", language="eng",
+                               is_default=True, channels=6)
+
+    decision = analyze_file(_mkv(), tracks, settings)
+
+    assert decision.is_manual_review is True
+    assert "Extracting them to SRT flattens the styling" in decision.reason
+    assert "keep them embedded, which keeps the file as MKV" in decision.reason
+    assert "convert it anyway" not in decision.reason
+
+
+def test_the_reason_says_it_for_one_styled_track(settings):
+    tracks = _anime_tracks()[:4]
+
+    decision = analyze_file(_mkv(), tracks, settings)
+
+    assert "Extracting it to SRT" in decision.reason
+    assert "keep it embedded" in decision.reason
 
 
 def test_the_default_is_to_ask_when_the_setting_is_absent(settings):
@@ -266,6 +311,28 @@ def test_a_file_whose_fonts_serve_nothing_is_not_flagged(settings):
     assert decision.is_manual_review is False
 
 
+@pytest.mark.parametrize("prefer_mp4", [True, False])
+def test_no_question_with_extraction_off(settings, prefer_mp4):
+    """
+    With extraction off a kept ASS track stays embedded, which keeps the
+    file MKV, and a Matroska output copies every attachment, so the styling
+    and the fonts both survive. The gate used to ask here anyway, though
+    Always Keep and Always Remove both leave such a file as it is, and a
+    styled track with no fonts is never asked about. The image gate has
+    always needed extraction on, for the same reason.
+
+    Asking about this survived the whole suite.
+    """
+    settings["extract_text_subtitles_to_srt"] = False
+    settings["prefer_mp4_container"] = prefer_mp4
+
+    decision = analyze_file(_mkv(), _anime_tracks(), settings)
+
+    assert decision.is_manual_review is False
+    assert _actions(decision, "extract_subtitle") == []
+    assert decision.target_container in (None, "mkv")
+
+
 def test_a_file_with_no_fonts_is_untouched_by_this(settings):
     """The overwhelming majority of files. Nothing here may apply to them."""
     decision = analyze_file(_mkv(fonts=0), _anime_tracks(), settings)
@@ -344,10 +411,14 @@ def test_an_extract_answer_does_what_always_remove_does(settings):
 def test_an_extract_answer_holds_with_extraction_switched_off(settings):
     """
     Extract is a per-track exception to extract_text_subtitles_to_srt, as
-    Keep is to the keep list. The font gate still fires with extraction
-    off, so a review can be answered Extract there. Without the exception
-    the answer fell through to the default rules: the tracks stayed
-    embedded and held the file as MKV, which is what Keep does.
+    Keep is to the keep list. Without the exception the answer fell through
+    to the default rules: the tracks stayed embedded and held the file as
+    MKV, which is what Keep does.
+
+    The font gate fired with extraction off when this was written, so a
+    review could be answered Extract there. It no longer asks with
+    extraction off, since nothing is at risk; an Extract answer stored
+    before still does what it says, and this pins that.
     """
     settings["extract_text_subtitles_to_srt"] = False
 

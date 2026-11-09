@@ -8,7 +8,10 @@ setting they care about, via BASE_SETTINGS | {"some_setting": value}.
 make_track() builds a single track dict without repeating every key every
 time — pass only the fields that matter for a given test.
 """
+import atexit
 import os
+import shutil
+import tempfile
 
 # Must be set before ANY test module first imports app.database.session
 # (directly or transitively, e.g. via app.core.worker): that module's
@@ -17,12 +20,28 @@ import os
 # imported by pytest before every test module, making this the one place
 # that reliably runs first. setdefault, not assignment — an explicitly
 # configured environment still wins.
-os.environ.setdefault("REMUXARR_DATABASE_PATH", "/tmp/remuxarr-test/remuxarr.db")
+#
+# Each run gets a directory of its own for the database and for TEMP_DIR,
+# removed when the run ends. Both used to be fixed paths, shared by every
+# run on the machine: two runs at once (a mutation run beside another, say)
+# each deleted the other's database at the start, and jobs staging as
+# job_1.remuxarr_tmp in the one /tmp/remuxarr wrote over each other's
+# output. A test that does not set TEMP_DIR itself stages there, and two
+# copies of test_revert_multiple_jobs run together failed three tests
+# between them. It also kept tests out of the folder a Remuxarr running on
+# the same machine uses.
+_run_dir = tempfile.mkdtemp(prefix="remuxarr-test-")
+atexit.register(shutil.rmtree, _run_dir, ignore_errors=True)
+os.environ.setdefault("REMUXARR_DATABASE_PATH", os.path.join(_run_dir, "remuxarr.db"))
+os.environ.setdefault("REMUXARR_TEMP_DIR", os.path.join(_run_dir, "tmp"))
 
 # Start every run from an empty database, so a local run is the same run CI
 # gets.
 #
-# This is not tidiness. The shared sqlite file survives between local runs
+# Each run's own directory starts empty anyway; this is for a database path
+# set in the environment, which is the same file every run.
+#
+# This is not tidiness. A shared sqlite file survives between local runs
 # and accumulates whatever tables and rows earlier runs created, so a test
 # that reaches the real SessionLocal instead of an isolated one PASSES
 # locally on state a previous run left behind, and fails on a clean
@@ -102,15 +121,12 @@ BASE_SETTINGS = {
     "keep_default_audio":           True,
     "keep_subtitle_languages":      ["eng"],
     "keep_forced_subtitles":        True,
-    "und_audio_threshold":          2,
     # Unsuffixed = subtitles, _audio = audio. Both present and both at the
     # production default, so a test that cares about one type has to say so
     # rather than inheriting the other type's value by accident.
     "fix_undefined_language":         "always_leave",
     "fix_undefined_language_audio":   "always_leave",
     "undefined_language_value":       "eng",
-    "undefined_language_mode":        "all_undefined_per_type",
-    "undefined_language_mode_audio":  "all_undefined_per_type",
     "prefer_mp4_container":         True,
     "extract_text_subtitles_to_srt": True,
     "existing_srt_handling":        "keep_both",

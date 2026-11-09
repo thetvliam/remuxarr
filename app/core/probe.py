@@ -157,6 +157,14 @@ def extract_tracks(probe_data: dict) -> list[dict]:
                 or any_tag_is_dub
             ),
             "title":          title,
+            # Read for the AC3 forge's marker (forge.FORGE_AC3_HANDLER_NAME).
+            # FFmpeg writes it as the MP4 track's handler name, and into
+            # Matroska as a HANDLER_NAME tag, so both spellings are looked
+            # for. It is the one stream tag that survived every job the
+            # forge marker has to outlive: titles are lost when a job
+            # rewrites an MP4, and a tag of our own when one turns Matroska
+            # into MP4 (both measured with the FFmpeg 8.1 the image ships).
+            "handler_name":   tags.get("handler_name") or tags.get("HANDLER_NAME"),
         })
 
     return tracks

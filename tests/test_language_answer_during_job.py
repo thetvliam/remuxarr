@@ -103,11 +103,12 @@ def database(tmp_path, monkeypatch):
 @pytest.fixture
 def lib(database):
     """
-    Movie.mkv with two untagged audio tracks, scanned: a job is queued to
-    convert it to MP4, and each track is a question in Audio Language Review.
+    Movie.mkv with two untagged audio tracks, scanned under Ask for audio:
+    a job is queued to convert it to MP4, and each track is a question in
+    Audio Language Review. The default, Leave, asks nothing.
     """
     from app.core import scanner
-    from app.database.models import AudioLanguageFlag, QueueItem
+    from app.database.models import AppSetting, AudioLanguageFlag, QueueItem
 
     factory, library = database.Session, database.library
     video = library / "Movie.mkv"
@@ -121,6 +122,9 @@ def lib(database):
         "-c:a", "aac", "-f", "matroska", str(video)], check=True)
 
     with factory() as db:
+        db.merge(AppSetting(key="fix_undefined_language_audio",
+                            value=json.dumps("always_ask")))
+        db.commit()
         scanner.scan_library(db, [str(library)], force_probe=True)
         assert [q.status for q in db.query(QueueItem)] == ["pending"], "no job queued"
         assert db.query(AudioLanguageFlag).count() == 2, "no questions to answer"
@@ -261,8 +265,7 @@ def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):
         "-f", "matroska", str(video)], check=True)
 
     with factory() as db:
-        for key, value in (("fix_undefined_language_audio", "always_ask"),
-                           ("undefined_language_mode_audio", "all_undefined")):
+        for key, value in (("fix_undefined_language_audio", "always_ask"),):
             db.merge(AppSetting(key=key, value=json.dumps(value)))
         db.commit()
         scanner.scan_library(db, [str(library)], force_probe=True)
@@ -280,3 +283,66 @@ def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):
     with factory() as db:
         path = db.query(MediaFile).one().path
     assert _audio_languages(path) == ["jpn", "eng"]
+
+
+def test_answering_one_of_two_untagged_tracks_leaves_the_other_asked_about(database):
+    """
+    Always Fix on audio, and two untagged audio tracks: neither is the
+    file's only one, so both are asked about. One is answered Japanese, a
+    job writes it, and a Re-check then decides the file again from the
+    tracks the job left: one untagged track beside one tagged by an answer.
+    The answer is counted with its track, so the file still has two to ask
+    about, and the untagged one is not taken as Primary Language.
+
+    Counted from the file's tags alone, the re-check saw a lone untagged
+    track and queued a job tagging it English. Mutation-verified; see the
+    Fix-rule section of test_decision.
+
+    Prefer MP4 is off so the only job is the one the answer asks for.
+    """
+    from app.api.routes._language_review import ApplyRequest
+    from app.api.routes.audio_language import apply_language
+    from app.core import scanner
+    from app.database.models import AppSetting, AudioLanguageFlag, QueueItem
+
+    factory, library = database.Session, database.library
+    video = library / "Movie.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-f", "matroska", str(video)], check=True)
+
+    def flagged():
+        with factory() as db:
+            return sorted(f.stream_index for f in db.query(AudioLanguageFlag))
+
+    def pending():
+        with factory() as db:
+            return db.query(QueueItem).filter(QueueItem.status == "pending").count()
+
+    with factory() as db:
+        for key, value in (("fix_undefined_language_audio", "always_fix"),
+                           ("prefer_mp4_container", False)):
+            db.merge(AppSetting(key=key, value=json.dumps(value)))
+        db.commit()
+        scanner.scan_library(db, [str(library)], force_probe=True)
+    assert flagged() == [1, 2]
+    assert pending() == 0, "Always Fix tagged one of two untagged tracks"
+
+    with factory() as db:
+        first = db.query(AudioLanguageFlag).filter(AudioLanguageFlag.stream_index == 1).one().id
+        apply_language(ApplyRequest(flag_ids=[first], target_language="jpn"), db)
+    assert pending() == 1, "the answer queued no job"
+    _run_next(database)
+    assert _audio_languages(video) == ["jpn", None]
+
+    with factory() as db:
+        scanner.scan_library(db, [str(library)], recheck=True)
+
+    assert pending() == 0, "the re-check queued a job for the untagged track"
+    assert flagged() == [2]
+    assert _audio_languages(video) == ["jpn", None]

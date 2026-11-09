@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.plex import refresh_in_background
 from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
-                              ScanStats, _file_info_for, _process_file,
+                              ScanStats, _clear_stale_status_records,
+                              _file_info_for, _process_file,
                               _load_subtitle_overrides, _load_audio_language_overrides,
                               _load_subtitle_language_overrides, _load_track_answers,
                               _get_forged_ac3_audio_index, _track_to_dict,
@@ -182,8 +183,9 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     scanner._process_file and worker._load_job_data construct for the
     same file, in one place.
 
-    Extracted from three near-identical inline copies in
-    resolve_subtitles / resolve_subtitles_bulk / approve_manual_review.
+    Extracted from three near-identical inline copies in endpoints since
+    replaced by /review/apply (resolve_subtitles, resolve_subtitles_bulk
+    and approve_manual_review); _answer_subtitle_review is the caller now.
     Independent review confirmed the triplication had already produced
     real divergence: all three copies were missing has_faststart (which
     scanner and worker both pass), so an MP4 in manual review whose only
@@ -193,7 +195,10 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
     file stayed un-optimised until a forced full rescan. A scan of the
     identical file would have queued it.
     """
-    tracks_raw = db.query(Track).filter(Track.file_id == media.id).all()
+    # In stream order, as the scanner's probe gives them: analyze_file reads
+    # position (the last audio track is the forge copy).
+    tracks_raw = (db.query(Track).filter(Track.file_id == media.id)
+                    .order_by(Track.stream_index).all())
     tracks = [_track_to_dict(t) for t in tracks_raw]
     file_info = _file_info_for(media)
     faststart = (
@@ -238,16 +243,23 @@ def _force_rescan(media: MediaFile) -> None:
 def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
                              decision) -> None:
     """
-    Apply a freshly-computed decision to a manual-review item — the
-    shared three-outcome block (stay in review / skipped / pending)
-    previously triplicated across resolve_subtitles /
-    resolve_subtitles_bulk / approve_manual_review.
+    Apply a freshly-computed decision to a manual-review item: it stays in
+    review, or becomes skipped or pending. Called by _answer_subtitle_review,
+    which /review/apply runs for each file answered. The single-item and bulk
+    resolve endpoints and approve_manual_review that once held three copies
+    of this block are gone.
 
-    Does NOT commit — the caller controls the transaction (the bulk
-    endpoint commits per item so one bad item can't roll back earlier
-    successes; the single-item endpoints commit once).
+    Does NOT commit — the caller controls the transaction: /review/apply
+    commits per file, so one bad file cannot roll back earlier successes.
 
-    Carries two fixes the triplication had let diverge:
+    Leaving review, the file's other skipped and review rows are cleared, as
+    the scanner clears them before recording either outcome and as pickup
+    does (worker._clear_leftover_rows). An earlier skipped row was left
+    beside the answered one, and History listed the file under Skipped while
+    it was queued, or twice under Skipped. The item itself is kept: it is the
+    review row being moved.
+
+    Carries two fixes the three copies had let diverge:
     • _upsert_language_flags runs for the skipped and pending outcomes —
       previously the endpoints computed decision.audio/subtitle_language_
       mismatch and then discarded them, so a skipped file with a mismatch
@@ -269,12 +281,14 @@ def _apply_decision_to_item(db: Session, item: QueueItem, media: MediaFile,
         item.review_subtitles = (
             json.dumps(decision.flagged_subtitles) if decision.flagged_subtitles else None
         )
-        # Which gate fired, so the bulk resolvers do not have to work it out
-        # from review_subtitles — see QueueItem.review_reason.
+        # Which gate fired, so the Review page and /review/apply do not have
+        # to work it out from review_subtitles — see QueueItem.review_reason.
         item.review_reason = decision.review_reason
         return
 
     _upsert_language_flags(db, media, decision)
+    _clear_stale_status_records(db, media.id, ("skipped", "manual_review"),
+                                keep_id=item.id)
 
     if not decision.should_process:
         item.status = "skipped"
@@ -526,6 +540,16 @@ class ReviewApplyRequest(BaseModel):
     skips: list[int] = []
 
 
+def _flagged_entries(item: QueueItem) -> dict[int, dict]:
+    """The item's flagged tracks, as the page was shown them, by stream."""
+    if not item.review_subtitles:
+        return {}
+    try:
+        return {t["stream_index"]: t for t in json.loads(item.review_subtitles)}
+    except (ValueError, TypeError, KeyError):
+        return {}
+
+
 def _flagged_streams(item: QueueItem) -> set:
     """
     The streams an item is flagged for, as the page was shown them.
@@ -534,12 +558,7 @@ def _flagged_streams(item: QueueItem) -> set:
     different one, which means the card the user answered described tracks
     this file may not have any more.
     """
-    if not item.review_subtitles:
-        return set()
-    try:
-        return {t["stream_index"] for t in json.loads(item.review_subtitles)}
-    except (ValueError, TypeError, KeyError):
-        return set()
+    return set(_flagged_entries(item))
 
 
 PREVIEW_FILE_LIMIT = 500
@@ -852,9 +871,9 @@ def list_acknowledged(
 ):
     """
     Files whose undefined audio tracks the user has confirmed are correct
-    as they are: Confirm correct on a threshold flag in Audio Language
-    Review, or a past Approve on a review the threshold raised while it
-    still held files.
+    as they are: Confirm correct on an untagged-track flag in Audio
+    Language Review, or, from before, on a flag of the retired threshold or
+    a past Approve on a review it raised while it still held files.
 
     Bounded like every other list in this codebase. There is no ceiling on
     how many files can carry this — it accumulates for the life of the
@@ -900,7 +919,7 @@ def clear_acknowledged(body: ClearAcknowledgedRequest,
     the scan stamp is invalidated too — the same pairing cancel_item needs,
     via the same helper.
 
-    Only the threshold's answer is taken back. A language mismatch the user
+    Only the undefined-audio answer is taken back. A language mismatch the user
     confirmed on the same file answers to its own switch and is untouched,
     which is why the two are kept apart.
 
@@ -1201,6 +1220,20 @@ class ReviewAnswerRefused(Exception):
     """
 
 
+def _track_has_changed(entry: dict, track: Track) -> bool:
+    """Whether a flagged entry no longer describes the track at its stream."""
+    if track.track_type != "subtitle":
+        return True
+    if "codec" in entry and (entry["codec"] or "").lower() != (track.codec or "").lower():
+        return True
+    if "language" in entry and ((entry["language"] or "und").lower()
+                                != (track.language or "und").lower()):
+        return True
+    if "is_forced" in entry and bool(entry["is_forced"]) != bool(track.is_forced):
+        return True
+    return False
+
+
 def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
                                answers: dict[int, str]) -> None:
     """
@@ -1210,7 +1243,33 @@ def _refuse_impossible_answers(db: Session, item: QueueItem, media: MediaFile,
     a card can say an answer cannot be done while the user is still choosing,
     rather than at Apply. Recording an answer and checking one are the same
     rules, so they are the same code.
+
+    An answer is also refused when the track at its stream number is no
+    longer the one the review was raised for. The callers check that the
+    answers name the flagged streams, but a number can stay while the track
+    behind it changes: a review raised from the tracks a file had before its
+    job named the styled subtitle as stream 3, the job dropped an audio
+    track, and "remove" on that card was stored against the French SRT that
+    had become stream 3. A scan no longer raises a review while a job runs,
+    but a row raised that way before can still be waiting, and a Re-check
+    is what brings it up to date. Compared on what each flagged entry
+    records and the track keeps: type, codec, language and forced. A field
+    an older entry does not carry is not compared. A stream with no track
+    at all is left to the "no such stream" refusal in _answer_subtitle_review.
     """
+    flagged = _flagged_entries(item)
+    tracks = {t.stream_index: t for t in
+              db.query(Track).filter(Track.file_id == media.id)}
+    for stream_index in answers:
+        entry, track = flagged.get(stream_index), tracks.get(stream_index)
+        if entry is not None and track is not None and _track_has_changed(entry, track):
+            raise ReviewAnswerRefused(
+                f"Stream {stream_index} is no longer the "
+                f"{(entry.get('language') or 'und').upper()} "
+                f"{entry.get('codec') or 'subtitle'} track this review asked "
+                f"about: the file has changed since. Run Re-check Scanned "
+                f"Files to bring the review up to date. Nothing was applied.")
+
     for stream_index, choice in answers.items():
         if choice not in ("keep", "remove", "extract"):
             raise ReviewAnswerRefused(
@@ -1519,10 +1578,9 @@ def _serialize(item: QueueItem, include_actions: bool = False) -> dict:
         "completed_at":   _iso(item.completed_at),
         "error_message":  item.error_message,
         "flagged_subtitles": flagged_subtitles,
-        # Which gate raised the review, so the UI can phrase it and offer
-        # the matching bulk action. Null on items not in review, and on
-        # rows written before the column existed — the UI reads a null
-        # alongside a flagged payload the same way the bulk resolver does.
+        # Which gate raised the review, so the UI can phrase it. Null on
+        # items not in review, and on rows written before the column
+        # existed.
         "review_reason":     item.review_reason,
         "file": {
             "id":        media.id,

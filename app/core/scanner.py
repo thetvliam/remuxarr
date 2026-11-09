@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.config import settings as app_settings
 from app.core.decision import analyze_file
 from app.core.exclude import ExcludeRules
+from app.core.revert_capture import repoint_created_file
 from app.core.probe import (
     ProbeError,
     extract_format_info,
@@ -168,15 +169,21 @@ def scan_library(
     scan_label = "full" if force_probe else ("re-check" if recheck else "delta")
     rules    = ExcludeRules.from_settings(app_cfg, paths)
 
-    # Original Language Audio's lookup. Only for a re-check or a full rescan,
-    # the two scans that decide files already seen, and only while the
-    # setting is on: a routine scan sees new and changed files, which an
-    # import's webhook has usually told about already, and asking each
-    # service for its whole library on every scheduled scan was the cost
-    # chosen against. One request per service per scan, before the walk.
+    # The original-language lookup. Only for a re-check or a full rescan,
+    # the two scans that decide files already seen: a routine scan sees new
+    # and changed files, which an import's webhook has usually told about
+    # already, and asking each service for its whole library on every
+    # scheduled scan was the cost chosen against. One request per enabled
+    # service per scan, before the walk, and none without the integration
+    # (original_languages asks only enabled services).
+    #
+    # Whatever Original Language Audio says. It used to ask only while that
+    # setting was on, which left the original language unknown for files
+    # already in a library otherwise. analyze_file reads it only under Keep
+    # both and Keep original only, so a value stored while that setting is
+    # off changes no decision.
     original_language_for = None
-    if ((force_probe or recheck)
-            and app_cfg.get("original_language_audio", "off") != "off"):
+    if force_probe or recheck:
         original_language_for = original_languages(app_cfg)
 
     logger.info("Starting %s scan of %d path(s)", scan_label, len(paths))
@@ -425,11 +432,22 @@ def _delete_media_file_and_related(db: Session, media: MediaFile) -> None:
     db.delete(media)
 
 
-def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, ...]) -> None:
+def _clear_stale_status_records(
+    db: Session,
+    file_id: int,
+    statuses: tuple[str, ...],
+    *,
+    keep_id: int | None = None,
+) -> None:
     """
     Delete any existing QueueItem(s) for this file matching the given
     as-of-this-scan statuses — call this right before creating a
-    genuinely new record with a DIFFERENT status for the same file.
+    genuinely new record with a DIFFERENT status for the same file, or
+    before moving an existing one to that status.
+
+    keep_id is a row that is never deleted: the one being moved, when it
+    currently holds one of the statuses being cleared. A review answer moves
+    its own manual_review row (queue._apply_decision_to_item).
 
     "skipped" and "manual_review" share the same defining trait: each
     one's entire meaning is "as of THIS scan, here's the situation,"
@@ -463,29 +481,96 @@ def _clear_stale_status_records(db: Session, file_id: int, statuses: tuple[str, 
     "skipped" and "manual_review" can have their entire claim become
     false out from under them like this.
     """
-    stale = db.query(QueueItem.id).filter(
-        QueueItem.file_id == file_id,
-        QueueItem.status.in_(statuses),
-    )
+    which = [QueueItem.file_id == file_id, QueueItem.status.in_(statuses)]
+    if keep_id is not None:
+        which.append(QueueItem.id != keep_id)
+    stale = db.query(QueueItem.id).filter(*which)
     db.query(PlannedAction).filter(
         PlannedAction.queue_item_id.in_(stale)
     ).delete(synchronize_session=False)
-    db.query(QueueItem).filter(
-        QueueItem.file_id == file_id,
-        QueueItem.status.in_(statuses),
-    ).delete(synchronize_session=False)
+    db.query(QueueItem).filter(*which).delete(synchronize_session=False)
+
+
+def _standing_encoding_review(db: Session, file_id: int, track_list: list[dict],
+                              decision) -> QueueItem | None:
+    """
+    The file's unanswered subtitle-encoding review, if a new decision must
+    leave it as it is; otherwise None, and the decision applies as usual.
+
+    worker._flag_subtitle_encoding_review raises this review after an
+    extraction fails on text that is not UTF-8. The decision engine knows
+    nothing of the failure, so it plans the same extraction whenever it
+    decides the file again. Once the review is answered, Keep or Remove is
+    stored per track and the engine extracts neither, so only the
+    unanswered review needs this.
+
+    It stands while both hold:
+
+      • the tracks it asks about are still in the file: the same stream
+        number, codec and language. Otherwise the file has changed and the
+        question is about tracks it no longer has; if the new file fails
+        the same way, the worker asks again.
+      • the decision would meet the failure again: it extracts one of those
+        tracks, or it is a review of its own, which would replace the
+        question and, once answered, extract the track. That review comes
+        when this one is answered, since answering decides the file again.
+
+    A decision that no longer extracts the tracks (extraction turned off,
+    or the language taken off the keep list) has nothing left to protect
+    the question from, and replaces it.
+    """
+    item = (db.query(QueueItem)
+              .filter(QueueItem.file_id == file_id,
+                      QueueItem.status == "manual_review",
+                      QueueItem.review_reason == "subtitle_encoding")
+              .first())
+    if item is None:
+        return None
+    try:
+        flagged = json.loads(item.review_subtitles or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(flagged, list) or not flagged:
+        return None
+
+    subtitles = {t["stream_index"]: t for t in track_list
+                 if t.get("track_type") == "subtitle"}
+    failed: set[int] = set()
+    for entry in flagged:
+        if not isinstance(entry, dict):
+            return None
+        track = subtitles.get(entry.get("stream_index"))
+        if track is None:
+            return None
+        if (track.get("codec") or "").lower() != (entry.get("codec") or "").lower():
+            return None
+        if (track.get("language") or "und") != (entry.get("language") or "und"):
+            return None
+        failed.add(entry["stream_index"])
+
+    if decision.is_manual_review:
+        return item
+    if any(a.action_type == "extract_subtitle" and a.stream_index in failed
+           for a in decision.actions):
+        return item
+    return None
 
 
 def _supersede_stale_pending_items(db: Session, file_id: int) -> None:
     """
     Delete any PENDING QueueItem(s) for this file — called from the
-    manual-review branch of _process_file right before it records the
-    review state.
+    manual-review and skip branches of _process_file right before each
+    records its state.
+
+    The skip branch needs it for the same reason as the one below, with a
+    skipped row in place of the review: a queued MKV-to-MP4 conversion, then
+    Prefer MP4 turned off and a Re-check, left the job pending beside the
+    skip, and its pickup added a second skipped row.
 
     Why this exists: a file could hold a pending item AND a
     manual_review item simultaneously. Sequence: a scan queues the file
     (pending, with PlannedActions computed under the then-current
-    settings) → conditions change (settings edit, threshold change) → a
+    settings) → conditions change (a settings edit) → a
     later scan's decision is manual-review, which created its review
     item WITHOUT touching the pending one. The worker would then still
     claim the stale pending item, recompute the decision at pickup, and
@@ -548,7 +633,7 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     a scan. Extracted into a shared helper specifically so worker.py can
     also call it right after computing its own fresh decision at
     job-pickup time (_load_job_data) — without that, a file whose
-    manual-review cause gets resolved via Approve (rather than being
+    manual-review cause gets answered on the Review page (rather than being
     re-discovered by a normal scan) would compute the correct
     audio_language_mismatch/subtitle_language_mismatch the whole time,
     at every single point along the way (approval, worker pickup), but
@@ -570,15 +655,15 @@ def _upsert_language_flags(db: Session, media_file: MediaFile, decision) -> None
     # Updated in place rather than deleted and re-added, because the review
     # page selects rows by id: a scan landing while a user is choosing would
     # otherwise replace the ids they had selected. The origin is updated with
-    # the rest, since a track can move between them — an undefined track
-    # asked about under always_ask becomes a threshold flag once the file
-    # reaches the threshold.
+    # the rest, since a track can move between them: a tagged track flagged
+    # as a mismatch becomes an undefined flag if the file comes back with
+    # that track untagged.
     #
     # Each origin is suppressed by its own switch only (AudioLanguageFlag.
     # origin). audio_language_ignored silences mismatch flags here. The
-    # threshold's acknowledgement is applied by the engine, which already
-    # leaves those flags out, so a file confirmed correct on a mismatch is
-    # still asked about its undefined tracks.
+    # undefined-audio acknowledgement is applied by the engine, which
+    # already leaves those flags out, so a file confirmed correct on a
+    # mismatch is still asked about its undefined tracks.
     existing_audio_flags = {
         flag.stream_index: flag
         for flag in db.query(AudioLanguageFlag)
@@ -970,11 +1055,14 @@ def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
     a fresh record with no history, for the same file. It goes through
     _delete_media_file_and_related so nothing it owns is orphaned.
 
-    Extracted subtitle paths on the file's SubtitleLanguageFlags follow
-    the file when the sidecar is found under the new name and not under
-    the old. _build_srt_path names a sidecar after the media file's stem,
-    so the new name is the same suffix on the new stem. Whether the
-    service renamed the sidecar at all is not assumed either way.
+    Extracted subtitle paths follow the file when the sidecar is found
+    under the new name and not under the old (_renamed_sidecar): on the
+    file's SubtitleLanguageFlags, and in the created_files of its revert
+    points, which a revert uses to take the sidecars away again. Left on
+    the old names there, the revert found nothing to remove and the user
+    had each extracted subtitle twice, embedded and beside the file.
+    Whether the service renamed the sidecar at all is not assumed either
+    way.
 
     Returns "moved" or one of the reasons above. Commits only on "moved".
     """
@@ -1011,16 +1099,57 @@ def move_renamed_file(db: Session, old_path: str, new_path: str) -> str:
                        SubtitleLanguageFlag.extracted_path.isnot(None))
                .all())
     for flag in flags:
-        if not flag.extracted_path.startswith(old_stem):
-            continue
-        renamed = new_stem + flag.extracted_path[len(old_stem):]
-        if os.path.exists(renamed) and not os.path.exists(flag.extracted_path):
+        renamed = _renamed_sidecar(flag.extracted_path, old_stem, new_stem)
+        if renamed:
             flag.extracted_path = renamed
+
+    for created in _created_file_paths(db, media.id):
+        renamed = _renamed_sidecar(created, old_stem, new_stem)
+        if renamed:
+            repoint_created_file(db, media.id, created, renamed)
 
     db.commit()
     logger.info("Renamed: record %d now points at %s (was %s)",
                 media.id, new_path, old_path)
     return "moved"
+
+
+def _renamed_sidecar(path: str, old_stem: str, new_stem: str) -> str | None:
+    """
+    Where a sidecar of a renamed media file is now, or None if it did not
+    move with it.
+
+    _build_srt_path names a sidecar after the media file's stem, so the new
+    name is the same suffix on the new stem: "X.en.srt" for "X.mkv" becomes
+    "Y.en.srt" for "Y.mkv". The suffix must start with a dot, or renaming
+    "X.mkv" would carry off "X2.en.srt", the sidecar of another file in the
+    same folder. A name the service changed beyond the stem is not
+    followed.
+
+    Followed only when the disk agrees: something at the new name and
+    nothing left at the old.
+    """
+    if not path.startswith(old_stem + "."):
+        return None
+    renamed = new_stem + path[len(old_stem):]
+    if os.path.exists(renamed) and not os.path.exists(path):
+        return renamed
+    return None
+
+
+def _created_file_paths(db: Session, file_id: int) -> list[str]:
+    """Every created_files path the file's revert points record, once each."""
+    paths: list[str] = []
+    for (manifest,) in db.query(RevertPoint.manifest).filter(RevertPoint.file_id == file_id):
+        try:
+            entries = json.loads(manifest).get("created_files") or []
+        except (TypeError, ValueError, AttributeError):
+            continue
+        for entry in entries:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if isinstance(path, str) and path not in paths:
+                paths.append(path)
+    return paths
 
 
 def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
@@ -1282,6 +1411,54 @@ def _process_file(
         if radarr_movie_id is None:
             radarr_movie_id = known_radarr
 
+    # ── A job running for this file ────────────────────────────────────────
+    # Nothing is recorded while one runs. The decision above came from the
+    # file as it was before the job, and the job is about to change it:
+    #
+    #   • a review raised now named its tracks by their pre-job stream
+    #     numbers. Once the job had dropped an audio track, the styled
+    #     subtitle the card showed as stream 3 was stream 2, stream 3 was
+    #     the French SRT, and the user's "remove" was stored against the
+    #     French SRT;
+    #   • a skip marked the file "skipped" while it was being processed;
+    #   • work the job was not doing (a subtitle language removed from the
+    #     keep list mid-job, say) reached the in-progress check in the queue
+    #     branch and was dropped. The job then recorded the file's new size
+    #     and mtime, so no delta scan looked at it again.
+    #
+    # All reproduced with a Re-check during a real job. The file is marked
+    # instead, as an answer given during a job marks it (see
+    # MediaFile.reevaluate_after_job): the worker decides it again from a
+    # fresh probe straight after a successful job, and the next scan does
+    # after any other outcome. The running job takes the IDs this call
+    # brought, for the reason the queue branch gives below.
+    running = db.query(QueueItem).filter(
+        QueueItem.file_id == media_file.id,
+        QueueItem.status == "processing",
+    ).first()
+    if running:
+        running.sonarr_series_id = sonarr_series_id
+        running.radarr_movie_id  = radarr_movie_id
+        media_file.reevaluate_after_job = True
+        db.commit()
+        return
+
+    # ── An unanswered subtitle-encoding review ─────────────────────────────
+    # Raised by the worker when an extraction failed, so the decision above
+    # cannot see it. Left to the branches below, a Re-check planned the same
+    # extraction, the review went back to the queue, the job failed the same
+    # way and the file came back here; and a review from a gate replaced the
+    # question, so answering that one extracted the track again.
+    standing = _standing_encoding_review(db, media_file.id, track_list, decision)
+    if standing:
+        media_file.status = "manual_review"
+        if sonarr_series_id is not None:
+            standing.sonarr_series_id = sonarr_series_id
+        if radarr_movie_id is not None:
+            standing.radarr_movie_id = radarr_movie_id
+        db.commit()
+        return
+
     # ── Manual review ──────────────────────────────────────────────────────
     if decision.is_manual_review:
         media_file.status = "manual_review"
@@ -1311,7 +1488,7 @@ def _process_file(
             # alters WHY the file needs review, and a file replaced on disk
             # alters WHICH subtitle tracks are flagged.
             #
-            # review_subtitles is the one that matters. resolve_subtitles acts
+            # review_subtitles is the one that matters. /review/apply acts
             # on the STREAM INDICES stored here, so leaving them stale means a
             # user's Keep/Remove choice is applied against indices that no
             # longer describe the file — silently operating on the wrong track.
@@ -1373,6 +1550,11 @@ def _process_file(
         media_file.status = "skipped"
         stats.skipped += 1
         _clear_stale_status_records(db, media_file.id, ("manual_review",))
+        # A job still waiting from an earlier scan is superseded, as in the
+        # review branch. Left, the Queue held a conversion for a file History
+        # said needed nothing (Prefer MP4 turned off, then Re-check), and its
+        # pickup decided the same and left a second skipped row.
+        _supersede_stale_pending_items(db, media_file.id)
 
         # Create or update a skipped QueueItem so the file is visible in
         # the History panel with the reason it needed no changes.
@@ -1425,7 +1607,9 @@ def _process_file(
         return
 
     # ── Queue ──────────────────────────────────────────────────────────────
-    # Don't double-queue files already pending or being processed
+    # Don't double-queue files already pending. A running job returned
+    # further up; "processing" stays in the filter for one the worker claims
+    # between that check and this one.
     in_progress = db.query(QueueItem).filter(
         QueueItem.file_id == media_file.id,
         QueueItem.status.in_(["pending", "processing"]),
@@ -1507,7 +1691,7 @@ def _process_file(
 # throw away a Keep answer the moment the same file's language was fixed.
 #
 # The ordinal is what tells identical tracks apart — two untitled ASS tracks,
-# or the several undefined audio tracks the threshold exists for. It is also
+# or several untagged audio tracks in one file. It is also
 # the one part of a descriptor that can change while the track itself does
 # not. A job that drops the first of two identical tracks renumbers the
 # second from 2 to 1, and the answer given for the dropped one then matched
@@ -1787,8 +1971,8 @@ def clear_media_answers(media: MediaFile, why: str) -> None:
 
 
 # The three answers that are not about one track: Confirm correct on a
-# language mismatch, audio and subtitle, and on the Undefined Audio Track
-# Threshold. Each stops a whole file being asked about.
+# language mismatch, audio and subtitle, and on a file's undefined audio.
+# Each stops a whole file being asked about.
 CONFIRMATION_COLUMNS = (
     "audio_language_ignored",
     "subtitle_language_ignored",
@@ -1958,9 +2142,9 @@ def _track_to_dict(t: Track) -> dict:
     analyze_file() and the decision engine.
 
     Single source of truth for this mapping — previously duplicated in
-    worker.py (_load_job_data) and queue.py (resolve_subtitles). Both now
-    call this function so any future Track field addition only needs to be
-    made here.
+    worker.py (_load_job_data) and queue.py (resolve_subtitles, since
+    replaced by _build_analysis_inputs). Both now call this function so any
+    future Track field addition only needs to be made here.
     """
     return {
         "stream_index":        t.stream_index,
@@ -2017,9 +2201,8 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     If this file has an AC3 forge job in any state where the added AC3
     track is (or should be treated as) present, return
     Ac3ForgeJob.audio_track_count — the 0-based audio-track-relative
-    index the AC3 was appended at. analyze_file() uses this to exclude
-    that track from the "multiple undefined-language audio tracks"
-    manual-review threshold count.
+    index the AC3 was appended at. analyze_file() uses this to leave
+    that track out of the undefined-track count.
 
     Only whether this is None matters to the caller. Because the index
     is the position at ADD time, analyze_file locates the track by
@@ -2039,9 +2222,8 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
         couldn't see this window: "processing" is ambiguous on its own
         (an ADD in flight means the AC3 does NOT exist yet), so the
         is_undo flag is what disambiguates. Without this, a scan landing
-        mid-undo counted the forge track toward the und threshold and
-        could re-flag for manual review a file this feature exists to
-        exempt.
+        mid-undo counted the forge track as an untagged track and could
+        ask about a file this feature exists to exempt.
 
     Excluded: "pending"/"failed" and "processing" with is_undo=False
     (AC3 doesn't exist yet), "undone"/"cancelled" (AC3 already removed

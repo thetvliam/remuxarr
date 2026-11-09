@@ -639,6 +639,194 @@ def test_the_release_notes_file_is_shipped_in_the_image():
     assert "COPY RELEASE_NOTES.md" in _read("Dockerfile")
 
 
+# ── The FFmpeg build ───────────────────────────────────────────────────────
+#
+# The image and CI both download one exact BtbN build of FFmpeg, named by
+# three values written in each file: the release tag, the version the
+# binary reports, and the archive's SHA-256. The Dockerfile's stage 2
+# comment says why the tag is a month-end one and how to move it.
+#
+# The image followed BtbN's floating "latest" release before this, rebuilt
+# daily from the tip of the 8.1 branch, so two builds of the same commit
+# could ship different FFmpeg; and before that a daily tag, which BtbN
+# deleted after 14 days and which broke a build. These tests keep both
+# mistakes from coming back, and give notice before the pinned build
+# reaches the end of BtbN's two years.
+#
+# Verified by mutation, 14 applied, 14 killed, each surviving first every
+# test that reads either file (four test files): a daily tag in one file and in both, the
+# checksum or version differing between the files, the checksum check
+# removed from either, either URL back on the floating release, the image's
+# asset name back on it, the tag dropped from CI, either version check
+# loosened to the 8.1 branch, the version not reaching CI's confirm step,
+# and a month-end pin within 90 days of deletion.
+
+_FFMPEG_FILES = ("Dockerfile", ".github/workflows/ci.yml")
+_FFMPEG_PIN_FIELDS = ("FFMPEG_TAG", "FFMPEG_VERSION", "FFMPEG_SHA256")
+_FFMPEG_TAG_FORM = r"autobuild-(\d{4})-(\d{2})-(\d{2})-\d{2}-\d{2}"
+# How long before BtbN's deletion date the suite starts failing.
+_FFMPEG_NOTICE_DAYS = 90
+
+
+def _ffmpeg_pin(name):
+    """The three pinned values as one file writes them: `FFMPEG_TAG="..."`
+    in the Dockerfile's shell, `FFMPEG_TAG: ...` in the workflow's env."""
+    import re
+
+    text = _read(name)
+    pin = {}
+    for field in _FFMPEG_PIN_FIELDS:
+        found = re.findall(rf'^\s*{field}(?:=|:[ \t]*)"?([^"\s;]+)', text, re.M)
+        assert len(found) == 1, (
+            f"{name} should set {field} once, and sets it {len(found)} times")
+        pin[field] = found[0]
+    return pin
+
+
+def _ffmpeg_tag_date(tag):
+    import datetime
+    import re
+
+    match = re.fullmatch(_FFMPEG_TAG_FORM, tag)
+    assert match, (
+        f"FFMPEG_TAG is {tag!r}, not a dated autobuild-YYYY-MM-DD-HH-MM tag. "
+        f"A floating tag such as 'latest' ships whatever BtbN built that day.")
+    return datetime.date(*(int(part) for part in match.groups()))
+
+
+def test_ci_installs_the_ffmpeg_build_the_image_ships():
+    """
+    CI installs FFmpeg so the tests run against the binary users get. That
+    is only true while the two files name the same build, and nothing but
+    this compares them.
+    """
+    pins = {name: _ffmpeg_pin(name) for name in _FFMPEG_FILES}
+    image, ci = pins["Dockerfile"], pins[".github/workflows/ci.yml"]
+    assert image == ci, (
+        f"the image pins FFmpeg {image} and CI pins {ci}. Change both "
+        f"together, or the suite is not testing what ships.")
+
+    _ffmpeg_tag_date(image["FFMPEG_TAG"])
+    assert len(image["FFMPEG_SHA256"]) == 64 and all(
+        c in "0123456789abcdef" for c in image["FFMPEG_SHA256"]), (
+        "FFMPEG_SHA256 is not a lowercase hex SHA-256")
+
+
+def test_both_ffmpeg_installs_download_the_pinned_asset():
+    """
+    The pinned values only matter if the download is built from them. Each
+    file must fetch the asset named by FFMPEG_VERSION from the release named
+    by FFMPEG_TAG, and nothing from BtbN's floating "latest" release.
+    """
+    for name in _FFMPEG_FILES:
+        text = _read(name)
+        assert 'asset="ffmpeg-${FFMPEG_VERSION}-linux64-gpl-8.1.tar.xz"' in text, (
+            f"{name} no longer names the asset from FFMPEG_VERSION")
+        assert ('"https://github.com/BtbN/FFmpeg-Builds/releases/download/'
+                '${FFMPEG_TAG}/${asset}"') in text, (
+            f"{name} no longer downloads from the release named by FFMPEG_TAG")
+        code = [line for line in text.splitlines()
+                if not line.lstrip().startswith("#")]
+        floating = [line.strip() for line in code
+                    if "/latest/" in line or "-latest-" in line]
+        assert not floating, (
+            f"{name} downloads from BtbN's floating latest release, which is "
+            f"rebuilt every day: {floating}")
+
+
+def test_both_ffmpeg_installs_check_the_checksum_and_version():
+    """
+    The checksum is what makes the pin exact: without it a re-uploaded or
+    truncated asset installs silently. The version check proves the binary
+    runs, and it checks the exact build, not just the 8.1 branch, so the
+    wrong build cannot pass it. The image checks ffmpeg and ffprobe; CI
+    checks the archive's ffmpeg, then ffmpeg and ffprobe on the PATH.
+    """
+    import re
+
+    expected_version_checks = {"Dockerfile": 2, ".github/workflows/ci.yml": 3}
+    for name in _FFMPEG_FILES:
+        text = _read(name)
+        assert re.search(r'echo "\$\{FFMPEG_SHA256\}  [^"]+" \| sha256sum -c -', text), (
+            f"{name} no longer checks the download against FFMPEG_SHA256")
+        exact = text.count('grep -qF "version ${FFMPEG_VERSION}-"')
+        assert exact == expected_version_checks[name], (
+            f"{name} checks the exact FFmpeg version {exact} times, expected "
+            f"{expected_version_checks[name]}")
+        loose = re.findall(r"grep -q\w* ['\"]version n[\d.]+['\"]", text)
+        assert not loose, (
+            f"{name} accepts any build of a branch, not the pinned one: {loose}")
+
+
+def test_ci_steps_that_check_the_ffmpeg_version_can_see_it():
+    """
+    A step's env applies to that step only, so the confirm step learns
+    FFMPEG_VERSION from $GITHUB_ENV, written by the install step. Without
+    that it runs with the variable unset: `set -u` fails it, and without
+    `set -u` it would grep for "version -" and fail with no clue why.
+    """
+    import re
+
+    text = _read(".github/workflows/ci.yml")
+    steps = re.split(r"^\s*- name: ", text, flags=re.M)[1:]
+    exported = False
+    users = 0
+    for step in steps:
+        if "${FFMPEG_VERSION}" in step:
+            users += 1
+            title = step.splitlines()[0]
+            in_env = re.search(r"^\s*FFMPEG_VERSION:", step, re.M)
+            assert in_env or exported, (
+                f"the step {title!r} uses FFMPEG_VERSION, which is neither in "
+                f"its env nor written to $GITHUB_ENV by an earlier step")
+        if re.search(r'FFMPEG_VERSION=\$\{FFMPEG_VERSION\}" >> "\$GITHUB_ENV"', step):
+            exported = True
+    assert users >= 2, "ci.yml no longer checks the FFmpeg version after installing it"
+
+
+def test_the_pinned_ffmpeg_tag_is_a_month_end_build():
+    """
+    BtbN keeps the last build of each month for two years and deletes every
+    other build after 14 days. A mid-month tag would build today and break
+    every build two weeks later, which is how the June 2026 pin failed.
+
+    This can only check the date: whether that day's build really was the
+    month's last needs BtbN's tag list (the Dockerfile says where). BtbN
+    builds daily, so a month's last build falls in its last few days, and
+    the check allows the last three in case a day's build was skipped.
+    """
+    import calendar
+
+    tag = _ffmpeg_pin("Dockerfile")["FFMPEG_TAG"]
+    built = _ffmpeg_tag_date(tag)
+    last_day = calendar.monthrange(built.year, built.month)[1]
+    assert built.day >= last_day - 2, (
+        f"FFMPEG_TAG {tag} is not from the end of its month, so BtbN deletes "
+        f"it 14 days after it was built. Pin the month's last build instead.")
+
+
+def test_the_pinned_ffmpeg_build_is_not_near_deletion():
+    """
+    The month-end build is kept for two years, then BtbN deletes it and the
+    image stops building. This fails 90 days before that date, on a
+    calendar rather than on any change to the code, so whoever sees it has
+    time to move the pin before a build breaks.
+    """
+    import datetime
+
+    tag = _ffmpeg_pin("Dockerfile")["FFMPEG_TAG"]
+    built = _ffmpeg_tag_date(tag)
+    # A 29 February build is kept until 28 February two years on.
+    deleted = built.replace(year=built.year + 2, day=min(built.day, 28)
+                            if built.month == 2 else built.day)
+    notice = deleted - datetime.timedelta(days=_FFMPEG_NOTICE_DAYS)
+    assert datetime.date.today() < notice, (
+        f"BtbN deletes {tag} around {deleted:%d %B %Y}. Move FFMPEG_TAG, "
+        f"FFMPEG_VERSION and FFMPEG_SHA256 to a newer month-end build in the "
+        f"Dockerfile and .github/workflows/ci.yml; the Dockerfile's stage 2 "
+        f"comment has the steps.")
+
+
 # ── What publishes an image ────────────────────────────────────────────────
 #
 # publish.yml runs only for a push that changes a file the image is built

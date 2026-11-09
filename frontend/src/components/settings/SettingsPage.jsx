@@ -218,42 +218,6 @@ const EmailBreakerStatus = ({ api }) => {
   );
 };
 
-/* ── Cross-setting warnings ─────────────────────────────────────────────────
- *
- * A few settings are inert, or do something other than they appear to,
- * depending on another setting several groups away. The description text
- * can say so, but descriptions are collapsed behind the "?" and are
- * unconditional — they cannot tell the user that the combination they are
- * looking at right now is one of the broken ones.
- *
- * Kept as an explicit list rather than a schema field. There is one entry;
- * a `warn_when` mini-language in the settings schema to express it would
- * be more machinery than the thing it encodes, and this is the file that
- * already knows about every value at once. */
-const fieldWarning = (key, values) => {
-  /* Always Ask on subtitles does nothing unless undefined subtitles are
-   * being kept.
-   *
-   * Asking deliberately does NOT resolve the language — that is the whole
-   * point of asking. So the track reaches the keep/drop filter still
-   * reading "und", matches nothing in Keep Subtitle Languages, and is
-   * dropped before the flagging pass can see it. The user gets no
-   * question and no subtitle. Verified against analyze_file: dropped when
-   * the track is ordinary, kept and flagged when it is forced, which is
-   * why the wording below is about non-forced tracks specifically. */
-  if (key === "fix_undefined_language"
-    && values.fix_undefined_language === "always_ask"
-    && !values.keep_undefined_subtitles) {
-    return "Always Ask will not reach you for most tracks while "
-    + "\"Always Keep Undefined-Language Subtitles\" (under Subtitles) is "
-    + "off. Asking leaves the track tagged und, so it matches nothing "
-    + "in Keep Subtitle Languages and is dropped before it can be "
-    + "flagged — no question, and no subtitle. Only forced tracks "
-    + "survive to reach Subtitle Language Review.";
-    }
-    return null;
-};
-
 /* ── Settings field row ─────────────────────────────────────────────────────
  * The description is collapsed by default and revealed by clicking the
  * setting's name — hovering the name surfaces a "?" to advertise that it's
@@ -262,8 +226,7 @@ const fieldWarning = (key, values) => {
  * always laid out (just transparent until hover) so nothing shifts as the
  * pointer moves down the list, and it stays visible on mobile, where there
  * is no hover to discover it with. */
-const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
-  warning = null }) => {
+const FieldRow = ({ field, value, onChange, isMobile, immediate = false }) => {
     const { palette, type, space, radius } = useTheme();
     const [open,  setOpen]  = useState(false);
     const [hover, setHover] = useState(false);
@@ -329,22 +292,6 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
         </span>
       )}
       </button>
-
-      {/* Shown unconditionally, not folded into the collapsed description.
-        * It only appears when the combination is actually wrong, and a
-        * warning the user has to click to discover is one they will not
-        * discover. */}
-        {warning && (
-          <div style={{
-            color: palette.amber,
-            fontSize: type.size.md,
-            lineHeight: type.leading.relaxed,
-            marginTop: space.sm,
-            paddingRight: isMobile ? 0 : 14,
-          }}>
-          {warning}
-          </div>
-        )}
 
         {open && hasDesc && (
           <div style={{
@@ -879,7 +826,6 @@ const FieldRow = ({ field, value, onChange, isMobile, immediate = false,
               onChange={live ? live.onToggle : (v => set(field.key, v))}
               isMobile={isMobile}
               immediate={!!live}
-              warning={fieldWarning(field.key, values)}
               />
               {field.key === "include_patterns" && (
                 <ExcludedFilesSection api={api} toast={toast}

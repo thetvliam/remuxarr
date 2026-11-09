@@ -59,8 +59,8 @@ import os
 from dataclasses import dataclass
 
 from app.config import settings as app_settings
-from app.core.ffmpeg import SidecarUnsupported, build_sidecar_command
-from app.core.probe import ProbeError, extract_format_info, probe_file
+from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
+from app.core.probe import ProbeError, extract_format_info, is_faststart_mp4, probe_file
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams
 from app.core.revert_restore import revert_blocked_reason
@@ -462,6 +462,65 @@ def _record_created_files(manifest: dict, created_files: list[str]) -> None:
     manifest["created_files"] = list(existing.values())
 
 
+def repoint_created_file(db, file_id: int, old_path: str, new_path: str) -> None:
+    """
+    Follow a rename of a file a job created in any revert point that
+    recorded it.
+
+    A revert removes the subtitle files its job created, matching them by
+    the path recorded at capture. Rename one without telling the revert
+    point and the match fails, so reverting re-embeds the subtitle and
+    leaves the sidecar behind — the user ends up with it twice, which is
+    the exact duplication that cleanup exists to prevent.
+
+    Two renames call this: Language Review naming an extracted sidecar
+    after the language chosen, and Sonarr or Radarr renaming the media
+    file and its sidecars with it (scanner.move_renamed_file).
+
+    Only the path is updated. A rename preserves size and mtime, so the
+    fingerprint recorded alongside it is still accurate and still protects
+    a file the user has since edited.
+
+    Never raises. The rename has already happened; a manifest that cannot
+    be updated means one stale sidecar after a revert, which is untidy
+    rather than harmful, and is no reason to undo what the caller did.
+    """
+    from app.database.models import RevertPoint
+    try:
+        # Filtered by file_id for cost, not for safety: the path match
+        # below is what prevents another file's records being touched, and
+        # extracted subtitle paths are derived from the media filename so
+        # two files cannot record the same one. Without the filter this
+        # would load and JSON-parse every revert point in the bin on every
+        # rename.
+        points = (
+            db.query(RevertPoint)
+            .filter(RevertPoint.file_id == file_id)
+            .all()
+        )
+        for point in points:
+            try:
+                manifest = json.loads(point.manifest)
+            except (TypeError, ValueError):
+                continue
+
+            entries = manifest.get("created_files") or []
+            hits = [e for e in entries if e.get("path") == old_path]
+            if not hits:
+                continue
+            for entry in hits:
+                entry["path"] = new_path
+            point.manifest = json.dumps(manifest)
+            logger.info(
+                "Revert point %d now tracks the renamed subtitle", point.id,
+            )
+    except Exception:
+        logger.exception(
+            "Could not update revert points for the renamed subtitle %s",
+            new_path,
+        )
+
+
 async def capture(
     *,
     input_path: str,
@@ -528,8 +587,13 @@ async def capture(
             # translation and has the matroska/webm trap documented
             # alongside it.
             container = extract_format_info(original_probe).get("container")
+            # The original's layout, read now because only the first job
+            # sees the original; later jobs carry this manifest forward.
+            faststart = (is_faststart_mp4(input_path)
+                         if _CONTAINER_FORMAT.get(container) == "mp4" else None)
             manifest = build_manifest(original_probe, original_path=input_path,
-                                      original_container=container)
+                                      original_container=container,
+                                      faststart=faststart)
         else:
             # A later job. The manifest is NOT rebuilt from input_path —
             # that file is already a processed version, and treating it as

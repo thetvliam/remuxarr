@@ -90,9 +90,8 @@ def original_languages(cfg: dict):
     A lookup from a file's path to its film's or series' original language,
     built by asking each enabled service once for everything it manages.
 
-    For Re-check Scanned Files and Force Full Rescan while Original Language
-    Audio is on (scanner.scan_library); imports bring the language with them
-    and routine scans do not ask. Each entry's folder is in the service's
+    For Re-check Scanned Files and Force Full Rescan (scanner.scan_library);
+    imports bring the language with them and routine scans do not ask. Each entry's folder is in the service's
     terms, so each file's path is translated with that service's Container
     Paths first, as find_arr_id's caller does. Matched on whole folder names
     by looking each of the path's parent folders up, which is find_arr_id's

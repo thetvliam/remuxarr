@@ -470,6 +470,60 @@ describe("the outcome line", () => {
     )).toBeInTheDocument();
   });
 
+  /* A file the preview still holds in review. Its decision describes no
+   * container, so the line must not describe one: it read "Stays MKV, 2
+   * deleted" when nothing would be deleted or done. Each mutation below
+   * survived the whole suite before these existed:
+   *
+   *   • still_in_review ignored
+   *   • a mixed card's line counting the files still in review
+   *   • no line of its own for a card whose files all need review again
+   *   • several files spoken of as one, and one as several
+   */
+  it("says a file still needs review rather than what happens to it", async () => {
+    const user = userEvent.setup();
+    const held = { still_in_review: true, will_process: false, target_container: null };
+    mockApi({ previewPerFile: { 1: held, 2: held } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "All 2 still need review after these answers: there is something else to ask about them",
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/Stays MKV/)).toBeNull();
+  });
+
+  it("says it of one file as one", async () => {
+    const user = userEvent.setup();
+    mockApi({ groups: [{ ...GROUP, file_count: 1, files: [GROUP.files[0]] }],
+              previewPerFile: {
+                1: { still_in_review: true, will_process: false, target_container: null },
+              } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "Still needs review after these answers: there is something else to ask about it",
+    )).toBeInTheDocument();
+  });
+
+  it("describes the other files of a card from those alone", async () => {
+    const user = userEvent.setup();
+    mockApi({ previewPerFile: {
+      1: { still_in_review: true, will_process: false, target_container: null },
+    } });
+    show();
+
+    await answerCard(user);
+
+    expect(await screen.findByText(
+      "1 of 2 files still need review after these answers. "
+      + "The others: Converts to MP4, 2 deleted",
+    )).toBeInTheDocument();
+  });
+
   it("shows no line at all when the preview cannot be had", async () => {
     const user = userEvent.setup();
     mockApi();

@@ -351,3 +351,189 @@ def test_a_subtitle_left_behind_keeps_its_old_path(lib):
 
     assert _move(lib, old, new) == "moved"
     assert _flag_path(lib) == old_srt
+
+
+
+def test_a_neighbours_sidecar_is_never_taken_for_this_files(tmp_path):
+    """
+    A sidecar is the media file's stem, a dot, then the rest. Matching on
+    the stem alone, renaming "Ep1.mkv" to "Ep2.mkv" read "Ep10.en.srt" as
+    one of its own and pointed it at "Ep20.en.srt", whenever that existed
+    and the original did not. The disk checks made it unlikely; the dot
+    makes it impossible. The same rule moves review flags and revert
+    points, so it is pinned once, here.
+    """
+    old_stem, new_stem = str(tmp_path / "Ep1"), str(tmp_path / "Ep2")
+    _file(tmp_path / "Ep20.en.srt")
+    _file(tmp_path / "Ep2.en.srt")
+
+    assert scanner._renamed_sidecar(old_stem + "0.en.srt", old_stem, new_stem) is None
+    assert scanner._renamed_sidecar(old_stem + ".en.srt", old_stem, new_stem) == new_stem + ".en.srt"
+
+
+# ── Revert points ────────────────────────────────────────────────────────────
+#
+# A revert takes away the sidecars its job extracted, found by the paths
+# recorded at capture, because it puts those subtitles back inside the file.
+# A rename that left them on the old names meant the revert found nothing to
+# remove, and each subtitle was there twice: embedded, and beside the file
+# under its new name. Sonarr and Radarr rename the sidecars they know about
+# along with the file.
+#
+# Verified by mutation, 6 applied 6 killed, each surviving the whole
+# 2306-test suite first:
+#
+#   • revert points not followed at all     → the followed test, and the
+#                                             revert end to end
+#   • the rest of the name not needing to
+#     start with a dot                      → the neighbour test above
+#   • the new name not checked              → the gone-from-both test
+#   • the old name not checked              → the both-names test
+#   • only the first revert point followed  → the every-point test
+#   • a malformed manifest raising          → the malformed test
+#
+# Language Review's own rename, which the moved helper also serves, and the
+# helper not writing the manifest back, were already killed by
+# test_revert_multiple_jobs.py::test_a_renamed_subtitle_is_still_removed_on_revert,
+# and are not claimed here.
+
+def _revert_point(lib, file_id, media, *created, manifest=None):
+    """A revert point recording `created` as the files its job made."""
+    if manifest is None:
+        entries = []
+        for path in created:
+            stat = os.stat(path)
+            entries.append({"path": path, "size": stat.st_size,
+                            "mtime": stat.st_mtime})
+        manifest = json.dumps({"path": media, "created_files": entries})
+    with lib.Session() as db:
+        db.add(RevertPoint(file_id=file_id, sidecar_path="/recycle/x.mkv",
+                           original_path=media, manifest=manifest))
+        db.commit()
+
+
+def _created(lib):
+    """Each revert point's created_files paths, by point, as base names."""
+    with lib.Session() as db:
+        points = db.query(RevertPoint).order_by(RevertPoint.id).all()
+        out = []
+        for point in points:
+            try:
+                entries = json.loads(point.manifest).get("created_files", [])
+            except ValueError:
+                out.append(None)
+                continue
+            out.append([os.path.basename(e["path"]) for e in entries])
+        return out
+
+
+def _renamed_episode(lib, episode, *suffixes, rename_sidecars=True):
+    """
+    An imported episode with extracted sidecars and a revert point that
+    records them, then renamed on disk, sidecars too unless told not to.
+    Returns the file id and the old and new media paths.
+    """
+    old = _file(lib.folder / f"Show - {episode} - TBA.mkv")
+    file_id, _ = _imported(lib, old)
+    sidecars = [_file(lib.folder / f"Show - {episode} - TBA{s}") for s in suffixes]
+    _revert_point(lib, file_id, old, *sidecars)
+    new = str(lib.folder / f"Show - {episode} - The Title.mkv")
+    os.rename(old, new)
+    if rename_sidecars:
+        for s in suffixes:
+            os.rename(str(lib.folder / f"Show - {episode} - TBA{s}"),
+                      str(lib.folder / f"Show - {episode} - The Title{s}"))
+    return file_id, old, new
+
+
+def test_sidecars_renamed_with_the_file_are_followed_in_its_revert_point(lib):
+    file_id, old, new = _renamed_episode(lib, "S01E10", ".en.srt", ".en.forced.srt")
+
+    assert _move(lib, old, new) == "moved"
+    assert _created(lib) == [["Show - S01E10 - The Title.en.srt",
+                              "Show - S01E10 - The Title.en.forced.srt"]]
+
+
+def test_a_revert_after_a_rename_takes_the_renamed_sidecars_away(lib):
+    """
+    End to end: Sonarr's Rename webhook, then the revert's own clean-up,
+    on the manifest as the database now holds it.
+    """
+    from app.core.revert_restore import _remove_created_files
+
+    file_id, old, new = _renamed_episode(lib, "S01E11", ".en.srt", ".en.forced.srt")
+    handler, payload = _sonarr_rename(old, new)
+    _webhook(handler, payload)
+
+    with lib.Session() as db:
+        manifest = json.loads(db.query(RevertPoint).one().manifest)
+    _remove_created_files(manifest)
+
+    assert sorted(os.listdir(lib.folder)) == ["Show - S01E11 - The Title.mkv"]
+
+
+def test_a_sidecar_left_behind_keeps_its_recorded_path(lib):
+    """The service may not know about the sidecar, and leave it as it was."""
+    file_id, old, new = _renamed_episode(lib, "S01E12", ".en.srt", rename_sidecars=False)
+
+    assert _move(lib, old, new) == "moved"
+    assert _created(lib) == [["Show - S01E12 - TBA.en.srt"]]
+
+
+def test_a_sidecar_at_both_names_is_not_followed(lib):
+    """
+    Copied rather than renamed: the recorded file is still where the job
+    wrote it, and still the one a revert should take away.
+    """
+    file_id, old, new = _renamed_episode(lib, "S01E13", ".en.srt", rename_sidecars=False)
+    _file(lib.folder / "Show - S01E13 - The Title.en.srt")
+
+    assert _move(lib, old, new) == "moved"
+    assert _created(lib) == [["Show - S01E13 - TBA.en.srt"]]
+
+
+def test_a_sidecar_gone_from_both_names_is_not_followed(lib):
+    """
+    Deleted rather than renamed. Pointing the record at a name nothing is
+    at would claim a file the job never made, if one turned up there.
+    """
+    file_id, old, new = _renamed_episode(lib, "S01E14", ".en.srt", rename_sidecars=False)
+    os.remove(lib.folder / "Show - S01E14 - TBA.en.srt")
+
+    assert _move(lib, old, new) == "moved"
+    assert _created(lib) == [["Show - S01E14 - TBA.en.srt"]]
+
+
+def test_every_revert_point_of_the_file_is_followed(lib):
+    """
+    A file can have more than one revert point, each recording the sidecars
+    of its own job.
+    """
+    old = _file(lib.folder / "Show - S01E15 - TBA.mkv")
+    file_id, _ = _imported(lib, old)
+    english = _file(lib.folder / "Show - S01E15 - TBA.en.srt")
+    french = _file(lib.folder / "Show - S01E15 - TBA.fr.srt")
+    _revert_point(lib, file_id, old, english)
+    _revert_point(lib, file_id, old, french)
+    new = str(lib.folder / "Show - S01E15 - The Title.mkv")
+    os.rename(old, new)
+    os.rename(english, str(lib.folder / "Show - S01E15 - The Title.en.srt"))
+    os.rename(french, str(lib.folder / "Show - S01E15 - The Title.fr.srt"))
+
+    assert _move(lib, old, new) == "moved"
+    assert _created(lib) == [["Show - S01E15 - The Title.en.srt"],
+                             ["Show - S01E15 - The Title.fr.srt"]]
+
+
+def test_a_malformed_manifest_does_not_stop_the_rename(lib):
+    """
+    The record moving is what keeps the file's history and answers; a
+    revert point that cannot be read is one stale sidecar at worst, and no
+    reason to lose all of that.
+    """
+    file_id, old, new = _renamed_episode(lib, "S01E16", ".en.srt")
+    _revert_point(lib, file_id, old, manifest="not json")
+
+    assert _move(lib, old, new) == "moved"
+    assert _records(lib) == [(file_id, new, os.path.basename(new), str(lib.folder))]
+    assert _created(lib) == [["Show - S01E16 - The Title.en.srt"], None]

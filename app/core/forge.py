@@ -7,11 +7,13 @@ Key differences from the main remux pipeline
 ---------------------------------------------
 • The original AAC 5.1 track is KEPT — not replaced.
 • A new AC3 5.1 track is APPENDED to the end of the audio stream list.
-• The operation is reversible: the appended AC3 is always the LAST audio
-  track, and undo re-locates it by that property against a fresh probe.
-  The add-time index IS stored (Ac3ForgeJob.audio_track_count) but undo
-  does NOT use it — see resolve_forge_ac3_for_undo for the false "undone"
-  that trusting it produced.
+• The operation is reversible: the appended AC3 carries a marker
+  (FORGE_AC3_HANDLER_NAME), and undo re-locates it by that marker against
+  a fresh probe, or by its being the LAST audio track where the add left
+  no marker. The add-time index IS stored (Ac3ForgeJob.audio_track_count)
+  but undo does NOT use it — see resolve_forge_ac3_for_undo for the false
+  "undone" that trusting it produced, and for the AC3 the file already
+  had that the last-track rule alone removed.
 
 FFmpeg strategy
 ---------------
@@ -28,13 +30,16 @@ FFmpeg strategy
 """
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from app.core.timeutil import utcnow
 
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
+from app.core.ffmpeg import (
+    KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
+)
 from app.core.probe import ProbeError, extract_tracks, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
@@ -48,6 +53,27 @@ from app.core.subprocess_runner import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Written as the handler_name of the AC3 an add appends, so that undo can
+# tell it from an AC3 5.1 the file already had. Without it undo took the
+# last audio track for the forged one, and once a job had dropped the
+# forged AC3 that was a track of the original: undo removed it, recorded
+# "undone", and on a file with no other audio left video alone.
+#
+# handler_name because it is the stream tag that survives every rewrite the
+# marker must outlive, measured with the FFmpeg 8.1 the image ships: a job
+# from Matroska to Matroska, Matroska to MP4 and MP4 to MP4, and a revert,
+# which writes back the tags it recorded. A title was lost whenever an MP4
+# was rewritten (titles are now written back for MP4: ffmpeg's title_of and
+# _title_args here), and a tag of our own is lost when Matroska becomes MP4. AVI,
+# MPEG-TS and ASF keep no handler_name at all, which is why an add only
+# counts as marked once the probe after it has found the marker
+# (finish_forge_job).
+#
+# Worded as a label rather than an identifier, in case a player shows it.
+# None of probe's forced, SDH or dub patterns may match it: they are
+# applied to every tag value.
+FORGE_AC3_HANDLER_NAME = "AC3 5.1 (Remuxarr)"
 
 _FORMAT_MAP = {
     "mkv":  "matroska",
@@ -83,6 +109,59 @@ class ForgeResult:
 
 # ── Command builders ───────────────────────────────────────────────────────────
 
+def _title_args(fmt: str, titles: dict[int, str] | None) -> list[str]:
+    """
+    -metadata arguments writing each title back, for an MP4 output.
+
+    Both forge commands copy every stream, and in an MP4 FFmpeg reads a
+    title as the tag "name" but writes one only from "title", so an add or
+    an undo on an MP4 dropped every track's title. `titles` maps an output
+    stream index to its title (titles_after_forge). Matroska keeps titles
+    through a copy, so nothing is written for it.
+    """
+    if fmt != "mp4" or not titles:
+        return []
+    args: list[str] = []
+    for index, title in sorted(titles.items()):
+        args += [f"-metadata:s:{index}", f"title={title}"]
+    return args
+
+
+def _cover_unmaps(covers: Sequence[CoverArt]) -> list[str]:
+    """Negative maps leaving each Matroska cover out of a "-map 0" copy."""
+    args: list[str] = []
+    for cover in covers:
+        args += ["-map", f"-0:{cover.stream_index}"]
+    return args
+
+
+def titles_after_forge(tracks: list[dict],
+                       removed_audio_index: int | None = None) -> dict[int, str]:
+    """
+    Where each titled track will be in a forge command's output, with its
+    title.
+
+    Titles are written only for an MP4 (_title_args), which has no
+    attachments or Matroska covers, so both commands map its streams in
+    order and a stream keeps its index; an undo removes one audio stream,
+    and every stream after it moves down one. `removed_audio_index` is that
+    stream's position among the audio tracks (the -0:a:N of
+    build_undo_command). The AC3 an add appends goes last and has no title.
+    """
+    removed: int | None = None
+    if removed_audio_index is not None:
+        audio = sorted(t["stream_index"] for t in tracks if t["track_type"] == "audio")
+        if 0 <= removed_audio_index < len(audio):
+            removed = audio[removed_audio_index]
+    out: dict[int, str] = {}
+    for t in tracks:
+        index, title = t["stream_index"], t.get("title")
+        if not title or index == removed:
+            continue
+        out[index - 1 if removed is not None and index > removed else index] = title
+    return out
+
+
 def build_add_ac3_command(
     input_path:        str,
     temp_path:         str,
@@ -90,6 +169,8 @@ def build_add_ac3_command(
     audio_track_count: int,     # number of audio tracks BEFORE adding AC3
     container:         str = "mkv",
     add_faststart:     bool = True,
+    titles:            dict[int, str] | None = None,
+    covers:            Sequence[CoverArt] = (),
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -97,6 +178,16 @@ def build_add_ac3_command(
 
     The new AC3 always ends up at output audio index audio_track_count
     (0-based), making the undo index deterministic.
+
+    Attachments are mapped after the AC3, not with the rest of "-map 0":
+    an attachment copied ahead of an encoded stream makes the Matroska
+    muxer stop with "Received a packet for an attachment stream" (FFmpeg
+    8.1 and 6.1 alike), so every add on an MKV with fonts used to fail.
+    The main pipeline maps them last too (build_ffmpeg_command).
+
+    covers are the file's Matroska cover images, copied out by the worker
+    (copy_out_cover_art). "-map 0" would take each as a real still-image
+    video track, so each is left out of the map and attached again.
     """
     # Hard-fail on unknown containers rather than silently defaulting to
     # matroska — same file-corruption pattern just fixed in
@@ -120,13 +211,32 @@ def build_add_ac3_command(
         "-i", input_path,
         "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
         # ── Keep every existing stream unchanged ───────────────────────────
+        # Attachments and covers come back after the AC3; see the docstring.
         "-map", "0",
+        "-map", "-0:t",
+        *_cover_unmaps(covers),
         "-c", "copy",
         # ── Map the AAC 5.1 a second time and transcode it to AC3 ─────────
         "-map", f"0:{aac_stream_index}",
         f"-c:a:{ac3_idx}", "ac3",
         f"-b:a:{ac3_idx}", "640k",
         f"-ac:{ac3_idx}", "6",
+        # What tells this AC3 apart from one the file already had; it
+        # replaces any handler name the copy inherits from the AAC. See
+        # FORGE_AC3_HANDLER_NAME.
+        f"-metadata:s:a:{ac3_idx}", f"handler_name={FORGE_AC3_HANDLER_NAME}",
+        # Every copied stream keeps its own flags; see KEEP_STREAM_FLAGS.
+        *KEEP_STREAM_FLAGS,
+        # The AC3 takes its flags from the AAC it is encoded from; all but
+        # default, so it never makes a second default audio track. With
+        # two, the MP4 muxer gives every track its own alternate group, so the
+        # AAC and the AC3 are both enabled and no longer alternatives.
+        # Keeping the copy through the next scan is decision.py's work, as
+        # Keep Default Audio no longer keeps it.
+        f"-disposition:a:{ac3_idx}", "-default",
+        "-map", "0:t?",
+        *cover_attach_args(covers),
+        *_title_args(fmt, titles),
         # ── Output ────────────────────────────────────────────────────────
         "-f", fmt,
     ]
@@ -156,11 +266,15 @@ def build_undo_command(
     ac3_audio_output_index: int,   # resolved at UNDO time by resolve_forge_ac3_for_undo
     container:             str = "mkv",
     add_faststart:         bool = True,
+    titles:                dict[int, str] | None = None,
+    covers:                Sequence[CoverArt] = (),
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
-    stream N from the selection.
+    stream N from the selection. covers are left out and attached again,
+    as for build_add_ac3_command; a copy alone does not trip the muxer over
+    attachments, so they stay where "-map 0" puts them.
 
     ac3_audio_output_index comes from resolve_forge_ac3_for_undo's fresh
     probe of the file, NOT from Ac3ForgeJob.audio_track_count — the
@@ -183,7 +297,11 @@ def build_undo_command(
         "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
         "-map", "0",
         "-map", f"-0:a:{ac3_audio_output_index}",   # strip the AC3 we added
+        *_cover_unmaps(covers),
         "-c", "copy",
+        *KEEP_STREAM_FLAGS,
+        *cover_attach_args(covers),
+        *_title_args(fmt, titles),
         "-f", fmt,
     ]
 
@@ -550,74 +668,96 @@ def _claim_next_forge_job_locked(reverting: int | None) -> int | None:
         db.close()
 
 
-def resolve_forge_ac3_for_undo(tracks: list[dict]) -> tuple[str, int | None]:
+def resolve_forge_ac3_for_undo(
+    tracks: list[dict],
+    *,
+    marked: bool = False,
+) -> tuple[str, int | None]:
     """
     Locate the forge-added AC3 5.1 track in a FRESHLY-probed track list,
     for undo. Pure function — takes probe.extract_tracks() output,
     touches nothing.
 
+    marked is the job's Ac3ForgeJob.ac3_marked: whether the probe after its
+    add found FORGE_AC3_HANDLER_NAME on the new AC3. It decides which rule
+    identifies the track.
+
     Returns (outcome, audio_output_index):
       ("found", N)        — the forge AC3 is audio output stream N
                             (0-based, i.e. the -0:a:{N} selector);
-      ("absent", None)    — no AC3 5.1 track exists anywhere in the file:
-                            the track is already gone (the main pipeline
-                            legitimately drops it when its inherited
-                            language isn't in the keep list), so there is
-                            nothing to undo;
-      ("mismatch", None)  — an AC3 5.1 track exists but is NOT the last
-                            audio track, which the invariant below says
-                            is impossible for a file forge actually
-                            modified — refuse rather than guess.
+      ("absent", None)    — the forge AC3 is already gone (the main
+                            pipeline legitimately drops it when its
+                            inherited language isn't in the keep list), so
+                            there is nothing to undo;
+      ("mismatch", None)  — the file does not look like one this job
+                            forged: refuse rather than guess;
+      ("only_audio", None) — the track found is the file's only audio
+                            track: refuse, as removing it would leave a
+                            file with no sound.
 
-    Why "last audio track" identifies the forge AC3 (the invariant):
-    build_add_ac3_command APPENDS the new AC3 after every existing
-    stream, making it the final audio track at add time. The main remux
-    pipeline (build_ffmpeg_command) only ever drops or copies audio
-    tracks in source order — it never reorders and never appends — so
-    any later processing shifts the forge AC3 left but can never move
-    anything past it: if it survives at all, it is still the last audio
-    track. A pre-existing AC3 5.1 in the source (possible — candidates
-    only require an AAC 5.1, they can carry other tracks too) always
-    sits BEFORE the appended one, so "last" never confuses the two.
+    A marked job: the marker identifies the track. No audio track carrying
+    it is "absent", whatever AC3 tracks the file has. One carrying it is
+    "found", provided it still has the forge shape (AC3, six channels).
+    More than one, or a marker on anything else, is "mismatch".
 
-    This function exists because the previous undo trusted
-    Ac3ForgeJob.audio_track_count — the track's position AT ADD TIME —
-    verbatim. The forge rewrite changes the file's size/mtime, so the
-    next delta scan re-evaluates it, and the main pipeline can drop
-    audio tracks (e.g. a non-kept-language track) before the user ever
-    clicks undo. The forge AC3 was the LAST audio track, so any drop
-    pushes the stored index past the end of the surviving audio — and
-    FFmpeg SILENTLY IGNORES a negative map that matches nothing
-    (verified live: rc=0, no warning). The stale undo therefore rewrote
+    An unmarked job (an add from before the marker existed, a container
+    that keeps no handler_name, or an add whose closing probe failed) falls
+    back to the rule undo used before: build_add_ac3_command APPENDS the
+    new AC3 after every existing stream, and the main remux pipeline only
+    ever drops or copies audio tracks in source order, so a forge AC3 that
+    survives is still the last audio track. No AC3 5.1 anywhere is
+    "absent", an AC3 5.1 last is "found", and one elsewhere is "mismatch":
+    the path holds a different file, replaced in place under the same name.
+
+    That rule cannot tell a dropped forge AC3 from a surviving one when the
+    file already had an AC3 5.1 of its own. Candidates only require an AAC
+    5.1, so a French AAC 5.1 beside an English AC3 5.1 can be forged; drop
+    French audio afterwards and the job removes the AAC and the forged
+    AC3, which inherited its language. The English AC3 is then the last
+    audio track, and undo removed it, recorded "undone", and left a file
+    with video alone (reproduced with real FFmpeg). The marker is what
+    closes that. For unmarked jobs nothing can, short of refusing every
+    undo, so "only_audio" at least stops the outcome that loses the file's
+    sound. It applies to marked jobs too, where it guards a layout no job
+    is known to produce: a forge AC3 outliving the AAC it came from.
+
+    The add-time position, Ac3ForgeJob.audio_track_count, is used by
+    neither rule. The forge rewrite changes the file's size/mtime, so the
+    next delta scan re-evaluates it, and the main pipeline can drop audio
+    tracks (e.g. a non-kept-language track) before the user ever clicks
+    undo, which pushes the stored index past the end of the surviving
+    audio. FFmpeg SILENTLY IGNORES a negative map that matches nothing
+    (verified live: rc=0, no warning), so an undo that trusted it rewrote
     the entire file with every track kept and recorded the job as
-    "undone" — a false success leaving the AC3 embedded forever while
-    the UI reported it removed and the candidates list excluded the
-    file. The failure mode was confirmed
-    empirically during the fix. Resolving by verified properties at
-    undo time closes it.
+    "undone", leaving the AC3 embedded while the UI reported it removed.
 
-    The "mismatch" outcome is the safety net for the one case property
-    matching can't cover: the path now holds a DIFFERENT file (replaced
-    in place under the identical filename) whose own layout happens to
-    include an AC3 5.1 somewhere. When the invariant doesn't hold, this
-    file cannot be the one forge modified — refusing with a clear error
-    beats stripping a track from a file forge never touched. (A same-
-    layout replacement is indistinguishable in principle; the stored-
-    index approach was equally blind to it, and normal *arr upgrades
-    change the release filename, which deletes the MediaFile row and
-    the forge job with it — so this residual window is both tiny and
-    strictly no worse than before.)
+    (A same-layout replacement at the same path is indistinguishable in
+    principle; normal *arr upgrades change the release filename, which
+    deletes the MediaFile row and the forge job with it.)
     """
     audio = [t for t in tracks if t.get("track_type") == "audio"]
 
     def _is_forge_shape(t: dict) -> bool:
         return (t.get("codec") or "").lower() == "ac3" and t.get("channels") == 6
 
-    if not any(_is_forge_shape(t) for t in audio):
-        return ("absent", None)
-    if audio and _is_forge_shape(audio[-1]):
-        return ("found", len(audio) - 1)
-    return ("mismatch", None)
+    if marked:
+        carrying = [n for n, t in enumerate(audio)
+                    if t.get("handler_name") == FORGE_AC3_HANDLER_NAME]
+        if not carrying:
+            return ("absent", None)
+        if len(carrying) > 1 or not _is_forge_shape(audio[carrying[0]]):
+            return ("mismatch", None)
+        index = carrying[0]
+    else:
+        if not any(_is_forge_shape(t) for t in audio):
+            return ("absent", None)
+        if not _is_forge_shape(audio[-1]):
+            return ("mismatch", None)
+        index = len(audio) - 1
+
+    if len(audio) == 1:
+        return ("only_audio", None)
+    return ("found", index)
 
 
 def resolve_forge_aac_for_add(tracks: list[dict]) -> tuple[int, int] | None:
@@ -646,6 +786,79 @@ def resolve_forge_aac_for_add(tracks: list[dict]) -> tuple[int, int] | None:
     if not aac:
         return None
     return aac[0]["stream_index"], len(audio)
+
+
+def settle_forge_jobs(db, file_id: int, tracks: list[dict], *, after: str) -> None:
+    """
+    Bring the file's finished AC3 Forge jobs in line with the file, after
+    something other than the forge rewrote it. Does not commit.
+
+    Two things do, and each can take the forged AC3 away:
+
+      • a revert (after="revert", revert_restore._apply): an AC3 forged
+        after processing is not part of the original and goes. One forged
+        BEFORE processing is part of it, and comes back;
+      • a job (after="job", worker._finish_job): the forged AC3 inherits
+        its AAC's language, so dropping that language from Keep Audio
+        Languages drops both.
+
+    Either way the forge job used to keep saying "success". The Forge page
+    then listed the file as forged, left it out of the candidates and
+    refused to queue it again, until an undo that had nothing to remove.
+
+    tracks is the probe the caller has just made of the rewritten file, so
+    a probe that failed never reaches here and the jobs stay as they were.
+    The file decides, through resolve_forge_ac3_for_undo, the test the
+    undo itself uses, applied to each job with that job's own ac3_marked,
+    as its undo would apply it: "absent" settles the job as undone, the
+    state a completed undo leaves; "found" leaves it alone; "mismatch" (an
+    AC3 5.1 where the forge never puts one) and "only_audio" are left
+    alone too, as the undo refuses to act on either.
+
+    Per job, because the rule differs. Under the last-track rule alone, a
+    file that carries its own AC3 5.1 last reads as "found" once the
+    forged one has gone: the job stays "success", and its undo would then
+    remove the file's own AC3. A marked job looks for its marker, which
+    that track does not carry.
+
+    "undo_failed" is settled with "success": the AC3 that undo could not
+    remove is gone now as well. No other status is touched. A revert is
+    refused while the file has a pending or running forge job
+    (routes/revert.restore). After a job, a pending add or undo re-reads
+    the file when it starts, and goes by what it finds there
+    (load_forge_job_data).
+
+    after names the caller, for the log.
+    """
+    from app.database.models import Ac3ForgeJob
+
+    jobs = (db.query(Ac3ForgeJob)
+              .filter(Ac3ForgeJob.file_id == file_id,
+                      Ac3ForgeJob.status.in_(("success", "undo_failed")))
+              .all())
+    settled = 0
+    for job in jobs:
+        outcome, _index = resolve_forge_ac3_for_undo(
+            tracks, marked=bool(job.ac3_marked))
+        if outcome in ("mismatch", "only_audio"):
+            logger.warning(
+                "AC3 Forge job %d for file %d left as it is after the %s: "
+                "its undo would refuse the file (%s)",
+                job.id, file_id, after, outcome,
+            )
+            continue
+        if outcome == "found":
+            continue
+        job.status = "undone"
+        job.is_undo = True
+        job.completed_at = utcnow()
+        job.error_message = None
+        settled += 1
+    if settled:
+        logger.info(
+            "Marked %d AC3 Forge job(s) for file %d undone: the %s removed "
+            "the forged track", settled, file_id, after,
+        )
 
 
 def load_forge_job_data(job_id: int) -> dict | None:
@@ -678,7 +891,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
                                 a stuck state for an already-correct
                                 file;
       • layout mismatch      → job failed with an explicit explanation,
-                                file untouched.
+                                file untouched;
+      • only audio track     → the same: an undo never leaves a file
+                                with no audio.
     """
     from app.database.models import Ac3ForgeJob, MediaFile
 
@@ -726,27 +941,44 @@ def load_forge_job_data(job_id: int) -> dict | None:
             db.commit()
 
         if job.is_undo:
-            outcome, undo_audio_output_index = resolve_forge_ac3_for_undo(fresh_tracks)
+            outcome, undo_audio_output_index = resolve_forge_ac3_for_undo(
+                fresh_tracks, marked=bool(job.ac3_marked),
+            )
 
             if outcome == "absent":
                 logger.info(
-                    "Forge undo %d: no AC3 5.1 track present in %s — it was "
-                    "already removed (most likely by the main pipeline after "
-                    "the forge rewrite triggered a re-scan). Marking undone "
-                    "without touching the file.",
+                    "Forge undo %d: the forged AC3 5.1 track is no longer in "
+                    "%s — it was already removed (most likely by the main "
+                    "pipeline after the forge rewrite triggered a re-scan). "
+                    "Marking undone without touching the file.",
                     job_id, media.path,
                 )
                 finish_forge_job(job_id, True, None, None)
                 return None
 
             if outcome == "mismatch":
+                where = ("more than one track carries the forge marker, or "
+                         "it is on a track that is not AC3 5.1"
+                         if job.ac3_marked else
+                         "an AC3 5.1 track exists but is not the last audio "
+                         "track")
                 finish_forge_job(
                     job_id, False, None,
                     "The file's audio layout no longer matches what this "
-                    "forge job produced (an AC3 5.1 track exists but is not "
-                    "the last audio track) — the file at this path appears "
-                    "to have been replaced. Refusing to remove a track from "
-                    "a file this job did not modify.",
+                    f"forge job produced ({where}) — the file at this path "
+                    "appears to have been replaced. Refusing to remove a "
+                    "track from a file this job did not modify.",
+                )
+                return None
+
+            if outcome == "only_audio":
+                finish_forge_job(
+                    job_id, False, None,
+                    "The AC3 5.1 track this undo would remove is the file's "
+                    "only audio track, so removing it would leave the file "
+                    "with no sound. It may not be the one this forge job "
+                    "added: that one may have been removed by later "
+                    "processing. The file was not changed.",
                 )
                 return None
 
@@ -780,6 +1012,12 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,
+            # Each track's title by its index in the output, which the
+            # commands write back for an MP4 (_title_args).
+            "titles":             titles_after_forge(fresh_tracks, undo_audio_output_index),
+            # The Matroska covers and the attachment count, from the same
+            # probe, for the worker to copy out (copy_out_cover_art).
+            "cover_art":          find_matroska_covers(probe_data),
             "original_size":      job.original_size,
             "job_timeout_minutes": app_cfg.get("job_timeout_minutes", 120),
             # Read here for the same reason as job_timeout_minutes above:
@@ -882,6 +1120,16 @@ def finish_forge_job(
         # job to start on the old ones.
         if success and fresh_tracks is not None:
             from app.core.scanner import replace_track_rows
+            if not job.is_undo:
+                # Marked only once the rewritten file shows the marker where
+                # a marked undo will look for it. The add always writes it,
+                # but AVI, MPEG-TS and ASF keep no handler_name, and a job
+                # marked on the strength of the command alone would find no
+                # marker at undo and take its AC3 for already removed. With
+                # no probe here the job stays unmarked: undo then uses the
+                # last-track rule, as it does for adds from before the marker.
+                job.ac3_marked = resolve_forge_ac3_for_undo(
+                    fresh_tracks, marked=True)[0] == "found"
             if job.is_undo:
                 _rekey_questions_after_undo(db, job.file_id, fresh_tracks)
             # An add needs nothing of the kind: it appends its AC3 after
@@ -913,8 +1161,11 @@ def _rekey_questions_after_undo(db, file_id: int, fresh_tracks: list[dict]) -> N
     its old position named the next subtitle along, or nothing.
 
     The removed track is found in the stored rows, which are what the
-    questions are numbered against, by the rule the undo itself uses
-    (resolve_forge_ac3_for_undo). Rows that do not show it are left to
+    questions are numbered against, by resolve_forge_ac3_for_undo's
+    last-track rule. Stored rows keep no handler name, so the marker cannot
+    be used here, and it is not needed: a forge AC3 that a marked undo
+    found is a forge AC3 that survived, which the same invariant puts last.
+    Rows that do not show it are left to
     job_stream_mapping's count check with nothing marked removed: a layout
     that is the same either side pairs one to one, and a type whose count
     does not add up loses its questions, which the next scan asks again,

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2250 tests across 100 test files, plus 774 frontend tests under
+2413 tests across 110 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -8,6 +8,12 @@ The file count is the modules `pytest` collects, not the `.py` files under
 `tests/`: `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
 and a helper script, contain no tests, and are not counted. Both readings were
 in use at once until this was written down.
+
+Two runs can go side by side, a mutation run beside the suite, say:
+`conftest.py` gives each run a directory of its own for the database and for
+`TEMP_DIR`, removed when it ends, unless `REMUXARR_DATABASE_PATH` or
+`REMUXARR_TEMP_DIR` is set. Tests that look for their own processes match on an
+argument unique to the run.
 
 ## What's here
 
@@ -20,12 +26,14 @@ see each docstring. `test_language_codes.py` covers language codes in any of
 their spellings (en, eng, and deu beside ger): the tables in
 `app/core/langcodes.py`, the engine comparing them as one, settings saved in
 the one form, and two-letter tags written in full when a file is processed.
+`test_track_order.py` checks that the worker at pickup and an answered review
+hand the engine a file's stored tracks in stream order, since it reads position.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
-`test_settings_schema.py`, `test_backup_restore.py`,
+`test_settings_schema.py`, `test_setting_values.py`, `test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
 `test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
 `test_replaced_file_answers.py`. Real
@@ -38,6 +46,9 @@ unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
+`test_setting_values.py` covers values of the wrong kind: the settings routes
+refuse them, an import skips and reports them, and a stored one, which a full
+backup restore or a hand edit can leave, is read as the default.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan
@@ -75,8 +86,20 @@ and the endpoint that lists excluded files, which a scan only counts.
 **Queue and job lifecycle** — `test_queue_lifecycle.py`, `test_queue_routes.py`,
 `test_job_finalisation.py`, `test_history_routes.py`,
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
+`test_crash_after_swap.py`,
 `test_clean_shutdown.py`, `test_background_tasks.py`,
-`test_retry_unreadable_file.py`, `test_ask_again.py`. `test_retry_unreadable_file.py`
+`test_retry_unreadable_file.py`, `test_ask_again.py`, `test_scan_during_job.py`,
+`test_encoding_review_rescan.py`.
+`test_crash_after_swap.py` stops a real job with a crash after its swap,
+part-way through it and before it, then runs startup recovery: a job whose
+output was in place used to be failed, and the next scan forgot its answers.
+`test_encoding_review_rescan.py` follows an unanswered subtitle-encoding review
+through the scans that decide its file again: Re-check queued the extraction
+that had failed, and a gate's review replaced the question.
+`test_scan_during_job.py` runs a Re-check during a real job and over a waiting
+one: a review raised mid-job named the tracks as they were before the job, so
+an answer landed on another track, and a skip left a waiting job in the queue.
+`test_retry_unreadable_file.py`
 retries failed items whose file
 ffprobe cannot read, through Retry All and the item's own Retry: both deleted
 the failed row and reported nothing wrong. `test_ask_again.py` covers Ask
@@ -99,13 +122,27 @@ acts on it.
 `test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
-`test_existing_subtitle_files.py`, `test_timeout_logging.py`. Some run a
+`test_existing_subtitle_files.py`, `test_timeout_logging.py`,
+`test_mp4_track_titles.py`, `test_stream_flags.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
 `test_attachment_preservation.py` pins the `-map` arguments against the bug
 that let every remux, including a pure language re-tag, silently destroy a
-file's fonts and cover art while reporting success.
+file's fonts while reporting success. It also covers Matroska cover art, which
+that map never caught: FFmpeg reports it as a video stream, so a job copies it
+out and attaches it again, and fails rather than drop it. AC3 Forge does the
+same, and maps attachments after the AC3 it encodes: ahead of it, the Matroska
+muxer refused every add on an MKV with fonts.
+`test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
+and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
+from `title`, so every title used to be lost.
+`test_stream_flags.py` covers each stream's flags (default, forced,
+commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
+marks the first of two or more streams of a type default when none is, unless
+the command sets a flag itself, so an MKV's first subtitle used to be turned
+on. The AC3 a Forge add makes takes its AAC's flags but default, so a file
+never gains a second default audio track.
 `test_audio_transcode_retry.py` covers the retry for audio that cannot be
 stream-copied, in both execution branches — the same guard twice over, so
 killing it in one says nothing about the other. The last two are the two-pass
@@ -124,7 +161,11 @@ traceback, and the other three left the reason out.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
-`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`.
+`test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`,
+`test_forge_undo_identity.py`, `test_forged_ac3_keep.py`.
+`test_forge_undo_identity.py` runs a real forge, a job and an undo on a
+file that had an AC3 5.1 of its own: once the job had dropped the forged
+AC3, undo removed the original's and could leave a file with no audio.
 `test_forge_keeps_tracks_current.py` runs a real forge add and undo
 with a job waiting for the same file: the stored track list stayed as it was
 before the rewrite, so the job left out a just-added AC3, or mapped a removed
@@ -136,6 +177,10 @@ Matroska whatever the file was.
 progress. A stop used to leave the run going until the event loop was torn
 down, and the next start failed it as a crash, though the file was
 untouched.
+`test_forged_ac3_keep.py` covers a scan of a forged file: the AC3 is kept
+whenever a kept audio track has its language. Keep Default Audio and the
+last-resort fallback used to keep the AAC and not its copy, so the next scan
+removed the track Forge had just added.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
 `test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,
@@ -143,6 +188,9 @@ untouched.
 `test_arr_quality_restore.py`, `test_plex_client.py`, `test_scheduler.py`,
 `test_plex_on_import.py`, `test_plex_after_review.py`, `test_email_notify.py`,
 `test_post_job_notify.py`.
+`test_rename_tracking.py` covers a file Sonarr or Radarr renames keeping its
+record, and the sidecars renamed with it being followed: in its review flags,
+and in its revert points, where a revert finds the sidecars it takes away.
 `test_arr_quality_restore.py` covers putting a file's quality back after a
 container change replaces it, and its fixture is the real history of one
 movie that this happened to — two deletion records newer than the import
@@ -181,16 +229,17 @@ nothing.
 `test_subtitle_rename.py`, `test_font_attachment_review.py`,
 `test_font_attachment_pipeline.py`, `test_review_reason.py`,
 `test_answers_follow_tracks.py`, `test_language_answer_during_job.py`,
-`test_review_keeps_language_flags.py`.
+`test_review_keeps_language_flags.py`, `test_undefined_audio_confirmation.py`.
 `test_subtitle_rename.py` covers what the others cannot reach: an
 extracted subtitle is no longer in the mux, so a language chosen in review has
 to rename the file on disk rather than re-extract the track, and the filename
 is what Plex reads.
 `test_font_attachment_review.py` covers the third review gate: a file carrying
 embedded fonts, which only Matroska can hold and which its styled subtitles
-reference by name. Converting it to MP4 drops the fonts and flattens ASS to
-SRT, so text positioned over a sign in the picture ends up at the bottom of
-the screen. It tests the gate alone, on dicts built by hand, and that is how
+reference by name. Extracting the styled tracks flattens ASS to SRT, so text
+positioned over a sign in the picture ends up at the bottom of the screen, and
+converting to MP4 then drops the fonts; the gate asks only while extraction is
+on. It tests the gate alone, on dicts built by hand, and that is how
 the gate shipped never firing: the count it keys on was probed and then
 dropped by all three callers. `test_font_attachment_pipeline.py` covers the
 path from the probe to the gate instead — the scanner, the worker at job
@@ -218,6 +267,9 @@ and only a Full Scan applied the answer. It runs the real worker and scanner.
 while it has language questions. The review decision carries no language
 findings, so the scan and the review answer leave the questions alone, and
 the file is then in two sections of the Review page at once.
+`test_undefined_audio_confirmation.py` follows Confirm correct on a file's
+untagged audio, and Clear acknowledged, through a real scan each time: the
+answer has its own switch, kept apart from the one for a wrong language.
 
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,

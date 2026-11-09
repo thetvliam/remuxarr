@@ -84,7 +84,7 @@ about the file needs to change, this just stops it being flagged again
 on future scans.
 
 Each flag records the answer on the switch for its origin: a language
-mismatch on audio_language_ignored, and the undefined-audio threshold on
+mismatch on audio_language_ignored, and an untagged track on
 und_audio_threshold_acknowledged, which Clear acknowledged can take back.
 A file whose flags are already gone is marked audio_language_ignored, as
 before flags had an origin.
@@ -92,7 +92,7 @@ before flags had an origin.
 
     origin_switches = (
         ("mismatch",  "audio_language_ignored"),
-        ("threshold", "und_audio_threshold_acknowledged"),
+        ("undefined", "und_audio_threshold_acknowledged"),
     ),
 )
 

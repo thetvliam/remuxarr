@@ -46,7 +46,8 @@ from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
                               _track_to_dict, descriptors_by_stream)
 from app.core.langcodes import canonical, two_letter
 from app.core.plex import refresh_in_background
-from app.database.models import MediaFile, QueueItem, RevertPoint, Track
+from app.core.revert_capture import repoint_created_file
+from app.database.models import MediaFile, QueueItem, Track
 from app.database.session import get_app_settings, get_db
 
 logger = logging.getLogger(__name__)
@@ -90,9 +91,9 @@ def _switches_for(kind: LanguageReviewKind, flags) -> set[str]:
 
     Audio flags record where they came from (AudioLanguageFlag.origin), and
     each origin has its own switch: a language mismatch answers to
-    audio_language_ignored, the undefined-audio threshold to
+    audio_language_ignored, an untagged track to
     und_audio_threshold_acknowledged. They are kept apart so that taking
-    back one kind of answer — Clear acknowledged, for the threshold — cannot
+    back one kind of answer — Clear acknowledged, for untagged tracks — cannot
     undo the other on the same file, such as a Japanese track confirmed as
     correctly Japanese.
 
@@ -250,62 +251,9 @@ def _rename_extracted_subtitle(flag, lang: str, db=None,
             # the name's entries to the new number would carry it off too.
             # No question can name that file, as a question's sidecar always
             # carries "und" and the name taken carries the answer.
-            _repoint_revert_points(db, flag.file_id, *moved_aside)
-        _repoint_revert_points(db, flag.file_id, old_path, new_path)
+            repoint_created_file(db, flag.file_id, *moved_aside)
+        repoint_created_file(db, flag.file_id, old_path, new_path)
     return new_path
-
-
-def _repoint_revert_points(db, file_id: int, old_path: str, new_path: str) -> None:
-    """
-    Follow the rename in any revert point that recorded this file.
-
-    A revert removes the subtitle files its job created, matching them by
-    the path recorded at capture. Rename one without telling the revert
-    point and the match fails, so reverting re-embeds the subtitle and
-    leaves the sidecar behind — the user ends up with it twice, which is
-    the exact duplication that cleanup exists to prevent.
-
-    Only the path is updated. os.rename preserves size and mtime, so the
-    fingerprint recorded alongside it is still accurate and still protects
-    a file the user has since edited.
-
-    Never raises. The rename has already happened and the language choice
-    is already committed; a manifest that cannot be updated means one
-    stale sidecar after a revert, which is untidy rather than harmful.
-    """
-    try:
-        # Filtered by file_id for cost, not for safety: the path match
-        # below is what prevents another file's records being touched, and
-        # extracted subtitle paths are derived from the media filename so
-        # two files cannot record the same one. Without the filter this
-        # would load and JSON-parse every revert point in the bin on every
-        # language correction.
-        points = (
-            db.query(RevertPoint)
-            .filter(RevertPoint.file_id == file_id)
-            .all()
-        )
-        for point in points:
-            try:
-                manifest = json.loads(point.manifest)
-            except (TypeError, ValueError):
-                continue
-
-            entries = manifest.get("created_files") or []
-            hits = [e for e in entries if e.get("path") == old_path]
-            if not hits:
-                continue
-            for entry in hits:
-                entry["path"] = new_path
-            point.manifest = json.dumps(manifest)
-            logger.info(
-                "Revert point %d now tracks the renamed subtitle", point.id,
-            )
-    except Exception:
-        logger.exception(
-            "Could not update revert points for the renamed subtitle %s",
-            new_path,
-        )
 
 
 def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
@@ -451,7 +399,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # unanswerable from a stream index.
                 "extracted_path":    getattr(flag, "extracted_path", None),
                 # Audio only: where the flag came from, "mismatch" or
-                # "threshold" (AudioLanguageFlag.origin). Subtitle flags have
+                # "undefined" (AudioLanguageFlag.origin). Subtitle flags have
                 # no such column and report None.
                 "origin":            getattr(flag, "origin", None),
             })
@@ -600,7 +548,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # A previous Ignore shouldn't stick once the user has explicitly
             # chosen a language — that's a more specific, more recent decision.
             # Only the switch for the questions answered here: choosing a
-            # language for a mismatch says nothing about the threshold.
+            # language for a mismatch says nothing about undefined tracks.
             for attr in _switches_for(kind, flags):
                 setattr(media, attr, False)
             db.commit()
@@ -834,8 +782,9 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             # apply_language is closed by the same action that opens the
             # door. A replacement is a new file rather than a way back, and
             # Ask again takes back every other answer stored for the file
-            # with it. (The threshold's switch has a way back of its own,
-            # Clear acknowledged, but this returns before writing either.)
+            # with it. (The undefined-audio switch has a way back of its
+            # own, Clear acknowledged, but this returns before writing
+            # either.)
             #
             # A one-way door has no business being reachable in the mode that
             # ships ON and promises nothing will change.

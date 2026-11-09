@@ -16,8 +16,9 @@ Undo removed tracks by a positional index captured at ADD time:
     already removed, mark undone without touching the file; "mismatch" →
     layout violates the invariant, refuse rather than guess).
 
-    The same stale index also fed analyze_file's und-threshold
-    exclusion, which previously indexed into audio_tracks blindly — a
+    The same stale index also fed analyze_file's exclusion of the forge
+    AC3 from the undefined-track count (then the und threshold's count,
+    now Always Fix's), which previously indexed into audio_tracks blindly — a
     stale in-range index silently excluded whatever unrelated track sat
     there. Checking the index first and only falling back to the last
     track closed most of that, but not all: the index is the audio count
@@ -153,35 +154,103 @@ def test_preexisting_ac3_51_before_forge_track_still_resolves_last():
     assert idx == 2  # the appended (last) one, not the pre-existing at 0
 
 
+# ── Marked jobs, and the only-audio refusal ──────────────────────────────────
+#
+# A job whose add left FORGE_AC3_HANDLER_NAME on its AC3 is resolved by the
+# marker. The last-track rule above cannot see that a forged AC3 has gone
+# when the file had one of its own: the real-FFmpeg runs in
+# test_forge_undo_identity show the AC3 that rule removed. Its mutation
+# record covers the tests here as well.
+
+def _marked(track):
+    from app.core.forge import FORGE_AC3_HANDLER_NAME
+
+    return {**track, "handler_name": FORGE_AC3_HANDLER_NAME}
+
+
+def test_a_marked_job_with_no_marker_left_has_nothing_to_undo():
+    """
+    The file's own AC3 5.1 sits last, where the last-track rule would take it
+    for the forged one.
+    """
+    tracks = [_video(0), make_track(stream_index=1, language="eng"), _ac3_forge(2)]
+    assert resolve_forge_ac3_for_undo(tracks, marked=True) == ("absent", None)
+    assert resolve_forge_ac3_for_undo(tracks) == ("found", 1), (
+        "the premise: unmarked, this layout reads as the forged AC3 found"
+    )
+
+
+def test_a_marked_job_finds_its_track_by_the_marker():
+    tracks = [_video(0), _aac51(1), _marked(_ac3_forge(2, "fre")), _ac3_forge(3)]
+    assert resolve_forge_ac3_for_undo(tracks, marked=True) == ("found", 1)
+
+
+def test_two_marked_tracks_are_a_refusal():
+    """Not a file one add produced. Neither is safe to pick."""
+    tracks = [_video(0), _aac51(1), _marked(_ac3_forge(2)), _marked(_ac3_forge(3))]
+    assert resolve_forge_ac3_for_undo(tracks, marked=True) == ("mismatch", None)
+
+
+def test_a_marker_on_a_track_that_is_not_ac3_51_is_a_refusal():
+    """
+    The marker says which track the forge made; the shape says it is still
+    what the forge made. A stereo AC3 carrying it is neither, and removing
+    it would take a track that is not the forged one, as it stands.
+    """
+    stereo = make_track(stream_index=2, track_type="audio", codec="ac3",
+                        language="eng", channels=2, channel_layout="stereo")
+    tracks = [_video(0), _aac51(1), _marked(stereo)]
+    assert resolve_forge_ac3_for_undo(tracks, marked=True) == ("mismatch", None)
+
+
+def test_neither_rule_removes_a_files_only_audio_track():
+    """
+    Unmarked, the AC3 here may be the original's, left behind by a job that
+    dropped the forged one with its AAC. Marked, it is the forged AC3, but
+    removing it still leaves a file with no sound.
+    """
+    unmarked = [_video(0), _ac3_forge(1)]
+    assert resolve_forge_ac3_for_undo(unmarked) == ("only_audio", None)
+    marked = [_video(0), _marked(_ac3_forge(1))]
+    assert resolve_forge_ac3_for_undo(marked, marked=True) == ("only_audio", None)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# analyze_file's und-threshold exclusion validates the index
+# analyze_file's forge exclusion validates the index
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# These read the flags the threshold raises. They asked whether the file went
-# to manual review, which is what the threshold used to do with it; it now
-# flags every undefined track it counted in Audio Language Review instead.
-# An excluded forge AC3 means one und track left, below the threshold of 2,
-# so nothing is flagged — the same distinction, at the same place.
+# The forge AC3 is left out of Always Fix's undefined-track count. These were
+# written for the retired Undefined Audio Track Threshold's count, and first
+# read whether the file went to manual review, then the threshold's flags.
+# Under Always Fix, an excluded forge AC3 leaves one untagged track, which is
+# tagged with the copy and flagged by nothing; counted, there are two, and
+# both are flagged — the same distinction, at the same place.
+#
+# Moved over by mutation: any AC3 last taken for the forge copy, whatever its
+# channels, survived the 2268-test suite with the threshold's tests
+# deselected, and is killed by the AC3 stereo test.
 
-def _threshold_flagged(decision):
-    """The stream indices the threshold flagged, in order."""
+FIX = dict(BASE_SETTINGS, fix_undefined_language_audio="always_fix")
+
+
+def _und_flagged(decision):
+    """The stream indices flagged as undefined, in order."""
     return [f["stream_index"] for f in decision.undefined_audio_flags
-            if f["origin"] == "threshold"]
+            if f["origin"] == "undefined"]
 
 
 def test_stale_forge_index_still_excludes_the_real_forge_track():
     """
-    und-language AAC 5.1 + its und forge AC3, threshold 2. After a drop
+    und-language AAC 5.1 + its und forge AC3. After a drop
     elsewhere the stored index (here: 5, past the end) no longer lands
     on anything — the OLD code then excluded nothing and tripped manual
     review on a file whose second und track is a known, intentional
     duplicate. The validated fallback must exclude the last-track AC3.
     """
-    settings = dict(BASE_SETTINGS)
     tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=5)
-    assert _threshold_flagged(decision) == [], (
+    assert _und_flagged(decision) == [], (
         "Stale forge index defeated the exclusion — the file's undefined "
         "tracks were flagged even though its second und track is the forge AC3."
     )
@@ -192,16 +261,15 @@ def test_stale_index_landing_on_wrong_track_does_not_exclude_it():
     The inverse hazard the validation exists for: two GENUINE und AAC
     tracks and a stored index that happens to land in range. Blind
     indexing excluded whichever unrelated track sat there, silently
-    lowering the und count below threshold. With no ac3/6ch anywhere,
-    nothing may be excluded — the file must reach manual review.
+    lowering the und count. With no ac3/6ch anywhere, nothing may be
+    excluded — both tracks must be asked about.
     """
-    settings = dict(BASE_SETTINGS)
     tracks = [_video(0), _aac51(1, "und"), _aac51(2, "und")]
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=1)
-    assert _threshold_flagged(decision) == [1, 2], (
+    assert _und_flagged(decision) == [1, 2], (
         "An in-range stale index excluded a genuine und track that is "
-        "not the forge AC3 — the threshold was silently bypassed."
+        "not the forge AC3 — the count was silently lowered."
     )
 
 
@@ -220,15 +288,15 @@ def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
     Here the stored index is 1 (the original had one audio track) and a
     replacement release carries three, its own AC3 5.1 sitting at index
     1. That track belongs to a file forge never touched, so excluding it
-    from the threshold lets an unknown file past the manual-review gate.
-    resolve_forge_ac3_for_undo calls this exact layout "mismatch" and
-    refuses; the exclusion must reach the same answer.
+    leaves the release's other untagged track looking like the only one,
+    and Always Fix tags both on a guess. resolve_forge_ac3_for_undo calls
+    this exact layout "mismatch" and refuses; the exclusion must reach the
+    same answer.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=3)
     replacement = [
         _video(0),
         make_track(stream_index=1, track_type="audio", codec="aac",
-                   language="und", channels=2, channel_layout="stereo"),
+                   language="eng", channels=2, channel_layout="stereo"),
         _ac3_forge(2, "und"),    # the REPLACEMENT release's own AC3 5.1
         _aac51(3, "und"),
     ]
@@ -238,13 +306,13 @@ def test_an_in_range_index_landing_on_an_unrelated_ac3_does_not_exclude_it():
     )
     assert audio[1]["codec"] == "ac3", "fixture: stored index must land on the AC3"
 
-    decision = analyze_file(make_file_info(), replacement, settings,
+    decision = analyze_file(make_file_info(), replacement, FIX,
                             forged_ac3_audio_index=1)
 
-    assert _threshold_flagged(decision), (
-        "an unrelated release's AC3 5.1 was excluded from the und threshold "
-        "because a stale index happened to land on it — the threshold was "
-        "bypassed for a file forge never touched"
+    assert _und_flagged(decision) == [2, 3], (
+        "an unrelated release's AC3 5.1 was excluded from the und count "
+        "because a stale index happened to land on it — a file forge never "
+        "touched was tagged on a guess"
     )
 
 
@@ -259,17 +327,16 @@ def test_an_ac3_stereo_last_track_is_not_mistaken_for_the_forge_ac3():
     test_wrong_shaped_last_track_does_not_match; this is the exclusion's
     own copy of it, which nothing covered.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
     ac3_stereo = make_track(stream_index=2, track_type="audio", codec="ac3",
                             language="und", channels=2, channel_layout="stereo")
     tracks = [_video(0), _aac51(1, "und"), ac3_stereo]
 
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=1)
 
-    assert _threshold_flagged(decision) == [1, 2], (
+    assert _und_flagged(decision) == [1, 2], (
         "an AC3 stereo commentary track was treated as the forge AC3 and "
-        "exempted from the und threshold"
+        "left out of the und count"
     )
 
 
@@ -284,15 +351,14 @@ def test_nothing_is_excluded_for_a_file_with_no_forge_job():
     forged_ac3_audio_index being None is the only thing separating those
     two cases, so it is the guard that carries the whole distinction.
     """
-    settings = dict(BASE_SETTINGS, und_audio_threshold=2)
     tracks = [_video(0), _aac51(1, "und"), _ac3_forge(2, "und")]
 
-    decision = analyze_file(make_file_info(), tracks, settings,
+    decision = analyze_file(make_file_info(), tracks, FIX,
                             forged_ac3_audio_index=None)
 
-    assert _threshold_flagged(decision) == [1, 2], (
-        "a file with no forge job had its last AC3 5.1 exempted from the "
-        "und threshold — the exemption is supposed to require a forge job"
+    assert _und_flagged(decision) == [1, 2], (
+        "a file with no forge job had its last AC3 5.1 left out of the "
+        "und count — the exemption is supposed to require a forge job"
     )
 
 
@@ -376,7 +442,7 @@ def test_original_status_matrix_unchanged():
 # ── After a revert ───────────────────────────────────────────────────────────
 #
 # A revert removes an AC3 forged after processing, and brings one forged
-# before it back. revert_restore._settle_forge_jobs uses the resolver above,
+# before it back. forge.settle_forge_jobs uses the resolver above,
 # on the probe of the restored file, to bring the file's forge jobs in line.
 #
 # Mutants, run against the suite without these tests first (they were
@@ -388,6 +454,15 @@ def test_original_status_matrix_unchanged():
 # and is_undo left unset. A first version of the "came back" mutant was
 # equivalent — a redundant branch made it change nothing — and the branch
 # was removed so the mutant could mean something.
+#
+# The last two tests came with settling each job by its own ac3_marked; their
+# mutants are recorded in test_forge_undo_identity.
+#
+# The function moved from revert_restore to forge when _finish_job came to
+# call it as well, and these tests changed only their import and gained the
+# caller argument. The seven mutants above and those two were run before the
+# move and again at the new location, and each was killed by the same tests
+# both times.
 
 import pytest  # noqa: E402
 
@@ -411,10 +486,10 @@ def forge_db():
     return db
 
 
-def _job(db, file_id, status):
+def _job(db, file_id, status, *, marked=False):
     from app.database.models import Ac3ForgeJob
 
-    job = Ac3ForgeJob(file_id=file_id, status=status,
+    job = Ac3ForgeJob(file_id=file_id, status=status, ac3_marked=marked,
                       is_undo=status in ("undo_pending", "undo_failed"))
     db.add(job)
     db.commit()
@@ -434,13 +509,13 @@ def test_a_revert_that_removed_the_forged_track_settles_its_jobs_as_undone(forge
     job stayed "success", the Forge page listed the file as forged, and
     queueing it again was refused as already processed.
     """
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
     stuck = _job(forge_db, 1, "undo_failed")
     failed_add = _job(forge_db, 1, "failed")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)], after="revert")
     forge_db.commit()
 
     statuses = _statuses(forge_db)
@@ -455,11 +530,11 @@ def test_a_revert_that_removed_the_forged_track_settles_its_jobs_as_undone(forge
 
 def test_a_revert_that_brought_the_forged_track_back_leaves_its_jobs(forge_db):
     """Forged before processing, the AC3 is part of the original and returns."""
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)
@@ -471,23 +546,23 @@ def test_an_ac3_where_the_forge_never_puts_one_is_not_guessed_about(forge_db):
     that, and so does this. Settling it as undone would invite a second
     forge onto a file that may still carry the first.
     """
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     done = _job(forge_db, 1, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1), _aac51(2)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1), _aac51(2)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)
 
 
 def test_only_the_reverted_files_jobs_are_settled(forge_db):
-    from app.core.revert_restore import _settle_forge_jobs
+    from app.core.forge import settle_forge_jobs
 
     mine = _job(forge_db, 1, "success")
     other = _job(forge_db, 2, "success")
 
-    _settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)])
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1)], after="revert")
     forge_db.commit()
 
     statuses = _statuses(forge_db)
@@ -515,6 +590,39 @@ def test_a_restored_file_that_could_not_be_probed_leaves_the_jobs(forge_db, monk
                              original_path="/m/1.mkv", destination="/m/1.mkv")
 
     restore_mod._apply(forge_db, plan, "/m/1.mkv")
+    forge_db.commit()
+
+    assert _statuses(forge_db)[done] == ("success", False)
+
+
+def test_each_job_is_settled_by_its_own_rule(forge_db):
+    """
+    The restored original has an AC3 5.1 of its own, last. A marked job looks
+    for its marker, which that track does not carry, and its AC3 went with
+    the revert: undone. Under the last-track rule the original's AC3 reads
+    as the forged one still there, so an unmarked job keeps "success", the
+    answer that rule has always given here.
+    """
+    from app.core.forge import settle_forge_jobs
+
+    marked = _job(forge_db, 1, "success", marked=True)
+    unmarked = _job(forge_db, 1, "success")
+
+    settle_forge_jobs(forge_db, 1, [_video(0), _aac51(1), _ac3_forge(2)], after="revert")
+    forge_db.commit()
+
+    statuses = _statuses(forge_db)
+    assert statuses[marked] == ("undone", True)
+    assert statuses[unmarked] == ("success", False)
+
+
+def test_a_restored_file_whose_only_audio_is_an_ac3_51_is_not_settled(forge_db):
+    """The undo refuses that file, so the revert does not settle it either."""
+    from app.core.forge import settle_forge_jobs
+
+    done = _job(forge_db, 1, "success")
+
+    settle_forge_jobs(forge_db, 1, [_video(0), _ac3_forge(1)], after="revert")
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)

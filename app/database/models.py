@@ -93,19 +93,18 @@ class MediaFile(Base):
     #
     # Mismatch flags only: a flag records where it came from and answers to
     # its own switch (AudioLanguageFlag.origin), so a file confirmed correct
-    # here is still asked about undefined tracks over the Undefined Audio
-    # Track Threshold, which is a different question with a different
-    # answer.
+    # here is still asked about its untagged tracks, which is a different
+    # question with a different answer.
     audio_language_ignored = Column(Boolean, default=False)
 
-    # Set when the user confirms the undefined tracks of a file at or over
-    # the Undefined Audio Track Threshold are correct as they are: Confirm
-    # correct on a threshold flag in Audio Language Review, or Approve on a
-    # review the threshold raised while it still held files. It suppresses
-    # those flags, and it stops fix_undefined_language_audio=always_fix
-    # guessing at the tracks, which it never does over the threshold
-    # anyway. Clear acknowledged takes it back, and the tracks are flagged
-    # again on the next scan.
+    # Set when the user confirms a file's untagged audio tracks are correct
+    # as they are: Confirm correct on an "undefined" flag in Audio Language
+    # Review, or, from before, on a flag of the retired Undefined Audio
+    # Track Threshold or Approve on a review it raised while it still held
+    # files. It stops those tracks being flagged; Always Fix still tags a
+    # lone track that qualifies. Clear acknowledged takes it back, and the
+    # tracks are flagged again on the next scan. The name is the
+    # threshold's, kept so the column did not have to change.
     #
     # The threshold used to hold the file for manual review, and had no
     # persistence at all: every fresh analyze_file() call, including the
@@ -125,19 +124,23 @@ class MediaFile(Base):
     subtitle_language_overrides = Column(Text)
     subtitle_language_ignored   = Column(Boolean, default=False)
 
-    # Set when a language answer lands while this file's job is running.
-    # That job decided before the answer existed, and when it ends it
-    # records the file's new size and mtime, so a delta scan finds nothing
-    # to look at. The worker re-checks the file straight after a successful
-    # job (worker._reevaluate_after_job); otherwise a scan does, once no job
-    # is running for it (scanner._process_file), which also clears it.
+    # Set when this file needs deciding again once its job is over, and a
+    # delta scan would not see it: a language answer, or a scan, landing
+    # while the job runs (the job decided before either, and records the
+    # file's new size and mtime when it ends), or the probe after a job
+    # failing (worker._finish_job), which leaves the tracks of the file as
+    # it was before the job beside the new size and mtime. The worker
+    # re-checks the file straight after a successful job
+    # (worker._reevaluate_after_job); otherwise a scan does, once no job is
+    # running for it (scanner._process_file), which clears it once its
+    # probe works.
     reevaluate_after_job = Column(Boolean, default=False)
 
     # The language the film or series was made in, as Sonarr or Radarr knows
     # it (their originalLanguage, through langcodes.from_arr_language), or
     # null when Remuxarr has not been told. Written from a webhook's payload
     # whatever the settings say, as it costs nothing, and by Re-check Scanned
-    # Files and Force Full Rescan while Original Language Audio is on
+    # Files and Force Full Rescan, likewise whatever the settings say
     # (arr_lookup.original_languages); never cleared by a caller that brings
     # none. Read by analyze_file through scanner._file_info_for.
     original_language = Column(String)
@@ -221,6 +224,14 @@ class QueueItem(Base):
     # appears here — the reason counts tracks, it does not name them.
     reason         = Column(Text)
     error_message  = Column(Text)
+    # What a running job is about to swap into place, written just before
+    # the swap (worker._write_swap_record): each output's path with the size
+    # and mtime of its staged copy, which the rename keeps, the source's
+    # path and fingerprint, and the revert point waiting to be recorded.
+    # Startup recovery reads it for a job a crash left at "processing" to
+    # tell whether the output replaced anything, and finishes the job if it
+    # did (worker._recover_from_swap_record). Cleared when the job finishes.
+    swap_record    = Column(Text)
     progress       = Column(Float, default=0.0)  # 0–100
     # One of the four strings ffmpeg._describe_action returns, e.g.
     # "Remuxing to MP4" or "Remuxing tracks". The old example here,
@@ -388,6 +399,14 @@ class Ac3ForgeJob(Base):
     #   so undo locates it from a fresh probe (forge.resolve_forge_ac3_for_undo).
     aac_stream_index  = Column(Integer)
     audio_track_count = Column(Integer)
+
+    # True when the probe after a successful add found the forge marker
+    # (forge.FORGE_AC3_HANDLER_NAME) on the new AC3. Undo then identifies
+    # the track by the marker alone. False for adds from before the marker
+    # existed, for containers that do not keep it (AVI, MPEG-TS and ASF
+    # drop it), and when that probe failed: those fall back to the
+    # last-audio-track rule. See forge.resolve_forge_ac3_for_undo.
+    ac3_marked = Column(Boolean, default=False)
 
     progress       = Column(Float,  default=0.0)
     current_action = Column(String)
@@ -569,12 +588,15 @@ class AudioLanguageFlag(Base):
     # Where the flag came from, because each origin is confirmed through its
     # own switch on MediaFile:
     #   "mismatch"  — decision.audio_language_mismatch: a defined language
-    #                 that is not a preferred one, or an undefined track
-    #                 fix_undefined_language_audio=always_ask left for a
-    #                 person. Suppressed by audio_language_ignored.
-    #   "threshold" — decision.undefined_audio_flags: the file is at or over
-    #                 the Undefined Audio Track Threshold. Suppressed by
+    #                 that is not a preferred one. Suppressed by
+    #                 audio_language_ignored.
+    #   "undefined" — decision.undefined_audio_flags: an untagged track the
+    #                 fix pass left for a person. Suppressed by
     #                 und_audio_threshold_acknowledged.
+    #
+    # Untagged tracks were "mismatch" under Always Ask, and "threshold" when
+    # the retired Undefined Audio Track Threshold flagged them; a startup
+    # step renames both (session._rename_undefined_audio_flags).
     #
     # The server default is what the table rebuild relies on: it copies only
     # the columns the old shape had, and every row from before this column

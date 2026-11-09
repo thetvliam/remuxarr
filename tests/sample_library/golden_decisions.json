@@ -1,8 +1,8 @@
 {
  "Anime HEVC Main10 1080p Sample1.mkv": {
   "container": "mkv",
-  "outcome": "process",
-  "target_container": "mp4"
+  "outcome": "manual_review",
+  "target_container": null
  },
  "Anime HEVC Main10 1080p Sample2.mkv": {
   "container": "mkv",
@@ -21,8 +21,8 @@
  },
  "Clannad After Story OPA - sample HEVC main10 1080p.mkv": {
   "container": "mkv",
-  "outcome": "process",
-  "target_container": "mp4"
+  "outcome": "manual_review",
+  "target_container": null
  },
  "Dolby Digital Plus 7.1 Channel Check.mkv": {
   "container": "mkv",

@@ -32,7 +32,12 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Response, Upl
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.database.session import get_app_settings, get_db, update_app_setting
+from app.database.session import (
+    DEFAULT_APP_SETTINGS,
+    get_app_settings,
+    get_db,
+    update_app_setting,
+)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -92,9 +97,18 @@ def update_bulk(
     updates: dict[str, Any] = Body(..., description="Map of setting key → new value"),
     db: Session = Depends(get_db),
 ):
-    """Update multiple settings in one request."""
+    """
+    Update multiple settings in one request.
+
+    All or nothing: every key and value is checked before any is written,
+    so one bad value cannot leave half a save behind.
+    """
     for key in updates:
         _validate_key(key)
+    problems = [p for key, value in updates.items()
+                if (p := setting_problem(key, value))]
+    if problems:
+        raise HTTPException(400, "Nothing was saved. " + "; ".join(problems) + ".")
     for key, value in updates.items():
         update_app_setting(db, key, value)
     return updates
@@ -161,6 +175,11 @@ async def import_settings(file: UploadFile = File(...), db: Session = Depends(ge
     hard-reject used elsewhere, since schema drift between versions is a
     realistic, expected scenario for this specific endpoint. Skipped
     keys are reported back in the response so nothing is lost silently.
+
+    A value of the wrong type (setting_problem) is skipped the same way, and
+    reported apart from the unknown keys, with what is wrong with each:
+    the rest of the file still applies, as a key this version does not
+    know does not stop the others.
     """
     try:
         raw = await file.read()
@@ -181,18 +200,23 @@ async def import_settings(file: UploadFile = File(...), db: Session = Depends(ge
 
     applied: list[str] = []
     skipped: list[str] = []
+    invalid: dict[str, str] = {}
     for key, value in settings_in.items():
-        if key in KNOWN_KEYS:
+        if key not in KNOWN_KEYS:
+            skipped.append(key)
+        elif problem := setting_problem(key, value):
+            invalid[key] = problem
+        else:
             update_app_setting(db, key, value)
             applied.append(key)
-        else:
-            skipped.append(key)
 
     return {
         "applied":      len(applied),
         "applied_keys": sorted(applied),
         "skipped":      len(skipped),
         "skipped_keys": sorted(skipped),
+        "invalid":      len(invalid),
+        "invalid_keys": dict(sorted(invalid.items())),
     }
 
 
@@ -250,6 +274,9 @@ def get_one(key: str, db: Session = Depends(get_db)):
 def update_one(key: str, body: SettingValue, db: Session = Depends(get_db)):
     """Update a single setting."""
     _validate_key(key)
+    problem = setting_problem(key, body.value)
+    if problem:
+        raise HTTPException(400, f"Not saved: {problem}.")
     setting = update_app_setting(db, key, body.value)
     return {"key": setting.key, "value": body.value}
 
@@ -328,7 +355,6 @@ KNOWN_KEYS = {
     "original_language_audio",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
-    "keep_undefined_subtitles",
     "keep_default_audio",
     "prefer_mp4_container",
     "dry_run_mode",
@@ -336,7 +362,6 @@ KNOWN_KEYS = {
     "skip_extras",
     "exclude_patterns",
     "include_patterns",
-    "und_audio_threshold",
     "extract_text_subtitles_to_srt",
     "existing_srt_handling",
     "image_subtitle_handling",
@@ -348,8 +373,6 @@ KNOWN_KEYS = {
     "fix_undefined_language",
     "fix_undefined_language_audio",
     "undefined_language_value",
-    "undefined_language_mode",
-    "undefined_language_mode_audio",
     "plex_enabled",
     "plex_url",
     "plex_token",
@@ -390,6 +413,64 @@ def _validate_key(key: str) -> None:
     if key not in KNOWN_KEYS:
         raise HTTPException(400, f"Unknown setting key: {key!r}. "
                                  f"Valid keys: {sorted(KNOWN_KEYS)}")
+
+
+def setting_problem(key: str, value: Any) -> str | None:
+    """
+    What is wrong with `value` for the setting `key`, or None if nothing is.
+
+    Values arrive as arbitrary JSON, and nothing checked them. The engine
+    takes a list setting as a set, so keep_subtitle_languages saved as
+    "eng" became {"e", "n", "g"} and the English subtitle was dropped;
+    "eng,ger" for audio dropped the German track; and any non-empty
+    string is true, so prefer_mp4_container saved as "false" converted
+    anyway. The Settings page always sends the right type. An import from
+    a hand-edited file, or a script calling the API, need not.
+
+    The schema says what each setting is (SETTINGS_SCHEMA "type"), and for a
+    select which values it takes, and for an integer any minimum. The few
+    settings with no schema entry are held to their default's type. Nothing
+    is coerced: "eng" could be meant as ["eng"], but "eng,ger" cannot be
+    split safely, so a wrong type is reported rather than guessed at.
+    """
+    entry = _SCHEMA_BY_KEY.get(key)
+    kind = entry["type"] if entry else _DEFAULT_KINDS.get(key)
+    if kind is None:
+        return None
+    if kind in ("string", "select") and not isinstance(value, str):
+        return f"{key} must be text, not {_json_kind(value)}"
+    if kind == "select":
+        allowed = [o["value"] for o in entry.get("options", [])]
+        if value not in allowed:
+            return f"{key} must be one of {', '.join(allowed)}, not {value!r}"
+    if kind == "boolean" and not isinstance(value, bool):
+        return f"{key} must be true or false, not {_json_kind(value)}"
+    if kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return f"{key} must be a whole number, not {_json_kind(value)}"
+        if entry and entry.get("min") is not None and value < entry["min"]:
+            return f"{key} must be at least {entry['min']}, not {value}"
+    if kind == "string_list":
+        if not isinstance(value, list):
+            return f"{key} must be a list of text, not {_json_kind(value)}"
+        if not all(isinstance(item, str) for item in value):
+            return f"{key} must be a list of text, and holds something else"
+    return None
+
+
+def _json_kind(value: Any) -> str:
+    """The JSON name of a value's type, for a message."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true or false"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return f"the text {value!r}"
+    if isinstance(value, list):
+        return "a list"
+    return "an object"
 
 
 # ── Schema (consumed by the config UI) ────────────────────────────────────────
@@ -503,19 +584,19 @@ SETTINGS_SCHEMA = [
             },
         ],
         "description": "What to do with SUBTITLE tracks whose language is "
-                       "undefined (und). Always Fix tags them automatically "
-                       "with the primary language below. Always Ask flags "
-                       "them for a human decision in Subtitle Language "
-                       "Review without touching the file until resolved. "
-                       "Note that Always Leave is not neutral for "
-                       "subtitles: an untagged track keeps its und tag, "
-                       "which matches nothing in Keep Subtitle Languages, "
-                       "so it is dropped unless Keep Undefined Subtitles is "
-                       "on or the track is forced. Only tracks being kept "
-                       "in the output are considered, and extracted "
-                       "subtitles count as kept — their language lives in "
-                       "the sidecar filename. Audio is controlled "
-                       "separately by the setting below.",
+                       "undefined (und). Always Fix tags the track with the "
+                       "primary language below when it is the file's only "
+                       "untagged subtitle, and sends untagged subtitles to "
+                       "Subtitle Language Review when there are more than "
+                       "one. Always Ask sends every untagged subtitle there, "
+                       "without touching the file until resolved. Always "
+                       "Leave keeps them untagged. An untagged "
+                       "subtitle is never removed for having no language, "
+                       "whichever is chosen; one that Always Fix tags is "
+                       "kept or removed by Keep Subtitle Languages, like any "
+                       "tagged track. Extracted subtitles count as kept — "
+                       "their language lives in the sidecar filename. Audio "
+                       "is controlled separately by the setting below.",
     },
     {
         "key":     "fix_undefined_language_audio",
@@ -537,21 +618,18 @@ SETTINGS_SCHEMA = [
             },
         ],
         "description": "What to do with AUDIO tracks whose language is "
-                       "undefined (und). Always Fix tags them automatically "
-                       "with the primary language below. Always Ask flags "
-                       "them for a human decision in Audio Language Review "
-                       "without touching the file until resolved. Unlike "
-                       "the subtitle setting above, Always Leave here is "
-                       "genuinely a no-op — an undefined audio track is "
-                       "kept either way, it simply stays untagged, because "
-                       "dropping audio on a guess is far more costly than "
-                       "dropping an optional subtitle. Video tracks are "
-                       "never affected. Overridden by the separate "
-                       "Undefined Audio Track Threshold below: a file with "
-                       "too many undefined audio tracks to safely guess "
-                       "between has all of them flagged in Audio Language "
-                       "Review and none of them tagged automatically, "
-                       "whatever this setting says.",
+                       "undefined (und). Always Fix tags the track with the "
+                       "primary language below when it is the file's only "
+                       "untagged audio track and the film or series was "
+                       "made in that language, as Sonarr or Radarr records "
+                       "it, or the original language is not known. "
+                       "Otherwise it sends the untagged tracks to Audio "
+                       "Language Review. Always Ask sends every untagged "
+                       "audio track there, without touching the file until "
+                       "resolved. Always "
+                       "Leave keeps them untagged: an undefined audio track "
+                       "is kept either way. Video tracks are "
+                       "never affected.",
     },
     {
         "key":         "undefined_language_value",
@@ -563,65 +641,6 @@ SETTINGS_SCHEMA = [
                        "(e.g. eng, fre, jpn). A two-letter code (en) is saved "
                        "as its three-letter form (eng), which is what gets "
                        "written into the file.",
-    },
-    {
-        # Unsuffixed key = subtitles, matching fix_undefined_language above
-        # and for the same reason. This one also feeds the pre-pass that
-        # decides which undefined subtitles survive keep/drop, so a reset
-        # here costs tracks too, not just tags.
-        "key":     "undefined_language_mode",
-        "group":   "Metadata",
-        "label":   "Apply To (Subtitles)",
-        "type":    "select",
-        "options": [
-            {
-                "value": "all_undefined",
-                "label": "All undefined tracks",
-            },
-            {
-                "value": "all_undefined_per_type",
-                "label": "Only when all subtitle tracks are undefined",
-            },
-            {
-                "value": "single_per_type",
-                "label": "Only when there is exactly one undefined subtitle track",
-            },
-        ],
-        "description": "Which undefined subtitle tracks the setting above "
-                       "acts on. 'All undefined' tags every und subtitle. "
-                       "The middle option is safer — it acts only when "
-                       "every subtitle track is und, avoiding guesses on "
-                       "mixed-language files. 'Only when there is exactly "
-                       "one' is the most conservative. Audio has its own "
-                       "Apply To below and is unaffected by this.",
-    },
-    {
-        "key":     "undefined_language_mode_audio",
-        "group":   "Metadata",
-        "label":   "Apply To (Audio)",
-        "type":    "select",
-        "options": [
-            {
-                "value": "all_undefined",
-                "label": "All undefined tracks",
-            },
-            {
-                "value": "all_undefined_per_type",
-                "label": "Only when all audio tracks are undefined",
-            },
-            {
-                "value": "single_per_type",
-                "label": "Only when there is exactly one undefined audio track",
-            },
-        ],
-        "description": "Which undefined audio tracks the audio setting "
-                       "above acts on. 'All undefined' tags every und audio "
-                       "track. The middle option is safer — it acts only "
-                       "when every audio track is und, avoiding guesses on "
-                       "a file that has one tagged track and one untagged "
-                       "one. 'Only when there is exactly one' is the most "
-                       "conservative. Subtitles have their own Apply To "
-                       "above and are unaffected by this.",
     },
     # ── Audio ──────────────────────────────────────────────────────────────
     {
@@ -673,21 +692,6 @@ SETTINGS_SCHEMA = [
                        "language is not known keeps what Keep Audio Languages "
                        "keeps.",
     },
-    {
-        "key":         "und_audio_threshold",
-        "group":       "Audio",
-        "label":       "Undefined Audio Track Threshold",
-        "type":        "integer",
-        "min":         1,
-        "description": "When a file has this many or more audio tracks with "
-                       "an undefined language, flag every one of them in "
-                       "Audio Language Review rather than guessing: set each "
-                       "track's language there, or confirm they are correct "
-                       "as they are. Processing is not held up either way, "
-                       "since an undefined audio track is always kept. "
-                       "Minimum 1 — a threshold of 0 would match every file, "
-                       "including ones with no undefined tracks at all.",
-    },
     # ── Subtitles ──────────────────────────────────────────────────────────
     {
         "key":         "keep_subtitle_languages",
@@ -707,19 +711,6 @@ SETTINGS_SCHEMA = [
         "label":       "Always Keep Forced Subtitles",
         "type":        "boolean",
         "description": "Retain forced subtitle tracks regardless of language.",
-    },
-    {
-        "key":         "keep_undefined_subtitles",
-        "group":       "Subtitles",
-        "label":       "Always Keep Undefined-Language Subtitles",
-        "type":        "boolean",
-        "description": "Retain subtitle tracks that carry no language tag, "
-                       "which would otherwise be removed for not matching the "
-                       "keep list. An untagged track is often the one you want "
-                       "- it is the absence of a label, not a foreign "
-                       "language. Combine with Fix Undefined Language Tags set "
-                       "to Always Ask to keep them and be prompted to name them "
-                       "in Subtitle Language Review.",
     },
     {
         "key":         "extract_text_subtitles_to_srt",
@@ -809,17 +800,20 @@ SETTINGS_SCHEMA = [
             },
             {
                 "value": "always_remove",
-                "label": "Always remove (convert anyway, lose the styling)",
+                "label": "Always remove (extract to SRT, lose the styling)",
             },
         ],
-        "description": "What to do with a file that carries embedded fonts. "
-                       "Only Matroska can hold them, and the file's styled "
-                       "subtitles reference them by name, so converting to "
-                       "MP4 drops the fonts and flattens ASS subtitles to "
-                       "SRT — losing the positioning that places text over "
-                       "signs in the picture. Always Keep leaves those "
-                       "tracks embedded, which keeps the file as MKV; "
-                       "unwanted audio tracks are still removed.",
+        "description": "What to do with a file that carries embedded fonts "
+                       "while Extract Subtitles to External SRT is on. The "
+                       "file's styled subtitles reference the fonts by name, "
+                       "and extracting them flattens ASS subtitles to SRT — "
+                       "losing the positioning that places text over signs "
+                       "in the picture. Only Matroska can hold the fonts, so "
+                       "they are lost too if the file then converts to MP4. "
+                       "Always Keep leaves those tracks embedded, which keeps "
+                       "the file as MKV; unwanted audio tracks are still "
+                       "removed. With extraction off the tracks stay "
+                       "embedded anyway, and nothing is asked.",
     },
     # ── Recycle Bin ────────────────────────────────────────────────────────
     {
@@ -1259,21 +1253,29 @@ RESCAN_NOTE = (
     "result until you run Force Full Rescan (Settings, Maintenance & Logs)."
 )
 
+_SCHEMA_BY_KEY = {entry["key"]: entry for entry in SETTINGS_SCHEMA}
+
+# The type of the settings with no schema entry, from their defaults.
+_DEFAULT_KINDS = {
+    key: ("boolean" if isinstance(default, bool)
+          else "integer" if isinstance(default, int)
+          else "string_list" if isinstance(default, list)
+          else "string")
+    for key, default in DEFAULT_APP_SETTINGS.items()
+    if key not in _SCHEMA_BY_KEY
+}
+
 APPLIES_ON_RESCAN = {
     "prefer_mp4_container",
     "add_faststart_to_mp4",
     "fix_undefined_language",
     "fix_undefined_language_audio",
     "undefined_language_value",
-    "undefined_language_mode",
-    "undefined_language_mode_audio",
     "keep_audio_languages",
     "keep_default_audio",
     "original_language_audio",
-    "und_audio_threshold",
     "keep_subtitle_languages",
     "keep_forced_subtitles",
-    "keep_undefined_subtitles",
     "extract_text_subtitles_to_srt",
     "image_subtitle_handling",
     "font_attachment_handling",

@@ -74,10 +74,19 @@ export const BackupRestoreSection = ({ api, toast, onImported, first = false }) 
       const r = await fetch(`${api}/api/settings/import`, { method: "POST", body });
       const data = await r.json();
       if (r.ok) {
+        // An invalid value is skipped like an unknown key, so the rest of
+        // the file still applies; the toast says so, and turns to a warning,
+        // since a setting the file meant to change has not.
+        const skippedText = data.skipped
+          ? ` — ${data.skipped} unrecognized key${data.skipped === 1 ? "" : "s"} skipped`
+          : "";
+        const invalidKeys = Object.keys(data.invalid_keys || {});
+        const invalidText = invalidKeys.length
+          ? ` — ${invalidKeys.length} invalid value${invalidKeys.length === 1 ? "" : "s"} skipped (${invalidKeys.join(", ")})`
+          : "";
         toast?.(
-          `Imported ${data.applied} setting${data.applied === 1 ? "" : "s"}` +
-          (data.skipped ? ` — ${data.skipped} unrecognized key${data.skipped === 1 ? "" : "s"} skipped` : ""),
-                "success",
+          `Imported ${data.applied} setting${data.applied === 1 ? "" : "s"}${skippedText}${invalidText}`,
+          invalidKeys.length ? "warning" : "success",
         );
         // Not optional. SettingsPage loads schema and values once on mount, so
         // after an import it keeps rendering PRE-IMPORT values — and because
