@@ -59,8 +59,8 @@ import os
 from dataclasses import dataclass
 
 from app.config import settings as app_settings
-from app.core.ffmpeg import SidecarUnsupported, build_sidecar_command
-from app.core.probe import ProbeError, extract_format_info, probe_file
+from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
+from app.core.probe import ProbeError, extract_format_info, is_faststart_mp4, probe_file
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams
 from app.core.revert_restore import revert_blocked_reason
@@ -587,8 +587,13 @@ async def capture(
             # translation and has the matroska/webm trap documented
             # alongside it.
             container = extract_format_info(original_probe).get("container")
+            # The original's layout, read now because only the first job
+            # sees the original; later jobs carry this manifest forward.
+            faststart = (is_faststart_mp4(input_path)
+                         if _CONTAINER_FORMAT.get(container) == "mp4" else None)
             manifest = build_manifest(original_probe, original_path=input_path,
-                                      original_container=container)
+                                      original_container=container,
+                                      faststart=faststart)
         else:
             # A later job. The manifest is NOT rebuilt from input_path —
             # that file is already a processed version, and treating it as

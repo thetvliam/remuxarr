@@ -45,7 +45,8 @@ MANIFEST_VERSION = 2
 
 
 def build_manifest(probe_data: dict, *, original_path: str,
-                   original_container: str | None) -> dict:
+                   original_container: str | None,
+                   faststart: bool | None = None) -> dict:
     """
     Describe a file's full stream layout, for restoring it later.
 
@@ -131,6 +132,13 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # falls back for those. Not a version bump, which would make capture
         # replace — and so discard — every existing point.
         "format_tags": dict(probe_data.get("format", {}).get("tags") or {}),
+        # Whether an MP4 original had its index (moov) before the media, as
+        # capture read it from the file (is_faststart_mp4): a layout, so no
+        # probe shows it. Restore writes it back; without it a fast-start
+        # original came back with the index at the end. None for anything
+        # else, and absent from manifests written before it, which restore
+        # treats alike. Not a version bump, for the reason format_tags gives.
+        "faststart": faststart,
     }
 
 

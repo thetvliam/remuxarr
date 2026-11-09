@@ -754,6 +754,11 @@ def build_restore_command(
     cmd += _format_tag_args(manifest)
     # Chapters survive a remux, so the processed file still has them.
     cmd += ["-map_chapters", "0"]
+    # The original's layout: an MP4 recorded as fast-start gets its index
+    # back in front. Only True asks; False, None and a manifest from before
+    # the layout was recorded all leave the muxer's default.
+    if out_fmt == "mp4" and manifest.get("faststart") is True:
+        cmd += ["-movflags", "+faststart"]
     cmd += ["-f", out_fmt, output_path]
     return cmd
 
