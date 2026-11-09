@@ -91,7 +91,15 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
    exception. A scan error is expected only on a file ffprobe cannot read.
 2. Every output probes, and its video and audio decode without an error.
 3. Every input stream is in the output, dropped by a planned action or
-   extracted to a sidecar, and the chapters survive.
+   extracted to a sidecar, and the chapters survive. Every stream the job
+   kept also holds what it held: kept streams are paired with the output's
+   by kind, in order, and a checksum of each one's packets (or an
+   attachment's data), taken before any job, is compared. A job copies what
+   it keeps, so a kept track with another's content, or a re-encoded one,
+   shows here. Video or audio whose packets differ is decoded and compared
+   with the library the run was given; the same frames pass, and the stream
+   is listed as repackaged (below). Subtitles, covers and attachments must
+   match as stored.
 4. Every kept audio and subtitle track carries the language the plan gave
    it.
 5. Each extraction adds exactly one sidecar, and an existing sidecar's text
@@ -167,12 +175,16 @@ they compare a job's plan with the answers, judge one job against the
 original, so they leave such a file out; `summary.json` lists it under
 `several_jobs`.
 
-A stream a revert gives back with different packets that decode to the same
-frames is repackaged, not changed, and is not a finding: the report and
-`summary.json` list it under `repackaged`. The generated library's two
-MPEG-TS files do this whenever a job converts them to MP4. Their H.264 comes
-back with every NAL unit the same and start codes of other lengths, which
-FFmpeg writes going back to MPEG-TS (`count_or_copy` in
+A stream a job or a revert leaves with different packets that decode to the
+same frames is repackaged, not changed, and is not a finding: the report and
+`summary.json` list it under `repackaged`, with which of the two did it. The
+generated library's two MPEG-TS files do this whenever a job converts them
+to MP4. Going in, the MP4 muxer stores H.264 with length prefixes where
+MPEG-TS has start codes (`ff_nal_parse_units`, from `mov_write_packet`) and
+AAC without its ADTS headers (`aac_adtstoasc`, added by
+`mov_check_bitstream`; both in `libavformat/movenc.c`). Coming back, a
+revert gives the H.264 every NAL unit the same and start codes of other
+lengths, which FFmpeg writes going back to MPEG-TS (`count_or_copy` in
 `libavcodec/bsf/h264_mp4toannexb.c`). Where the restored file's streams are
 not the original's in number or order (a Matroska cover come back as a video
 track, or a check 11 finding of its own), positions cannot be compared, and
@@ -197,8 +209,9 @@ cover art do not go into MP4, a conversion onto a name another file already
 holds is refused, a revert gives Matroska cover art back as a video track,
 an existing subtitle file a job replaced or moved stays that way after a
 revert, a job goes ahead without a revert point when capture reports one
-unavailable and Require Revert Point is off, and an answer for a track a
-revert brings back from the sidecar is asked again. These are listed under "Accepted losses" with
+unavailable and Require Revert Point is off, an answer for a track a
+revert brings back from the sidecar is asked again, and a job whose audio
+copy failed is run again with its kept audio re-encoded to AAC. These are listed under "Accepted losses" with
 where each decision is recorded, and do not count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down
 somewhere a reader can check.

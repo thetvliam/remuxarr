@@ -14,8 +14,10 @@ Each profile is checked against invariants instead:
      exception. A scan error is expected only on a file ffprobe cannot read.
   2. Every output probes, and its video and audio decode without an error.
   3. Every input stream is in the output, dropped by a planned action or
-     extracted to a sidecar, and the chapters survive. Losses the project has
-     already decided on are listed separately with where that is recorded.
+     extracted to a sidecar, and the chapters survive. Every stream kept
+     holds what it held: the same packets, or the same decoded frames.
+     Losses the project has already decided on are listed separately with
+     where that is recorded.
   4. Every kept audio and subtitle track carries the language the plan gave
      it: the Fix target if there is one, otherwise its own tag.
   5. Each extraction adds exactly one sidecar, and an existing sidecar's text
@@ -160,6 +162,11 @@ IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
 # Losses the project has decided to accept, keyed by stream kind. Each is
 # listed in the report rather than counted as a finding, with where the
 # decision is written down.
+# A job whose audio copy failed is run again with every kept audio track
+# re-encoded to AAC, so those tracks no longer hold what they held.
+_AUDIO_RETRY = ("the corrupt-audio retry re-encodes every kept audio track to AAC: "
+                "app/core/worker.py, _make_audio_transcode_decision")
+
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
                   "attachment map in build_ffmpeg_command",
@@ -580,9 +587,16 @@ def run_child(spec_path: str) -> None:
             entry["actions"] = [f"{a.action_type}:{a.stream_index}" for a in actions]
             entry["source"] = source
             entry["plan"] = _plan_of(actions)
+            # For check 3: the worker says when a job fell back to the
+            # corrupt-audio retry, which the stored plan does not show.
+            retried = any(rec["message"].startswith(f"Job {job.id} (")
+                          and "audio copy failed" in rec["message"]
+                          for rec in collect.records)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
-                             cfg, canonical, allowed_changes, entry, several)
+                             cfg, canonical, allowed_changes, entry, several,
+                             hashes_before.get(rel(source)),
+                             Path(spec["library"]) / rel(source), retried)
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -641,8 +655,8 @@ def run_child(spec_path: str) -> None:
         "temp_left": {k: v for k, v in temp_left.items() if v},
         "choices": choices,
         "several_jobs": [e["file"] for e in files if e.get("several_jobs")],
-        "repackaged": [{"file": e["file"], "streams": e["repackaged"]}
-                       for e in files if e.get("repackaged")],
+        "repackaged": [{"file": e["file"], "by": by, "streams": streams}
+                       for e in files for by, streams in (e.get("repackaged") or {}).items()],
         "files": [{k: v for k, v in e.items() if k not in ("id", "source", "plan", "touched")}
                   for e in files],
         "logged_errors": [r for r in collect.records
@@ -1196,7 +1210,7 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                     original["streams"], differing, want == got,
                     "after the revert", "in the original"))
             if repackaged:
-                e["repackaged"] = repackaged
+                e.setdefault("repackaged", {})["revert"] = repackaged
         if want != got:
             # A Matroska cover comes back as a video track, which can also
             # move it ahead of the attachments that followed it.
@@ -1368,7 +1382,8 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
-                     before, after, cfg, canonical, allowed_changes, entry, several=False):
+                     before, after, cfg, canonical, allowed_changes, entry, several=False,
+                     source_holds=None, kept_copy=None, retried=False):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -1441,6 +1456,8 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     ch_after = len(info_after.get("chapters") or [])
     if ch_before != ch_after:
         find(3, source, f"chapters {ch_before} -> {ch_after}")
+    _check_kept_content(find, known, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, retried, entry)
 
     # 4. Languages as planned, matched in order within each kind.
     def lang(s):
@@ -1471,6 +1488,79 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     for p in set(srt_after) - set(srt_before):
         if not (lib / p).stat().st_size:
             find(5, source, f"empty sidecar {Path(p).name}")
+
+
+def _check_kept_content(find, known, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, retried, entry):
+    """
+    Check 3's second half: every stream the job kept holds what it held.
+
+    Kept streams are paired with the output's as check 3 counts them, by
+    kind and in order, which is how build_ffmpeg_command writes them. A
+    kind whose count is off has been reported, or accepted, just above, and
+    is left out: its positions say nothing.
+
+    A job copies what it keeps, so packets are compared first. Where video
+    or audio differs:
+
+      - audio in a job the worker ran again with the corrupt-audio retry is
+        an accepted loss (_AUDIO_RETRY): it was re-encoded, on purpose;
+      - otherwise both are decoded, the source from the library the run
+        was given, as the job may have removed its own. The same frames
+        pass, and the stream is listed as repackaged. MPEG-TS into MP4
+        does this (the generated library's files 19 and 20): the MP4 muxer
+        stores H.264 with length prefixes where MPEG-TS has start codes
+        (ff_nal_parse_units, from mov_write_packet), and AAC without its
+        ADTS headers (aac_adtstoasc, added by mov_check_bitstream; both in
+        libavformat/movenc.c, FFmpeg 8.1).
+
+    Subtitles, covers and attachments must match as stored: the pipeline
+    never converts a subtitle it keeps (a text subtitle MP4 cannot hold
+    keeps the file as MKV; decision.MP4_INCOMPATIBLE_SUBS).
+    """
+    name = Path(output).name
+    holds = stream_hashes(output, info_after)
+    if source_holds is None or holds is None:
+        find(3, source, "could not checksum the streams of "
+                        f"{'the source' if source_holds is None else name}")
+        return
+    at_before = {id(s): i for i, s in enumerate(info_before["streams"])}
+    at_after = {id(s): i for i, s in enumerate(info_after["streams"])}
+    pristine: list[bool] = []       # worked out once, and only if needed
+
+    def source_is_pristine() -> bool:
+        if not pristine:
+            pristine.append(kept_copy is not None and kept_copy.is_file() and
+                            sha(kept_copy) == before.get(Path(source).relative_to(lib).as_posix()))
+        return pristine[0]
+
+    differing, repackaged, reencoded = [], [], 0
+    for k in sorted({kk for kk, _ in expected}):
+        kept = [s for kk, s in expected if kk == k]
+        out = [s for s in info_after["streams"] if kind(s) == k]
+        if len(kept) != len(out):
+            continue
+        for src, dst in zip(kept, out):
+            i, o = at_before[id(src)], at_after[id(dst)]
+            if source_holds[i] == holds[o]:
+                continue
+            if k == "audio" and retried:
+                reencoded += 1
+                continue
+            if k in ("video", "audio") and source_is_pristine():
+                was = decoded_hash(str(kept_copy), i)
+                if was is not None and was == decoded_hash(output, o):
+                    repackaged.append(i)
+                    continue
+            differing.append(i)
+    if differing:
+        find(3, source, _content_finding(info_before["streams"], differing, True,
+                                         f"in {name}", "in the source"))
+    if repackaged:
+        entry.setdefault("repackaged", {})["job"] = sorted(repackaged)
+    if reencoded:
+        known.append({"file": Path(source).relative_to(lib).as_posix(),
+                      "lost": f"{reencoded} audio track(s) re-encoded", "why": _AUDIO_RETRY})
 
 
 # ── The parent: run the profiles, report ────────────────────────────────────
@@ -1574,12 +1664,13 @@ def main() -> int:
     repackaged: dict[tuple, list[str]] = {}
     for r in results:
         for k in r.get("repackaged", []):
-            repackaged.setdefault((k["file"], tuple(k["streams"])), []).append(r["profile"])
+            repackaged.setdefault((k["file"], k["by"], tuple(k["streams"])), []
+                                  ).append(r["profile"])
     if repackaged:
-        print(f"\nRepackaged by a revert ({len(repackaged)} distinct, not counted): "
+        print(f"\nRepackaged ({len(repackaged)} distinct, not counted): "
               "different packets that decode to the same frames")
-        for (file, streams), names in sorted(repackaged.items()):
-            print(f"  {file}: stream(s) {', '.join(map(str, streams))} "
+        for (file, by, streams), names in sorted(repackaged.items()):
+            print(f"  {file}: stream(s) {', '.join(map(str, streams))} by a {by} "
                   f"in {len(names)} profile(s)")
 
     summary = Path(args.out).resolve() / "summary.json"
