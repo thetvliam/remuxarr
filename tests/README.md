@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2408 tests across 109 test files, plus 775 frontend tests under
+2413 tests across 110 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -141,7 +141,8 @@ from `title`, so every title used to be lost.
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless
 the command sets a flag itself, so an MKV's first subtitle used to be turned
-on.
+on. The AC3 a Forge add makes takes its AAC's flags but default, so a file
+never gains a second default audio track.
 `test_audio_transcode_retry.py` covers the retry for audio that cannot be
 stream-copied, in both execution branches — the same guard twice over, so
 killing it in one says nothing about the other. The last two are the two-pass
@@ -161,7 +162,7 @@ traceback, and the other three left the reason out.
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
 `test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`,
-`test_forge_undo_identity.py`.
+`test_forge_undo_identity.py`, `test_forged_ac3_keep.py`.
 `test_forge_undo_identity.py` runs a real forge, a job and an undo on a
 file that had an AC3 5.1 of its own: once the job had dropped the forged
 AC3, undo removed the original's and could leave a file with no audio.
@@ -176,6 +177,10 @@ Matroska whatever the file was.
 progress. A stop used to leave the run going until the event loop was torn
 down, and the next start failed it as a crash, though the file was
 untouched.
+`test_forged_ac3_keep.py` covers a scan of a forged file: the AC3 is kept
+whenever a kept audio track has its language. Keep Default Audio and the
+last-resort fallback used to keep the AAC and not its copy, so the next scan
+removed the track Forge had just added.
 
 **Integrations** — `test_webhook_paths.py`, `test_webhook_enable_scope.py`,
 `test_rename_tracking.py`, `test_webhook_intake.py`, `test_arr_client.py`,

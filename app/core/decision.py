@@ -998,6 +998,20 @@ def analyze_file(
             # preferred language) is already present.
             or (keep_default_audio and track.get("is_default") and not has_preferred_audio)
             or track["stream_index"] == absolute_fallback_stream_index
+            # AC3 Forge's track is an encode of an audio track the file
+            # still has, and carries its language, so it goes where that
+            # track goes: kept whenever a kept track has its language. The
+            # file does not record which track it came from; the language
+            # is what the two share. Without this, two terms above kept the
+            # source and not the copy: Keep Default Audio, as the copy is
+            # not marked default, and the fallback, which keeps one track;
+            # so the next scan removed the track Forge had just added. A
+            # track of the copy's language outside the keep list is still
+            # dropped, and the copy with it. survives_without_fallback
+            # leaves this term out: it holds only when another track is
+            # kept, so it never decides whether any audio survives.
+            or (track["stream_index"] == forge_copy_si
+                and any((k["language"] or "und") == lang for k in kept_audio))
         )
 
         if not should_keep:

@@ -227,6 +227,13 @@ def build_add_ac3_command(
         f"-metadata:s:a:{ac3_idx}", f"handler_name={FORGE_AC3_HANDLER_NAME}",
         # Every copied stream keeps its own flags; see KEEP_STREAM_FLAGS.
         *KEEP_STREAM_FLAGS,
+        # The AC3 takes its flags from the AAC it is encoded from; all but
+        # default, so it never makes a second default audio track. With
+        # two, the MP4 muxer gives every track its own alternate group, so the
+        # AAC and the AC3 are both enabled and no longer alternatives.
+        # Keeping the copy through the next scan is decision.py's work, as
+        # Keep Default Audio no longer keeps it.
+        f"-disposition:a:{ac3_idx}", "-default",
         "-map", "0:t?",
         *cover_attach_args(covers),
         *_title_args(fmt, titles),

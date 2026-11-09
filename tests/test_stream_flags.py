@@ -9,6 +9,9 @@ subtitles, neither on by default, turned the first one on. The sources
 here have two audio tracks and two subtitles with no default among them,
 and other flags (commentary, forced, hearing impaired) that must survive
 beside them.
+
+The AC3 a Forge add makes takes the flags of the AAC it is encoded from,
+all but default, so a file never gains a second default audio track.
 """
 
 import asyncio
@@ -30,7 +33,7 @@ ffmpeg_required = pytest.mark.skipif(
     reason="ffmpeg/ffprobe not available",
 )
 
-FLAGS = ("default", "forced", "hearing_impaired", "comment")
+FLAGS = ("default", "forced", "hearing_impaired", "comment", "original")
 
 
 def _ffmpeg(*args):
@@ -136,9 +139,10 @@ def test_a_job_leaves_every_kept_streams_flags_as_they_were(tmp_path, settings):
 
 def _forge_source(tmp_path, with_ac3=False):
     """
-    Video, an eng AAC 5.1 (default), an eng AAC stereo commentary and two eng
-    subtitles (forced, hearing impaired), none of them default. with_ac3
-    appends the AC3 5.1 an add would have made, for an undo to remove.
+    Video, an eng AAC 5.1 (default and original), an eng AAC stereo
+    commentary and two eng subtitles (forced, hearing impaired), none of
+    them default. with_ac3 appends the AC3 5.1 an add would have made, for
+    an undo to remove.
     """
     video, surround, stereo = _inputs(tmp_path)
     source = tmp_path / "source.mkv"
@@ -150,20 +154,21 @@ def _forge_source(tmp_path, with_ac3=False):
             "-c:a:0", "copy", "-c:a:1", "copy", "-c:s", "copy",
             "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=eng",
             "-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=eng",
-            "-disposition:v:0", "0", "-disposition:a:0", "default", "-disposition:a:1", "comment",
+            "-disposition:v:0", "0", "-disposition:a:0", "default+original",
+            "-disposition:a:1", "comment",
             "-disposition:s:0", "forced", "-disposition:s:1", "hearing_impaired",
             str(source))
     return source
 
 
-def _run_forge(monkeypatch, source, is_undo):
+def _run_forge(monkeypatch, source, is_undo, container="mkv"):
     """worker._run_forge_job on a real file; returns finish_forge_job's verdict."""
     import app.core.forge as forge
     import app.core.worker as worker
 
     job_data = {
         "job_id": 1, "file_id": 1, "is_undo": is_undo,
-        "file_path": str(source), "filename": source.name, "container": "mkv",
+        "file_path": str(source), "filename": source.name, "container": container,
         "aac_stream_index": 1, "audio_track_count": 2,
         "undo_audio_output_index": 2 if is_undo else None,
         "titles": {}, "original_size": os.path.getsize(source),
@@ -199,6 +204,28 @@ def test_a_forge_add_leaves_the_copied_streams_flags_as_they_were(tmp_path, monk
     after = _flags(source)
     assert [t for t, _ in after] == [t for t, _ in before] + ["audio"]
     assert after[:-1] == before
+    assert before[1] == ("audio", {"default", "original"}), "fixture changed"
+    assert after[-1] == ("audio", {"original"})
+
+
+@ffmpeg_required
+def test_a_forge_add_to_an_mp4_leaves_one_default_audio_track(tmp_path, monkeypatch):
+    """
+    In an MP4 a second default audio track gave every track its own
+    alternate group, both audio tracks enabled. ffprobe reads an MP4
+    track's enabled flag as default.
+    """
+    video, surround, stereo = _inputs(tmp_path)
+    source = tmp_path / "source.mp4"
+    _ffmpeg("-i", video, "-i", surround, "-i", stereo, "-map", "0", "-map", "1", "-map", "2",
+            "-c", "copy", "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=fre",
+            "-disposition:a:0", "default", "-disposition:a:1", "0", str(source))
+    before = _flags(source)
+    assert before == [("video", {"default"}), ("audio", {"default"}), ("audio", set())], \
+        "fixture changed"
+    finished = _run_forge(monkeypatch, source, is_undo=False, container="mp4")
+    assert finished["success"], finished["error"]
+    assert _flags(source) == before + [("audio", set())]
 
 
 @ffmpeg_required
