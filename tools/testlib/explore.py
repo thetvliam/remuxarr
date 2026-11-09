@@ -1095,6 +1095,12 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         queued_before = {q.id for q in db.query(QueueItem)}
         scanner.scan_library(db, [str(lib)], force_probe=True)
         for e in reverted:
+            # e["plan"] is the last job's, and a file with several was
+            # planned on the processed file by every job after the first,
+            # so no one plan is what the original was planned. Left out, as
+            # checks 3, 4, 5 and 8 leave it out.
+            if e.get("several_jobs"):
+                continue
             fresh = [q for q in db.query(QueueItem).filter(QueueItem.file_id == e["id"])
                      .order_by(QueueItem.id) if q.id not in queued_before]
             if not fresh:

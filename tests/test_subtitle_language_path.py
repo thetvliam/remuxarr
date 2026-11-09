@@ -201,17 +201,21 @@ def test_resolved_override_clears_the_flag():
     assert _action_for(after, 2).external_path.endswith(".en.forced.srt")
 
 
-def test_override_does_not_change_keep_or_drop():
+def test_an_answered_subtitle_is_kept_whatever_the_keep_list_says():
     """
-    Scope guard. Applying a language correction must not silently add or
-    remove a subtitle track — the Review page offers to relabel, not to change
-    what ends up in the library. A Spanish track dropped by the keep list stays
-    dropped even with an override naming it English.
+    The Review page asks what a track is, not whether to keep it, so an
+    answer does not remove one. A track tagged Spanish and answered French,
+    neither in the keep list, used to be dropped for its tag; judged by the
+    answer instead, and the job writing it, it was kept and then removed by
+    the next scan. Now it is kept, and extracted under the answered
+    language (decision.py, "Language Review answers").
     """
-    cfg = _prod(fix_undefined_language="always_ask")
+    cfg = _prod(fix_undefined_language="always_ask", keep_subtitle_languages=["eng"])
     d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2, lang="spa")], cfg,
-                     subtitle_language_overrides={2: "eng"})
-    assert _action_for(d, 2).action_type == "drop_track"
+                     subtitle_language_overrides={2: "fre"})
+    action = _action_for(d, 2)
+    assert action.action_type == "extract_subtitle"
+    assert action.external_path.endswith("Movie.fr.srt"), action.external_path
 
 
 def test_override_is_ignored_when_extraction_is_off():
@@ -471,3 +475,19 @@ def test_an_sdh_dub_track_is_named_sdh_not_sdh_dub():
     path = _action_for(d, 2).external_path
     assert path.endswith("Movie.en.sdh.srt"), path
     assert "dub" not in path, f"'.dub' was not suppressed for an SDH track: {path}"
+
+
+def test_a_dropped_subtitle_says_what_fix_took_it_as():
+    """
+    An untagged subtitle Always Fix took as English, dropped as English is
+    not kept. The line shows its current [und] tag, and said it was "taken
+    as und", the one thing it was not.
+    """
+    cfg = _prod(fix_undefined_language="always_fix", undefined_language_value="eng",
+                keep_subtitle_languages=["jpn"], keep_forced_subtitles=False,
+                extract_text_subtitles_to_srt=False)
+    d = analyze_file(_fmt(), [VIDEO, _audio(), _sub(2)], cfg)
+    action = _action_for(d, 2)
+    assert action.action_type == "drop_track"
+    assert "(undefined, taken as eng by Fix Undefined Subtitle Language Tags)" in \
+        action.description

@@ -1727,13 +1727,15 @@ def test_fix_tags_a_lone_untagged_track_in_a_film_in_primary_language(settings, 
     assert d.undefined_audio_flags == []
 
 
-def test_an_answered_track_still_counts_after_the_keep_list_drops_it(settings):
+def test_an_answered_track_still_counts_once_its_answer_is_written(settings):
     """
     Two untagged subtitles; the user named the first French in Subtitle
-    Language Review, the job wrote it, and Keep Subtitle Languages (English)
-    now drops it. The file had two untagged subtitles to ask about, and the
-    second is still asked about rather than taken as English: the answer is
-    stored against the track, so it is counted with it.
+    Language Review and the job wrote it. Keep Subtitle Languages (English)
+    keeps it all the same, as an answered track is kept (decision.py,
+    "Language Review answers"). The file had two untagged subtitles to ask
+    about, and the second is still asked about rather than taken as
+    English: the answer is stored against the track, so it is counted with
+    it.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
@@ -1750,7 +1752,7 @@ def test_an_answered_track_still_counts_after_the_keep_list_drops_it(settings):
     d = analyze_file(make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
                      tracks, settings, subtitle_language_overrides={2: "fre"})
 
-    assert ("drop_track", 2) in [(a.action_type, a.stream_index) for a in d.actions]
+    assert ("drop_track", 2) not in [(a.action_type, a.stream_index) for a in d.actions]
     assert not [a for a in d.actions if a.track_type == "subtitle" and a.target_language]
     assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [3]
 

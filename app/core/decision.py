@@ -458,6 +458,11 @@ def analyze_file(
         wrong language — distinct from fix_undefined_language, which only
         ever touches "und" tracks. Persisted on
         MediaFile.audio_language_overrides.
+
+        An answered track is judged by the keep rules as the answered
+        language, and is always kept: see "Language Review answers" below.
+        subtitle_language_overrides, from Subtitle Language Review, keeps
+        its tracks the same way.
     has_faststart : bool | None
         Result of is_faststart_mp4() for this file.  None means unknown
         (non-MP4 container, probe failed, or setting disabled).  Only
@@ -662,6 +667,33 @@ def analyze_file(
     und_sub_language = _resolve_undefined_subtitle_language(
         sub_tracks, settings, set(subtitle_language_overrides))
 
+    # ── Language Review answers ──────────────────────────────────────────────
+    # An answer from Audio or Subtitle Language Review says what language a
+    # track is, and the job writes it as the track's tag. The keep rules
+    # used to read the tag before it, and the next scan read the tag the
+    # job had written, so the two disagreed: a track answered in a language
+    # the keep list does not hold was kept, tagged, and removed by the next
+    # scan. Two rules follow:
+    #
+    #   • Every audio keep rule reads the answered language, not the tag
+    #     the track has now (_audio_lang, below). An answered English track
+    #     counts as English for "has preferred audio", Keep original only,
+    #     the fallback and the AC3 Forge copy's rule, each of which decides
+    #     about other tracks. No subtitle's fate turns on another's
+    #     language, and an answered subtitle is kept by the rule below, so
+    #     _effective_sub_lang has no need of the answer.
+    #   • An answered track is kept, whatever the keep list says. The
+    #     Review page asks what a track is, not whether to keep it, and a
+    #     question about a track should not be how it disappears. Kept
+    #     only by not matching anything, the answer used to remove it a
+    #     scan later; kept by the fallback, an answer could remove it at
+    #     once, the untagged track it had been standing in for taking its
+    #     place. A "remove" answer from manual review (subtitle_overrides,
+    #     Delete on the Review page) is a choice to remove, and still does.
+    #
+    # Answers persist, carried from job to job (scanner.rekey_track_answers),
+    # so the next scan reads the same answer and comes to the same decision.
+
     def _effective_sub_lang(track: dict) -> str:
         return (und_sub_language.get(track["stream_index"])
                 or track["language"] or "und")
@@ -684,6 +716,9 @@ def analyze_file(
             lang in keep_sub_langs
             or (keep_forced_subs and is_forced)
             or lang == "und"
+            # Answered in Subtitle Language Review: see "Language Review
+            # answers" above.
+            or track["stream_index"] in subtitle_language_overrides
         )
 
     # ── Answers that cannot be carried out ───────────────────────────────────
@@ -940,7 +975,9 @@ def analyze_file(
     )
 
     def _audio_lang(track: dict) -> str:
-        return (und_audio_language.get(track["stream_index"])
+        # A Language Review answer first: see "Language Review answers" above.
+        return (audio_language_overrides.get(track["stream_index"])
+                or und_audio_language.get(track["stream_index"])
                 or track["language"] or "und")
 
     file_keep_audio_langs = keep_audio_langs
@@ -1011,6 +1048,7 @@ def analyze_file(
     survives_without_fallback = any(
         _audio_lang(t) in file_keep_audio_langs
         or _audio_lang(t) == "und"
+        or t["stream_index"] in audio_language_overrides
         or (keep_default_audio and t.get("is_default") and not has_preferred_audio)
         for t in audio_tracks
     )
@@ -1075,6 +1113,9 @@ def analyze_file(
             # overriding the language filter when English (or any other
             # preferred language) is already present.
             or (keep_default_audio and track.get("is_default") and not has_preferred_audio)
+            # Answered in Audio Language Review: see "Language Review
+            # answers" above. Restated in survives_without_fallback.
+            or track["stream_index"] in audio_language_overrides
             or track["stream_index"] == absolute_fallback_stream_index
             # AC3 Forge's track is an encode of an audio track the file
             # still has, and carries its language, so it goes where that
@@ -1228,8 +1269,9 @@ def analyze_file(
             # match; saying only "not in keep list" would read as though the
             # file had tagged it so.
             why = (
-                f"not in keep list (undefined, taken as {lang} by Fix "
-                f"Undefined Subtitle Language Tags)"
+                f"not in keep list (undefined, taken as "
+                f"{_effective_sub_lang(track)} by Fix Undefined Subtitle "
+                f"Language Tags)"
                 if (track["language"] or "und") == "und"
                 else "not in keep list"
             )
@@ -1262,12 +1304,9 @@ def analyze_file(
             # then deleted because the mismatch had cleared, and the file was
             # still written as Movie.und.forced.srt.
             #
-            # Deliberately scoped to the sidecar name and the action's own
-            # language field. It does NOT feed back into the keep/drop
-            # decision above: _sub_is_kept already ran against the track's
-            # real tag, and re-running it here would mean a language
-            # correction could silently add or remove a subtitle track, which
-            # is not what the Review page offers to do.
+            # The keep/drop decision above already read the answer
+            # (_sub_is_kept; see "Language Review answers"), so an answered
+            # track always reaches here or the embedded branch.
             srt_lang = (subtitle_language_overrides.get(si) or "").strip().lower() or lang
             srt_path = _build_srt_path(
                 file_info.get("path", ""), srt_lang, is_forced, is_sdh, is_dub, used_srt_paths

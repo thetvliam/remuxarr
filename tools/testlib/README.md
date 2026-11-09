@@ -154,9 +154,9 @@ restored through the app's own `restore_revert_point`, and:
     still marked a success, since the AC3 it added is gone.
 
 A question raised by a job and answered after it starts a second job on
-the processed file. Checks 3, 4, 5 and 8, and checks 17 and 18 where they
-compare a job's plan with the answers, judge one job against the original,
-so they leave such a file out; `summary.json` lists it under
+the processed file. Checks 3, 4, 5, 8 and 14, and checks 17 and 18 where
+they compare a job's plan with the answers, judge one job against the
+original, so they leave such a file out; `summary.json` lists it under
 `several_jobs`.
 
 A file the rescan in check 7 queued again is not reverted, since the revert
