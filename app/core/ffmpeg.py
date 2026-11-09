@@ -151,6 +151,21 @@ _CONTAINER_FORMAT = {
     "mov": "mov",
 }
 
+# Every stream keeps the flags it came with: default, forced, commentary
+# and the rest. FFmpeg copies each output stream's flags from its input,
+# and then, unless the command sets a disposition on some stream, marks
+# the first stream of a type default wherever two or more streams of that
+# type have no default between them (set_dispositions in
+# fftools/ffmpeg_mux_init.c, FFmpeg 8.1). So a remux of an MKV with two
+# subtitles, neither on by default, turned the first one on, and a player
+# showed it unasked. "+0" adds nothing to output stream 0, which leaves
+# every flag as it was, and counts as a disposition set, which turns that
+# rule off. An MP4 output is not changed by this: its muxer enables the
+# first track of a type with no default itself (enable_tracks in
+# libavformat/movenc.c). The revert restore writes every stream's flags
+# itself, so it needs none of this.
+KEEP_STREAM_FLAGS = ["-disposition:0", "+0"]
+
 
 def build_ffmpeg_command(
     input_path: str,
@@ -268,6 +283,8 @@ def build_ffmpeg_command(
         cmd += title_of(t, f"s:{out_idx}")
     if kept_subs:
         cmd += ["-c:s", "copy"]
+
+    cmd += KEEP_STREAM_FLAGS
 
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which

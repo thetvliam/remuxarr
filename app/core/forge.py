@@ -37,7 +37,9 @@ from app.core.timeutil import utcnow
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
-from app.core.ffmpeg import CoverArt, cover_attach_args, find_matroska_covers
+from app.core.ffmpeg import (
+    KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
+)
 from app.core.probe import ProbeError, extract_tracks, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
@@ -223,6 +225,8 @@ def build_add_ac3_command(
         # replaces any handler name the copy inherits from the AAC. See
         # FORGE_AC3_HANDLER_NAME.
         f"-metadata:s:a:{ac3_idx}", f"handler_name={FORGE_AC3_HANDLER_NAME}",
+        # Every copied stream keeps its own flags; see KEEP_STREAM_FLAGS.
+        *KEEP_STREAM_FLAGS,
         "-map", "0:t?",
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
@@ -288,6 +292,7 @@ def build_undo_command(
         "-map", f"-0:a:{ac3_audio_output_index}",   # strip the AC3 we added
         *_cover_unmaps(covers),
         "-c", "copy",
+        *KEEP_STREAM_FLAGS,
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
         "-f", fmt,

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2404 tests across 108 test files, plus 775 frontend tests under
+2408 tests across 109 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -123,7 +123,7 @@ acts on it.
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
 `test_existing_subtitle_files.py`, `test_timeout_logging.py`,
-`test_mp4_track_titles.py`. Some run a
+`test_mp4_track_titles.py`, `test_stream_flags.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -137,6 +137,11 @@ muxer refused every add on an MKV with fonts.
 `test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.
+`test_stream_flags.py` covers each stream's flags (default, forced,
+commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
+marks the first of two or more streams of a type default when none is, unless
+the command sets a flag itself, so an MKV's first subtitle used to be turned
+on.
 `test_audio_transcode_retry.py` covers the retry for audio that cannot be
 stream-copied, in both execution branches — the same guard twice over, so
 killing it in one says nothing about the other. The last two are the two-pass
