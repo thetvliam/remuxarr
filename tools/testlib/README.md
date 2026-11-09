@@ -123,12 +123,14 @@ route function, and the worker runs the Forge jobs:
 20. Every add succeeds, and nothing logs an exception.
 21. The file gains exactly one AC3 5.1 track carrying Forge's marker, placed
     after the last audio track, and every other stream is as it was (the
-    same comparison as check 11).
+    same comparison as check 11, with every packet checksum equal: an add
+    copies the streams it keeps).
 22. The forged file probes and decodes cleanly.
 23. A full rescan queues nothing for a forged file that had nothing left to
     do before the forge.
 24. With `_forge_undo`, every add is undone through the route function, and
-    the file is back to exactly the streams it had before the add.
+    the file is back to exactly the streams it had before the add, packet
+    checksums included.
 25. No Forge temp file is left, no Forge job is still pending, processing
     or waiting to undo, and nothing in the library changed but the forged
     files.
@@ -144,7 +146,13 @@ restored through the app's own `restore_revert_point`, and:
     converted output goes away.
 11. The restored file matches the original stream for stream (type, codec,
     language and title tags, disposition flags, attachment filename and
-    mimetype, order), and an MP4's fast-start layout matches too.
+    mimetype, order), and an MP4's fast-start layout matches too. Each
+    stream also holds what it held: a checksum of its packets, or of an
+    attachment's data, is taken before any job and compared. Tags and flags
+    are written back from the revert point, so they can all be right while
+    a stream carries another's content. Video or audio whose packets differ
+    is decoded and compared with the library the run was given; the same
+    frames pass, and the stream is listed as repackaged (below).
 12. The restored file probes and decodes cleanly.
 13. The job's other files are back as they were: extracted subtitle files
     gone, everything else byte for byte, and nothing else touched.
@@ -158,6 +166,17 @@ the processed file. Checks 3, 4, 5, 8 and 14, and checks 17 and 18 where
 they compare a job's plan with the answers, judge one job against the
 original, so they leave such a file out; `summary.json` lists it under
 `several_jobs`.
+
+A stream a revert gives back with different packets that decode to the same
+frames is repackaged, not changed, and is not a finding: the report and
+`summary.json` list it under `repackaged`. The generated library's two
+MPEG-TS files do this whenever a job converts them to MP4. Their H.264 comes
+back with every NAL unit the same and start codes of other lengths, which
+FFmpeg writes going back to MPEG-TS (`count_or_copy` in
+`libavcodec/bsf/h264_mp4toannexb.c`). Where the restored file's streams are
+not the original's in number or order (a Matroska cover come back as a video
+track, or a check 11 finding of its own), positions cannot be compared, and
+the check is that what each original stream held is somewhere in the file.
 
 A file the rescan in check 7 queued again is not reverted, since the revert
 route refuses a queued file; `summary.json` marks it `revert_skipped`. Each

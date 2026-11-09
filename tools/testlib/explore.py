@@ -44,12 +44,14 @@ function and the worker runs the Forge jobs:
 
  20. Every add succeeds, and nothing logs an exception.
  21. The file gains exactly one AC3 5.1 carrying Forge's marker, after the
-     last audio track, and every other stream is as it was.
+     last audio track, and every other stream is as it was, packet for
+     packet.
  22. The forged file probes and decodes cleanly.
  23. A full rescan queues nothing for a forged file that had nothing left
      to do before the forge.
  24. With the runner's _forge_undo choice, every add is undone the same
-     way, and the file is back to exactly the streams it had before.
+     way, and the file is back to exactly the streams it had before,
+     packet for packet.
  25. No Forge temp file or unfinished Forge job is left, and nothing in
      the library changed but the forged files.
 
@@ -61,8 +63,9 @@ revert route refuses one), and:
      can hold: anything but an attachment. With revert off, none has one.
  10. Every restore succeeds, onto the original name and extension, and a
      converted output goes away.
- 11. The restored file matches the original stream for stream, and an
-     MP4's fast-start layout matches too.
+ 11. The restored file matches the original stream for stream, in what
+     each stream says it is and in what it holds (its packets, or the same
+     decoded frames), and an MP4's fast-start layout matches too.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
  14. A full rescan plans the restored file exactly as it planned the
@@ -264,6 +267,119 @@ def decode_errors(path: str) -> str:
     return r.stderr.strip() or (f"exit {r.returncode}" if r.returncode else "")
 
 
+def stream_hashes(path: str, info: dict | None) -> list[str] | None:
+    """
+    One checksum per stream of what the stream holds, in stream order: its
+    packets as they are stored, or an attachment's data. None when they
+    cannot all be taken.
+
+    A stream's tags and flags say what it claims to be; this says what it
+    is. The two can part: a revert that put one subtitle's text in two
+    slots gave every stream the right codec, language and flags, written
+    from the manifest, and passed every comparison made on those.
+
+    Packets come from FFmpeg's streamhash muxer, one line per stream, in
+    one run. An attachment has no packets, so every one hashes alike there;
+    ffprobe hashes the data it carries in their place.
+    """
+    if info is None:
+        return None
+    streams = info["streams"]
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-v", "error", "-i", path, "-map", "0", "-c", "copy",
+         "-f", "streamhash", "-hash", "md5", "-"],
+        capture_output=True, text=True)
+    packets: dict[int, str] = {}
+    for line in r.stdout.splitlines():
+        index, _, rest = line.strip().partition(",")
+        _type, _, digest = rest.partition(",")
+        if index.isdigit() and digest.startswith("MD5="):
+            packets[int(index)] = digest
+    if r.returncode != 0 or sorted(packets) != list(range(len(streams))):
+        return None
+    hashes = [packets[i] for i in range(len(streams))]
+    attached = [i for i, st in enumerate(streams) if st.get("codec_type") == "attachment"]
+    if attached:
+        p = subprocess.run(
+            [FFPROBE, "-v", "error", "-show_entries", "stream=index,extradata_hash",
+             "-show_data_hash", "md5", "-of", "json", path],
+            capture_output=True, text=True)
+        try:
+            data = {st.get("index"): st.get("extradata_hash")
+                    for st in json.loads(p.stdout or "{}").get("streams", [])}
+        except ValueError:
+            return None
+        for i in attached:
+            if not data.get(streams[i].get("index")):
+                return None
+            hashes[i] = "data " + data[streams[i]["index"]]
+    return hashes
+
+
+def decoded_hash(path: str, index: int) -> str | None:
+    """A checksum of one video or audio stream's decoded frames."""
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-v", "error", "-i", path, "-map", f"0:{index}",
+         "-f", "md5", "-"],
+        capture_output=True, text=True)
+    line = r.stdout.strip()
+    return line if r.returncode == 0 and line.startswith("MD5=") else None
+
+
+def content_differences(streams: list[dict], was: list[str], now: list[str],
+                        in_place: bool, decoded=None) -> tuple[list[int], list[int]]:
+    """
+    Which of a file's earlier streams no longer hold what they held:
+    (differing, repackaged), as indices into `streams`, the earlier file's.
+    `was` and `now` are stream_hashes() of the earlier and the later file.
+
+    in_place says the two files list the same streams in the same order, so
+    each is compared with the one in its position. Otherwise the layouts
+    differ in some way a signature check has already judged (a Matroska
+    cover that came back as a video track, or a finding of its own), and
+    all that is asked is that what each earlier stream held is still
+    somewhere in the later file.
+
+    decoded(index) gives the two files' decoded checksums for a stream, and
+    is asked only in place, about a video or audio stream whose packets
+    differ. Equal, the stream is repackaged rather than differing: it
+    decodes to the same frames. Seen with H.264 that a job moved from
+    MPEG-TS to MP4 and a revert moved back (the generated library's files
+    19 and 20): every NAL unit was the same, but going back to MPEG-TS
+    FFmpeg writes start codes of its own lengths, four bytes on a packet's
+    first unit and on a parameter set and three on the rest (count_or_copy
+    in libavcodec/bsf/h264_mp4toannexb.c, FFmpeg 8.1).
+    """
+    if not in_place:
+        missing = Counter(was) - Counter(now)
+        differing = []
+        for i, h in enumerate(was):
+            if missing[h] > 0:
+                missing[h] -= 1
+                differing.append(i)
+        return differing, []
+    differing, repackaged = [], []
+    for i, (a, b) in enumerate(zip(was, now)):
+        if a == b:
+            continue
+        if decoded is not None and streams[i].get("codec_type") in ("video", "audio"):
+            before, after = decoded(i)
+            if before is not None and before == after:
+                repackaged.append(i)
+                continue
+        differing.append(i)
+    return differing, repackaged
+
+
+def _content_finding(streams: list[dict], differing: list[int], in_place: bool,
+                     now: str, was: str) -> str:
+    names = ", ".join(f"stream {i} ({streams[i].get('codec_type')} "
+                      f"{streams[i].get('codec_name')})" for i in differing)
+    if in_place:
+        return f"{names}: holds different content {now} than {was}"
+    return f"{names}: what it held {was} is nowhere in the file {now}"
+
+
 def kind(stream: dict) -> str | None:
     t = stream.get("codec_type")
     if t == "video":
@@ -353,6 +469,9 @@ def run_child(spec_path: str) -> None:
 
     before = inventory(lib)
     probes_before = {rel: probe(str(lib / rel)) for rel in before}
+    # For check 11: what each stream holds, before any job.
+    hashes_before = {rel: stream_hashes(str(lib / rel), info)
+                     for rel, info in probes_before.items()}
     # For check 11: whether each MP4 starts with its moov, before any job.
     from app.core.probe import is_faststart_mp4
     faststart_before = {r: is_faststart_mp4(str(lib / r)) for r, info in probes_before.items()
@@ -508,7 +627,7 @@ def run_child(spec_path: str) -> None:
 
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
-        faststart_before, rel, collect,
+        faststart_before, rel, collect, hashes_before, Path(spec["library"]),
     )
 
     result = {
@@ -522,6 +641,8 @@ def run_child(spec_path: str) -> None:
         "temp_left": {k: v for k, v in temp_left.items() if v},
         "choices": choices,
         "several_jobs": [e["file"] for e in files if e.get("several_jobs")],
+        "repackaged": [{"file": e["file"], "streams": e["repackaged"]}
+                       for e in files if e.get("repackaged")],
         "files": [{k: v for k, v in e.items() if k not in ("id", "source", "plan", "touched")}
                   for e in files],
         "logged_errors": [r for r in collect.records
@@ -561,12 +682,14 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
         for item in get_candidates(db, limit=10000)["items"]:
             media = db.get(MediaFile, item["id"])
             pre = probe(media.path)
+            pre_holds = stream_hashes(media.path, pre)
             try:
                 job = add_to_queue(QueueForgeRequest(file_id=media.id), db)
             except HTTPException as exc:
                 find(20, media.path, f"a Forge candidate was refused: {exc.detail}")
                 continue
-            added[media.id] = {"job": job["id"], "path": media.path, "pre": pre}
+            added[media.id] = {"job": job["id"], "path": media.path, "pre": pre,
+                               "pre_holds": pre_holds}
     asyncio.run(run_forge_jobs())
 
     forged = []
@@ -609,6 +732,19 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
             if rest != was:
                 find(21, j["path"], "beside the AC3: " + _first_difference(
                     was, rest, now="after the add", was="before"))
+            # What each holds too, packet for packet: the add copies them.
+            holds = stream_hashes(j["path"], post)
+            if j["pre_holds"] is None or holds is None:
+                find(21, j["path"], "could not checksum the streams of the file "
+                                    f"{'before' if j['pre_holds'] is None else 'after'} the add")
+            else:
+                differing, _ = content_differences(
+                    j["pre"]["streams"], j["pre_holds"],
+                    [h for i, h in enumerate(holds) if i != marked[0]], rest == was)
+                if differing:
+                    find(21, j["path"], "beside the AC3: " + _content_finding(
+                        j["pre"]["streams"], differing, rest == was,
+                        "after the add", "before"))
             j["post"] = post
 
     # 23. A rescan queues nothing for a forged file that had nothing left to
@@ -657,6 +793,18 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
                     if now != was:
                         find(24, j["path"], _first_difference(
                             was, now, now="after the undo", was="before the add"))
+                    holds = stream_hashes(j["path"], post)
+                    if j["pre_holds"] is None or holds is None:
+                        if j["pre_holds"] is not None:   # check 21 said so otherwise
+                            find(24, j["path"], "could not checksum the streams of "
+                                                "the file after the undo")
+                    else:
+                        differing, _ = content_differences(
+                            j["pre"]["streams"], j["pre_holds"], holds, now == was)
+                        if differing:
+                            find(24, j["path"], _content_finding(
+                                j["pre"]["streams"], differing, now == was,
+                                "after the undo", "before the add"))
 
     # 25. Nothing left over: no Forge temp file, no job still on its way,
     # and nothing in the library changed but the forged files.
@@ -911,7 +1059,8 @@ def _without_attached_pic(sig: tuple) -> tuple:
 
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
-                        probes_before, faststart_before, rel, collect) -> int:
+                        probes_before, faststart_before, rel, collect,
+                        hashes_before, pristine) -> int:
     """
     Phase 2: restore every revert point through the app's own
     restore_revert_point, then check the round trip (checks 9 to 15).
@@ -1023,6 +1172,31 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             continue
         want = [_signature(s) for s in original["streams"]]
         got = [_signature(s) for s in info["streams"]]
+        # And what each stream holds. Video or audio whose packets differ
+        # is decoded, against the library the run was given: the original
+        # here is gone, and that copy is the same file while its checksum
+        # says so.
+        held = hashes_before.get(rel(source))
+        holds = stream_hashes(restored, info)
+        if held is None or holds is None:
+            find(11, source, "could not checksum the streams of "
+                             f"{'the original' if held is None else 'the restored file'}")
+        else:
+            kept_copy = pristine / rel(source)
+
+            def decoded(i, kept_copy=kept_copy, source=source, restored=restored):
+                if not kept_copy.is_file() or sha(kept_copy) != before.get(rel(source)):
+                    return None, None
+                return decoded_hash(str(kept_copy), i), decoded_hash(restored, i)
+
+            differing, repackaged = content_differences(
+                original["streams"], held, holds, want == got, decoded)
+            if differing:
+                find(11, source, _content_finding(
+                    original["streams"], differing, want == got,
+                    "after the revert", "in the original"))
+            if repackaged:
+                e["repackaged"] = repackaged
         if want != got:
             # A Matroska cover comes back as a video track, which can also
             # move it ahead of the attachments that followed it.
@@ -1397,6 +1571,16 @@ def main() -> int:
         print(f"\nAccepted losses ({len(known)} distinct, not counted):")
         for (file, lost, why), names in sorted(known.items()):
             print(f"  {file}: {lost} ({why}) in {len(names)} profile(s)")
+    repackaged: dict[tuple, list[str]] = {}
+    for r in results:
+        for k in r.get("repackaged", []):
+            repackaged.setdefault((k["file"], tuple(k["streams"])), []).append(r["profile"])
+    if repackaged:
+        print(f"\nRepackaged by a revert ({len(repackaged)} distinct, not counted): "
+              "different packets that decode to the same frames")
+        for (file, streams), names in sorted(repackaged.items()):
+            print(f"  {file}: stream(s) {', '.join(map(str, streams))} "
+                  f"in {len(names)} profile(s)")
 
     summary = Path(args.out).resolve() / "summary.json"
     summary.write_text(json.dumps(results, indent=1))
