@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2423 tests across 111 test files, plus 775 frontend tests under
+2436 tests across 112 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -279,7 +279,7 @@ answer has its own switch, kept apart from the one for a wrong language.
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,
 `test_revert_multiple_jobs.py`, `test_revert_match.py`, `test_revert_routes.py`,
-`test_revert_created_files.py`, `test_recycle_bin.py`,
+`test_revert_created_files.py`, `test_revert_retagged_capture.py`, `test_recycle_bin.py`,
 `test_retention_sweep.py`, `test_staging_hook.py`, `test_schema_migration.py`,
 `test_deployment_config.py`. The failure this feature has to avoid is not a
 crash: it is a revert that succeeds and quietly rebuilds the file wrong.
@@ -292,6 +292,12 @@ playable files and argv-level assertions saw nothing amiss.
 revert re-embeds the subtitles extraction wrote beside the media, so leaving
 those files gives every subtitle twice, while deleting every `.srt` next to the
 media would take out the ones that predate Remuxarr.
+`test_revert_retagged_capture.py` covers capture following each kept track to
+where the job put it. Matched by metadata, a kept track the job had just tagged
+with a dropped track's language was taken for the dropped one, the sidecar
+stored the wrong track, and a revert gave back the kept track's content twice.
+It compares every restored stream's packets, since the metadata is right
+either way.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored

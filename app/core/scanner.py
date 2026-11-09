@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.config import settings as app_settings
 from app.core.decision import analyze_file
 from app.core.exclude import ExcludeRules
+from app.core.revert import positional_pairs
 from app.core.revert_capture import repoint_created_file
 from app.core.probe import (
     ProbeError,
@@ -1772,35 +1773,22 @@ def job_stream_mapping(
     """
     Where each track a job kept now sits: before stream_index -> after.
 
-    Paired by position within each track type, because that is how
-    build_ffmpeg_command writes the output: every video track, then the kept
-    audio, then the kept subtitles, each type in source order. Interleaved
-    sources come out grouped by type, so counting across types would pair a
-    subtitle with an audio track.
+    revert.positional_pairs does the pairing, by position within each track
+    type; see there. Revert capture pairs a job's tracks the same way, so
+    the two cannot disagree about which track is which.
 
     A type whose kept count does not match what the output holds is left
     out entirely and its answers dropped. Some step this does not know about
     added or lost a track, and guessing the pairing is exactly the failure
     being fixed here.
     """
-    mapping: dict[int, int] = {}
-    for track_type in sorted({t["track_type"] for t in before + after}):
-        kept = sorted(
-            (t for t in before
-             if t["track_type"] == track_type and t["stream_index"] not in removed),
-            key=lambda t: t["stream_index"],
+    mapping, left_out = positional_pairs(before, after, removed)
+    for track_type, kept, out in left_out:
+        logger.warning(
+            "Stored answers for %s tracks of %s dropped: the job kept %d "
+            "but the output has %d, so which is which cannot be told",
+            track_type, path, kept, out,
         )
-        out = sorted((t for t in after if t["track_type"] == track_type),
-                     key=lambda t: t["stream_index"])
-        if len(kept) != len(out):
-            logger.warning(
-                "Stored answers for %s tracks of %s dropped: the job kept %d "
-                "but the output has %d, so which is which cannot be told",
-                track_type, path, len(kept), len(out),
-            )
-            continue
-        for src, dst in zip(kept, out):
-            mapping[src["stream_index"]] = dst["stream_index"]
     return mapping
 
 

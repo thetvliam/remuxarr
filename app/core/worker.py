@@ -877,6 +877,12 @@ def _reencoded_indices(decision: ProcessingDecision) -> set[int]:
             if a.action_type == "transcode_track"}
 
 
+def _removed_indices(decision: ProcessingDecision) -> set[int]:
+    """The input streams a decision leaves out of the output file."""
+    return {a.stream_index for a in decision.actions
+            if a.action_type in ("drop_track", "extract_subtitle")}
+
+
 def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
     """
     Return a copy of the decision where every audio copy_track action is
@@ -1394,6 +1400,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
     # (AAC to AAC) and must still be stored. Set from the decision each run
     # uses — the first attempt's, then the corrupt-audio retry's.
     reencoded_by_this_run: set[int] = _reencoded_indices(decision)
+    # And which it removes, so capture follows each kept track to where the
+    # job put it instead of matching it by metadata the job may have just
+    # rewritten. See revert_capture._pins. The same for every run: the
+    # corrupt-audio retry's decision turns copies into transcodes and
+    # removes nothing the first did not (_make_audio_transcode_decision).
+    removed_by_this_run = frozenset(_removed_indices(decision))
 
     async def on_before_staging(produced_path: str) -> str | None:
         # Cleared BEFORE capturing, not after.
@@ -1432,6 +1444,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             job_id        = job_id,
             app_cfg       = app_cfg,
             reencoded     = frozenset(reencoded_by_this_run),
+            removed       = removed_by_this_run,
         )
         if result:
             captured.append(result)

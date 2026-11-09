@@ -507,3 +507,38 @@ def test_a_job_that_copied_its_audio_reports_nothing_re_encoded(capturing_rig):
     run(rig)
 
     assert [c["reencoded"] for c in rig.captures] == [frozenset()]
+
+
+# Capture is also told which input streams the job leaves out, so it follows
+# each kept track to where the job put it rather than matching it by metadata
+# the job may have rewritten (revert_capture._pins).
+
+def _drop_audio(stream_index):
+    return Action(action_type="drop_track", description="drop ger",
+                  track_type="audio", stream_index=stream_index)
+
+
+def test_capture_is_told_what_the_job_removes(capturing_rig):
+    rig = capturing_rig
+    rig.actions = [copy_video(), copy_audio(stream_index=1), _drop_audio(2)]
+    rig.results = [ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert [c["removed"] for c in rig.captures] == [frozenset({2})]
+
+
+def test_the_retry_tells_capture_what_it_removes_extracted_subtitles_included(capturing_rig):
+    rig = capturing_rig
+    rig.actions = [
+        copy_audio(stream_index=1), _drop_audio(2),
+        Action(action_type="extract_subtitle", description="extract eng",
+               track_type="subtitle", stream_index=3,
+               external_path="/media/Show.eng.srt"),
+    ]
+    rig.results = [ffmpeg_result(rig, False, UNKNOWN_TIMESTAMP),
+                   ffmpeg_result(rig, True)]
+
+    run(rig)
+
+    assert [c["removed"] for c in rig.captures] == [frozenset({2, 3})]

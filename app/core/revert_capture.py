@@ -60,9 +60,11 @@ from dataclasses import dataclass
 
 from app.config import settings as app_settings
 from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
-from app.core.probe import ProbeError, extract_format_info, is_faststart_mp4, probe_file
+from app.core.probe import (
+    ProbeError, extract_format_info, extract_tracks, is_faststart_mp4, probe_file,
+)
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
-from app.core.revert import build_manifest, match_streams
+from app.core.revert import build_manifest, match_streams, positional_pairs
 from app.core.revert_restore import revert_blocked_reason
 
 logger = logging.getLogger(__name__)
@@ -350,6 +352,41 @@ def _discard_partial(staged: str) -> None:
         logger.warning("Could not remove the partial sidecar %s: %s", staged, exc)
 
 
+def _pins(
+    manifest: dict,
+    input_probe: dict,
+    produced_probe: dict,
+    removed: frozenset[int],
+    *,
+    extend: bool,
+) -> dict[int, int | None]:
+    """
+    Where this run put each original stream it was handed, for
+    match_streams' pinned: a manifest stream's "index" -> the processed
+    stream it became, or None for one the run removed.
+
+    A stream is found in the input by the index it has there: its own index
+    on a first job, where the input is the original; the processed_index
+    the previous capture recorded on a later one. A stream an earlier job
+    already destroyed is not in the input, and is not pinned. Nor is any
+    stream positional_pairs could not place (attachments, covers, data
+    streams, a type whose count in the output is not what the run kept):
+    those are matched from the files, as before.
+    """
+    mapping, _left_out = positional_pairs(
+        extract_tracks(input_probe), extract_tracks(produced_probe), removed)
+    pins: dict[int, int | None] = {}
+    for stream in manifest.get("streams", []):
+        source = stream.get("processed_index") if extend else stream.get("index")
+        if source is None:
+            continue
+        if source in removed:
+            pins[stream["index"]] = None
+        elif source in mapping:
+            pins[stream["index"]] = mapping[source]
+    return pins
+
+
 def _unmatch_reencoded(
     matches: list[tuple[dict, int | None]],
     reencoded: frozenset[int],
@@ -530,6 +567,7 @@ async def capture(
     app_cfg: dict,
     forge: bool = False,
     reencoded: frozenset[int] = frozenset(),
+    removed: frozenset[int] | None = None,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
@@ -540,6 +578,12 @@ async def capture(
 
     reencoded is the input stream indices this run re-encoded rather than
     copied — see _unmatch_reencoded.
+
+    removed is the input stream indices this run dropped or extracted. Given,
+    each kept track is followed to where the job put it rather than matched
+    by its metadata (_pins, match_streams' pinned). None matches every
+    stream from the files alone, as an AC3 Forge run does: it rewrites no
+    track's language, which is what the matching cannot see past.
 
     Returns (captured, error). A non-None error is returned straight to the
     staging hook and aborts the run with the source file untouched; it is
@@ -604,8 +648,21 @@ async def capture(
             manifest = existing.manifest
             container = manifest.get("container")
 
+        pinned = None
+        if removed is not None:
+            if extend:
+                # Only a first job has the file it was handed probed already.
+                try:
+                    input_probe = await _off_loop(probe_file, input_path)
+                except ProbeError as exc:
+                    raise _Unavailable(
+                        f"Could not probe for a revert point: {exc}"
+                    ) from exc
+            else:
+                input_probe = original_probe
+            pinned = _pins(manifest, input_probe, produced_probe, removed, extend=extend)
         matches = _unmatch_reencoded(
-            match_streams(manifest, produced_probe), reencoded, extend=extend)
+            match_streams(manifest, produced_probe, pinned), reencoded, extend=extend)
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.
