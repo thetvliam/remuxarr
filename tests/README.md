@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2413 tests across 110 test files, plus 775 frontend tests under
+2423 tests across 111 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -18,7 +18,7 @@ argument unique to the run.
 ## What's here
 
 **The decision engine** — `test_decision.py`, `test_subtitle_language_path.py`,
-`test_command_and_pure_functions.py`. `analyze_file()` decides what happens to
+`test_command_and_pure_functions.py`, `test_undefined_audio_fix_keep.py`. `analyze_file()` decides what happens to
 every file; these take plain dicts in and assert on a plain dataclass out, so
 they need no ffmpeg, no database and no real files, and run in well under a
 second. Most are tied to a specific incident from this project's development —
@@ -28,6 +28,11 @@ their spellings (en, eng, and deu beside ger): the tables in
 the one form, and two-letter tags written in full when a file is processed.
 `test_track_order.py` checks that the worker at pickup and an answered review
 hand the engine a file's stored tracks in stream order, since it reads position.
+`test_undefined_audio_fix_keep.py` covers the untagged audio track Always Fix
+tags: it is judged by the keep list as the language it will be tagged, and
+each test decides a file, applies the plan and decides again, which must find
+nothing to do. Judged as untagged, it used to be kept, tagged, and removed by
+the next scan.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,

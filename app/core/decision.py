@@ -370,6 +370,55 @@ def _resolve_undefined_subtitle_language(
     return {} if lone is None else {lone: _primary_language(settings)}
 
 
+def _resolve_undefined_audio_language(
+    audio_tracks: list[dict],
+    settings: dict,
+    answered: set[int],
+    original_language: str | None,
+    forge_copy_si: int | None,
+) -> dict[int, str]:
+    """
+    Map the undefined audio streams Always Fix will tag to Primary
+    Language, or {} when none will be. The audio half of
+    _resolve_undefined_subtitle_language, and run before keep/drop for the
+    same reason: a track taken as Primary Language is judged by Keep Audio
+    Languages as that language.
+
+    Judged as untagged instead, it was always kept, the job tagged it, and
+    the next scan dropped it when Primary Language was not in the keep
+    list: two jobs for one decision. Worse, an untagged track that
+    survived that way stopped the last-resort fallback from firing, so a
+    file whose tagged tracks were all outside the keep list kept only the
+    untagged one (a commentary, in the case that showed it) and lost its
+    main audio.
+
+    Always Fix tags the file's one untagged audio track
+    (_lone_undefined_track, leaving out the AC3 Forge copy), provided the
+    film is in Primary Language or its original language is unknown:
+    Primary Language is the only language Remuxarr writes on its own, and
+    a lone untagged track in a film made in another language is most
+    likely in that one. The Forge copy, if untagged, takes the same tag:
+    it is a copy of that track, which is the only other untagged audio
+    track, since untagged audio is never dropped. always_leave and
+    always_ask resolve nothing. The fix pass tags exactly what this maps.
+    """
+    if _resolve_und_mode(settings, "audio") != "always_fix":
+        return {}
+    primary = _primary_language(settings)
+    if original_language not in (None, primary):
+        return {}
+    excluded = frozenset() if forge_copy_si is None else frozenset({forge_copy_si})
+    lone = _lone_undefined_track(audio_tracks, answered, excluded)
+    if lone is None:
+        return {}
+    mapped = {lone: primary}
+    if forge_copy_si is not None and any(
+            t["stream_index"] == forge_copy_si and (t.get("language") or "und") == "und"
+            for t in audio_tracks):
+        mapped[forge_copy_si] = primary
+    return mapped
+
+
 def analyze_file(
     file_info: dict,
     tracks:    list[dict],
@@ -542,8 +591,8 @@ def analyze_file(
     sub_tracks = [_normalise_sub(t) for t in tracks if t["track_type"] == "subtitle"]
 
     # ── The AC3 Forge copy ───────────────────────────────────────────────────
-    # Left out of the undefined-track count (_lone_undefined_track, in the
-    # fix pass). See the forged_ac3_audio_index docstring above for why: it
+    # Left out of the undefined-track count (_lone_undefined_track, in
+    # _resolve_undefined_audio_language). See the forged_ac3_audio_index docstring above for why: it
     # is a known duplicate, not a new ambiguous source. It used to be left
     # out of the Undefined Audio Track Threshold's count, for the same
     # reason, while that setting existed.
@@ -588,7 +637,8 @@ def analyze_file(
     # NOTE the deliberate asymmetry with audio: there is no "und" branch
     # here, so an undefined-language subtitle only survives by being
     # forced — while undefined-language AUDIO is always kept
-    # unconditionally. Not an oversight; see the full rationale at the
+    # unconditionally (once Always Fix has given the track it will tag a
+    # language, for audio as for subtitles). Not an oversight; see the full rationale at the
     # `or lang == "und"` branch inside the audio should_keep condition
     # below (in short: a wrong guess costs a silent, ruined output on
     # the audio side and merely a lost optional extra on this one, so
@@ -872,15 +922,33 @@ def analyze_file(
     # only when a track in it exists; otherwise the list applies, so a file
     # whose only audio is a dub still keeps what it would have kept.
     #
-    # Compared against the tracks' own tags, as the keep list always is;
-    # Language Review answers are applied further down, as retags.
-    file_keep_audio_langs = keep_audio_langs
+    # Compared against the tracks' own tags, as the keep list always is,
+    # except that a track Always Fix will tag is taken as the tag it will
+    # get (_audio_lang, below); Language Review answers are applied further
+    # down, as retags.
     original_language = canonical(file_info.get("original_language")) or None
+
+    # Which untagged audio track Always Fix is going to tag, and to what,
+    # resolved BEFORE the keep/drop decision, as the subtitle one is (see
+    # _resolve_undefined_audio_language). Every read of an audio track's
+    # language from here to the end of the keep loop goes through
+    # _audio_lang, so the keep list, the "has preferred audio" check, the
+    # fallback and the keep rule all see the language the job will write.
+    und_audio_language = _resolve_undefined_audio_language(
+        audio_tracks, settings, set(audio_language_overrides),
+        original_language, forge_copy_si,
+    )
+
+    def _audio_lang(track: dict) -> str:
+        return (und_audio_language.get(track["stream_index"])
+                or track["language"] or "und")
+
+    file_keep_audio_langs = keep_audio_langs
     original_mode = settings.get("original_language_audio", "off")
     if original_language and original_mode == "keep_both":
         file_keep_audio_langs = keep_audio_langs | {original_language}
     elif (original_language and original_mode == "original_only"
-            and any((t["language"] or "und") == original_language for t in audio_tracks)):
+            and any(_audio_lang(t) == original_language for t in audio_tracks)):
         file_keep_audio_langs = {original_language}
 
     # Pre-check: is there at least one audio track in the preferred language
@@ -897,7 +965,7 @@ def analyze_file(
     # undefined or non-preferred language — not to override the language filter
     # when a preferred track is available.
     has_preferred_audio = any(
-        (t["language"] or "und") in file_keep_audio_langs
+        _audio_lang(t) in file_keep_audio_langs
         for t in audio_tracks
     )
 
@@ -941,8 +1009,8 @@ def analyze_file(
     # Keeping the two expressions in step is what makes the invariant hold,
     # so any future change to should_keep's terms belongs here too.
     survives_without_fallback = any(
-        (t["language"] or "und") in file_keep_audio_langs
-        or (t["language"] or "und") == "und"
+        _audio_lang(t) in file_keep_audio_langs
+        or _audio_lang(t) == "und"
         or (keep_default_audio and t.get("is_default") and not has_preferred_audio)
         for t in audio_tracks
     )
@@ -961,18 +1029,25 @@ def analyze_file(
         # is the thing to look at — and the file is already waiting in
         # Audio Language Review, where it can be corrected in bulk
         # alongside every other file with the same wrong tag.
+        # A track Always Fix will tag has no tag yet; say what it is taken
+        # as rather than call it tagged.
+        fallback_tag = (
+            f"untagged, taken as '{_audio_lang(fallback_track)}' (Primary Language)"
+            if absolute_fallback_stream_index in und_audio_language
+            else f"tagged '{fallback_track.get('language') or 'und'}'"
+        )
         logger.warning(
             "No usable audio track for %s — every track has a defined, "
-            "non-preferred language (kept stream %d, tagged '%s') and none "
+            "non-preferred language (kept stream %d, %s) and none "
             "is default-flagged. Force-keeping it to avoid a silent output "
             "file. Correct the tag in Audio Language Review.",
             file_info.get("path", "<unknown path>"),
             absolute_fallback_stream_index,
-            fallback_track.get("language") or "und",
+            fallback_tag,
         )
 
     for track in audio_tracks:
-        lang     = track["language"] or "und"
+        lang     = _audio_lang(track)
         codec    = (track["codec"] or "").lower()
 
         should_keep = (
@@ -991,6 +1066,9 @@ def analyze_file(
             # cheaper to make: keep the audio, drop the subtitle. The
             # Fix Undefined Language settings exist precisely to let und
             # tags be resolved properly rather than guessed at here.
+            # Under Always Fix, the track it will tag has already been
+            # given that language (_audio_lang), so this term keeps only
+            # what stays untagged.
             or lang == "und"
             # Only keep the default-flagged track when no preferred-language
             # track exists — preserves audio on edge-case files without
@@ -1011,7 +1089,7 @@ def analyze_file(
             # leaves this term out: it holds only when another track is
             # kept, so it never decides whether any audio survives.
             or (track["stream_index"] == forge_copy_si
-                and any((k["language"] or "und") == lang for k in kept_audio))
+                and any(_audio_lang(k) == lang for k in kept_audio))
         )
 
         if not should_keep:
@@ -1029,10 +1107,14 @@ def analyze_file(
                 if original_mode == "original_only" and lang in keep_audio_langs
                 else "not in keep list"
             )
+            # The line shows the [und] the track has now, and an untagged
+            # track was always kept before, so say what it was judged as.
+            if track["stream_index"] in und_audio_language:
+                why = f"untagged, taken as {lang} (Primary Language): {why}"
             actions.append(Action(
                 action_type="drop_track",
                 description=(
-                    f"Drop audio [{lang}] {codec} "
+                    f"Drop audio [{track['language'] or 'und'}] {codec} "
                     f"{track.get('channel_layout', '')} "
                     f"(stream {track['stream_index']}) — {why}"
                 ),
@@ -1047,7 +1129,7 @@ def analyze_file(
         actions.append(Action(
             action_type="copy_track",
             description=(
-                f"Copy audio [{lang}] {codec} "
+                f"Copy audio [{track['language'] or 'und'}] {codec} "
                 f"{track.get('channel_layout', '')} "
                 f"(stream {track['stream_index']})"
             ),
@@ -1377,33 +1459,16 @@ def analyze_file(
             # nothing, so a file whose tracks it would not guess at was
             # never asked about either.
             #
-            # Subtitles: the pre-pass's mapping, so keep/drop and this pass
-            # agree on the one track. Audio: the one untagged audio track,
-            # counted as the pre-pass counts subtitles, provided the film
-            # is in Primary Language or its original language is unknown.
-            # Primary Language is the only language Remuxarr writes on its
-            # own, and a single untagged track in a film made in another
-            # language is most likely in that one. The AC3 Forge copy is
-            # not counted, being a copy of its source, and takes the tag
-            # with it: its source is the only other untagged audio track,
-            # since untagged audio is never dropped.
+            # Both types: the pre-pass's mapping, so keep/drop and this pass
+            # agree on the tracks (_resolve_undefined_subtitle_language,
+            # _resolve_undefined_audio_language). A mapped track keep/drop
+            # dropped is not in und_kept, so is not tagged.
             if und_mode != "always_fix":
                 tag_si: set[int] = set()
             elif track_type == "subtitle":
                 tag_si = set(und_sub_language)
             else:
-                excluded = frozenset() if forge_copy_si is None else frozenset({forge_copy_si})
-                lone = _lone_undefined_track(
-                    [t for t in tracks if t["track_type"] == "audio"],
-                    set(overrides_for_type), excluded)
-                tag_si = (
-                    set() if lone is None
-                    or original_language not in (None, lang_value)
-                    else {lone}
-                )
-                if tag_si and forge_copy_si is not None and any(
-                        t["stream_index"] == forge_copy_si for t in und_kept):
-                    tag_si.add(forge_copy_si)
+                tag_si = set(und_audio_language)
             qualifying = {t["stream_index"] for t in und_kept}
 
             for i, action in enumerate(actions):
