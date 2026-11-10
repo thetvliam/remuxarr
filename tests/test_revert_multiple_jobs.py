@@ -1357,6 +1357,24 @@ def test_a_second_jobs_sidecar_stays_in_order(tmp_path, monkeypatch):
 # The forge rewrites the file in place, so it goes through revert capture the
 # way a job does. These run the real forge — _process_next_forge, its
 # command builders, FFmpeg — against a file a job has already processed.
+#
+# A forge run on a file with no usable revert point records none. Verified
+# by mutation, 5 applied, 5 killed, run against every test file that
+# reaches capture or the forge worker step:
+#
+#   • no early return (the old behaviour)  → both tests for it below; it
+#                                            survived the suite before them
+#   • early return only when no point row  → test_a_forge_run_leaves_a_
+#     exists, not when one is unusable       revert_point_it_cannot_build_on
+#                                            _as_it_was only. Before it, the
+#                                            only failures were two forge
+#                                            shutdown tests that failed on
+#                                            the change itself
+#   • early return for every forge run     → already killed, by the forged-
+#                                            after-a-job tests here
+#   • early return for jobs too            → already killed, widely
+#   • the worker calling capture without   → already killed, by
+#     forge=True                             test_forge_orchestration.py
 
 
 class _QuietSocket:
@@ -1524,6 +1542,52 @@ def test_forging_a_file_with_no_revert_point_creates_none(forge_lib):
     assert _forge(lib).status == "success"
 
     assert lib["db"].query(RevertPoint).count() == 0
+    assert os.listdir(lib["recycle"]) == []
+
+
+def test_undoing_a_forge_on_a_file_with_no_revert_point_creates_none(forge_lib):
+    """
+    Forged and undone, never processed. The undo removes only the AC3 the
+    forge added, so nothing of the original is lost. It used to take the
+    forged file it was handed as the original, store the AC3 it removed, and
+    record a point whose restore put that AC3 back.
+    """
+    from app.database.models import RevertPoint
+
+    lib = forge_lib
+    pristine = _codecs(lib["path"])
+    assert _forge(lib).status == "success"
+    assert _forge(lib, undo=True).status == "undone"
+    assert _codecs(lib["path"]) == pristine
+
+    assert lib["db"].query(RevertPoint).count() == 0
+    assert os.listdir(lib["recycle"]) == []
+
+
+def test_a_forge_run_leaves_a_revert_point_it_cannot_build_on_as_it_was(forge_lib):
+    """
+    A point whose sidecar has gone cannot be extended. A forge run leaves
+    it as it is, add or undo, rather than replacing it with a point
+    anchored to the forged file: the undo used to do that, storing the AC3
+    it removed as a track of the original.
+    """
+    from app.database.models import RevertPoint
+
+    lib = forge_lib
+    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
+    point = lib["db"].query(RevertPoint).one()
+    before = (point.id, point.sidecar_path, point.manifest)
+    os.remove(point.sidecar_path)
+
+    def unchanged():
+        lib["db"].expire_all()
+        return [(p.id, p.sidecar_path, p.manifest)
+                for p in lib["db"].query(RevertPoint)] == [before]
+
+    assert _forge(lib).status == "success"
+    assert unchanged(), "the add replaced the point"
+    assert _forge(lib, undo=True).status == "undone"
+    assert unchanged(), "the undo replaced the point"
     assert os.listdir(lib["recycle"]) == []
 
 

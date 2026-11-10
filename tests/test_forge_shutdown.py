@@ -33,6 +33,13 @@ stood (2037 tests) first:
   • the captured revert point kept           → during the copy
   • the bookkeeping after the swap awaited
     without the shield                       → after the swap (both)
+
+The copy and swap tests used to undo on a file with no revert point,
+which captured the forged AC3 as if it were original. Once a forge run on
+such a file recorded none, they captured nothing, so they now undo on a
+file a job processed after the add (_forged_then_undo, processed). The six
+mutants were run again on both sides of that change, with the same kill
+map, test for test.
 """
 import asyncio
 import hashlib
@@ -55,9 +62,16 @@ SECONDS = 10    # with -re, how long FFmpeg runs for
 
 
 @pytest.fixture
-def lib(tmp_path, monkeypatch):
+def lib(tmp_path, monkeypatch, request):
     """Movie.mkv, ten seconds with one English AAC 5.1 track, scanned, with
-    nothing for the queue to do and a forge add waiting."""
+    nothing for the queue to do and a forge add waiting.
+
+    Given {"subtitle": True} (WITH_A_SUBTITLE), the file also has an
+    English subtitle, for a job to drop (_forged_then_undo). Only where
+    asked: with one in the file, the undo in
+    test_a_run_stopped_while_ffmpeg_runs_goes_back_in_the_queue was over
+    before FFmpeg could be seen running, and a plain -re copy of such a
+    file took half a second rather than SECONDS."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 
@@ -85,17 +99,26 @@ def lib(tmp_path, monkeypatch):
     library = tmp_path / "library"
     library.mkdir()
     video = library / "Movie.mkv"
+    subtitle_in, subtitle_out = [], []
+    if getattr(request, "param", {}).get("subtitle"):
+        srt = tmp_path / "eng.srt"
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+        subtitle_in = ["-i", str(srt)]
+        subtitle_out = ["-map", "2:s", "-metadata:s:s:0", "language=eng", "-c:s", "srt"]
     subprocess.run([
         "ffmpeg", "-v", "error", "-y",
         "-f", "lavfi", "-i", f"testsrc=size=64x36:rate=5:duration={SECONDS}",
-        "-f", "lavfi", "-i", f"sine=frequency=440:duration={SECONDS}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration={SECONDS}", *subtitle_in,
         "-map", "0:v", "-map", "1:a", "-ac", "6", "-metadata:s:a:0", "language=eng",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "64k", "-f", "matroska", str(video)], check=True)
+        "-c:a", "aac", "-b:a", "64k", *subtitle_out, "-f", "matroska", str(video)],
+        check=True)
 
     with factory() as db:
+        # Extraction off, or the scan queues the subtitle's extraction.
         for key, value in [("dry_run_mode", False), ("prefer_mp4_container", False),
-                           ("auto_start_jobs", True)]:
+                           ("auto_start_jobs", True),
+                           ("extract_text_subtitles_to_srt", False)]:
             db.merge(AppSetting(key=key, value=json.dumps(value)))
         db.commit()
         scanner.scan_library(db, [str(library)], force_probe=True)
@@ -107,6 +130,10 @@ def lib(tmp_path, monkeypatch):
                           job_id=job_id, temp=tmp_path / f"forge_{job_id}.forge_tmp",
                           recycle=tmp_path / "recycle", tmp_path=tmp_path)
     engine.dispose()
+
+
+WITH_A_SUBTITLE = pytest.mark.parametrize(
+    "lib", [{"subtitle": True}], indirect=True, ids=["with a subtitle"])
 
 
 def _set(lib, key, value):
@@ -153,11 +180,23 @@ def _ffmpeg_writing(path):
 
 
 def _revert_files(lib):
+    """The sidecar each revert point row names, and what is in the recycle
+    folder: both by name, so a sidecar replaced by another shows."""
     from app.database.models import RevertPoint
 
     with lib.Session() as db:
-        rows = db.query(RevertPoint).count()
+        rows = sorted(os.path.basename(p.sidecar_path) for p in db.query(RevertPoint))
     return rows, sorted(p.name for p in lib.recycle.rglob("*") if p.is_file())
+
+
+def _forge_sidecar(lib):
+    """The name the forge run's own sidecar gets."""
+    from app.core.revert_capture import sidecar_path_for
+    from app.database.models import MediaFile
+
+    with lib.Session() as db:
+        file_id = db.query(MediaFile).one().id
+    return os.path.basename(sidecar_path_for(file_id, lib.job_id, forge=True))
 
 
 async def _until(condition, what, timeout=30.0):
@@ -168,13 +207,37 @@ async def _until(condition, what, timeout=30.0):
     raise AssertionError(f"timed out waiting for {what}")
 
 
-def _forged_then_undo(lib):
-    """A real forge add, then the undo the undo route would queue for it."""
-    from app.database.models import Ac3ForgeJob
+def _forged_then_undo(lib, *, processed=False):
+    """
+    A real forge add, then the undo the undo route would queue for it.
+
+    processed puts a job between the two that drops the subtitle (the lib
+    has to have one), with revert capture in the window as the
+    worker has it. The file then has a revert point whose original holds
+    the forged AC3, so the undo extends it and stores the AC3 beside the
+    subtitle. Without the job there would be nothing to capture: on a file
+    with no point, a forge run records none.
+    """
+    from app.core.revert_capture import capture
+    from app.database.models import Ac3ForgeJob, MediaFile
 
     assert asyncio.run(lib.worker._process_next_forge(_FakeWS())) is True
     assert _job(lib).status == "success"
     assert _audio(lib.video) == ["aac", "ac3"]
+    if processed:
+        with lib.Session() as db:
+            file_id = db.query(MediaFile).one().id
+        produced = lib.tmp_path / "job1.remuxarr_tmp"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(lib.video),
+                        "-map", "0", "-map", "-0:s", "-c", "copy",
+                        "-f", "matroska", str(produced)], check=True)
+        captured, error = asyncio.run(capture(
+            input_path=str(lib.video), produced_path=str(produced),
+            file_id=file_id, job_id=1,
+            app_cfg={"revert_enabled": True, "revert_require_point": False}))
+        assert (bool(captured), error) == (True, None)
+        os.replace(produced, lib.video)
+        lib.worker._record_revert_point(file_id, captured, str(lib.video))
     with lib.Session() as db:
         job = db.get(Ac3ForgeJob, lib.job_id)
         job.status, job.is_undo, job.progress = "undo_pending", True, 0.0
@@ -218,19 +281,22 @@ def test_a_run_stopped_while_ffmpeg_runs_goes_back_in_the_queue(lib, monkeypatch
     assert _digest(lib.video) == before
 
 
+@WITH_A_SUBTITLE
 def test_a_run_stopped_during_the_copy_drops_its_revert_point(lib, monkeypatch):
     """
     Held at the first progress update of the copy into place: FFmpeg has
     finished and the revert point for its output has been captured. An
-    undo, because an add loses nothing and so captures nothing; the AC3 an
-    undo removes is in the file it was handed, which with no earlier point
-    counts as the original.
+    undo on a file processed after the add, because that is what captures:
+    the job's point counts the forged AC3 as original, and the undo removes
+    it. The forge run's sidecar goes, and the job's point is left as it was.
     """
     from app.api.ws_manager import ws_manager
     from app.core.subprocess_runner import STAGING_ACTION
 
-    _forged_then_undo(lib)
     _set(lib, "revert_enabled", True)
+    _forged_then_undo(lib, processed=True)
+    point = _revert_files(lib)
+    assert point[0] and point[0] == point[1], "fixture changed: the job recorded no point"
     before = _digest(lib.video)
     copying = threading.Event()
     seen = {}
@@ -250,25 +316,28 @@ def test_a_run_stopped_during_the_copy_drops_its_revert_point(lib, monkeypatch):
 
     job = asyncio.run(go())
 
-    assert seen["revert"][1], "fixture changed: nothing was captured to drop"
+    assert _forge_sidecar(lib) in seen["revert"][1], (
+        "fixture changed: nothing was captured to drop")
     assert job.status == "undo_pending"
-    assert _revert_files(lib) == (0, [])
+    assert _revert_files(lib) == point
     assert _digest(lib.video) == before
 
 
-@pytest.mark.parametrize("undo", [False, True], ids=["add", "undo"])
+@pytest.mark.parametrize("undo, lib", [(False, {}), (True, {"subtitle": True})],
+                         indirect=["lib"], ids=["add", "undo"])
 def test_a_run_stopped_after_the_swap_is_recorded_as_done(lib, monkeypatch, undo):
     """
     Held in the track re-read: the file has been rewritten and, for the
     undo, its revert point recorded, and the job is not yet marked
     finished. The add is the case that matters most, as one run again
-    appends a second AC3; the undo is the one that records a revert point.
+    appends a second AC3; the undo is the one that records a revert point,
+    on a file processed after the add (see _forged_then_undo).
     """
     from app.database.models import Track
 
-    if undo:
-        _forged_then_undo(lib)
     _set(lib, "revert_enabled", True)
+    if undo:
+        _forged_then_undo(lib, processed=True)
     reached, release = threading.Event(), threading.Event()
     real_probe = lib.forge.probe_tracks_after_forge
 
@@ -298,8 +367,9 @@ def test_a_run_stopped_after_the_swap_is_recorded_as_done(lib, monkeypatch, undo
     with lib.Session() as db:
         assert sorted(t.codec for t in db.query(Track)
                       .filter(Track.track_type == "audio")) == audio
-    rows, files = _revert_files(lib)
-    assert (rows, bool(files)) == ((1, True) if undo else (0, False))
+    # The undo's point replaced the job's, and the job's sidecar with it.
+    recorded = [_forge_sidecar(lib)] if undo else []
+    assert _revert_files(lib) == (recorded, recorded)
 
 
 class _FakeWS:

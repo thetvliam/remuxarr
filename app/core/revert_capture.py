@@ -558,8 +558,9 @@ async def capture(
     Produce a sidecar for whatever this job destroyed.
 
     forge marks an AC3 Forge run rather than a queue job. It rewrites the
-    file in place just as a job does, so it goes through here too; the flag
-    only changes the sidecar's name and the log lines.
+    file in place just as a job does, so it goes through here too. The flag
+    changes the sidecar's name and the log lines, and a Forge run with no
+    usable point to extend records none (see where it returns early).
 
     removed is the input stream indices this run dropped or extracted. Given,
     each kept track is followed to where the job put it rather than matched
@@ -592,6 +593,23 @@ async def capture(
         # ignored: `extend` decides what to build FROM, `existing` decides
         # which row to write back to.
         extend = existing is not None and existing.usable
+
+        # An AC3 Forge run only keeps a revert point up to date; it never
+        # starts one. Adding an AC3 loses nothing, and undoing one removes
+        # only the track Forge itself added. With no point to build on, the
+        # file an undo is handed is the forged one, and taking that as the
+        # original recorded Forge's own AC3 as an original track, stored it,
+        # and a restore put back the AC3 the user had just undone. A point
+        # that cannot be built on is left as it is, as an add always left
+        # it, rather than replaced by one anchored to the forged file.
+        #
+        # A point that exists and is usable is extended as for a job. When
+        # its original already held a forged AC3 (forged, then processed),
+        # undoing that AC3 stores it: the point describes the file as it
+        # was before the job, and that file had it.
+        if forge and not extend:
+            logger.info("%s: no revert point to keep up to date", label)
+            return None, None
 
         if not extend:
             # Either this file's first job, or one whose existing point

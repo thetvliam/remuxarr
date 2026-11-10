@@ -3494,7 +3494,10 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
     # existing revert point still has to be rebuilt against the file the
     # forge leaves, or its fingerprint no longer matches and the point is
     # dead. Undoing a forged AC3 that was there before a job ran removes a
-    # track that point counts as original, and capture stores it.
+    # track that point counts as original, and capture stores it. A file
+    # with no usable point gains none from a forge run, add or undo: a point
+    # anchored to the forged file would hold only Forge's own AC3, and a
+    # restore would put it back (revert_capture.capture).
     #
     # Handled the way _run_job handles its capture: held until the swap has
     # happened, then recorded; deleted on any failure, because a sidecar for
