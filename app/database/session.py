@@ -27,13 +27,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "keep_subtitle_languages": ["eng"],
     # Always keep forced subtitle tracks regardless of language
     "keep_forced_subtitles": True,
-    # Whether a subtitle with no language tag survives the keep list.
-    #
-    # Off, because that is what the feature has always done and turning it
-    # on for everyone would silently start retaining tracks on every
-    # library. "und" is not a language that failed to match the keep list,
-    # it is the absence of one, and which of those two a user means is
-    # genuinely their call rather than something to guess.
     # Keep the default-flagged audio track even if its language isn't in the list
     "keep_default_audio": True,
     # Off: a file keeps exactly the audio it kept before the setting existed.
@@ -58,7 +51,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "exclude_patterns": [],
     # Overrides both of the above for the files it matches (Always Include).
     "include_patterns": [],
-    # How many "und" audio tracks trigger a manual-review flag
     # Extract kept text-based subtitle tracks (SubRip, mov_text, ASS/SSA) to
     # an external .srt sidecar file (Plex naming: Movie.en.srt /
     # Movie.en.forced.srt) and remove them from the muxed output. Kept
@@ -112,12 +104,12 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # existing installs upgrading see no change until they deliberately
     # pick a different value.
     # Subtitle side. Keeps the original key name on purpose: it is the value
-    # every existing install already has, and for subtitles always_leave is
-    # not a no-op — an untagged subtitle that is not retagged fails the
-    # keep_subtitle_languages test and is dropped. Renaming this to
-    # _subtitle for symmetry with the audio key below would hand every
-    # upgrading install a fresh always_leave and delete subtitle tracks from
-    # their library on the next run.
+    # every existing install already has, and renaming it to _subtitle for
+    # symmetry with the audio key below would hand every upgrading install a
+    # fresh always_leave in place of the mode it chose. An untagged subtitle
+    # left untagged is kept whatever the mode (decision._sub_is_kept); it
+    # used to be dropped for matching nothing in keep_subtitle_languages,
+    # which made the reset cost tracks, until 52ec23a.
     "fix_undefined_language":   "always_leave",
     # Audio side, split out from the above so the two types can differ (fix
     # audio automatically, ask about subtitles, or the reverse). New key, so
