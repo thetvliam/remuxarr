@@ -9,7 +9,7 @@ just build argv lists).
 """
 import pytest
 
-from app.core.decision import analyze_file
+from app.core.decision import Action, ProcessingDecision, analyze_file
 from app.core.ffmpeg import build_ffmpeg_command, determine_output_path
 from app.core.forge import build_add_ac3_command, build_undo_command
 from tests.conftest import make_track, make_file_info
@@ -30,12 +30,12 @@ def test_unknown_container_raises_instead_of_silently_muxing_matroska():
     has no entry for. The old `.get(..., "matroska")` default meant such
     a file — processed for ANY reason, e.g. a simple track drop — got
     Matroska bytes written into its original path in place, with the
-    original deleted after "success". analyze_file's own container guard
-    can't catch it (the container string is present and non-empty; it
-    just isn't muxable-as-itself), so the command builder must hard-fail
-    rather than guess. The ValueError is caught by the worker's
-    job-level handler and becomes a visible failed job, raised before
-    FFmpeg ever starts — the source file is never touched.
+    original deleted after "success". The command builder hard-fails
+    rather than guess. The ValueError is caught by the worker's job-level
+    handler and becomes a visible failed job, raised before FFmpeg ever
+    starts, so the source file is never touched. analyze_file now leaves
+    such a file alone before any job exists (no failed job, and no scan
+    queueing it again), and this stays the guard behind it.
     """
     tracks = [
         make_track(stream_index=0, track_type="video", codec="flv1"),
@@ -44,15 +44,15 @@ def test_unknown_container_raises_instead_of_silently_muxing_matroska():
         make_track(stream_index=2, track_type="audio", codec="mp3",
                    language="fre"),
     ]
-    file_info = make_file_info(path="/media/x/clip.flv", container="flv",
-                                video_codec="flv1")
-    decision = analyze_file(file_info, tracks, _flv_settings())
-
-    # The decision itself legitimately wants to process (drop the French
-    # track) — the failure must come from the command builder, which is
-    # the last line of defence before bytes hit disk.
-    assert decision.should_process is True
-    assert decision.target_container == "flv"
+    # Built by hand: analyze_file now leaves a file in a container with no
+    # muxer alone rather than plan a job for it (test_decision.py), so the
+    # builder no longer sees one from there. It still refuses one, as the
+    # last line of defence before bytes hit disk.
+    decision = ProcessingDecision(
+        should_process=True, reason="Remove 1 audio track", target_container="flv",
+        actions=[Action(action_type="drop_track", description="drop French",
+                        track_type="audio", stream_index=2)],
+    )
 
     out = determine_output_path("/media/x/clip.flv", decision)
     with pytest.raises(ValueError, match="Unsupported output container 'flv'"):

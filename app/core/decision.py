@@ -1662,6 +1662,17 @@ def analyze_file(
     if override_fixed_indices:
         has_language_fix = True
 
+    # A container Remuxarr has no muxer for: see where it is left alone,
+    # below. Its Language Review questions are not raised, here or there:
+    # an answer could only come back to that same decision. Imported here,
+    # as ffmpeg imports this module.
+    from app.core.ffmpeg import output_muxer
+    cannot_write = output_muxer(target_container) is None
+    if cannot_write:
+        audio_language_mismatch = None
+        undefined_audio_flags = []
+        subtitle_language_mismatches = []
+
     # ── Is there anything to do? ───────────────────────────────────────────
     has_drops       = any(a.action_type == "drop_track" for a in actions)
     has_container   = any(a.action_type == "change_container" for a in actions)
@@ -1679,6 +1690,27 @@ def analyze_file(
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
+            faststart_enabled=add_faststart,
+        )
+
+    # ── A container Remuxarr cannot write ──────────────────────────────────
+    # The command builder refuses one it has no muxer for rather than guess
+    # (ffmpeg.build_ffmpeg_command), so a job here could only fail. An FLV
+    # kept as FLV was queued for a language fix, failed before FFmpeg ran,
+    # and every full scan queued it again. A muxer would not help: FLV
+    # stores no language tag, so the fix would rewrite the file without it
+    # and be queued again all the same. Left as it is instead, with the
+    # reason in History.
+    if cannot_write:
+        name = target_container.upper()
+        return ProcessingDecision(
+            should_process=False,
+            reason=(f"Remuxarr cannot write {name} files, so this one is left as "
+                    "it is. Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
+                    f"Remuxarr cannot write {name} files, and this one's tracks "
+                    "cannot go into MP4, so it is left as it is."),
+            actions=[],
+            mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             faststart_enabled=add_faststart,
         )
 

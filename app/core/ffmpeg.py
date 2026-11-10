@@ -296,12 +296,12 @@ def build_ffmpeg_command(
     # containers (e.g. .flv) that _normalise_container passes through
     # unchanged and this map has no entry for — those files got Matroska
     # bytes written into their original path, in place, with the original
-    # deleted after "success". analyze_file's own container guard can't
-    # catch this case (the container string is present and non-empty; it
-    # just isn't muxable-as-itself here). Raising is caught by the
-    # worker's job-level exception handler and becomes a visible failed
-    # job with this message — and, critically, it fires before FFmpeg
-    # ever starts, so the source file is never touched.
+    # deleted after "success". analyze_file now leaves such a file alone
+    # before any job is queued (its output_muxer check), so this is the
+    # guard behind that. Raising is caught by the worker's job-level
+    # exception handler and becomes a visible failed job with this message
+    # — and, critically, it fires before FFmpeg ever starts, so the source
+    # file is never touched.
     if decision.target_container not in _CONTAINER_FORMAT:
         raise ValueError(
             f"Unsupported output container {decision.target_container!r} — "
