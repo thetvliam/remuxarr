@@ -1329,15 +1329,22 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                     if getattr(media, a)]
             if left:
                 find(14, e["source"], f"the revert left {', '.join(left)} stored")
-        queued_before = {q.id for q in db.query(QueueItem)}
+        # Nothing waits for a restored file before the rescan (the revert
+        # route refuses a queued file), so whatever waits after it is the
+        # rescan's. Told apart by status, not by id: the rescan deletes the
+        # file's stale skipped record (scanner._clear_stale_status_records)
+        # and SQLite gives the row it adds the same id when that record was
+        # the newest, as it is in a one-file library.
+        waiting = {e["id"] for e in reverted if _scan_outcome(db, e["id"])["item"]}
         scanner.scan_library(db, [str(lib)], force_probe=True)
         for e in reverted:
-            fresh = [q for q in db.query(QueueItem).filter(QueueItem.file_id == e["id"])
-                     .order_by(QueueItem.id) if q.id not in queued_before]
-            if not fresh:
-                find(14, e["source"], "a rescan did not queue the restored file again")
+            if e["id"] in waiting:
+                find(14, e["source"], "the restored file was queued before the rescan")
                 continue
             now, first = _scan_outcome(db, e["id"]), e["first_scan"]
+            if now["item"] is None:
+                find(14, e["source"], "a rescan did not queue the restored file again")
+                continue
             for what in now:
                 if now[what] != first[what]:
                     find(14, e["source"], f"a rescan gives {what} {now[what]}, "
