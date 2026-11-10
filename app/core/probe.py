@@ -227,6 +227,22 @@ def count_font_attachments(probe_data: dict) -> int:
     )
 
 
+# The major brand QuickTime writes. ffprobe names a QuickTime file and an
+# MP4 alike ("mov,mp4,m4a,3gp,3g2,mj2"), and both normalise to "mp4", so the
+# brand is what tells them apart.
+QUICKTIME_BRAND = "qt  "
+
+
+def is_quicktime(probe_data: dict | None) -> bool:
+    """
+    Whether the probed file is a QuickTime movie rather than an MP4, by its
+    major brand. Remuxarr writes one with FFmpeg's QuickTime muxer, so it
+    stays one (ffmpeg.output_muxer).
+    """
+    tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
+    return tags.get("major_brand") == QUICKTIME_BRAND
+
+
 def extract_format_info(probe_data: dict) -> dict:
     """Extract file-level format metadata.
 

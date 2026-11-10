@@ -18,7 +18,7 @@ from pathlib import Path
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
-from app.core.probe import ProbeError, probe_file
+from app.core.probe import QUICKTIME_BRAND, ProbeError, probe_file
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -151,6 +151,25 @@ _CONTAINER_FORMAT = {
     "mov": "mov",
 }
 
+
+def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
+    """
+    The FFmpeg muxer that writes `container`, or None for one this does
+    not know.
+
+    quicktime says the file being written is a QuickTime movie and stays
+    one (probe.is_quicktime: its major brand is "qt  "). Its container
+    normalises to "mp4", but FFmpeg's MP4 muxer turned a QuickTime file
+    into an MP4 under its .mov name: the brand became "isom", PCM audio's
+    "sowt" sample entry became the ISO "ipcm" that many players cannot
+    play, and the video gained an "und" language. The QuickTime muxer
+    keeps all three, so a job changes only what it set out to and a revert
+    gives the original back. Both muxers are libavformat/movenc.c, so
+    -movflags and the rest apply alike.
+    """
+    fmt = _CONTAINER_FORMAT.get(container)
+    return "mov" if quicktime and fmt == "mp4" else fmt
+
 # Every stream keeps the flags it came with: default, forced, commentary
 # and the rest. FFmpeg copies each output stream's flags from its input,
 # and then, unless the command sets a disposition on some stream, marks
@@ -173,12 +192,14 @@ def build_ffmpeg_command(
     decision: ProcessingDecision,
     all_tracks: list[dict],
     covers: Sequence[CoverArt] = (),
+    quicktime: bool = False,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
 
     covers are Matroska cover images already copied out of the source by
     _prepare_cover_art, which hands over none unless the output is Matroska.
+    quicktime says the source is a QuickTime movie (see output_muxer).
 
     Strategy
     --------
@@ -287,7 +308,11 @@ def build_ffmpeg_command(
             f"refusing to guess the mux format (supported: "
             f"{', '.join(sorted(_CONTAINER_FORMAT))})"
         )
-    out_fmt = _CONTAINER_FORMAT[decision.target_container]
+    # A QuickTime source normalises to "mp4" and keeps that container, so
+    # an "mp4" target for it is always the file staying a .mov.
+    out_fmt = output_muxer(decision.target_container, quicktime)
+    if out_fmt is None:
+        raise KeyError(decision.target_container)
     logger.info(
         "build_ffmpeg_command: decision.target_container=%r -> out_fmt=%r "
         "(output_path=%s)",
@@ -610,7 +635,9 @@ def build_restore_command(
         raise RestoreUnsupported("Manifest records no streams.")
 
     container = manifest.get("container")
-    out_fmt = _CONTAINER_FORMAT.get(container)
+    # The original's brand is among the tags capture recorded for it.
+    out_fmt = output_muxer(
+        container, (manifest.get("format_tags") or {}).get("major_brand") == QUICKTIME_BRAND)
     if not out_fmt:
         raise RestoreUnsupported(
             f"No FFmpeg muxer known for original container {container!r}."
@@ -754,7 +781,7 @@ def build_restore_command(
     # The original's layout: an MP4 recorded as fast-start gets its index
     # back in front. Only True asks; False, None and a manifest from before
     # the layout was recorded all leave the muxer's default.
-    if out_fmt == "mp4" and manifest.get("faststart") is True:
+    if out_fmt in ("mp4", "mov") and manifest.get("faststart") is True:
         cmd += ["-movflags", "+faststart"]
     cmd += ["-f", out_fmt, output_path]
     return cmd
@@ -802,9 +829,12 @@ async def execute_ffmpeg(
     before_staging: Callable[[str], Awaitable[str | None]] | None = None,
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
+    quicktime: bool = False,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
+
+    quicktime says the source is a QuickTime movie (see output_muxer).
 
     • Writes to a temp file in TEMP_DIR (typically a RAM-backed or fast
       cache location), then moves to output_path on success.  This keeps
@@ -850,7 +880,7 @@ async def execute_ffmpeg(
         return FFmpegResult(success=False, output_path=None, error=cover_error,
                             output_size=None)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
-                               covers=covers)
+                               covers=covers, quicktime=quicktime)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1104,9 +1134,11 @@ async def execute_ffmpeg_combined(
     before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
     before_swap:          Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready:        Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
+    quicktime:            bool = False,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
-    Single-pass combined remux + subtitle extraction.
+    Single-pass combined remux + subtitle extraction. quicktime as for
+    execute_ffmpeg.
 
     Reads the source file ONCE and writes all outputs simultaneously:
       • The remuxed media file (to TEMP_DIR, then moved to output_path)
@@ -1175,7 +1207,7 @@ async def execute_ffmpeg_combined(
         )
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
-                                    covers=covers)
+                                    covers=covers, quicktime=quicktime)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
