@@ -774,15 +774,15 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
             #
             # It reaches it because an ignore cannot be undone on its own.
             # The ignored column is written True here and False in only
-            # three other places: inside apply_language; when a scan finds
-            # the file replaced by one with different tracks; and Ask again
-            # (both through scanner.forget_answers). Ignoring deletes every
-            # flag row for the file, while the scanner refuses to create new
-            # ones for a file already marked, so the route back through
-            # apply_language is closed by the same action that opens the
-            # door. A replacement is a new file rather than a way back, and
-            # Ask again takes back every other answer stored for the file
-            # with it. (The undefined-audio switch has a way back of its
+            # four other places: inside apply_language; when a scan finds
+            # the file replaced by one with different tracks; Ask again; and
+            # a revert (the last three through scanner.forget_answers).
+            # Ignoring deletes every flag row for the file, while the scanner
+            # refuses to create new ones for a file already marked, so the
+            # route back through apply_language is closed by the same action
+            # that opens the door. A replacement is a new file rather than a
+            # way back, and Ask again and a revert take back every other
+            # answer stored for the file with it. (The undefined-audio switch has a way back of its
             # own, Clear acknowledged, but this returns before writing
             # either.)
             #

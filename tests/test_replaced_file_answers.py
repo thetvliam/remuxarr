@@ -13,7 +13,8 @@ track stopped a German release from being flagged.
 A scan that probes a file now forgets all five when the file changed on
 disk and its tracks differ from the stored ones (scanner._replaced_on_disk).
 Remuxarr's own jobs, reverts and AC3 forge runs store the tracks of the
-file they wrote, so they do not.
+file they wrote, so they do not. (A revert forgets them itself:
+revert_restore._apply.)
 
 These drive the real scan_library, _process_file and queue_single_file
 against a real database and real files on disk. Only ffprobe is replaced,
@@ -32,7 +33,7 @@ import json
 import pytest
 
 import app.core.scanner as scanner
-from app.core.scanner import queue_single_file, replace_track_rows, scan_library
+from app.core.scanner import queue_single_file, scan_library
 from app.database.models import AppSetting, MediaFile
 
 ALL_FIVE = {
@@ -201,19 +202,17 @@ def test_an_out_of_date_stamp_with_matching_tracks_keeps_its_answers(lib):
     assert lib.stored() == ALL_FIVE
 
 
-def test_a_reverted_file_keeps_the_answers_carried_back_to_it(lib):
+def test_a_file_marked_again_with_its_tracks_unchanged_keeps_its_answers(lib):
     """
-    A revert puts the original back, stores the tracks it probed from it
-    (revert_restore._apply) and writes the -1 re-evaluate marker. The next
-    scan finds the tracks it stored.
+    Cancelling, dismissing or clearing a job writes the -1 re-evaluate
+    marker and keeps the answers. The next scan sees a change on disk and
+    finds the tracks it stored. (A revert writes the marker too, and
+    forgets the answers itself: revert_restore._apply.)
     """
-    lib.put(_probe("eng", "ger"), 128)   # the processed file
+    lib.put(_probe("eng", "jpn"), 64)
     lib.scan()
     lib.answer()
-
-    lib.put(_probe("eng", "jpn"), 64)    # the original, restored
     media = lib.media()
-    replace_track_rows(lib.db, media.id, scanner.extract_tracks(_probe("eng", "jpn")))
     media.size, media.mtime = -1, -1.0
     lib.db.commit()
 

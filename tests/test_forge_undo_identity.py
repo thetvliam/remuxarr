@@ -28,6 +28,8 @@ test_schema_migration.
 Verified by mutation, 14 applied, 14 killed. Every one was run against the
 full suite as it stood (2250 tests) before any of these tests existed, with
 one mechanical change: test_answers_go_back_to_the_tracks_they_were_given_for
+(since replaced, in test_revert_multiple_jobs.py, by
+test_a_revert_forgets_every_answer_given_for_the_file)
 built Track rows by unpacking the probe's dict, which fails on the new
 handler_name key, and now writes them with replace_track_rows, as
 _finish_job does. All fourteen survived that baseline:

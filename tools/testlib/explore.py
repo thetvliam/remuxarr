@@ -71,8 +71,10 @@ revert route refuses one), and:
      decoded frames), and an MP4's fast-start layout matches too.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
- 14. A full rescan plans the restored file exactly as it planned the
-     original.
+ 14. A revert leaves no answer or confirmation stored for the file, and a
+     full rescan then decides the restored file exactly as the first scan
+     decided the original, before any question was answered: the same
+     queue item, plan, review questions and Language Review questions.
  15. The point is spent: no row, no sidecar, no temp file left, and no
      Forge job on the file still marked a success.
 
@@ -494,6 +496,8 @@ def run_child(spec_path: str) -> None:
         scan = scanner.scan_library(db, [str(lib)], force_probe=True)
         timings["scan"] = round(time.monotonic() - t, 2)
         source_of = {m.id: m.path for m in db.query(MediaFile)}
+        # For check 14, before any question is answered.
+        first_scan = {m.id: _scan_outcome(db, m.id) for m in db.query(MediaFile)}
 
     async def drain():
         loop = asyncio.get_running_loop()
@@ -558,6 +562,7 @@ def run_child(spec_path: str) -> None:
                      "jobs": [j.status for j in jobs]}
             if media.id in answered:
                 entry["answered"] = answered[media.id]
+            entry["first_scan"] = first_scan.get(media.id)
             files.append(entry)
             for j in jobs:
                 if j.status in ("success", "manual_review", "skipped"):
@@ -1054,6 +1059,40 @@ def _check_answers_stick(find, db, files, source_of):
                                f"{sorted(again)} again")
 
 
+def _scan_outcome(db, file_id: int) -> dict:
+    """
+    What a scan decided for a file and asks of the user (check 14): its
+    waiting queue item's status and plan, the subtitles a review asks
+    about, and its Language Review questions.
+    """
+    from app.api.routes.queue import _flagged_entries
+    from app.database.models import (AudioLanguageFlag, PlannedAction, QueueItem,
+                                     SubtitleLanguageFlag)
+
+    item = (db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status.in_(["pending", "manual_review"]))
+            .order_by(QueueItem.id.desc()).first())
+    plan = review = None
+    if item is not None:
+        plan = _plan_of(db.query(PlannedAction)
+                        .filter(PlannedAction.queue_item_id == item.id)
+                        .order_by(PlannedAction.order).all())
+        if item.status == "manual_review":
+            review = sorted(_flagged_entries(item))
+    return {
+        "item": item.status if item else None,
+        "plan": plan,
+        "review": review,
+        "audio questions": sorted(
+            f.stream_index for f in db.query(AudioLanguageFlag)
+            .filter(AudioLanguageFlag.file_id == file_id)),
+        "subtitle questions": sorted(
+            f.stream_index for f in db.query(SubtitleLanguageFlag)
+            .filter(SubtitleLanguageFlag.file_id == file_id)),
+    }
+
+
 def _plan_of(actions) -> list[list]:
     """A job's planned actions, as check 14 compares them."""
     return [[a.action_type, a.track_type, a.stream_index, a.target_language]
@@ -1088,20 +1127,19 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     """
     import asyncio
 
-    from app.api.routes.queue import _flagged_entries
     from app.api.routes.revert import _ACTIVE_QUEUE_STATES
     from app.core import scanner
     from app.core.probe import is_faststart_mp4
     from app.core.revert_restore import restore_revert_point
     from app.database import session as S
-    from app.database.models import Ac3ForgeJob, PlannedAction, QueueItem, RevertPoint
+    from app.database.models import Ac3ForgeJob, MediaFile, QueueItem, RevertPoint
 
     enabled = bool(cfg.get("revert_enabled"))
     by_id = {e["id"]: e for e in files}
     with S.SessionLocal() as db:
-        points = [(p.id, p.file_id, p.sidecar_path, p.manifest)
+        points = [(p.id, p.file_id, p.sidecar_path)
                   for p in db.query(RevertPoint).order_by(RevertPoint.id)]
-    with_point = {file_id for _, file_id, _, _ in points}
+    with_point = {file_id for _, file_id, _ in points}
 
     # 9. A point exactly when one should be.
     for e in files:
@@ -1129,16 +1167,11 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     pre_revert = inventory(lib)
     first_record = len(collect.records)
     reverted = []
-    for point_id, file_id, sidecar, manifest in points:
+    for point_id, file_id, sidecar in points:
         e = by_id.get(file_id)
         if e is None or "source" not in e:
             continue
         source = e["source"]
-        # For check 14: answered tracks the revert brings back from the
-        # sidecar. Their answers do not come back with them, by design.
-        from_sidecar = {s["index"] for s in json.loads(manifest or "{}").get("streams", [])
-                        if s.get("processed_index") is None}
-        e["answers_dropped"] = sorted(from_sidecar & _answered_streams(e))
         # The revert route refuses a file that is queued, and check 7's
         # rescan can have queued it again; that is reported there.
         with S.SessionLocal() as db:
@@ -1284,44 +1317,31 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     if tmp.exists() and any(p.is_file() for p in tmp.rglob("*")):
         find(15, "temp folder", "temp file(s) left behind after the reverts")
 
-    # 14. A rescan decides each restored file as it decided the original.
+    # 14. A revert forgets every answer and confirmation stored for the file
+    # (revert_restore._apply), so a rescan decides the restored file as the
+    # first scan decided the original, before any question was answered.
+    # Files with several jobs included: whatever ran, the revert put back
+    # the original that scan was made on.
     with S.SessionLocal() as db:
+        for e in reverted:
+            media = db.get(MediaFile, e["id"])
+            left = [a for a in scanner.ANSWER_COLUMNS + scanner.CONFIRMATION_COLUMNS
+                    if getattr(media, a)]
+            if left:
+                find(14, e["source"], f"the revert left {', '.join(left)} stored")
         queued_before = {q.id for q in db.query(QueueItem)}
         scanner.scan_library(db, [str(lib)], force_probe=True)
         for e in reverted:
-            # e["plan"] is the last job's, and a file with several was
-            # planned on the processed file by every job after the first,
-            # so no one plan is what the original was planned. Left out, as
-            # checks 3, 4, 5 and 8 leave it out.
-            if e.get("several_jobs"):
-                continue
             fresh = [q for q in db.query(QueueItem).filter(QueueItem.file_id == e["id"])
                      .order_by(QueueItem.id) if q.id not in queued_before]
             if not fresh:
                 find(14, e["source"], "a rescan did not queue the restored file again")
                 continue
-            actions = db.query(PlannedAction).filter(
-                PlannedAction.queue_item_id == fresh[-1].id
-            ).order_by(PlannedAction.order).all()
-            dropped = set(e.get("answers_dropped", []))
-            plan = _plan_of(actions)
-            if fresh[-1].status == "manual_review":
-                asked = set(_flagged_entries(fresh[-1])) or dropped
-                if dropped and asked <= dropped:
-                    known.append({"file": rel(e["source"]), "lost": "answer asked again",
-                                  "why": _ANSWERS_FROM_SIDECAR})
-                else:
-                    find(14, e["source"], "a rescan made the restored file manual_review")
-            elif fresh[-1].status != "pending":
-                find(14, e["source"], f"a rescan made the restored file {fresh[-1].status}")
-            elif plan != e["plan"]:
-                differs = _differing_streams(plan, e["plan"])
-                if dropped and differs - {None} and differs - {None} <= dropped:
-                    known.append({"file": rel(e["source"]), "lost": "answer not carried back",
-                                  "why": _ANSWERS_FROM_SIDECAR})
-                else:
-                    find(14, e["source"], f"a rescan plans {plan}, "
-                                          f"the original was planned {e['plan']}")
+            now, first = _scan_outcome(db, e["id"]), e["first_scan"]
+            for what in now:
+                if now[what] != first[what]:
+                    find(14, e["source"], f"a rescan gives {what} {now[what]}, "
+                                          f"the first scan gave {first[what]}")
     return len(reverted)
 
 
@@ -1338,29 +1358,6 @@ def _point_unavailable(collect, source: str) -> str | None:
             reason = rec["message"].split(marker, 1)[1]
             return re.sub(r" @ 0x[0-9a-f]+", "", reason).splitlines()[0][:160]
     return None
-
-
-_ANSWERS_FROM_SIDECAR = ("a track the revert brings back from the sidecar has its "
-                         "question asked again: app/core/revert_restore.py, _apply; "
-                         "look-alike tracks are stored whole, app/core/revert.py, "
-                         "match_streams")
-
-
-def _answered_streams(e: dict) -> set[int]:
-    answers = e.get("answered") or {}
-    return {int(s) for key in ("subtitle", "audio_language", "subtitle_language")
-            for s in answers.get(key) or {}}
-
-
-def _differing_streams(a: list, b: list) -> set:
-    """Stream indices whose planned actions differ between two plans."""
-    def by_stream(plan):
-        out: dict = {}
-        for action in plan:
-            out.setdefault(action[2], []).append(action)
-        return out
-    x, y = by_stream(a), by_stream(b)
-    return {k for k in set(x) | set(y) if x.get(k) != y.get(k)}
 
 
 def _first_difference(want: list, got: list, now: str = "after the revert",

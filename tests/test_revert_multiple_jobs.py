@@ -127,12 +127,10 @@ test has one audio track, paired one to one: with a French track beside
 the English, the look-alike rule from revert._pair_pass stores both
 anyway, and ignoring the mark goes unnoticed.
 
-test_answers_go_back_to_the_tracks_they_were_given_for came with carrying
-stored answers through a revert. Its three mutants, recorded in
-test_answers_follow_tracks.py, survived the suite as it stood first: the
-re-key not called, resolved against the restored tracks, and the manifest's
-processed_index ignored. This test and that module's own revert test kill
-all three.
+test_a_revert_forgets_every_answer_given_for_the_file replaced the test
+that came with carrying stored answers through a revert, when a revert came
+to forget them all instead. Its mutants are recorded in
+test_answers_follow_tracks.py.
 """
 import asyncio
 import json
@@ -1833,40 +1831,38 @@ def test_a_later_job_keeps_the_stored_original_of_a_re_encoded_track(tmp_path, m
     assert _packets(outcome.restored_path, "a") == lib["audio"]
 
 
-def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
+def test_a_revert_forgets_every_answer_given_for_the_file(lib):
     """
-    Answers stored while the file was processed are keyed to the processed
-    layout. A revert puts the dropped English audio back in front of the
-    French, so left as they were, the French track's answer would land on
-    the English one. _apply carries them back through the manifest instead:
-    processed_index is where each original stream sat in the processed file,
-    and the restore writes the streams back in manifest order, so each one's
-    own index is where it is now.
+    Answers and confirmations stored while the file was processed are all
+    forgotten, so each question the restored file raises is asked again: a
+    user who reverts has most likely seen Remuxarr do something they did
+    not want. A revert used to carry the answers back to the tracks they
+    were given for, and the next scan applied them again without asking.
 
-    Real capture, restore and probe, so the manifest indices are the ones a
-    real job records. The Track rows a job's _finish_job would have written
-    are taken from a probe of the processed file.
+    Real capture, restore and probe. The Track rows a job's _finish_job
+    would have written are taken from a probe of the processed file, and
+    the answers are keyed to them as a scan stores them.
     """
     import json
 
     from app.core.probe import extract_tracks, probe_file
-    from app.core.scanner import (_track_to_dict, descriptors_by_stream,
-                                  replace_track_rows, resolve_track_answers)
-    from app.database.models import MediaFile, Track
+    from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
+                                  descriptors_by_stream, replace_track_rows)
+    from app.database.models import MediaFile
 
     # Drop the English audio: the processed file is video, fre, ger subtitle.
     _run_job(lib, ["-map", "0:0", "-map", "0:2", "-map", "0:3", "-c", "copy"], job_id=1)
 
     db = lib["db"]
     processed = extract_tracks(probe_file(str(lib["path"])))
-    assert [(td["stream_index"], td["language"]) for td in processed][1:] == [(1, "fre"), (2, "ger")]
     keys = descriptors_by_stream(processed)
     media = db.get(MediaFile, lib["media"].id)
-    # Written the way _finish_job writes them. Unpacked straight into Track,
-    # the probe's dict fails on any key no column holds (handler_name).
     replace_track_rows(db, media.id, processed)
     media.audio_language_overrides = json.dumps({keys[1]: "ita"})
     media.subtitle_overrides = json.dumps({keys[2]: "keep"})
+    media.subtitle_language_overrides = json.dumps({keys[2]: "ger"})
+    for attr in CONFIRMATION_COLUMNS:
+        setattr(media, attr, True)
     db.commit()
 
     outcome = _revert(lib)
@@ -1874,10 +1870,9 @@ def test_answers_go_back_to_the_tracks_they_were_given_for(lib):
 
     db.expire_all()
     media = db.get(MediaFile, lib["media"].id)
-    restored = [_track_to_dict(t) for t in db.query(Track).filter(Track.file_id == media.id)]
-    assert resolve_track_answers(json.loads(media.audio_language_overrides), restored) == {2: "ita"}, (
-        "the French track's answer is on another track after the revert")
-    assert resolve_track_answers(json.loads(media.subtitle_overrides), restored) == {3: "keep"}
+    assert {a: getattr(media, a) for a in ANSWER_COLUMNS} == dict.fromkeys(ANSWER_COLUMNS)
+    assert {a: getattr(media, a) for a in CONFIRMATION_COLUMNS} == dict.fromkeys(
+        CONFIRMATION_COLUMNS, False)
 
 
 # ── An MP4's fast-start layout ───────────────────────────────────────────────

@@ -297,12 +297,10 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     are correct; a bookkeeping failure is fixed by the next full rescan
     and must not be reported to the user as a failed revert.
     """
-    from app.core.scanner import (ANSWER_COLUMNS, _delete_media_file_and_related,
-                                  _track_to_dict, clear_media_answers,
-                                  rekey_language_flags, rekey_media_answers,
-                                  replace_track_rows)
+    from app.core.scanner import (_delete_media_file_and_related, forget_answers,
+                                  rekey_language_flags, replace_track_rows)
     from app.database.models import (AudioLanguageFlag, MediaFile, RevertPoint,
-                                      SubtitleLanguageFlag, Track)
+                                      SubtitleLanguageFlag)
 
     media = db.get(MediaFile, plan.file_id)
     if media is None:
@@ -368,46 +366,44 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     media.status = "unprocessed"
     media.last_processed = None
 
+    # Every answer and confirmation stored for the file is forgotten, so
+    # each question the restored file raises is asked again. A user who
+    # reverts has most likely seen Remuxarr do something they did not want,
+    # and the answers are part of what decided it: carried back, they made
+    # the next scan do the same again without asking (an answer on a track
+    # the job kept), and the only way out was Ask again. Done before the
+    # probe, so a restored file that cannot be read is no exception.
+    forget_answers(media, "reverted")
+
     try:
         probe_data = probe_file(restored_path, app_settings.FFPROBE_PATH)
         fmt_info = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)
 
-        # Carried back before the rows below are replaced, for the reason a
-        # job carries them forward (see rekey_track_answers). The manifest
-        # already says where each original stream sat in the processed file:
-        # processed_index is kept current across every job a point is
+        # The Language Review questions still open are moved to where their
+        # tracks now sit, before the rows below are replaced, for the reason
+        # rekey_language_flags gives: a question left at its processed
+        # position named whichever track the revert put there, a dropped
+        # French track coming back in front of the untagged one it was
+        # asked about, say. They are questions, not answers, so they stay.
+        # The manifest says where each original stream sat in the processed
+        # file: processed_index is kept current across every job a point is
         # extended over, and the restore writes the streams back in manifest
-        # order, so each one's own index is where it now sits. A stream the
-        # revert brought back from the sidecar had no track to answer for in
-        # the processed file, so its question is asked again.
-        #
-        # The Language Review questions are moved by the same mapping, for
-        # the reason rekey_language_flags gives: a question left at its
-        # processed position named whichever track the revert put there, a
-        # dropped French track coming back in front of the untagged one it
-        # was asked about, say. Nothing is marked extracted, as a revert
-        # extracts nothing; an extracted subtitle's question loses its row
-        # if the revert removed its sidecar (_remove_created_files runs
-        # first), since the subtitle is back in the file and the next scan
-        # asks about it there.
-        has_answers = any(getattr(media, a) for a in ANSWER_COLUMNS)
-        has_flags = any(
+        # order, so each one's own index is where it now sits. Nothing is
+        # marked extracted, as a revert extracts nothing; an extracted
+        # subtitle's question loses its row if the revert removed its
+        # sidecar (_remove_created_files runs first), since the subtitle is
+        # back in the file and the next scan asks about it there.
+        if any(
             db.query(Flag.id).filter(Flag.file_id == media.id).first()
             for Flag in (AudioLanguageFlag, SubtitleLanguageFlag)
-        )
-        if has_answers or has_flags:
-            before = [_track_to_dict(t) for t in
-                      db.query(Track).filter(Track.file_id == media.id)]
+        ):
             mapping = {
                 stream["processed_index"]: stream["index"]
                 for stream in plan.manifest.get("streams", [])
                 if stream.get("processed_index") is not None
             }
-            if has_answers:
-                rekey_media_answers(media, before, track_list, mapping)
-            if has_flags:
-                rekey_language_flags(db, media.id, mapping, set())
+            rekey_language_flags(db, media.id, mapping, set())
 
         replace_track_rows(db, media.id, track_list)
 
@@ -425,7 +421,6 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
             "Post-revert track refresh failed for %s: %s — Track rows may be "
             "stale until the next full rescan", restored_path, exc,
         )
-        clear_media_answers(media, "the restored file could not be probed")
 
     # The point has been spent: the file is back to the original it
     # described, so there is nothing left to restore. Deleting by file_id
