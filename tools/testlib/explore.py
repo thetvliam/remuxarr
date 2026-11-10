@@ -162,10 +162,10 @@ IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
 # Losses the project has decided to accept, keyed by stream kind. Each is
 # listed in the report rather than counted as a finding, with where the
 # decision is written down.
-# A job whose audio copy failed is run again with every kept audio track
-# re-encoded to AAC, so those tracks no longer hold what they held.
-_AUDIO_RETRY = ("the corrupt-audio retry re-encodes every kept audio track to AAC: "
-                "app/core/worker.py, _make_audio_transcode_decision")
+# A job whose audio cannot be copied fails and leaves the file alone, as
+# nothing is re-encoded to get past it.
+_UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, "
+                     '"Nothing is ever re-encoded"; app/core/worker.py, _explain_failure')
 
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
@@ -570,6 +570,11 @@ def run_child(spec_path: str) -> None:
                                          "_output_name_taken"})
                     entry["refused"] = True
                     continue
+                if j.status == "failed" and error.startswith(worker.UNCOPYABLE_AUDIO):
+                    known.append({"file": rel(source), "lost": "job refused",
+                                  "why": _UNCOPYABLE_AUDIO})
+                    entry["refused"] = True
+                    continue
                 find(1, source, f"job {j.status}: {error[:300]}")
             done = [j for j in jobs if j.status == "success"]
             if not done:
@@ -587,16 +592,11 @@ def run_child(spec_path: str) -> None:
             entry["actions"] = [f"{a.action_type}:{a.stream_index}" for a in actions]
             entry["source"] = source
             entry["plan"] = _plan_of(actions)
-            # For check 3: the worker says when a job fell back to the
-            # corrupt-audio retry, which the stored plan does not show.
-            retried = any(rec["message"].startswith(f"Job {job.id} (")
-                          and "audio copy failed" in rec["message"]
-                          for rec in collect.records)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
                              cfg, canonical, allowed_changes, entry, several,
                              hashes_before.get(rel(source)),
-                             Path(spec["library"]) / rel(source), retried)
+                             Path(spec["library"]) / rel(source))
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -1383,7 +1383,7 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
                      before, after, cfg, canonical, allowed_changes, entry, several=False,
-                     source_holds=None, kept_copy=None, retried=False):
+                     source_holds=None, kept_copy=None):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -1456,8 +1456,8 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     ch_after = len(info_after.get("chapters") or [])
     if ch_before != ch_after:
         find(3, source, f"chapters {ch_before} -> {ch_after}")
-    _check_kept_content(find, known, lib, source, output, expected, info_before,
-                        info_after, source_holds, kept_copy, before, retried, entry)
+    _check_kept_content(find, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, entry)
 
     # 4. Languages as planned, matched in order within each kind.
     def lang(s):
@@ -1490,8 +1490,8 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
             find(5, source, f"empty sidecar {Path(p).name}")
 
 
-def _check_kept_content(find, known, lib, source, output, expected, info_before,
-                        info_after, source_holds, kept_copy, before, retried, entry):
+def _check_kept_content(find, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, entry):
     """
     Check 3's second half: every stream the job kept holds what it held.
 
@@ -1501,18 +1501,15 @@ def _check_kept_content(find, known, lib, source, output, expected, info_before,
     is left out: its positions say nothing.
 
     A job copies what it keeps, so packets are compared first. Where video
-    or audio differs:
-
-      - audio in a job the worker ran again with the corrupt-audio retry is
-        an accepted loss (_AUDIO_RETRY): it was re-encoded, on purpose;
-      - otherwise both are decoded, the source from the library the run
-        was given, as the job may have removed its own. The same frames
-        pass, and the stream is listed as repackaged. MPEG-TS into MP4
-        does this (the generated library's files 19 and 20): the MP4 muxer
-        stores H.264 with length prefixes where MPEG-TS has start codes
-        (ff_nal_parse_units, from mov_write_packet), and AAC without its
-        ADTS headers (aac_adtstoasc, added by mov_check_bitstream; both in
-        libavformat/movenc.c, FFmpeg 8.1).
+    or audio differs, both are decoded, the source from the library the
+    run was given, as the job may have removed its own. The same frames
+    pass, and the stream is listed as repackaged. MPEG-TS into MP4 does
+    this (the generated library's files 19 and 20): the MP4 muxer stores
+    H.264 with length prefixes where MPEG-TS has start codes
+    (ff_nal_parse_units, from mov_write_packet), and AAC without its ADTS
+    headers (aac_adtstoasc, added by mov_check_bitstream; both in
+    libavformat/movenc.c, FFmpeg 8.1). Anything else is a finding: nothing
+    in the pipeline re-encodes.
 
     Subtitles, covers and attachments must match as stored: the pipeline
     never converts a subtitle it keeps (a text subtitle MP4 cannot hold
@@ -1534,7 +1531,7 @@ def _check_kept_content(find, known, lib, source, output, expected, info_before,
                             sha(kept_copy) == before.get(Path(source).relative_to(lib).as_posix()))
         return pristine[0]
 
-    differing, repackaged, reencoded = [], [], 0
+    differing, repackaged = [], []
     for k in sorted({kk for kk, _ in expected}):
         kept = [s for kk, s in expected if kk == k]
         out = [s for s in info_after["streams"] if kind(s) == k]
@@ -1543,9 +1540,6 @@ def _check_kept_content(find, known, lib, source, output, expected, info_before,
         for src, dst in zip(kept, out):
             i, o = at_before[id(src)], at_after[id(dst)]
             if source_holds[i] == holds[o]:
-                continue
-            if k == "audio" and retried:
-                reencoded += 1
                 continue
             if k in ("video", "audio") and source_is_pristine():
                 was = decoded_hash(str(kept_copy), i)
@@ -1558,9 +1552,6 @@ def _check_kept_content(find, known, lib, source, output, expected, info_before,
                                          f"in {name}", "in the source"))
     if repackaged:
         entry.setdefault("repackaged", {})["job"] = sorted(repackaged)
-    if reencoded:
-        known.append({"file": Path(source).relative_to(lib).as_posix(),
-                      "lost": f"{reencoded} audio track(s) re-encoded", "why": _AUDIO_RETRY})
 
 
 # ── The parent: run the profiles, report ────────────────────────────────────

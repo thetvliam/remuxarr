@@ -211,7 +211,8 @@ an existing subtitle file a job replaced or moved stays that way after a
 revert, a job goes ahead without a revert point when capture reports one
 unavailable and Require Revert Point is off, an answer for a track a
 revert brings back from the sidecar is asked again, and a job whose audio
-copy failed is run again with its kept audio re-encoded to AAC. These are listed under "Accepted losses" with
+cannot be copied fails and leaves the file as it was, since nothing is
+re-encoded to get past it. These are listed under "Accepted losses" with
 where each decision is recorded, and do not count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down
 somewhere a reader can check.

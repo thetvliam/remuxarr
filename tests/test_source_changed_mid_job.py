@@ -36,7 +36,8 @@ re-evaluation skipped; the captured revert sidecar kept; the scan stamp not
 reset; the subtitle files this job extracted kept; and the original
 deleted after a conversion without checking it is still the file the job
 read. 19 applied, 19 killed, by this file and by the swap-hook tests in
-test_staging_hook.py, test_audio_transcode_retry.py and
+test_staging_hook.py, test_audio_transcode_retry.py (now
+test_uncopyable_audio.py) and
 test_source_file_preservation.py.
 
 A file gone before its job's turn came later and is covered under "Gone

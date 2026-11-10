@@ -387,39 +387,25 @@ def _pins(
     return pins
 
 
-def _unmatch_reencoded(
+def _keep_reencoded_lost(
     matches: list[tuple[dict, int | None]],
-    reencoded: frozenset[int],
-    *,
-    extend: bool,
 ) -> list[tuple[dict, int | None]]:
     """
-    Count a re-encoded track as lost, whatever the matching says.
+    Keep a track an older version re-encoded counted as lost, whatever the
+    matching says.
 
-    A job's corrupt-audio retry re-encodes every kept audio track to AAC
-    (worker._make_audio_transcode_decision). When the original was AAC
-    too, the re-encode has the same codec, channels and sample rate, so
-    matching pairs the two and nothing is stored — and a revert brings
-    back the lossy copy under the original's name. The bytes the original
-    had are only in the file this run was handed, so the track is lost
-    from the point of view of a revert, and stored from there.
-
-    reencoded holds input stream indices. On a first job that is the
-    manifest stream's own index; on a later one, the processed_index the
-    previous capture recorded against the file this job was handed.
-
-    Each such stream is marked "reencoded" in the manifest, and a marked
-    stream is never paired with a later file again. Otherwise the next job
-    would match its stored original against the file's re-encode, and
-    _reannotate would drop the stored copy in favour of the file's.
+    A job whose audio could not be copied used to be run again with every
+    kept audio track re-encoded to AAC, and capture marked each such stream
+    "reencoded" in the manifest and stored its original. Nothing re-encodes
+    now (worker._explain_failure), so the mark is no longer written, but a
+    revert point recorded then still carries it. When the original was AAC
+    too, the re-encode in the file has the same codec, channels and sample
+    rate, so matching would pair the two on the next job, and _reannotate
+    would drop the stored original in favour of the file's lossy copy. A
+    marked stream is never paired with a later file.
     """
-    out = []
-    for stream, index in matches:
-        source_index = stream.get("processed_index") if extend else stream.get("index")
-        if source_index is not None and source_index in reencoded:
-            stream["reencoded"] = True
-        out.append((stream, None if stream.get("reencoded") else index))
-    return out
+    return [(stream, None if stream.get("reencoded") else index)
+            for stream, index in matches]
 
 
 def _reannotate(
@@ -566,7 +552,6 @@ async def capture(
     job_id: int,
     app_cfg: dict,
     forge: bool = False,
-    reencoded: frozenset[int] = frozenset(),
     removed: frozenset[int] | None = None,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
@@ -575,9 +560,6 @@ async def capture(
     forge marks an AC3 Forge run rather than a queue job. It rewrites the
     file in place just as a job does, so it goes through here too; the flag
     only changes the sidecar's name and the log lines.
-
-    reencoded is the input stream indices this run re-encoded rather than
-    copied — see _unmatch_reencoded.
 
     removed is the input stream indices this run dropped or extracted. Given,
     each kept track is followed to where the job put it rather than matched
@@ -661,8 +643,8 @@ async def capture(
             else:
                 input_probe = original_probe
             pinned = _pins(manifest, input_probe, produced_probe, removed, extend=extend)
-        matches = _unmatch_reencoded(
-            match_streams(manifest, produced_probe, pinned), reencoded, extend=extend)
+        matches = _keep_reencoded_lost(
+            match_streams(manifest, produced_probe, pinned))
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.

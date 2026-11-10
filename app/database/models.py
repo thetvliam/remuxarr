@@ -344,8 +344,9 @@ class PlannedAction(Base):
                            nullable=False)
 
     order       = Column(Integer, default=0)
-    # copy_track | drop_track | transcode_track | change_container |
+    # copy_track | drop_track | change_container |
     # flag_manual_review | extract_subtitle | add_faststart
+    # (and transcode_track on rows an older version wrote)
     # The full ActionType literal in decision.py — scanner._queue_file writes
     # every action the decision produced, so any type added there lands here.
     action_type = Column(String, nullable=False)
@@ -680,10 +681,10 @@ class RevertPoint(Base):
     tracks — the database half of the recycle bin.
 
     The disk half is `sidecar_path`: a Matroska file holding only the
-    streams the job actually destroyed (dropped audio/subtitles, and the
-    pre-transcode original of any track the corrupt-audio retry path
-    re-encoded). Video is never stored, because it is never re-encoded —
-    that asymmetry is the whole reason this is affordable.
+    streams the job actually destroyed (dropped audio/subtitles; a point
+    from an older version can also hold the original of a track its
+    audio retry re-encoded). Video is never stored, because it is never
+    re-encoded — that asymmetry is the whole reason this is affordable.
 
     Why the manifest exists as well as the sidecar
     ----------------------------------------------

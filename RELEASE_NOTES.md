@@ -60,6 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- Remuxarr no longer re-encodes audio it cannot copy. When a file had a corrupt audio track, or audio with no timestamps (some older AVI files), the job was quietly run again with every audio track it kept re-encoded to AAC, including tracks that were fine, while the job's plan still said "copy". Such a job now fails, says that the audio cannot be copied, and leaves the file exactly as it was. Nothing in processing re-encodes any more; AC3 Forge, which you run yourself, is the only place a track is re-encoded. Files processed before this update keep the audio they were given.
+
 ## Fixed
 
 - With Fix Undefined Language for audio set to Always Fix, an untagged audio track is now judged by Keep Audio Languages as the language it is about to be tagged (Primary Language). It used to be kept for being untagged, tagged, and then removed by the next scan when Primary Language was not in the list, so the file was processed twice. Kept that way, it could also leave a file with only that track: when no tagged track was in the list and Keep Default Audio was off, every tagged track was dropped, a film's main audio included, and an untagged director's commentary was what remained. Now the first audio track is kept as a last resort instead, as it is for any file where nothing else would be.

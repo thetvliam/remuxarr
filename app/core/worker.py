@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import replace as dc_replace
 from app.core.timeutil import utcnow
 
 from app.config import settings as app_settings
@@ -770,11 +769,11 @@ async def _after_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -
 def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
     """
     Return True if the error is specifically caused by corrupt audio frames
-    in a stream that was being copied (-c:a copy) rather than transcoded.
+    in a stream that was being copied.
 
     All four conditions must be present:
       "aost#"      — audio output stream (not vost# video, not sost# subtitle)
-      "/copy"      — the codec was copy, not a transcoder like aac or ac3
+      "/copy"      — the stream was being copied
       "error submitting a packet to the muxer" — the muxer rejected the packet
       "invalid data found" — the packet data itself is corrupt/malformed
 
@@ -782,15 +781,11 @@ def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
     trigger for:
       - Video errors (vost# not aost#)
       - Subtitle errors (sost# not aost#)
-      - Transcoding failures (show /aac or /ac3, not /copy)
       - Disk / permission errors (different error text entirely)
 
     Note: the subtitle encoding failure handler (_is_subtitle_encoding_failure)
     runs BEFORE this check in _run_job.  A subtitle-caused cascade that also
     produces an aost#/copy line is already caught there and never reaches here.
-
-    Safe to retry: the retry uses -c:a aac (no /copy), so even if the retry
-    also fails the error will not match this pattern, preventing any loop.
     """
     if not error:
         return False
@@ -805,35 +800,24 @@ def _is_corrupt_audio_copy_failure(error: str | None) -> bool:
 
 def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
     """
-    Sibling to _is_corrupt_audio_copy_failure above — same remediation
-    (retry with the audio transcoded instead of copied), but a genuinely
-    different root cause, so kept as a separate, narrowly-scoped function
-    rather than folded into that one's conditions, which specifically and
-    accurately claim to identify corrupt packet DATA — not this.
+    Sibling to _is_corrupt_audio_copy_failure above — the same outcome (the
+    audio cannot be copied), but a genuinely different root cause, so kept
+    as a separate, narrowly-scoped function rather than folded into that
+    one's conditions, which specifically and accurately claim to identify
+    corrupt packet DATA — not this.
 
     This one is source audio packets that simply have no usable timestamp
     at all — most often seen in older/non-standard AVI files, where the
     container itself doesn't reliably carry per-packet timing the way
     more modern formats do. A pure stream copy has nothing to preserve in
-    that case; transcoding sidesteps the problem entirely, since the
-    decoder generates fresh, internally-consistent timestamps of its own
-    rather than needing to trust absent source ones. Confirmed via
-    verified reports that -fflags +genpts is NOT a reliable fix for this
-    specific error text — including an FFmpeg maintainer's own
-    acknowledgment that this class of H.264/timestamp issue is a known,
-    difficult-to-fix deficiency — which is why this goes straight to the
-    transcode retry rather than trying a timestamp-generation flag first.
+    that case.
 
     All four conditions must be present:
       "aost#"      — audio output stream (not vost# video, not sost# subtitle)
-      "/copy"      — the codec was copy, not a transcoder like aac or ac3
+      "/copy"      — the stream was being copied
       "error submitting a packet to the muxer" — the muxer rejected the packet
       "can't write packet with unknown timestamp" — the specific reason:
         no usable timestamp, not corrupt data (that's the sibling function)
-
-    Safe to retry for the same reason as the sibling function: the retry
-    uses -c:a aac (no /copy), so even if the retry also fails, the error
-    will not match this pattern either, preventing any loop.
     """
     if not error:
         return False
@@ -846,68 +830,41 @@ def _is_unknown_timestamp_audio_failure(error: str | None) -> bool:
     )
 
 
-def _needs_audio_transcode_retry(result) -> bool:
+# What a job that hit audio it cannot copy is recorded as failing with. The
+# testlib explorer reads the first sentence to tell this refusal from any
+# other failure (tools/testlib/explore.py).
+UNCOPYABLE_AUDIO = (
+    "The audio in this file cannot be copied without re-encoding it, and "
+    "Remuxarr does not re-encode audio. The file has been left as it was."
+)
+
+
+def _explain_failure(error: str | None) -> str | None:
     """
-    True when a failed FFmpeg attempt should be retried with AAC
-    transcoding instead of a plain audio copy — either genuinely corrupt
-    source packet data, or source packets with no usable timestamp at
-    all (common in older/non-standard AVI files); same remediation
-    either way.
+    The error a failed job is recorded with: FFmpeg's own, or, for audio
+    that cannot be copied, a plain statement of that in front of it.
 
-    Previously this exact predicate (result.success check plus both
-    _is_corrupt_audio_copy_failure / _is_unknown_timestamp_audio_failure
-    checks) was duplicated identically across _run_job's combined-pass
-    and two-pass branches. Only the predicate is hoisted here — the
-    actual retry call, log wording, and _make_audio_transcode_decision
-    rebuild stay inline at each call site deliberately: the two branches
-    call genuinely different underlying functions with different return
-    shapes (execute_ffmpeg_combined returns a tuple, execute_ffmpeg
-    doesn't), and the log wording usefully distinguishes which of the
-    two retry paths actually fired.
+    Such a job used to be run again with every kept audio track re-encoded
+    to AAC. That was the one place the pipeline re-encoded anything, against
+    what the README promises; it re-encoded every kept audio track, not
+    only the one FFmpeg had refused; and the plan the job showed still said
+    "copy". Now the job fails, the source untouched as after any failure,
+    and says why. FFmpeg's text is kept after the explanation, since it
+    names the stream.
     """
-    return not result.success and (
-        _is_corrupt_audio_copy_failure(result.error)
-        or _is_unknown_timestamp_audio_failure(result.error)
-    )
-
-
-def _reencoded_indices(decision: ProcessingDecision) -> set[int]:
-    """The input streams a decision re-encodes rather than copies."""
-    return {a.stream_index for a in decision.actions
-            if a.action_type == "transcode_track"}
+    if _is_corrupt_audio_copy_failure(error):
+        why = "An audio track has corrupt frames."
+    elif _is_unknown_timestamp_audio_failure(error):
+        why = "An audio track has packets with no timestamps."
+    else:
+        return error
+    return f"{UNCOPYABLE_AUDIO} {why}\n\nFFmpeg: {error}"
 
 
 def _removed_indices(decision: ProcessingDecision) -> set[int]:
     """The input streams a decision leaves out of the output file."""
     return {a.stream_index for a in decision.actions
             if a.action_type in ("drop_track", "extract_subtitle")}
-
-
-def _make_audio_transcode_decision(decision: ProcessingDecision) -> ProcessingDecision:
-    """
-    Return a copy of the decision where every audio copy_track action is
-    replaced with a transcode_track action targeting AAC.
-
-    output_codec_options is intentionally left empty so build_ffmpeg_command
-    does NOT emit a -ac:N channel-count override — this preserves the source
-    channel layout (stereo stays stereo, 5.1 stays 5.1) rather than forcing
-    a fixed count.  The existing AAC-5.1→AC3 transcode uses
-    output_codec_options={"b:a": "640k", "ac": "6"} specifically to force 5.1;
-    that path is unaffected by this function.
-    """
-    new_actions = [
-        dc_replace(
-            a,
-            action_type  = "transcode_track",
-            description  = f"{a.description} → re-encoded AAC (corrupt source frames)",
-            output_codec = "aac",
-            output_codec_options = {},
-        )
-        if (a.action_type == "copy_track" and a.track_type == "audio")
-        else a
-        for a in decision.actions
-    ]
-    return dc_replace(decision, actions=new_actions)
 
 
 def _is_subtitle_encoding_failure(error: str | None) -> bool:
@@ -1395,35 +1352,22 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
     will_create = _files_the_job_will_create(extract_actions)
 
-    # Which input streams the run now executing re-encodes rather than
-    # copies, for capture: a re-encode can look exactly like the original
-    # (AAC to AAC) and must still be stored. Set from the decision each run
-    # uses — the first attempt's, then the corrupt-audio retry's.
-    reencoded_by_this_run: set[int] = _reencoded_indices(decision)
-    # And which it removes, so capture follows each kept track to where the
-    # job put it instead of matching it by metadata the job may have just
-    # rewritten. See revert_capture._pins. The same for every run: the
-    # corrupt-audio retry's decision turns copies into transcodes and
-    # removes nothing the first did not (_make_audio_transcode_decision).
+    # Which input streams the job removes, so capture follows each kept
+    # track to where the job put it instead of matching it by metadata the
+    # job may have just rewritten. See revert_capture._pins.
     removed_by_this_run = frozenset(_removed_indices(decision))
 
     async def on_before_staging(produced_path: str) -> str | None:
         # Cleared BEFORE capturing, not after.
         #
-        # The corrupt-audio path re-runs the whole command, so the hook can
-        # fire more than once per job, and anything an earlier attempt left
-        # behind has no row and must not accumulate. Doing that afterwards
-        # looked equivalent and was not: sidecar_path_for is deterministic
-        # on (file_id, job_id), both unchanged across a retry, so the
-        # "stale" path is the same path the capture above just wrote. It
-        # would have deleted the new sidecar and then recorded a row
-        # pointing at nothing.
-        #
-        # Unreachable as the retry conditions currently stand — the hook
-        # only runs after the subprocess exits 0, while the retry needs
-        # stderr that only appears on a non-zero exit — but this is
-        # defensive code for the double-fire case, and it did not work for
-        # the double-fire case.
+        # Each job runs its command once, so the hook fires once. Should a
+        # job ever run it again, anything an earlier attempt left behind
+        # has no row and must not accumulate. Doing that afterwards looked
+        # equivalent and was not: sidecar_path_for is deterministic on
+        # (file_id, job_id), both unchanged across attempts, so the "stale"
+        # path is the same path the capture above just wrote. It would
+        # have deleted the new sidecar and then recorded a row pointing at
+        # nothing.
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
         captured.clear()
@@ -1443,7 +1387,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             file_id       = file_dict["id"],
             job_id        = job_id,
             app_cfg       = app_cfg,
-            reencoded     = frozenset(reencoded_by_this_run),
             removed       = removed_by_this_run,
         )
         if result:
@@ -1495,37 +1438,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 )
                 return
 
-            if _needs_audio_transcode_retry(result):
-                # Two distinct root causes land here — genuinely corrupt
-                # packet data, or source packets with no usable timestamp
-                # at all (common in older/non-standard AVI files) — but
-                # the same fix resolves both: retry the combined pass with
-                # AAC transcoding for all audio tracks instead of copying
-                # them, since transcoding generates fresh timestamps of
-                # its own regardless of which problem the source had.
-                logger.warning(
-                    "Job %d (%s): audio copy failed (corrupt frames or "
-                    "unusable source timestamps) — retrying combined pass "
-                    "with AAC transcoding",
-                    job_id, file_dict["path"],
-                )
-                retry_decision = _make_audio_transcode_decision(decision)
-                reencoded_by_this_run.clear()
-                reencoded_by_this_run.update(_reencoded_indices(retry_decision))
-                result, _ = await execute_ffmpeg_combined(
-                    input_path           = input_path,
-                    output_path          = output_path,
-                    decision             = retry_decision,
-                    all_tracks           = tracks,
-                    subtitle_extractions = subtitle_pairs,
-                    job_id               = job_id,
-                    progress_callback    = on_progress,
-                    timeout_seconds      = timeout_seconds,
-                    before_staging       = on_before_staging,
-                    before_swap          = on_before_swap,
-                    on_swap_ready        = on_swap_ready,
-                )
-
             # All-or-nothing staging: result.success now guarantees every
             # extracted .srt landed alongside the main file (per-SRT
             # logging happens inside execute_ffmpeg_combined). A missing
@@ -1576,8 +1488,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                     "progress": 0.0, "current_action": label, "speed": "",
                 })
                 # Each extraction gets the full timeout, as each FFmpeg
-                # command in this function does — the corrupt-audio retry
-                # gets a fresh one too. A timeout here is a hard failure:
+                # command in this function does. A timeout here is a hard failure:
                 # its message matches none of the encoding patterns below.
                 async def room_for_this_one(path=action.external_path) -> str | None:
                     return stop_if_changed() or make_room([path])
@@ -1650,29 +1561,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 before_swap       = on_before_swap,
                 on_swap_ready     = on_swap_ready,
             )
-
-            if _needs_audio_transcode_retry(result):
-                logger.warning(
-                    "Job %d (%s): audio copy failed (corrupt frames or "
-                    "unusable source timestamps) — retrying with AAC "
-                    "transcoding",
-                    job_id, file_dict["path"],
-                )
-                retry_decision = _make_audio_transcode_decision(decision)
-                reencoded_by_this_run.clear()
-                reencoded_by_this_run.update(_reencoded_indices(retry_decision))
-                result = await execute_ffmpeg(
-                    input_path        = input_path,
-                    output_path       = output_path,
-                    decision          = retry_decision,
-                    all_tracks        = tracks,
-                    job_id            = job_id,
-                    progress_callback = on_progress,
-                    timeout_seconds   = timeout_seconds,
-                    before_staging    = on_before_staging,
-                    before_swap       = on_before_swap,
-                    on_swap_ready     = on_swap_ready,
-                )
 
     except asyncio.CancelledError:
         # Aborted, or cut off by a clean stop and put back in the queue.
@@ -1757,8 +1645,16 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         for stale in captured:
             delete_sidecar(stale.sidecar_path)
         undo_own_files()
+        if _explain_failure(result.error) != result.error:
+            logger.warning(
+                "Job %d (%s): the audio cannot be copied (corrupt frames or "
+                "packets with no timestamps), and is not re-encoded; the "
+                "file is left as it was",
+                job_id, file_dict["path"],
+            )
         await loop.run_in_executor(
-            None, _finish_job, job_id, False, None, None, result.error
+            None, _finish_job, job_id, False, None, None,
+            _explain_failure(result.error),
         )
 
 # ── Sync DB helpers (run in thread executor) ───────────────────────────────────

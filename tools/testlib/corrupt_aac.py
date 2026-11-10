@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Plant corrupt AAC packets in an existing MKV/MP4 so a *stream copy* of its
-audio fails inside the muxer, the way Remuxarr's corrupt-audio retry expects:
+audio fails inside the muxer, with the error Remuxarr reads as audio that
+cannot be copied (worker._is_corrupt_audio_copy_failure):
 
   [aost#0:1/copy @ ...] Error submitting a packet to the muxer:
                         Invalid data found when processing input
@@ -13,8 +14,8 @@ has an invalid ADTS header. So: overwrite the start of the first audio
 packet with a valid ADTS header, and the start of a later one with an
 invalid header (sample-rate index 15). Packet sizes don't change, so the
 container stays structurally valid and ffprobe still reads it normally;
-only the bytes of those two audio frames are damaged, which a re-encode
-(the retry path) decodes past with a warning.
+only the bytes of those two audio frames are damaged, which a decoder gets
+past with a warning.
 
 Works on MP4/MOV/M4V input only: there ffprobe's packet "pos" is the exact
 byte offset of the sample. (Matroska's is the start of the block element,

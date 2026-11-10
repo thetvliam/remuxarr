@@ -119,15 +119,13 @@ extended point taking the processed file's tags. The restore's explicit
 already stops the global copy, so removing it is equivalent today, and it
 is there so the restore does not depend on that side effect.
 
-The re-encoded-audio tests at the end came with capture's reencoded
-argument. Mutants run against the suite as it stood first, all surviving
-it, all killed now: capture ignoring the set, the "reencoded" marker not
-written, the marker ignored by a later job, and a later job looking the
-track up by its original index rather than its processed_index. The two
-retry sites passing nothing are killed in test_audio_transcode_retry.
-The marker test first kept a French track beside the English, and the
-look-alike rule from revert._pair_pass then stored both anyway, so the
-marker mutants survived it; it now has one audio track, paired one to one.
+The re-encoded-audio test at the end is what is left of the audio retry,
+which re-encoded audio a job could not copy and has been removed
+(worker._explain_failure). A revert point recorded then marks each such
+track "reencoded", and a later job must still leave the mark alone. The
+test has one audio track, paired one to one: with a French track beside
+the English, the look-alike rule from revert._pair_pass stores both
+anyway, and ignoring the mark goes unnoticed.
 
 test_answers_go_back_to_the_tracks_they_were_given_for came with carrying
 stored answers through a revert. Its three mutants, recorded in
@@ -220,7 +218,7 @@ def lib(tmp_path, monkeypatch):
             "tmp": tmp_path, "pristine": _summarise(path)}
 
 
-def _run_job(lib, ffmpeg_args, *, job_id, extracts=None, reencoded=frozenset()):
+def _run_job(lib, ffmpeg_args, *, job_id, extracts=None):
     """
     Do to the file what a real job would, with capture in the same window:
     FFmpeg writes a temp output, capture runs while both files exist, then
@@ -242,7 +240,6 @@ def _run_job(lib, ffmpeg_args, *, job_id, extracts=None, reencoded=frozenset()):
         input_path=str(lib["path"]), produced_path=str(produced),
         file_id=lib["media"].id, job_id=job_id,
         app_cfg={"revert_enabled": True, "revert_require_point": False},
-        reencoded=reencoded,
     ))
     assert error is None, error
 
@@ -1709,46 +1706,60 @@ def test_a_point_from_before_tags_were_recorded_still_keeps_them(tmp_path, monke
     assert _file_tags(outcome.restored_path)["title"] == "My Film"
 
 
-# ── Audio a job had to re-encode ─────────────────────────────────────────────
+# ── A revert point from when a job could re-encode audio ─────────────────────
 #
-# A job's corrupt-audio retry re-encodes the kept audio to AAC. From AAC, the
-# re-encode has the same codec, channels and sample rate as the original, so
-# matching alone stored nothing and a revert put the lossy copy back. The
-# worker now tells capture which input streams the run re-encoded; these
-# simulate the retry by re-encoding in the job's own command and saying so.
-# Checked by packet hash: tags and codecs cannot tell the copies apart.
+# A job whose audio could not be copied used to be run again with the kept
+# audio re-encoded to AAC. From AAC, the re-encode has the same codec,
+# channels and sample rate as the original, so capture was told which
+# streams the run re-encoded, stored their originals, and marked them
+# "reencoded" in the manifest. Nothing re-encodes now, but a point recorded
+# then still has the mark, and a later job must not pair the stored
+# original with the file's re-encode. Checked by packet hash: tags and
+# codecs cannot tell the copies apart.
 
 _REENCODE_AUDIO = ["-c:v", "copy", "-c:a", "aac", "-b:a", "48k"]
 
 
-def test_audio_a_job_re_encoded_comes_back_as_the_original(tmp_path, monkeypatch):
-    lib = _library(tmp_path, monkeypatch, audio=[(440, "eng"), (880, "fre")])
+def _run_job_as_the_audio_retry_did(lib, ffmpeg_args, *, job_id, reencoded, monkeypatch):
+    """
+    _run_job, recording the point as the removed retry's capture did: each
+    original stream in `reencoded` marked, and counted as lost whatever the
+    matching says.
+    """
+    import app.core.revert_capture as capture_mod
 
-    # Keep the English, re-encoded; drop the French.
-    _run_job(lib, ["-map", "0:0", "-map", "0:1", *_REENCODE_AUDIO],
-             job_id=1, reencoded=frozenset({1}))
-    assert _packets(lib["path"], "a")[0] != lib["audio"][0], (
-        "the job did not actually re-encode"
-    )
+    real = capture_mod.match_streams
 
-    outcome = _revert(lib)
+    def marking(manifest, processed_probe, pinned=None):
+        matches = []
+        for stream, index in real(manifest, processed_probe, pinned):
+            if stream.get("index") in reencoded:
+                stream["reencoded"] = True
+                index = None
+            matches.append((stream, index))
+        return matches
 
-    assert outcome.success is True, outcome.error
-    assert _packets(outcome.restored_path, "a") == lib["audio"]
+    with monkeypatch.context() as m:
+        m.setattr(capture_mod, "match_streams", marking)
+        return _run_job(lib, ffmpeg_args, job_id=job_id)
 
 
 def test_a_later_job_keeps_the_stored_original_of_a_re_encoded_track(tmp_path, monkeypatch):
     """
-    The first job loses nothing but the re-encode, which is enough for a
-    revert point on its own. The second only re-tags. Matching then pairs
-    the stored English original with the file's re-encode — one of each,
-    nothing to make it doubt — and the rebuilt sidecar would drop the
-    original, unless the track stays marked as re-encoded.
+    The first job, an older version's, lost nothing but the re-encode,
+    which was enough for a revert point on its own. The second only
+    re-tags. Matching then pairs the stored English original with the
+    file's re-encode — one of each, nothing to make it doubt — and the
+    rebuilt sidecar would drop the original, unless the track stays marked
+    as re-encoded (revert_capture._keep_reencoded_lost).
     """
     lib = _library(tmp_path, monkeypatch, audio=[(440, "eng")])
 
-    _run_job(lib, ["-map", "0", *_REENCODE_AUDIO],
-             job_id=1, reencoded=frozenset({1}))
+    _run_job_as_the_audio_retry_did(lib, ["-map", "0", *_REENCODE_AUDIO], job_id=1,
+                                    reencoded={1}, monkeypatch=monkeypatch)
+    assert _packets(lib["path"], "a")[0] != lib["audio"][0], (
+        "the job did not actually re-encode"
+    )
     _run_job(lib, ["-map", "0", "-c", "copy",
                    "-metadata:s:a:0", "language=ger"], job_id=2)
 
@@ -1756,25 +1767,6 @@ def test_a_later_job_keeps_the_stored_original_of_a_re_encoded_track(tmp_path, m
 
     assert outcome.success is True, outcome.error
     assert _packets(outcome.restored_path, "a") == lib["audio"]
-
-
-def test_a_re_encode_in_a_later_job_finds_its_track_by_the_files_index(tmp_path, monkeypatch):
-    """
-    The first job drops the French, so the English moves from index 2 to 1.
-    The second job re-encodes it — input stream 1 of the file it was handed,
-    which is the English's processed_index, not its original index.
-    """
-    lib = _library(tmp_path, monkeypatch, audio=[(880, "fre"), (440, "eng")])
-
-    _run_job(lib, ["-map", "0:0", "-map", "0:2", "-c", "copy"], job_id=1)
-    _run_job(lib, ["-map", "0", *_REENCODE_AUDIO],
-             job_id=2, reencoded=frozenset({1}))
-
-    outcome = _revert(lib)
-
-    assert outcome.success is True, outcome.error
-    assert _packets(outcome.restored_path, "a") == lib["audio"]
-
 
 
 def test_answers_go_back_to_the_tracks_they_were_given_for(lib):

@@ -183,8 +183,7 @@ def build_ffmpeg_command(
     Strategy
     --------
     • All video streams  → always mapped, always copy
-    • Kept audio streams → copy, OR transcode (only ever via the
-      corrupt-audio retry path — worker.py's _make_audio_transcode_decision)
+    • Kept audio streams → copy
     • Kept sub streams   → copy (subtitles being extracted to external SRT,
       or dropped entirely, are excluded from the map list)
     • -progress pipe:1   → structured key=value progress on stdout
@@ -197,16 +196,6 @@ def build_ffmpeg_command(
     # muxed output entirely — treat them the same as "dropped" for mapping.
     extracted = {
         a.stream_index for a in decision.actions if a.action_type == "extract_subtitle"
-    }
-    # transcode_track actions only ever come from worker.py's corrupt-audio
-    # retry path (_make_audio_transcode_decision) — re-encoding audio when
-    # a lossless copy failed because the source frames themselves are
-    # corrupt. decision.py's own normal path never produces this directly;
-    # there's no setting that does anymore.
-    transcode_map = {
-        a.stream_index: a
-        for a in decision.actions
-        if a.action_type == "transcode_track"
     }
     # Tracks whose language metadata should be overwritten — set by
     # decision.py's language-fix pass when fix_undefined_language is enabled.
@@ -254,16 +243,7 @@ def build_ffmpeg_command(
     for out_idx, t in enumerate(kept_audio):
         si = t["stream_index"]
         cmd += ["-map", f"0:{si}"]
-        action = transcode_map.get(si)
-        if action and action.track_type == "audio":
-            cmd += [f"-c:a:{out_idx}", action.output_codec]
-            for opt_k, opt_v in action.output_codec_options.items():
-                # e.g. -ac:0 6 — used by the corrupt-audio retry path when
-                # it needs to force a specific channel count; normally
-                # empty, which preserves the source's own channel layout.
-                cmd += [f"-{opt_k}:{out_idx}", str(opt_v)]
-        else:
-            cmd += [f"-c:a:{out_idx}", "copy"]
+        cmd += [f"-c:a:{out_idx}", "copy"]
         if si in language_map:
             cmd += [f"-metadata:s:a:{out_idx}", f"language={language_map[si]}"]
         cmd += title_of(t, f"a:{out_idx}")
@@ -1463,13 +1443,8 @@ async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str 
 
 
 def _describe_action(decision: ProcessingDecision) -> str:
-    # has_transcode is only ever true here via worker.py's corrupt-audio
-    # retry path — there's no setting that produces this on a normal pass.
-    has_transcode  = any(a.action_type == "transcode_track" for a in decision.actions)
     has_container  = any(a.action_type == "change_container" for a in decision.actions)
     has_faststart  = any(a.action_type == "add_faststart" for a in decision.actions)
-    if has_transcode:
-        return "Re-encoding audio (recovering from corrupt source frames)"
     if has_container:
         return "Remuxing to MP4"
     if has_faststart:

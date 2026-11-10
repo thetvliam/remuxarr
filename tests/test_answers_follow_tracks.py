@@ -45,8 +45,8 @@ another module is named:
   • The job's removals ignored when pairing  → the reported cases
   • An extracted subtitle counted as kept    → test_job_finalisation.py
   • Tracks paired across types               → paired within their type
-  • The new key read from the source track   → reencoded, and the
-                                               reported cases
+  • The new key read from the source track   → changed descriptor, and
+                                               the reported cases
   • The count guard removed                  → count does not add up
   • Each of the three columns left out of
     the re-key, one mutant each              → test_job_finalisation.py
@@ -200,10 +200,12 @@ def test_tracks_are_paired_within_their_type():
     assert resolve_track_answers(carried, output) == {1: "jpn", 2: "keep"}
 
 
-def test_a_reencoded_track_keeps_its_answer():
+def test_a_track_whose_descriptor_changed_keeps_its_answer():
     """
-    The corrupt-audio retry re-encodes to AAC, which changes the codec in the
-    descriptor. The new key has to come from the output, not the source.
+    A kept track need not read the same in the output as in the source.
+    Here the codec differs, as it did when a job could re-encode audio it
+    was unable to copy. The new key has to come from the output, not the
+    source.
     """
     source = [t(0, "video", "h264", "und"),
               t(1, "audio", "eac3", "und", channels=6, layout="5.1(side)")]

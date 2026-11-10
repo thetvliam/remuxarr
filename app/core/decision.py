@@ -93,8 +93,12 @@ SRT_CONVERTIBLE_SUBS = frozenset({
 })
 
 
+# No type re-encodes a track: the pipeline copies what it keeps. A job run
+# by an older version can still show a "transcode_track" action in History,
+# from the AAC 5.1 to AC3 setting the pipeline once had, which is why the
+# frontend keeps a badge for it.
 ActionType = Literal[
-    "copy_track", "drop_track", "transcode_track",
+    "copy_track", "drop_track",
     "change_container", "flag_manual_review", "extract_subtitle",
     "add_faststart",
 ]
@@ -109,13 +113,6 @@ class Action:
     track_type:   str | None = None
     stream_index: int | None = None
     order:        int = 0
-    # Extra fields for transcode_track actions — currently only ever
-    # populated by worker._make_audio_transcode_decision's corrupt-source-
-    # audio retry path (transcodes to AAC), not by analyze_file itself.
-    # Not tied to any specific codec pairing; whichever retry path sets
-    # these determines the actual target.
-    output_codec:         str | None = None
-    output_codec_options: dict       = field(default_factory=dict)
     # Extra fields for extract_subtitle actions
     external_path: str | None = None
     language:      str | None = None
@@ -1295,7 +1292,7 @@ def analyze_file(
             # to be resolved here, before the path is built.
             #
             # It previously was not. _apply_language_override_pass only
-            # rewrites copy_track/transcode_track actions, and an extracted
+            # rewrites copy_track actions, and an extracted
             # subtitle is neither, so the override was skipped as a "no-op,
             # the correct and safe outcome". That reasoning holds for a
             # DROPPED track — there is nothing left to tag — but not for an
@@ -1429,7 +1426,7 @@ def analyze_file(
 
     # ── Language fix pass ─────────────────────────────────────────────────
     # Runs after all track decisions are finalised so we only tag tracks
-    # that are actually being kept (copy_track or transcode_track).
+    # that are actually being kept (copy_track).
     # Video tracks are intentionally skipped — players don't use video
     # language tags for track selection.
     has_language_fix    = False   # overall flag — either pass counts for should_process
@@ -1514,9 +1511,7 @@ def analyze_file(
                 if (
                     action.track_type == track_type
                     and action.stream_index in qualifying
-                    and action.action_type in (
-                        "copy_track", "transcode_track", "extract_subtitle",
-                    )
+                    and action.action_type in ("copy_track", "extract_subtitle")
                 ):
                     # A track with an already-pending override (the user
                     # already resolved this via Apply, possibly before a
@@ -1668,13 +1663,6 @@ def analyze_file(
         has_language_fix = True
 
     # ── Is there anything to do? ───────────────────────────────────────────
-    # NOTE: no has_transcode term here. analyze_file never emits a
-    # transcode_track action — the only creator is
-    # worker._make_audio_transcode_decision, which runs on a COPY of the
-    # decision at retry time, after this function has returned. So
-    # `any(... == "transcode_track" ...)` is always False on `actions`
-    # here and contributed nothing to this OR (it was previously computed
-    # and included anyway, its own comment admitting it's always False).
     has_drops       = any(a.action_type == "drop_track" for a in actions)
     has_container   = any(a.action_type == "change_container" for a in actions)
     has_extract     = any(a.action_type == "extract_subtitle" for a in actions)
@@ -1720,15 +1708,6 @@ def analyze_file(
                       if a.action_type == "drop_track" and a.track_type == "subtitle")
         if n_audio: parts.append(f"Remove {n_audio} audio track{'s' if n_audio > 1 else ''}")
         if n_sub:   parts.append(f"Remove {n_sub} subtitle track{'s' if n_sub > 1 else ''}")
-    # NOTE: no reason-string branch for transcode here — analyze_file
-    # never produces a transcode_track action (the only creator is
-    # worker._make_audio_transcode_decision, on a COPY at retry time,
-    # after this function returns). A "Transcode AAC 5.1 → AC3 5.1"
-    # branch here was unreachable dead code for a feature that no longer
-    # exists (the AAC 5.1 → AC3 setting was removed earlier this
-    # project). The has_transcode flag it once shared with the
-    # anything-to-do check above was removed there too, for the same
-    # always-False reason.
     if has_container:
         parts.append(f"Convert {current_container.upper()} → MP4")
     if has_extract:
@@ -1783,15 +1762,15 @@ def _apply_language_override_pass(
     docstring on ProcessingDecision for why there's no defined-but-wrong
     subtitle case the way there is for audio.
 
-    Only ever applies to a track that's still present as copy/transcode
-    at this point. The `action_type in ("copy_track", "transcode_track")`
+    Only ever applies to a track that's still present as a copy
+    at this point. The `action_type == "copy_track"`
     guard below is what enforces this: a track that got dropped
     (drop_track action) or extracted to an external .srt
-    (extract_subtitle action) simply isn't copy/transcode, so it's
+    (extract_subtitle action) simply isn't a copy, so it's
     skipped — a no-op for it, the correct and safe outcome rather than an
     error. (A previous explicit `stream_index not in dropped_si` set was
     redundant with this guard — a stream has exactly one action, so a
-    dropped stream can never also be copy/transcode — and was removed.)
+    dropped stream can never also be a copy — and was removed.)
 
     Compares the override against each track's real, current language
     (current_language_by_stream, derived from the source file via
@@ -1818,7 +1797,7 @@ def _apply_language_override_pass(
         if (
             action.track_type == track_type
             and action.stream_index in overrides
-            and action.action_type in ("copy_track", "transcode_track")
+            and action.action_type == "copy_track"
             and current_language_by_stream.get(action.stream_index) != override_lang
         ):
             # Named in the plan, as the undefined-tag pass names its tag:
