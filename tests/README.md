@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2445 tests across 113 test files, plus 775 frontend tests under
+2457 tests across 114 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -130,7 +130,8 @@ acts on it.
 **FFmpeg and staging** — `test_ffmpeg_command.py`,
 `test_source_file_preservation.py`, `test_forge_and_staging.py`,
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
-`test_uncopyable_audio.py`, `test_subtitle_extraction_routing.py`,
+`test_uncopyable_audio.py`, `test_uncopyable_audio_rescan.py`,
+`test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
 `test_existing_subtitle_files.py`, `test_timeout_logging.py`,
@@ -159,7 +160,9 @@ frames, or packets with no timestamps): the job fails once, in both execution
 branches, with a plain explanation, and nothing is re-encoded. It used to be
 run again with the audio re-encoded to AAC. One test runs real FFmpeg on a
 file with a corrupt AAC packet, so the error the detector reads is FFmpeg's
-own. The last two are the two-pass
+own. `test_uncopyable_audio_rescan.py` covers the scan side: a full scan or
+re-check does not queue such a file again until the file or its plan changes,
+and Retry, Ask Again and a webhook still queue it. The last two are the two-pass
 and combined-pass halves of one question: which failed extraction is a decision
 for a human, and so goes to manual review, rather than a plain failure.
 `test_existing_subtitle_files.py` covers extracting a subtitle onto a name

@@ -62,7 +62,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Changed
 
-- Remuxarr no longer re-encodes audio it cannot copy. When a file had a corrupt audio track, or audio with no timestamps (some older AVI files), the job was quietly run again with every audio track it kept re-encoded to AAC, including tracks that were fine, while the job's plan still said "copy". Such a job now fails, says that the audio cannot be copied, and leaves the file exactly as it was. Nothing in processing re-encodes any more; AC3 Forge, which you run yourself, is the only place a track is re-encoded. Files processed before this update keep the audio they were given.
+- Remuxarr no longer re-encodes audio it cannot copy. When a file had a corrupt audio track, or audio with no timestamps (some older AVI files), the job was quietly run again with every audio track it kept re-encoded to AAC, including tracks that were fine, while the job's plan still said "copy". Such a job now fails, says that the audio cannot be copied, and leaves the file exactly as it was. A full scan or re-check does not queue the file again until the file or what Remuxarr would do to it changes; Retry in History still tries it. Nothing in processing re-encodes any more; AC3 Forge, which you run yourself, is the only place a track is re-encoded. Files processed before this update keep the audio they were given.
 
 ## Fixed
 

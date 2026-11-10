@@ -25,7 +25,8 @@ Each profile is checked against invariants instead:
   6. Nothing outside a processed file and its sidecars changes: files sent to
      review, skipped or excluded keep every byte.
   7. A full rescan afterwards queues nothing for a file that was processed
-     or had nothing to do.
+     or had nothing to do, or whose job failed because its audio cannot be
+     copied.
   8. No temp file is left behind, and the source is gone only when the
      container changed.
 
@@ -574,6 +575,7 @@ def run_child(spec_path: str) -> None:
                     known.append({"file": rel(source), "lost": "job refused",
                                   "why": _UNCOPYABLE_AUDIO})
                     entry["refused"] = True
+                    entry["uncopyable_audio"] = True
                     continue
                 find(1, source, f"job {j.status}: {error[:300]}")
             done = [j for j in jobs if j.status == "success"]
@@ -623,9 +625,13 @@ def run_child(spec_path: str) -> None:
 
     # 7. A full rescan queues nothing for a file that was processed or had
     # nothing to do. A failed job is left out: a full scan decides every
-    # file again, so it queues a failed one again, which is how it is retried.
+    # file again, so it queues a failed one again, which is how it is
+    # retried. Except a job that failed because its audio cannot be copied:
+    # it would only fail again, so a scan holds the file back
+    # (scanner._held_back).
     settled = {e["id"] for e in files
-               if e["jobs"] and e["jobs"][-1] in ("success", "skipped")}
+               if e["jobs"] and (e["jobs"][-1] in ("success", "skipped")
+                                 or e.get("uncopyable_audio"))}
     with S.SessionLocal() as db:
         known_jobs = {q.id for q in db.query(QueueItem)}
         rescan = scanner.scan_library(db, [str(lib)], force_probe=True)

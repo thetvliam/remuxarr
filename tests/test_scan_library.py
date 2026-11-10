@@ -175,9 +175,10 @@ def _record_processed(monkeypatch):
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
              sonarr_series_id=None, radarr_movie_id=None, recheck=False,
-             original_language=None):
+             original_language=None, from_scan=False):
         calls.append({"path": path, "force_probe": force_probe,
-                      "dry_run": dry_run, "recheck": recheck})
+                      "dry_run": dry_run, "recheck": recheck,
+                      "from_scan": from_scan})
 
     monkeypatch.setattr(sc, "_process_file", fake)
     return calls
@@ -464,7 +465,7 @@ def test_one_file_that_raises_does_not_end_the_scan(db, tmp_path,
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
              sonarr_series_id=None, radarr_movie_id=None, recheck=False,
-             original_language=None):
+             original_language=None, from_scan=False):
         seen.append(path)
         if os.path.basename(path) == "B.mkv":
             raise OSError("unreadable")
@@ -495,7 +496,7 @@ def _recording_fake(monkeypatch, first_file):
 
     def fake(db, path, app_cfg, force_probe, dry_run, stats,
              sonarr_series_id=None, radarr_movie_id=None, recheck=False,
-             original_language=None):
+             original_language=None, from_scan=False):
         seen.append(path)
         if len(seen) == 1:
             first_file(db, path)
@@ -621,6 +622,23 @@ def test_a_recheck_reaches_every_file(db, tmp_path, monkeypatch):
     scan_library(db, [lib])
 
     assert [c["recheck"] for c in calls] == [True, True, False, False]
+
+
+def test_every_kind_of_scan_says_it_is_one(db, tmp_path, monkeypatch):
+    """
+    Closes: scan_library not telling _process_file it is a scan. A file
+    whose audio cannot be copied would be queued again by every full scan
+    and re-check, to fail again (scanner._held_back).
+    """
+    _setting(db, "dry_run_mode", "false")
+    calls = _record_processed(monkeypatch)
+    lib = _library(tmp_path, "tv", "A.mkv")
+
+    scan_library(db, [lib])
+    scan_library(db, [lib], recheck=True)
+    scan_library(db, [lib], force_probe=True)
+
+    assert [c["from_scan"] for c in calls] == [True, True, True]
 
 
 # ── A job that renames a file while the scan that queued it is still going ───

@@ -107,7 +107,9 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
 6. Nothing outside a processed file and its sidecars changes.
 7. A full rescan queues nothing for a file that was processed or had
    nothing to do. A failed job is left out, since a full scan queues it
-   again as its retry.
+   again as its retry; except one that failed because its audio cannot be
+   copied, which would only fail again, so a scan holds the file back
+   until the file or its plan changes.
 8. No temp file is left behind, and the source is gone only when the
    container changed.
 

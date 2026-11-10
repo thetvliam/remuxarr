@@ -61,6 +61,7 @@ class ScanStats:
     errors:        int = 0
     removed:       int = 0   # records removed: file gone from disk, or now excluded
     excluded:      int = 0   # files the exclude settings passed over this scan
+    held:          int = 0   # not queued again: audio cannot be copied (_held_back)
     cancelled:     bool = False   # True if the scan was stopped early by the user
 
 
@@ -234,7 +235,7 @@ def scan_library(
 
                 try:
                     _process_file(db, full_path, app_cfg, force_probe, dry_run, stats,
-                                  recheck=recheck,
+                                  recheck=recheck, from_scan=True,
                                   original_language=(original_language_for(full_path)
                                                      if original_language_for else None))
                 except Exception:
@@ -294,11 +295,11 @@ def scan_library(
 
     logger.info(
         "Scan %s — total=%d new=%d changed=%d unchanged=%d "
-        "queued=%d review=%d skipped=%d errors=%d removed=%d excluded=%d",
+        "queued=%d review=%d skipped=%d errors=%d removed=%d excluded=%d held=%d",
         "cancelled by user" if cancelled else "done",
         stats.total, stats.new, stats.changed, stats.unchanged,
         stats.queued, stats.manual_review, stats.skipped, stats.errors,
-        stats.removed, stats.excluded,
+        stats.removed, stats.excluded, stats.held,
     )
     return stats
 
@@ -1171,6 +1172,54 @@ def newest_arr_ids(db: Session, file_id: int) -> tuple[int | None, int | None]:
     return newest(QueueItem.sonarr_series_id), newest(QueueItem.radarr_movie_id)
 
 
+def _plan_key(actions) -> list[tuple]:
+    """What a plan does, track by track, for comparing two plans: from a
+    decision's Actions or from a job's PlannedAction rows."""
+    return sorted(
+        (a.action_type, a.track_type or "", -1 if a.stream_index is None else a.stream_index,
+         getattr(a, "target_language", None) or "")
+        for a in actions
+    )
+
+
+def _held_back(db: Session, file_id: int, decision) -> bool:
+    """
+    Whether a scan leaves this file unqueued: its newest job failed because
+    its audio cannot be copied, and the plan now is the plan that job ran.
+
+    The caller has already checked that the file is unchanged on disk and
+    that the call is a scan's.
+
+    A full scan or a re-check decides every file again, so it queued a
+    failed one again too, which is how a scan retries a failure. For this
+    failure that is no retry: the audio is the same, nothing re-encodes it
+    (worker._explain_failure), and the job fails again, at the cost of an
+    FFmpeg run and another failed entry in History, on every such scan.
+
+    Any change is worth another try, so it is queued after one: a new file
+    (the caller's check), or a plan that differs, such as a keep list that
+    now drops the track that would not copy. Retry and Retry All delete the
+    failed job before deciding the file again, so there is no failed job
+    here for them, and the file is queued.
+
+    Only the newest job counts: one after the failure, of any outcome, means
+    the failure is no longer what the file last did.
+    """
+    # worker imports this module, so its message is fetched when asked for.
+    from app.core.worker import UNCOPYABLE_AUDIO
+
+    newest = (
+        db.query(QueueItem)
+        .filter(QueueItem.file_id == file_id)
+        .order_by(QueueItem.created_at.desc(), QueueItem.id.desc())
+        .first()
+    )
+    if (newest is None or newest.status != "failed"
+            or not (newest.error_message or "").startswith(UNCOPYABLE_AUDIO)):
+        return False
+    return _plan_key(newest.planned_actions) == _plan_key(decision.actions)
+
+
 def _process_file(
     db:          Session,
     path:        str,
@@ -1182,6 +1231,7 @@ def _process_file(
     radarr_movie_id:  int | None = None,
     recheck:     bool = False,
     original_language: str | None = None,
+    from_scan:   bool = False,
 ) -> None:
     """
     Probe (when needed), decide and queue one file.
@@ -1195,6 +1245,11 @@ def _process_file(
     without running ffprobe on every one, as a Force Full Rescan does. A
     file that changed on disk is probed as usual: its stored tracks may no
     longer describe it. force_probe wins when both are set.
+
+    from_scan marks a call from scan_library, of any kind. Only a scan holds
+    back a file whose audio cannot be copied (_held_back); a Retry, an Ask
+    Again, an applied answer, a webhook or a re-decision after a cancelled
+    job queues it as it would any other.
     """
     # ── Stat the file ──────────────────────────────────────────────────────
     try:
@@ -1228,6 +1283,15 @@ def _process_file(
             QueueItem.file_id == existing.id,
             QueueItem.status == "processing",
         ).first()
+    )
+
+    # Read before the record is brought up to date below, which overwrites
+    # the stored size and mtime: whether the file is as it was when last
+    # seen. A force_probe scan never reaches the delta check, and still
+    # needs to know (_held_back).
+    unchanged_on_disk = (
+        existing is not None and existing.size == current_size
+        and abs(existing.mtime - current_mtime) < 1.0
     )
 
     from_record = False
@@ -1635,6 +1699,17 @@ def _process_file(
         in_progress.sonarr_series_id = sonarr_series_id
         in_progress.radarr_movie_id  = radarr_movie_id
         db.commit()
+        return
+
+    if (from_scan and unchanged_on_disk and not reevaluate
+            and _held_back(db, media_file.id, decision)):
+        stats.held += 1
+        logger.info(
+            "Not queuing %s again: its last job failed because its audio "
+            "cannot be copied, and neither the file nor what it would do has "
+            "changed since. Retry it in History to try again.",
+            path,
+        )
         return
 
     _clear_stale_status_records(db, media_file.id, ("skipped", "manual_review"))

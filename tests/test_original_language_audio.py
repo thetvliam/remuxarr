@@ -363,7 +363,7 @@ def scanning(tmp_path, monkeypatch):
 
     def fake_process(db, path, app_cfg, force_probe, dry_run, stats,
                      sonarr_series_id=None, radarr_movie_id=None, recheck=False,
-                     original_language=None):
+                     original_language=None, from_scan=False):
         handed.append(original_language)
 
     def fake_lookup(cfg):
