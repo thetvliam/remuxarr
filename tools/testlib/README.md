@@ -91,7 +91,15 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
    exception. A scan error is expected only on a file ffprobe cannot read.
 2. Every output probes, and its video and audio decode without an error.
 3. Every input stream is in the output, dropped by a planned action or
-   extracted to a sidecar, and the chapters survive.
+   extracted to a sidecar, and the chapters survive. Every stream the job
+   kept also holds what it held: kept streams are paired with the output's
+   by kind, in order, and a checksum of each one's packets (or an
+   attachment's data), taken before any job, is compared. A job copies what
+   it keeps, so a kept track with another's content, or a re-encoded one,
+   shows here. Video or audio whose packets differ is decoded and compared
+   with the library the run was given; the same frames pass, and the stream
+   is listed as repackaged (below). Subtitles, covers and attachments must
+   match as stored.
 4. Every kept audio and subtitle track carries the language the plan gave
    it.
 5. Each extraction adds exactly one sidecar, and an existing sidecar's text
@@ -99,7 +107,9 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
 6. Nothing outside a processed file and its sidecars changes.
 7. A full rescan queues nothing for a file that was processed or had
    nothing to do. A failed job is left out, since a full scan queues it
-   again as its retry.
+   again as its retry; except one that failed because its audio cannot be
+   copied, which would only fail again, so a scan holds the file back
+   until the file or its plan changes.
 8. No temp file is left behind, and the source is gone only when the
    container changed.
 
@@ -123,12 +133,14 @@ route function, and the worker runs the Forge jobs:
 20. Every add succeeds, and nothing logs an exception.
 21. The file gains exactly one AC3 5.1 track carrying Forge's marker, placed
     after the last audio track, and every other stream is as it was (the
-    same comparison as check 11).
+    same comparison as check 11, with every packet checksum equal: an add
+    copies the streams it keeps).
 22. The forged file probes and decodes cleanly.
 23. A full rescan queues nothing for a forged file that had nothing left to
     do before the forge.
 24. With `_forge_undo`, every add is undone through the route function, and
-    the file is back to exactly the streams it had before the add.
+    the file is back to exactly the streams it had before the add, packet
+    checksums included.
 25. No Forge temp file is left, no Forge job is still pending, processing
     or waiting to undo, and nothing in the library changed but the forged
     files.
@@ -144,7 +156,13 @@ restored through the app's own `restore_revert_point`, and:
     converted output goes away.
 11. The restored file matches the original stream for stream (type, codec,
     language and title tags, disposition flags, attachment filename and
-    mimetype, order), and an MP4's fast-start layout matches too.
+    mimetype, order), and an MP4's fast-start layout matches too. Each
+    stream also holds what it held: a checksum of its packets, or of an
+    attachment's data, is taken before any job and compared. Tags and flags
+    are written back from the revert point, so they can all be right while
+    a stream carries another's content. Video or audio whose packets differ
+    is decoded and compared with the library the run was given; the same
+    frames pass, and the stream is listed as repackaged (below).
 12. The restored file probes and decodes cleanly.
 13. The job's other files are back as they were: extracted subtitle files
     gone, everything else byte for byte, and nothing else touched.
@@ -154,10 +172,25 @@ restored through the app's own `restore_revert_point`, and:
     still marked a success, since the AC3 it added is gone.
 
 A question raised by a job and answered after it starts a second job on
-the processed file. Checks 3, 4, 5 and 8, and checks 17 and 18 where they
-compare a job's plan with the answers, judge one job against the original,
-so they leave such a file out; `summary.json` lists it under
+the processed file. Checks 3, 4, 5, 8 and 14, and checks 17 and 18 where
+they compare a job's plan with the answers, judge one job against the
+original, so they leave such a file out; `summary.json` lists it under
 `several_jobs`.
+
+A stream a job or a revert leaves with different packets that decode to the
+same frames is repackaged, not changed, and is not a finding: the report and
+`summary.json` list it under `repackaged`, with which of the two did it. The
+generated library's two MPEG-TS files do this whenever a job converts them
+to MP4. Going in, the MP4 muxer stores H.264 with length prefixes where
+MPEG-TS has start codes (`ff_nal_parse_units`, from `mov_write_packet`) and
+AAC without its ADTS headers (`aac_adtstoasc`, added by
+`mov_check_bitstream`; both in `libavformat/movenc.c`). Coming back, a
+revert gives the H.264 every NAL unit the same and start codes of other
+lengths, which FFmpeg writes going back to MPEG-TS (`count_or_copy` in
+`libavcodec/bsf/h264_mp4toannexb.c`). Where the restored file's streams are
+not the original's in number or order (a Matroska cover come back as a video
+track, or a check 11 finding of its own), positions cannot be compared, and
+the check is that what each original stream held is somewhere in the file.
 
 A file the rescan in check 7 queued again is not reverted, since the revert
 route refuses a queued file; `summary.json` marks it `revert_skipped`. Each
@@ -178,8 +211,10 @@ cover art do not go into MP4, a conversion onto a name another file already
 holds is refused, a revert gives Matroska cover art back as a video track,
 an existing subtitle file a job replaced or moved stays that way after a
 revert, a job goes ahead without a revert point when capture reports one
-unavailable and Require Revert Point is off, and an answer for a track a
-revert brings back from the sidecar is asked again. These are listed under "Accepted losses" with
+unavailable and Require Revert Point is off, an answer for a track a
+revert brings back from the sidecar is asked again, and a job whose audio
+cannot be copied fails and leaves the file as it was, since nothing is
+re-encoded to get past it. These are listed under "Accepted losses" with
 where each decision is recorded, and do not count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down
 somewhere a reader can check.

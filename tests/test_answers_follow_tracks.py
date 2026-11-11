@@ -18,14 +18,19 @@ the survivor:
 
 Both were reproduced against the real functions before this file existed.
 Now a job carries each answer to the track it was given for
-(job_stream_mapping + rekey_track_answers, from worker._finish_job) and a
-revert carries it back through the revert point's manifest
-(revert_restore._apply). An answer for a track that is gone is dropped, so
-its question comes back rather than landing on a neighbour. When the
-rewritten file cannot be probed the answers are cleared for the same
-reason. The worker side of that wiring is pinned in
-test_job_finalisation.py, and a real revert round trip in
-test_revert_multiple_jobs.py.
+(job_stream_mapping + rekey_track_answers, from worker._finish_job). An
+answer for a track that is gone is dropped, so its question comes back
+rather than landing on a neighbour. When the rewritten file cannot be
+probed the answers are cleared for the same reason. The worker side of
+that wiring is pinned in test_job_finalisation.py.
+
+A revert used to carry the answers back the same way, through the revert
+point's manifest. It now forgets every answer and confirmation stored for
+the file (revert_restore._apply), so each question is asked again: a user
+who reverts has most likely seen Remuxarr do something they did not want.
+A real revert round trip is in test_revert_multiple_jobs.py. The
+Language Review questions still open are moved with their tracks, as
+before.
 
 The pairing is per track type because that is how build_ffmpeg_command
 writes its output: video, then kept audio, then kept subtitles, each in
@@ -45,14 +50,15 @@ another module is named:
   • The job's removals ignored when pairing  → the reported cases
   • An extracted subtitle counted as kept    → test_job_finalisation.py
   • Tracks paired across types               → paired within their type
-  • The new key read from the source track   → reencoded, and the
-                                               reported cases
+  • The new key read from the source track   → changed descriptor, and
+                                               the reported cases
   • The count guard removed                  → count does not add up
   • Each of the three columns left out of
     the re-key, one mutant each              → test_job_finalisation.py
                                                (the subtitle and audio
                                                ones also by the revert
-                                               probe failure here)
+                                               probe failure here, while
+                                               a revert re-keyed)
   • A stale key kept                         → matched nothing
   • The type check removed                   → another type
   • A failed post-job probe keeps answers    → test_job_finalisation.py
@@ -62,6 +68,22 @@ another module is named:
     tracks                                   → the same two
   • Revert assumes nothing moved             → the same two
   • A failed post-revert probe keeps answers → forgets the answers
+
+The four revert mutants went with the re-key they mutated, when a revert
+came to forget every answer instead. The two tests for it at the end, with
+a real round trip in test_revert_multiple_jobs.py, were checked by
+mutation, each mutant run first against the suite before them:
+
+  • the forget removed                       → both, and the round trip.
+                                               Before them only the
+                                               probe failure test killed
+                                               it
+  • answers forgotten, confirmations kept    → both, and the round trip.
+                                               It survived the suite
+                                               before them
+  • the forget moved after the probe         → the probe failure one.
+                                               Killed by its earlier
+                                               form too
 
 One more was proposed and is not counted: routing a dry run through the
 real-success branch, where the re-key lives. The pre-existing
@@ -82,7 +104,8 @@ existed, and all three survived it:
 import pytest
 
 from app.core.decision import analyze_file
-from app.core.scanner import (descriptors_by_stream, job_stream_mapping,
+from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
+                              descriptors_by_stream, job_stream_mapping,
                               rekey_track_answers, resolve_track_answers)
 from tests.conftest import BASE_SETTINGS
 
@@ -200,10 +223,12 @@ def test_tracks_are_paired_within_their_type():
     assert resolve_track_answers(carried, output) == {1: "jpn", 2: "keep"}
 
 
-def test_a_reencoded_track_keeps_its_answer():
+def test_a_track_whose_descriptor_changed_keeps_its_answer():
     """
-    The corrupt-audio retry re-encodes to AAC, which changes the codec in the
-    descriptor. The new key has to come from the output, not the source.
+    A kept track need not read the same in the output as in the source.
+    Here the codec differs, as it did when a job could re-encode audio it
+    was unable to copy. The new key has to come from the output, not the
+    source.
     """
     source = [t(0, "video", "h264", "und"),
               t(1, "audio", "eac3", "und", channels=6, layout="5.1(side)")]
@@ -309,17 +334,23 @@ def reverting(tmp_path, monkeypatch):
         db.add(Track(file_id=media.id, **td))
     db.commit()
 
-    def restore(*, probe_fails=False, questions=(), keep_answers=True):
+    def restore(*, probe_fails=False, questions=(), keep_answers=True,
+                confirmed=False):
         """
         questions: Language Review rows to hold before the revert, as
         (kind, stream_index, sidecar or None), kind "audio" or "subtitle".
         keep_answers=False clears the stored answers first, so only the
-        questions can call for the re-key.
+        questions can call for the re-key. confirmed adds the third answer
+        column and sets all three confirmations, so every kind is stored.
         """
         from app.database.models import AudioLanguageFlag, SubtitleLanguageFlag
 
         if not keep_answers:
             media.audio_language_overrides = media.subtitle_overrides = None
+        if confirmed:
+            media.subtitle_language_overrides = json.dumps({key(PROCESSED, 2): "eng"})
+            for attr in CONFIRMATION_COLUMNS:
+                setattr(media, attr, True)
         for kind, si, sidecar in questions:
             if kind == "audio":
                 db.add(AudioLanguageFlag(file_id=media.id, stream_index=si,
@@ -349,24 +380,26 @@ def reverting(tmp_path, monkeypatch):
     return restore
 
 
-def _answers(media, column):
-    import json
-    return resolve_track_answers(json.loads(getattr(media, column) or "{}"), ORIGINAL)
+def _stored(media):
+    return {attr: getattr(media, attr) for attr in ANSWER_COLUMNS + CONFIRMATION_COLUMNS}
 
 
-def test_a_revert_carries_answers_back_to_where_the_tracks_were(reverting):
-    media = reverting()
-
-    assert _answers(media, "audio_language_overrides") == {2: "jpn"}, (
-        "the language answer is not on the undefined audio track it was given for")
-    assert _answers(media, "subtitle_overrides") == {3: "keep"}
+FORGOTTEN = {**{attr: None for attr in ANSWER_COLUMNS},
+             **{attr: False for attr in CONFIRMATION_COLUMNS}}
 
 
-def test_a_revert_whose_file_cannot_be_probed_forgets_the_answers(reverting):
-    media = reverting(probe_fails=True)
+def test_a_revert_forgets_every_answer_and_confirmation(reverting):
+    """
+    A user who reverts has most likely seen Remuxarr do something they did
+    not want, so every question the restored file raises is asked again.
+    The answers were carried back to the tracks they were given for, and
+    the next scan made the same decisions again without asking.
+    """
+    assert _stored(reverting(confirmed=True)) == FORGOTTEN
 
-    assert media.audio_language_overrides is None
-    assert media.subtitle_overrides is None
+
+def test_a_revert_whose_file_cannot_be_probed_forgets_them_too(reverting):
+    assert _stored(reverting(probe_fails=True, confirmed=True)) == FORGOTTEN
 
 
 def _questions(db):

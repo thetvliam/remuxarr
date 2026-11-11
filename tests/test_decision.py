@@ -523,6 +523,104 @@ def test_unknown_container_raises_rather_than_guessing(settings):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# A container Remuxarr cannot write
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# An FLV kept as FLV (Prefer MP4 Container off) was queued for a language fix,
+# the job failed in the command builder, which refuses a container it has no
+# muxer for, and every full scan queued it again. FLV stores no language
+# tag, so a muxer would only have turned that into a job that never sticks.
+# The decision now leaves such a file alone with a reason, and asks nothing.
+#
+# Verified by mutation, 3 applied, 3 killed, each run first against the
+# whole suite as it stood, which all three survived:
+#
+#   • the check removed                      → left alone with Prefer MP4
+#                                              off, tracks MP4 cannot hold,
+#                                              asks nothing
+#   • the two reasons swapped                → the same first two
+#   • its Language Review questions kept     → asks nothing
+
+def _flv(*audio, video="h264"):
+    """An FLV with the given (codec, language) audio tracks."""
+    tracks = [make_track(stream_index=0, track_type="video", codec=video)]
+    for i, (codec, language) in enumerate(audio, start=1):
+        tracks.append(make_track(stream_index=i, track_type="audio", codec=codec,
+                                 language=language, is_default=(i == 1)))
+    file_info = make_file_info(path="/media/x/clip.flv", container="flv",
+                               video_codec=video)
+    return file_info, tracks
+
+
+def test_a_file_remuxarr_cannot_write_is_left_alone(settings):
+    """An FLV that needs an untagged track tagged, with Prefer MP4 Container
+    off: no job, and the reason says what would change that."""
+    settings.update(prefer_mp4_container=False, fix_undefined_language_audio="always_fix")
+    file_info, tracks = _flv(("aac", "und"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is False
+    assert decision.actions == []
+    assert decision.reason == ("Remuxarr cannot write FLV files, so this one is left as "
+                               "it is. Turn on Prefer MP4 Container to convert it.")
+
+
+def test_one_whose_tracks_mp4_cannot_hold_is_left_alone_too(settings):
+    """Prefer MP4 Container on, but the video cannot go into MP4: the reason
+    says so instead of pointing at the setting."""
+    settings.update(prefer_mp4_container=True)
+    file_info, tracks = _flv(("mp3", "eng"), ("mp3", "fre"), video="flv1")
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is False
+    assert decision.actions == []
+    assert decision.reason == ("Remuxarr cannot write FLV files, and this one's tracks "
+                               "cannot go into MP4, so it is left as it is.")
+
+
+def test_one_that_can_go_into_mp4_is_still_converted(settings):
+    settings.update(prefer_mp4_container=True)
+    file_info, tracks = _flv(("aac", "eng"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is True
+    assert decision.target_container == "mp4"
+    assert any(a.action_type == "change_container" for a in decision.actions)
+
+
+def test_one_that_needs_nothing_says_so(settings):
+    """Nothing to do is still the reason when there is nothing to do."""
+    settings.update(prefer_mp4_container=False)
+    file_info, tracks = _flv(("aac", "eng"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is False
+    assert decision.reason.startswith("File already meets all configured criteria")
+
+
+def test_a_file_left_alone_asks_nothing(settings):
+    """
+    Under Always Ask an untagged track is a Language Review question, and a
+    language outside the keep list another. Either answer could only come
+    back to this decision, so neither is asked.
+    """
+    settings.update(prefer_mp4_container=False, fix_undefined_language_audio="always_ask",
+                    keep_audio_languages=["eng"])
+    for audio in (("aac", "und"), ("aac", "jpn")):
+        file_info, tracks = _flv(audio)
+
+        decision = analyze_file(file_info, tracks, settings)
+
+        assert decision.should_process is False
+        assert decision.undefined_audio_flags == [], audio
+        assert decision.audio_language_mismatch is None, audio
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Undefined language fix (the bulk pass, distinct from the override pass)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1727,13 +1825,15 @@ def test_fix_tags_a_lone_untagged_track_in_a_film_in_primary_language(settings, 
     assert d.undefined_audio_flags == []
 
 
-def test_an_answered_track_still_counts_after_the_keep_list_drops_it(settings):
+def test_an_answered_track_still_counts_once_its_answer_is_written(settings):
     """
     Two untagged subtitles; the user named the first French in Subtitle
-    Language Review, the job wrote it, and Keep Subtitle Languages (English)
-    now drops it. The file had two untagged subtitles to ask about, and the
-    second is still asked about rather than taken as English: the answer is
-    stored against the track, so it is counted with it.
+    Language Review and the job wrote it. Keep Subtitle Languages (English)
+    keeps it all the same, as an answered track is kept (decision.py,
+    "Language Review answers"). The file had two untagged subtitles to ask
+    about, and the second is still asked about rather than taken as
+    English: the answer is stored against the track, so it is counted with
+    it.
     """
     settings["fix_undefined_language"] = "always_fix"
     settings["undefined_language_value"] = "eng"
@@ -1750,7 +1850,7 @@ def test_an_answered_track_still_counts_after_the_keep_list_drops_it(settings):
     d = analyze_file(make_file_info(path="/m/Show.mkv", container="mkv", video_codec="h264"),
                      tracks, settings, subtitle_language_overrides={2: "fre"})
 
-    assert ("drop_track", 2) in [(a.action_type, a.stream_index) for a in d.actions]
+    assert ("drop_track", 2) not in [(a.action_type, a.stream_index) for a in d.actions]
     assert not [a for a in d.actions if a.track_type == "subtitle" and a.target_language]
     assert [m["stream_index"] for m in d.subtitle_language_mismatches] == [3]
 

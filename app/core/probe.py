@@ -90,9 +90,15 @@ def extract_tracks(probe_data: dict) -> list[dict]:
         disposition = stream.get("disposition", {})
 
         # Embedded cover art / thumbnail images are reported by ffprobe as
-        # codec_type="video" with the "attached_pic" disposition flag.
-        # Mapping them alongside the real video stream into MP4 causes the
-        # muxer to fail ("dimensions not set"). Skip them entirely.
+        # codec_type="video" with the "attached_pic" disposition flag. A
+        # cover is not a track, so it is left out here, and with it out of
+        # every track list the decision engine judges and build_ffmpeg_command
+        # maps. A Matroska cover goes back into a Matroska output on its own
+        # (ffmpeg.find_matroska_covers, cover_attach_args); a job writing
+        # an MP4 drops every cover, though not because the muxer cannot take
+        # one. An older comment here said mapping one into MP4 failed with
+        # "dimensions not set", but with FFmpeg 8.1 a JPEG or PNG cover from
+        # an MP4 or a Matroska copies into MP4 and keeps attached_pic.
         if codec_type == "video" and disposition.get("attached_pic", 0) == 1:
             continue
 
@@ -219,6 +225,22 @@ def count_font_attachments(probe_data: dict) -> int:
         if stream.get("codec_type") == "attachment"
         and _is_font_attachment(stream)
     )
+
+
+# The major brand QuickTime writes. ffprobe names a QuickTime file and an
+# MP4 alike ("mov,mp4,m4a,3gp,3g2,mj2"), and both normalise to "mp4", so the
+# brand is what tells them apart.
+QUICKTIME_BRAND = "qt  "
+
+
+def is_quicktime(probe_data: dict | None) -> bool:
+    """
+    Whether the probed file is a QuickTime movie rather than an MP4, by its
+    major brand. Remuxarr writes one with FFmpeg's QuickTime muxer, so it
+    stays one (ffmpeg.output_muxer).
+    """
+    tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
+    return tags.get("major_brand") == QUICKTIME_BRAND
 
 
 def extract_format_info(probe_data: dict) -> dict:

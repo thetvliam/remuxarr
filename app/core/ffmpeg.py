@@ -18,7 +18,7 @@ from pathlib import Path
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
-from app.core.probe import ProbeError, probe_file
+from app.core.probe import QUICKTIME_BRAND, ProbeError, probe_file
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -151,6 +151,25 @@ _CONTAINER_FORMAT = {
     "mov": "mov",
 }
 
+
+def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
+    """
+    The FFmpeg muxer that writes `container`, or None for one this does
+    not know.
+
+    quicktime says the file being written is a QuickTime movie and stays
+    one (probe.is_quicktime: its major brand is "qt  "). Its container
+    normalises to "mp4", but FFmpeg's MP4 muxer turned a QuickTime file
+    into an MP4 under its .mov name: the brand became "isom", PCM audio's
+    "sowt" sample entry became the ISO "ipcm" that many players cannot
+    play, and the video gained an "und" language. The QuickTime muxer
+    keeps all three, so a job changes only what it set out to and a revert
+    gives the original back. Both muxers are libavformat/movenc.c, so
+    -movflags and the rest apply alike.
+    """
+    fmt = _CONTAINER_FORMAT.get(container)
+    return "mov" if quicktime and fmt == "mp4" else fmt
+
 # Every stream keeps the flags it came with: default, forced, commentary
 # and the rest. FFmpeg copies each output stream's flags from its input,
 # and then, unless the command sets a disposition on some stream, marks
@@ -173,18 +192,19 @@ def build_ffmpeg_command(
     decision: ProcessingDecision,
     all_tracks: list[dict],
     covers: Sequence[CoverArt] = (),
+    quicktime: bool = False,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
 
     covers are Matroska cover images already copied out of the source by
     _prepare_cover_art, which hands over none unless the output is Matroska.
+    quicktime says the source is a QuickTime movie (see output_muxer).
 
     Strategy
     --------
     • All video streams  → always mapped, always copy
-    • Kept audio streams → copy, OR transcode (only ever via the
-      corrupt-audio retry path — worker.py's _make_audio_transcode_decision)
+    • Kept audio streams → copy
     • Kept sub streams   → copy (subtitles being extracted to external SRT,
       or dropped entirely, are excluded from the map list)
     • -progress pipe:1   → structured key=value progress on stdout
@@ -197,16 +217,6 @@ def build_ffmpeg_command(
     # muxed output entirely — treat them the same as "dropped" for mapping.
     extracted = {
         a.stream_index for a in decision.actions if a.action_type == "extract_subtitle"
-    }
-    # transcode_track actions only ever come from worker.py's corrupt-audio
-    # retry path (_make_audio_transcode_decision) — re-encoding audio when
-    # a lossless copy failed because the source frames themselves are
-    # corrupt. decision.py's own normal path never produces this directly;
-    # there's no setting that does anymore.
-    transcode_map = {
-        a.stream_index: a
-        for a in decision.actions
-        if a.action_type == "transcode_track"
     }
     # Tracks whose language metadata should be overwritten — set by
     # decision.py's language-fix pass when fix_undefined_language is enabled.
@@ -254,16 +264,7 @@ def build_ffmpeg_command(
     for out_idx, t in enumerate(kept_audio):
         si = t["stream_index"]
         cmd += ["-map", f"0:{si}"]
-        action = transcode_map.get(si)
-        if action and action.track_type == "audio":
-            cmd += [f"-c:a:{out_idx}", action.output_codec]
-            for opt_k, opt_v in action.output_codec_options.items():
-                # e.g. -ac:0 6 — used by the corrupt-audio retry path when
-                # it needs to force a specific channel count; normally
-                # empty, which preserves the source's own channel layout.
-                cmd += [f"-{opt_k}:{out_idx}", str(opt_v)]
-        else:
-            cmd += [f"-c:a:{out_idx}", "copy"]
+        cmd += [f"-c:a:{out_idx}", "copy"]
         if si in language_map:
             cmd += [f"-metadata:s:a:{out_idx}", f"language={language_map[si]}"]
         cmd += title_of(t, f"a:{out_idx}")
@@ -295,19 +296,23 @@ def build_ffmpeg_command(
     # containers (e.g. .flv) that _normalise_container passes through
     # unchanged and this map has no entry for — those files got Matroska
     # bytes written into their original path, in place, with the original
-    # deleted after "success". analyze_file's own container guard can't
-    # catch this case (the container string is present and non-empty; it
-    # just isn't muxable-as-itself here). Raising is caught by the
-    # worker's job-level exception handler and becomes a visible failed
-    # job with this message — and, critically, it fires before FFmpeg
-    # ever starts, so the source file is never touched.
+    # deleted after "success". analyze_file now leaves such a file alone
+    # before any job is queued (its output_muxer check), so this is the
+    # guard behind that. Raising is caught by the worker's job-level
+    # exception handler and becomes a visible failed job with this message
+    # — and, critically, it fires before FFmpeg ever starts, so the source
+    # file is never touched.
     if decision.target_container not in _CONTAINER_FORMAT:
         raise ValueError(
             f"Unsupported output container {decision.target_container!r} — "
             f"refusing to guess the mux format (supported: "
             f"{', '.join(sorted(_CONTAINER_FORMAT))})"
         )
-    out_fmt = _CONTAINER_FORMAT[decision.target_container]
+    # A QuickTime source normalises to "mp4" and keeps that container, so
+    # an "mp4" target for it is always the file staying a .mov.
+    out_fmt = output_muxer(decision.target_container, quicktime)
+    if out_fmt is None:
+        raise KeyError(decision.target_container)
     logger.info(
         "build_ffmpeg_command: decision.target_container=%r -> out_fmt=%r "
         "(output_path=%s)",
@@ -630,7 +635,9 @@ def build_restore_command(
         raise RestoreUnsupported("Manifest records no streams.")
 
     container = manifest.get("container")
-    out_fmt = _CONTAINER_FORMAT.get(container)
+    # The original's brand is among the tags capture recorded for it.
+    out_fmt = output_muxer(
+        container, (manifest.get("format_tags") or {}).get("major_brand") == QUICKTIME_BRAND)
     if not out_fmt:
         raise RestoreUnsupported(
             f"No FFmpeg muxer known for original container {container!r}."
@@ -774,7 +781,7 @@ def build_restore_command(
     # The original's layout: an MP4 recorded as fast-start gets its index
     # back in front. Only True asks; False, None and a manifest from before
     # the layout was recorded all leave the muxer's default.
-    if out_fmt == "mp4" and manifest.get("faststart") is True:
+    if out_fmt in ("mp4", "mov") and manifest.get("faststart") is True:
         cmd += ["-movflags", "+faststart"]
     cmd += ["-f", out_fmt, output_path]
     return cmd
@@ -822,9 +829,12 @@ async def execute_ffmpeg(
     before_staging: Callable[[str], Awaitable[str | None]] | None = None,
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
+    quicktime: bool = False,
 ) -> FFmpegResult:
     """
     Run FFmpeg asynchronously.
+
+    quicktime says the source is a QuickTime movie (see output_muxer).
 
     • Writes to a temp file in TEMP_DIR (typically a RAM-backed or fast
       cache location), then moves to output_path on success.  This keeps
@@ -870,7 +880,7 @@ async def execute_ffmpeg(
         return FFmpegResult(success=False, output_path=None, error=cover_error,
                             output_size=None)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
-                               covers=covers)
+                               covers=covers, quicktime=quicktime)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1124,9 +1134,11 @@ async def execute_ffmpeg_combined(
     before_staging:       Callable[[str], Awaitable[str | None]] | None = None,
     before_swap:          Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready:        Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
+    quicktime:            bool = False,
 ) -> tuple[FFmpegResult, list[ExtractionResult]]:
     """
-    Single-pass combined remux + subtitle extraction.
+    Single-pass combined remux + subtitle extraction. quicktime as for
+    execute_ffmpeg.
 
     Reads the source file ONCE and writes all outputs simultaneously:
       • The remuxed media file (to TEMP_DIR, then moved to output_path)
@@ -1195,7 +1207,7 @@ async def execute_ffmpeg_combined(
         )
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
-                                    covers=covers)
+                                    covers=covers, quicktime=quicktime)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1463,13 +1475,8 @@ async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str 
 
 
 def _describe_action(decision: ProcessingDecision) -> str:
-    # has_transcode is only ever true here via worker.py's corrupt-audio
-    # retry path — there's no setting that produces this on a normal pass.
-    has_transcode  = any(a.action_type == "transcode_track" for a in decision.actions)
     has_container  = any(a.action_type == "change_container" for a in decision.actions)
     has_faststart  = any(a.action_type == "add_faststart" for a in decision.actions)
-    if has_transcode:
-        return "Re-encoding audio (recovering from corrupt source frames)"
     if has_container:
         return "Remuxing to MP4"
     if has_faststart:

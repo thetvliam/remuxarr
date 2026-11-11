@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2413 tests across 110 test files, plus 775 frontend tests under
+2480 tests across 115 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -18,7 +18,8 @@ argument unique to the run.
 ## What's here
 
 **The decision engine** — `test_decision.py`, `test_subtitle_language_path.py`,
-`test_command_and_pure_functions.py`. `analyze_file()` decides what happens to
+`test_command_and_pure_functions.py`, `test_undefined_audio_fix_keep.py`,
+`test_language_answers_keep.py`. `analyze_file()` decides what happens to
 every file; these take plain dicts in and assert on a plain dataclass out, so
 they need no ffmpeg, no database and no real files, and run in well under a
 second. Most are tied to a specific incident from this project's development —
@@ -28,6 +29,16 @@ their spellings (en, eng, and deu beside ger): the tables in
 the one form, and two-letter tags written in full when a file is processed.
 `test_track_order.py` checks that the worker at pickup and an answered review
 hand the engine a file's stored tracks in stream order, since it reads position.
+`test_undefined_audio_fix_keep.py` covers the untagged audio track Always Fix
+tags: it is judged by the keep list as the language it will be tagged, and
+each test decides a file, applies the plan and decides again, which must find
+nothing to do. Judged as untagged, it used to be kept, tagged, and removed by
+the next scan.
+`test_language_answers_keep.py` covers Language Review answers in the keep
+decision: an answered track is judged as the answered language and always
+kept, deciding, applying and deciding again as above. Judged by its old tag,
+a track answered in a language the keep list does not hold was kept, tagged,
+and removed by the next scan.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
@@ -119,11 +130,13 @@ acts on it.
 **FFmpeg and staging** — `test_ffmpeg_command.py`,
 `test_source_file_preservation.py`, `test_forge_and_staging.py`,
 `test_subtitle_extraction_failures.py`, `test_attachment_preservation.py`,
-`test_audio_transcode_retry.py`, `test_subtitle_extraction_routing.py`,
+`test_uncopyable_audio.py`, `test_uncopyable_audio_rescan.py`,
+`test_subtitle_extraction_routing.py`,
 `test_subtitle_cascade_review.py`, `test_staging_progress.py`,
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
 `test_existing_subtitle_files.py`, `test_timeout_logging.py`,
-`test_mp4_track_titles.py`, `test_stream_flags.py`. Some run a
+`test_mp4_track_titles.py`, `test_stream_flags.py`,
+`test_quicktime_files.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -137,15 +150,25 @@ muxer refused every add on an MKV with fonts.
 `test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.
+`test_quicktime_files.py` covers QuickTime movies through a job, a revert,
+and an AC3 Forge add and undo. A `.mov` normalises to the `mp4` container,
+and FFmpeg's MP4 muxer used to write it: the brand became `isom`, PCM audio's
+`sowt` sample entry became `ipcm`, and the video gained an `und` language.
+A file whose major brand is `qt  ` is now written with the QuickTime muxer.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless
 the command sets a flag itself, so an MKV's first subtitle used to be turned
 on. The AC3 a Forge add makes takes its AAC's flags but default, so a file
 never gains a second default audio track.
-`test_audio_transcode_retry.py` covers the retry for audio that cannot be
-stream-copied, in both execution branches — the same guard twice over, so
-killing it in one says nothing about the other. The last two are the two-pass
+`test_uncopyable_audio.py` covers audio that cannot be stream-copied (corrupt
+frames, or packets with no timestamps): the job fails once, in both execution
+branches, with a plain explanation, and nothing is re-encoded. It used to be
+run again with the audio re-encoded to AAC. One test runs real FFmpeg on a
+file with a corrupt AAC packet, so the error the detector reads is FFmpeg's
+own. `test_uncopyable_audio_rescan.py` covers the scan side: a full scan or
+re-check does not queue such a file again until the file or its plan changes,
+and Retry, Ask Again and a webhook still queue it. The last two are the two-pass
 and combined-pass halves of one question: which failed extraction is a decision
 for a human, and so goes to manual review, rather than a plain failure.
 `test_existing_subtitle_files.py` covers extracting a subtitle onto a name
@@ -274,7 +297,7 @@ answer has its own switch, kept apart from the one for a wrong language.
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,
 `test_revert_multiple_jobs.py`, `test_revert_match.py`, `test_revert_routes.py`,
-`test_revert_created_files.py`, `test_recycle_bin.py`,
+`test_revert_created_files.py`, `test_revert_retagged_capture.py`, `test_recycle_bin.py`,
 `test_retention_sweep.py`, `test_staging_hook.py`, `test_schema_migration.py`,
 `test_deployment_config.py`. The failure this feature has to avoid is not a
 crash: it is a revert that succeeds and quietly rebuilds the file wrong.
@@ -287,6 +310,12 @@ playable files and argv-level assertions saw nothing amiss.
 revert re-embeds the subtitles extraction wrote beside the media, so leaving
 those files gives every subtitle twice, while deleting every `.srt` next to the
 media would take out the ones that predate Remuxarr.
+`test_revert_retagged_capture.py` covers capture following each kept track to
+where the job put it. Matched by metadata, a kept track the job had just tagged
+with a dropped track's language was taken for the dropped one, the sidecar
+stored the wrong track, and a revert gave back the kept track's content twice.
+It compares every restored stream's packets, since the metadata is right
+either way.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored

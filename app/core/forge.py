@@ -40,7 +40,7 @@ from app.config import settings as app_settings
 from app.core.ffmpeg import (
     KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
 )
-from app.core.probe import ProbeError, extract_tracks, probe_file
+from app.core.probe import ProbeError, extract_tracks, is_quicktime, probe_file
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -162,6 +162,13 @@ def titles_after_forge(tracks: list[dict],
     return out
 
 
+def _muxer(container: str, quicktime: bool) -> str:
+    """The muxer for a container _FORMAT_MAP knows, QuickTime told apart
+    as ffmpeg.output_muxer does."""
+    fmt = _FORMAT_MAP[container]
+    return "mov" if quicktime and fmt == "mp4" else fmt
+
+
 def build_add_ac3_command(
     input_path:        str,
     temp_path:         str,
@@ -171,10 +178,14 @@ def build_add_ac3_command(
     add_faststart:     bool = True,
     titles:            dict[int, str] | None = None,
     covers:            Sequence[CoverArt] = (),
+    quicktime:         bool = False,
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
     transcoded from the AAC 5.1 stream at aac_stream_index.
+
+    quicktime says the file is a QuickTime movie, written back with
+    FFmpeg's QuickTime muxer so it stays one (ffmpeg.output_muxer).
 
     The new AC3 always ends up at output audio index audio_track_count
     (0-based), making the undo index deterministic.
@@ -203,7 +214,7 @@ def build_add_ac3_command(
             f"refusing to guess the mux format (supported: "
             f"{', '.join(sorted(_FORMAT_MAP))})"
         )
-    fmt     = _FORMAT_MAP[container]
+    fmt     = _muxer(container, quicktime)
     ac3_idx = audio_track_count  # output audio index for the new stream
 
     cmd = [
@@ -268,9 +279,11 @@ def build_undo_command(
     add_faststart:         bool = True,
     titles:                dict[int, str] | None = None,
     covers:                Sequence[CoverArt] = (),
+    quicktime:             bool = False,
 ) -> list[str]:
     """
-    Copy all streams EXCEPT the AC3 track added by the forge.
+    Copy all streams EXCEPT the AC3 track added by the forge. quicktime as
+    for build_add_ac3_command.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection. covers are left out and attached again,
     as for build_add_ac3_command; a copy alone does not trip the muxer over
@@ -289,7 +302,7 @@ def build_undo_command(
             f"refusing to guess the mux format (supported: "
             f"{', '.join(sorted(_FORMAT_MAP))})"
         )
-    fmt = _FORMAT_MAP[container]
+    fmt = _muxer(container, quicktime)
 
     cmd = [
         app_settings.FFMPEG_PATH,
@@ -1009,6 +1022,8 @@ def load_forge_job_data(job_id: int) -> dict | None:
             # container they do not know, empty included, so the job fails
             # with the file untouched.
             "container":          media.container,
+            # From the same probe: a QuickTime movie is written back as one.
+            "quicktime":          is_quicktime(probe_data),
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,

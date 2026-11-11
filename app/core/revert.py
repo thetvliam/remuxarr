@@ -34,6 +34,16 @@ and returns what is no longer there. It deliberately does NOT read the
 job's planned actions, because the plan is a statement of intent and the
 sidecar has to be built from what happened — the attachment loss above is
 exactly a case where the two disagree and nothing in the plan mentions it.
+
+match_streams can be told one thing by the job: where each of its kept
+tracks went (positional_pairs, as `pinned`). That is not the plan standing
+in for what happened. It is used only for a track type whose count in the
+output is what the plan said it would be, a kept track still has to be
+found in the output with the same payload, and everything it says nothing
+about (attachments, covers, data streams, a type whose count is off) is
+matched from the files alone, as before. What it replaces is a guess:
+matching by metadata cannot tell look-alike tracks apart once the job has
+rewritten one's language (see match_streams).
 """
 
 # 2: manifests describe the PRISTINE original and are extended in place by
@@ -251,7 +261,52 @@ def _pair_pass(key_fn, unmatched: list[dict], remaining: list[dict],
             [c for c in remaining if id(c) not in consumed])
 
 
-def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int | None]]:
+def positional_pairs(
+    before: list[dict], after: list[dict], removed: set[int] | frozenset[int],
+) -> tuple[dict[int, int], list[tuple[str, int, int]]]:
+    """
+    Where each track a job kept now sits: (before stream_index -> after
+    stream_index, the types left out as (type, kept, in output)).
+
+    before and after are probe.extract_tracks() lists of the file the job
+    was handed and the file it wrote; removed is the stream indices the job
+    dropped or extracted. Paired by position within each track type,
+    because that is how build_ffmpeg_command writes the output: every video
+    track, then the kept audio, then the kept subtitles, each type in
+    source order. Interleaved sources come out grouped by type, so counting
+    across types would pair a subtitle with an audio track.
+
+    A type whose kept count does not match what the output holds is left
+    out: some step this does not know about added or lost a track of it
+    (an AC3 Forge add, say), and pairing by position would be a guess.
+
+    Shared by the two places that need to follow a job's tracks: the stored
+    answers (scanner.job_stream_mapping) and revert capture
+    (revert_capture.capture, as match_streams' pins).
+    """
+    mapping: dict[int, int] = {}
+    left_out: list[tuple[str, int, int]] = []
+    for track_type in sorted({t["track_type"] for t in before + after}):
+        kept = sorted(
+            (t for t in before
+             if t["track_type"] == track_type and t["stream_index"] not in removed),
+            key=lambda t: t["stream_index"],
+        )
+        out = sorted((t for t in after if t["track_type"] == track_type),
+                     key=lambda t: t["stream_index"])
+        if len(kept) != len(out):
+            left_out.append((track_type, len(kept), len(out)))
+            continue
+        for src, dst in zip(kept, out):
+            mapping[src["stream_index"]] = dst["stream_index"]
+    return mapping, left_out
+
+
+def match_streams(
+    manifest: dict,
+    processed_probe: dict,
+    pinned: dict[int, int | None] | None = None,
+) -> list[tuple[dict, int | None]]:
     """
     Pair every manifest entry with its index in the processed file, or None
     if it is no longer there.
@@ -304,14 +359,47 @@ def match_streams(manifest: dict, processed_probe: dict) -> list[tuple[dict, int
     subrip subtitles as mov_text, the codec no longer matches, and the
     subtitle is captured. That is the right outcome anyway, since the
     subrip original is the better thing to restore from.
+
+    pinned, when the caller knows where its job put each track, settles
+    those tracks before any pass runs. Keyed by a manifest stream's own
+    "index", a value is the processed stream it became, or None for one
+    the job removed. Pinned to a processed stream, a track is paired with
+    it only if their payloads match, and otherwise lost (a subrip track an
+    MP4 output turned into mov_text, as above); either way that processed
+    stream is taken out of the pool, so no pass hands it to another
+    original. Pinned to None, a track is lost however much a survivor
+    looks like it.
+
+    The passes cannot do this. A job that writes a language onto a kept
+    track can make it look exactly like a track it dropped: an untagged
+    subtitle kept and tagged English, and an English one of the same codec
+    removed. Pass 2 then pairs the dropped English original with the kept
+    track, one to one, and the untagged original is reported lost. The
+    sidecar stored the track that survived, never the one that was
+    destroyed, and a revert put the kept subtitle's text in both slots.
+    Unpinned tracks still go through the passes, against what the pins left.
     """
     processed = build_manifest(
         processed_probe, original_path="", original_container=None,
     )["streams"]
 
-    remaining = list(processed)
     matched: dict[int, int | None] = {}
-    unmatched = list(manifest.get("streams", []))
+    unmatched: list[dict] = []
+    by_index = {p["index"]: p for p in processed}
+    claimed: set[int] = set()
+    for original in manifest.get("streams", []):
+        if pinned is None or original.get("index") not in pinned:
+            unmatched.append(original)
+            continue
+        target = by_index.get(pinned[original["index"]])
+        if target is None:
+            matched[id(original)] = None
+            continue
+        claimed.add(target["index"])
+        matched[id(original)] = (
+            target["index"] if _payload_key(target) == _payload_key(original) else None
+        )
+    remaining = [p for p in processed if p["index"] not in claimed]
 
     # Progressively looser, each over what the previous could not place.
     # Running them as a sequence rather than merging them is what stops a

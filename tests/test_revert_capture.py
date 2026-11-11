@@ -1315,13 +1315,13 @@ def job(tmp_path, recycle, monkeypatch):
             calls["n"] += 1
             hook = kwargs.get("before_staging")
 
-            # hook_calls > 1 stands in for the corrupt-audio retry, which
-            # re-runs the whole command and so fires the hook again. Each
-            # firing produces its own sidecar, as a real capture would.
+            # hook_calls > 1 stands in for a job that runs its command a
+            # second time, and so fires the hook again. Each firing
+            # produces its own sidecar, as a real capture would.
             for attempt in range(hook_calls if hook else 0):
                 # same_path mirrors production, where sidecar_path_for is
-                # deterministic on (file_id, job_id) and a retry rewrites
-                # the same file.
+                # deterministic on (file_id, job_id) and a second run
+                # rewrites the same file.
                 name = ("7_1.remuxarr_revert" if same_path
                         else f"7_1_attempt{attempt}.remuxarr_revert")
                 sidecar = recycle / name
@@ -1462,10 +1462,11 @@ def test_a_retry_writing_the_same_path_keeps_the_sidecar(job):
 
 def test_a_retry_does_not_leave_the_first_attempts_sidecar_behind(job):
     """
-    The corrupt-audio path re-runs the whole command, so the hook fires
-    twice in one job. Only the last capture is ever recorded, so the first
-    attempt's sidecar has no row pointing at it — keep it and it leaks the
-    full size of the dropped tracks, on every retried job.
+    A job runs its command once as things stand; the audio retry that ran
+    it twice has been removed. The hook still clears what an earlier
+    firing captured, should a job ever run again: only the last capture is
+    recorded, so the first attempt's sidecar would have no row pointing at
+    it, and leak the full size of the dropped tracks.
     """
     state = job(success=True, hook_calls=2)
 

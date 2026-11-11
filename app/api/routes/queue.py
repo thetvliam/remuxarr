@@ -1482,10 +1482,10 @@ def ask_again(item_id: int, db: Session = Depends(get_db)):
     Forget every answer and confirmation stored for this item's file, then
     decide the file again now, so each question it raises is asked afresh.
 
-    Stored answers are applied each time a file is decided, and nothing
-    else takes one back short of applying a language. A wrong Remove came
-    back as soon as a revert restored the file: the revert carries the
-    answers of the tracks it kept, and the next scan applied them.
+    Stored answers are applied each time a file is decided, so a wrong one
+    goes on deciding the file until it is taken back: by this, by applying a
+    language, by a revert (revert_restore._apply forgets them all), or by a
+    scan finding the file replaced by one with different tracks.
 
     Decided with a fresh probe and the current settings, as Re-process
     does, and through the same _process_file, so a waiting job is replaced

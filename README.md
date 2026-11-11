@@ -312,7 +312,9 @@ processing is not part of the original, so reverting removes it.
 A reverted file goes back to your rules. The next scan looks at it afresh, so
 if the rule that changed it still applies, that scan processes it again - and
 with scheduled scans on, that can happen overnight. Change the rule first, or
-turn on dry-run mode, before reverting.
+turn on dry-run mode, before reverting. Reverting also forgets every answer you
+gave for that file in manual review and Language Review, Confirm Correct
+included, so the next scan asks each question again.
 
 **When it will refuse.** A revert point records the file as the job left it. If
 something else has written to that file since - Sonarr upgrading the episode is

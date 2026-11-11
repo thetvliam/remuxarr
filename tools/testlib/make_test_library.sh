@@ -310,14 +310,14 @@ f09() {  # Same subtitles, NO audio and VP9 video (no MP4, so extraction is the 
     -disposition:s:0 0 -disposition:s:1 hearing_impaired "${MKV[@]}" \
     "$OUT/09 - bad utf8 subtitle two pass.mkv"
 }
-f10() {  # Corrupt AAC packets: copy fails in the muxer -> retry with AAC re-encode (remux-only path).
+f10() {  # Corrupt AAC packets: copy fails in the muxer -> the job fails, file left alone (remux-only path).
   local a=(); add a video_in "10 corrupt audio remux"; add a tone_in 440; add a tone_in 550
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac \
     -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger -movflags +faststart \
     "$A/clean10.mp4"
   "$PYTHON" "$SCRIPT_DIR/corrupt_aac.py" "$A/clean10.mp4" "$OUT/10 - corrupt audio remux.mp4" a:0 60 >/dev/null
 }
-f11() {  # Corrupt AAC + a mov_text subtitle to extract -> retry on the combined path.
+f11() {  # Corrupt AAC + a mov_text subtitle to extract -> the same failure on the combined path.
   local a=(); add a video_in "11 corrupt audio combined"; add a tone_in 440; add a tone_in 550
   a+=(-i "$A/eng.srt")
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map 3 "${H264[@]}" -c:a aac -c:s mov_text \

@@ -60,9 +60,11 @@ from dataclasses import dataclass
 
 from app.config import settings as app_settings
 from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
-from app.core.probe import ProbeError, extract_format_info, is_faststart_mp4, probe_file
+from app.core.probe import (
+    ProbeError, extract_format_info, extract_tracks, is_faststart_mp4, probe_file,
+)
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
-from app.core.revert import build_manifest, match_streams
+from app.core.revert import build_manifest, match_streams, positional_pairs
 from app.core.revert_restore import revert_blocked_reason
 
 logger = logging.getLogger(__name__)
@@ -350,39 +352,60 @@ def _discard_partial(staged: str) -> None:
         logger.warning("Could not remove the partial sidecar %s: %s", staged, exc)
 
 
-def _unmatch_reencoded(
-    matches: list[tuple[dict, int | None]],
-    reencoded: frozenset[int],
+def _pins(
+    manifest: dict,
+    input_probe: dict,
+    produced_probe: dict,
+    removed: frozenset[int],
     *,
     extend: bool,
+) -> dict[int, int | None]:
+    """
+    Where this run put each original stream it was handed, for
+    match_streams' pinned: a manifest stream's "index" -> the processed
+    stream it became, or None for one the run removed.
+
+    A stream is found in the input by the index it has there: its own index
+    on a first job, where the input is the original; the processed_index
+    the previous capture recorded on a later one. A stream an earlier job
+    already destroyed is not in the input, and is not pinned. Nor is any
+    stream positional_pairs could not place (attachments, covers, data
+    streams, a type whose count in the output is not what the run kept):
+    those are matched from the files, as before.
+    """
+    mapping, _left_out = positional_pairs(
+        extract_tracks(input_probe), extract_tracks(produced_probe), removed)
+    pins: dict[int, int | None] = {}
+    for stream in manifest.get("streams", []):
+        source = stream.get("processed_index") if extend else stream.get("index")
+        if source is None:
+            continue
+        if source in removed:
+            pins[stream["index"]] = None
+        elif source in mapping:
+            pins[stream["index"]] = mapping[source]
+    return pins
+
+
+def _keep_reencoded_lost(
+    matches: list[tuple[dict, int | None]],
 ) -> list[tuple[dict, int | None]]:
     """
-    Count a re-encoded track as lost, whatever the matching says.
+    Keep a track an older version re-encoded counted as lost, whatever the
+    matching says.
 
-    A job's corrupt-audio retry re-encodes every kept audio track to AAC
-    (worker._make_audio_transcode_decision). When the original was AAC
-    too, the re-encode has the same codec, channels and sample rate, so
-    matching pairs the two and nothing is stored — and a revert brings
-    back the lossy copy under the original's name. The bytes the original
-    had are only in the file this run was handed, so the track is lost
-    from the point of view of a revert, and stored from there.
-
-    reencoded holds input stream indices. On a first job that is the
-    manifest stream's own index; on a later one, the processed_index the
-    previous capture recorded against the file this job was handed.
-
-    Each such stream is marked "reencoded" in the manifest, and a marked
-    stream is never paired with a later file again. Otherwise the next job
-    would match its stored original against the file's re-encode, and
-    _reannotate would drop the stored copy in favour of the file's.
+    A job whose audio could not be copied used to be run again with every
+    kept audio track re-encoded to AAC, and capture marked each such stream
+    "reencoded" in the manifest and stored its original. Nothing re-encodes
+    now (worker._explain_failure), so the mark is no longer written, but a
+    revert point recorded then still carries it. When the original was AAC
+    too, the re-encode in the file has the same codec, channels and sample
+    rate, so matching would pair the two on the next job, and _reannotate
+    would drop the stored original in favour of the file's lossy copy. A
+    marked stream is never paired with a later file.
     """
-    out = []
-    for stream, index in matches:
-        source_index = stream.get("processed_index") if extend else stream.get("index")
-        if source_index is not None and source_index in reencoded:
-            stream["reencoded"] = True
-        out.append((stream, None if stream.get("reencoded") else index))
-    return out
+    return [(stream, None if stream.get("reencoded") else index)
+            for stream, index in matches]
 
 
 def _reannotate(
@@ -529,17 +552,21 @@ async def capture(
     job_id: int,
     app_cfg: dict,
     forge: bool = False,
-    reencoded: frozenset[int] = frozenset(),
+    removed: frozenset[int] | None = None,
 ) -> tuple[CapturedRevertPoint | None, str | None]:
     """
     Produce a sidecar for whatever this job destroyed.
 
     forge marks an AC3 Forge run rather than a queue job. It rewrites the
-    file in place just as a job does, so it goes through here too; the flag
-    only changes the sidecar's name and the log lines.
+    file in place just as a job does, so it goes through here too. The flag
+    changes the sidecar's name and the log lines, and a Forge run with no
+    usable point to extend records none (see where it returns early).
 
-    reencoded is the input stream indices this run re-encoded rather than
-    copied — see _unmatch_reencoded.
+    removed is the input stream indices this run dropped or extracted. Given,
+    each kept track is followed to where the job put it rather than matched
+    by its metadata (_pins, match_streams' pinned). None matches every
+    stream from the files alone, as an AC3 Forge run does: it rewrites no
+    track's language, which is what the matching cannot see past.
 
     Returns (captured, error). A non-None error is returned straight to the
     staging hook and aborts the run with the source file untouched; it is
@@ -566,6 +593,23 @@ async def capture(
         # ignored: `extend` decides what to build FROM, `existing` decides
         # which row to write back to.
         extend = existing is not None and existing.usable
+
+        # An AC3 Forge run only keeps a revert point up to date; it never
+        # starts one. Adding an AC3 loses nothing, and undoing one removes
+        # only the track Forge itself added. With no point to build on, the
+        # file an undo is handed is the forged one, and taking that as the
+        # original recorded Forge's own AC3 as an original track, stored it,
+        # and a restore put back the AC3 the user had just undone. A point
+        # that cannot be built on is left as it is, as an add always left
+        # it, rather than replaced by one anchored to the forged file.
+        #
+        # A point that exists and is usable is extended as for a job. When
+        # its original already held a forged AC3 (forged, then processed),
+        # undoing that AC3 stores it: the point describes the file as it
+        # was before the job, and that file had it.
+        if forge and not extend:
+            logger.info("%s: no revert point to keep up to date", label)
+            return None, None
 
         if not extend:
             # Either this file's first job, or one whose existing point
@@ -604,8 +648,21 @@ async def capture(
             manifest = existing.manifest
             container = manifest.get("container")
 
-        matches = _unmatch_reencoded(
-            match_streams(manifest, produced_probe), reencoded, extend=extend)
+        pinned = None
+        if removed is not None:
+            if extend:
+                # Only a first job has the file it was handed probed already.
+                try:
+                    input_probe = await _off_loop(probe_file, input_path)
+                except ProbeError as exc:
+                    raise _Unavailable(
+                        f"Could not probe for a revert point: {exc}"
+                    ) from exc
+            else:
+                input_probe = original_probe
+            pinned = _pins(manifest, input_probe, produced_probe, removed, extend=extend)
+        matches = _keep_reencoded_lost(
+            match_streams(manifest, produced_probe, pinned))
         lost = [stream for stream, index in matches if index is None]
 
         # IMPOSSIBLE, not UNAVAILABLE — see the module docstring.

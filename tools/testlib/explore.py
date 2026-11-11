@@ -14,8 +14,10 @@ Each profile is checked against invariants instead:
      exception. A scan error is expected only on a file ffprobe cannot read.
   2. Every output probes, and its video and audio decode without an error.
   3. Every input stream is in the output, dropped by a planned action or
-     extracted to a sidecar, and the chapters survive. Losses the project has
-     already decided on are listed separately with where that is recorded.
+     extracted to a sidecar, and the chapters survive. Every stream kept
+     holds what it held: the same packets, or the same decoded frames.
+     Losses the project has already decided on are listed separately with
+     where that is recorded.
   4. Every kept audio and subtitle track carries the language the plan gave
      it: the Fix target if there is one, otherwise its own tag.
   5. Each extraction adds exactly one sidecar, and an existing sidecar's text
@@ -23,7 +25,8 @@ Each profile is checked against invariants instead:
   6. Nothing outside a processed file and its sidecars changes: files sent to
      review, skipped or excluded keep every byte.
   7. A full rescan afterwards queues nothing for a file that was processed
-     or had nothing to do.
+     or had nothing to do, or whose job failed because its audio cannot be
+     copied.
   8. No temp file is left behind, and the source is gone only when the
      container changed.
 
@@ -44,12 +47,14 @@ function and the worker runs the Forge jobs:
 
  20. Every add succeeds, and nothing logs an exception.
  21. The file gains exactly one AC3 5.1 carrying Forge's marker, after the
-     last audio track, and every other stream is as it was.
+     last audio track, and every other stream is as it was, packet for
+     packet.
  22. The forged file probes and decodes cleanly.
  23. A full rescan queues nothing for a forged file that had nothing left
      to do before the forge.
  24. With the runner's _forge_undo choice, every add is undone the same
-     way, and the file is back to exactly the streams it had before.
+     way, and the file is back to exactly the streams it had before,
+     packet for packet.
  25. No Forge temp file or unfinished Forge job is left, and nothing in
      the library changed but the forged files.
 
@@ -61,12 +66,15 @@ revert route refuses one), and:
      can hold: anything but an attachment. With revert off, none has one.
  10. Every restore succeeds, onto the original name and extension, and a
      converted output goes away.
- 11. The restored file matches the original stream for stream, and an
-     MP4's fast-start layout matches too.
+ 11. The restored file matches the original stream for stream, in what
+     each stream says it is and in what it holds (its packets, or the same
+     decoded frames), and an MP4's fast-start layout matches too.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
- 14. A full rescan plans the restored file exactly as it planned the
-     original.
+ 14. A revert leaves no answer or confirmation stored for the file, and a
+     full rescan then decides the restored file exactly as the first scan
+     decided the original, before any question was answered: the same
+     queue item, plan, review questions and Language Review questions.
  15. The point is spent: no row, no sidecar, no temp file left, and no
      Forge job on the file still marked a success.
 
@@ -157,6 +165,11 @@ IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
 # Losses the project has decided to accept, keyed by stream kind. Each is
 # listed in the report rather than counted as a finding, with where the
 # decision is written down.
+# A job whose audio cannot be copied fails and leaves the file alone, as
+# nothing is re-encoded to get past it.
+_UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, "
+                     '"Nothing is ever re-encoded"; app/core/worker.py, _explain_failure')
+
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
                   "attachment map in build_ffmpeg_command",
@@ -264,6 +277,119 @@ def decode_errors(path: str) -> str:
     return r.stderr.strip() or (f"exit {r.returncode}" if r.returncode else "")
 
 
+def stream_hashes(path: str, info: dict | None) -> list[str] | None:
+    """
+    One checksum per stream of what the stream holds, in stream order: its
+    packets as they are stored, or an attachment's data. None when they
+    cannot all be taken.
+
+    A stream's tags and flags say what it claims to be; this says what it
+    is. The two can part: a revert that put one subtitle's text in two
+    slots gave every stream the right codec, language and flags, written
+    from the manifest, and passed every comparison made on those.
+
+    Packets come from FFmpeg's streamhash muxer, one line per stream, in
+    one run. An attachment has no packets, so every one hashes alike there;
+    ffprobe hashes the data it carries in their place.
+    """
+    if info is None:
+        return None
+    streams = info["streams"]
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-v", "error", "-i", path, "-map", "0", "-c", "copy",
+         "-f", "streamhash", "-hash", "md5", "-"],
+        capture_output=True, text=True)
+    packets: dict[int, str] = {}
+    for line in r.stdout.splitlines():
+        index, _, rest = line.strip().partition(",")
+        _type, _, digest = rest.partition(",")
+        if index.isdigit() and digest.startswith("MD5="):
+            packets[int(index)] = digest
+    if r.returncode != 0 or sorted(packets) != list(range(len(streams))):
+        return None
+    hashes = [packets[i] for i in range(len(streams))]
+    attached = [i for i, st in enumerate(streams) if st.get("codec_type") == "attachment"]
+    if attached:
+        p = subprocess.run(
+            [FFPROBE, "-v", "error", "-show_entries", "stream=index,extradata_hash",
+             "-show_data_hash", "md5", "-of", "json", path],
+            capture_output=True, text=True)
+        try:
+            data = {st.get("index"): st.get("extradata_hash")
+                    for st in json.loads(p.stdout or "{}").get("streams", [])}
+        except ValueError:
+            return None
+        for i in attached:
+            if not data.get(streams[i].get("index")):
+                return None
+            hashes[i] = "data " + data[streams[i]["index"]]
+    return hashes
+
+
+def decoded_hash(path: str, index: int) -> str | None:
+    """A checksum of one video or audio stream's decoded frames."""
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-v", "error", "-i", path, "-map", f"0:{index}",
+         "-f", "md5", "-"],
+        capture_output=True, text=True)
+    line = r.stdout.strip()
+    return line if r.returncode == 0 and line.startswith("MD5=") else None
+
+
+def content_differences(streams: list[dict], was: list[str], now: list[str],
+                        in_place: bool, decoded=None) -> tuple[list[int], list[int]]:
+    """
+    Which of a file's earlier streams no longer hold what they held:
+    (differing, repackaged), as indices into `streams`, the earlier file's.
+    `was` and `now` are stream_hashes() of the earlier and the later file.
+
+    in_place says the two files list the same streams in the same order, so
+    each is compared with the one in its position. Otherwise the layouts
+    differ in some way a signature check has already judged (a Matroska
+    cover that came back as a video track, or a finding of its own), and
+    all that is asked is that what each earlier stream held is still
+    somewhere in the later file.
+
+    decoded(index) gives the two files' decoded checksums for a stream, and
+    is asked only in place, about a video or audio stream whose packets
+    differ. Equal, the stream is repackaged rather than differing: it
+    decodes to the same frames. Seen with H.264 that a job moved from
+    MPEG-TS to MP4 and a revert moved back (the generated library's files
+    19 and 20): every NAL unit was the same, but going back to MPEG-TS
+    FFmpeg writes start codes of its own lengths, four bytes on a packet's
+    first unit and on a parameter set and three on the rest (count_or_copy
+    in libavcodec/bsf/h264_mp4toannexb.c, FFmpeg 8.1).
+    """
+    if not in_place:
+        missing = Counter(was) - Counter(now)
+        differing = []
+        for i, h in enumerate(was):
+            if missing[h] > 0:
+                missing[h] -= 1
+                differing.append(i)
+        return differing, []
+    differing, repackaged = [], []
+    for i, (a, b) in enumerate(zip(was, now)):
+        if a == b:
+            continue
+        if decoded is not None and streams[i].get("codec_type") in ("video", "audio"):
+            before, after = decoded(i)
+            if before is not None and before == after:
+                repackaged.append(i)
+                continue
+        differing.append(i)
+    return differing, repackaged
+
+
+def _content_finding(streams: list[dict], differing: list[int], in_place: bool,
+                     now: str, was: str) -> str:
+    names = ", ".join(f"stream {i} ({streams[i].get('codec_type')} "
+                      f"{streams[i].get('codec_name')})" for i in differing)
+    if in_place:
+        return f"{names}: holds different content {now} than {was}"
+    return f"{names}: what it held {was} is nowhere in the file {now}"
+
+
 def kind(stream: dict) -> str | None:
     t = stream.get("codec_type")
     if t == "video":
@@ -353,6 +479,9 @@ def run_child(spec_path: str) -> None:
 
     before = inventory(lib)
     probes_before = {rel: probe(str(lib / rel)) for rel in before}
+    # For check 11: what each stream holds, before any job.
+    hashes_before = {rel: stream_hashes(str(lib / rel), info)
+                     for rel, info in probes_before.items()}
     # For check 11: whether each MP4 starts with its moov, before any job.
     from app.core.probe import is_faststart_mp4
     faststart_before = {r: is_faststart_mp4(str(lib / r)) for r, info in probes_before.items()
@@ -367,6 +496,8 @@ def run_child(spec_path: str) -> None:
         scan = scanner.scan_library(db, [str(lib)], force_probe=True)
         timings["scan"] = round(time.monotonic() - t, 2)
         source_of = {m.id: m.path for m in db.query(MediaFile)}
+        # For check 14, before any question is answered.
+        first_scan = {m.id: _scan_outcome(db, m.id) for m in db.query(MediaFile)}
 
     async def drain():
         loop = asyncio.get_running_loop()
@@ -431,6 +562,7 @@ def run_child(spec_path: str) -> None:
                      "jobs": [j.status for j in jobs]}
             if media.id in answered:
                 entry["answered"] = answered[media.id]
+            entry["first_scan"] = first_scan.get(media.id)
             files.append(entry)
             for j in jobs:
                 if j.status in ("success", "manual_review", "skipped"):
@@ -443,6 +575,12 @@ def run_child(spec_path: str) -> None:
                                   "why": f"{taken} already existed: app/core/worker.py, "
                                          "_output_name_taken"})
                     entry["refused"] = True
+                    continue
+                if j.status == "failed" and error.startswith(worker.UNCOPYABLE_AUDIO):
+                    known.append({"file": rel(source), "lost": "job refused",
+                                  "why": _UNCOPYABLE_AUDIO})
+                    entry["refused"] = True
+                    entry["uncopyable_audio"] = True
                     continue
                 find(1, source, f"job {j.status}: {error[:300]}")
             done = [j for j in jobs if j.status == "success"]
@@ -463,7 +601,9 @@ def run_child(spec_path: str) -> None:
             entry["plan"] = _plan_of(actions)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
-                             cfg, canonical, allowed_changes, entry, several)
+                             cfg, canonical, allowed_changes, entry, several,
+                             hashes_before.get(rel(source)),
+                             Path(spec["library"]) / rel(source))
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -490,9 +630,13 @@ def run_child(spec_path: str) -> None:
 
     # 7. A full rescan queues nothing for a file that was processed or had
     # nothing to do. A failed job is left out: a full scan decides every
-    # file again, so it queues a failed one again, which is how it is retried.
+    # file again, so it queues a failed one again, which is how it is
+    # retried. Except a job that failed because its audio cannot be copied:
+    # it would only fail again, so a scan holds the file back
+    # (scanner._held_back).
     settled = {e["id"] for e in files
-               if e["jobs"] and e["jobs"][-1] in ("success", "skipped")}
+               if e["jobs"] and (e["jobs"][-1] in ("success", "skipped")
+                                 or e.get("uncopyable_audio"))}
     with S.SessionLocal() as db:
         known_jobs = {q.id for q in db.query(QueueItem)}
         rescan = scanner.scan_library(db, [str(lib)], force_probe=True)
@@ -508,7 +652,7 @@ def run_child(spec_path: str) -> None:
 
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
-        faststart_before, rel, collect,
+        faststart_before, rel, collect, hashes_before, Path(spec["library"]),
     )
 
     result = {
@@ -522,6 +666,8 @@ def run_child(spec_path: str) -> None:
         "temp_left": {k: v for k, v in temp_left.items() if v},
         "choices": choices,
         "several_jobs": [e["file"] for e in files if e.get("several_jobs")],
+        "repackaged": [{"file": e["file"], "by": by, "streams": streams}
+                       for e in files for by, streams in (e.get("repackaged") or {}).items()],
         "files": [{k: v for k, v in e.items() if k not in ("id", "source", "plan", "touched")}
                   for e in files],
         "logged_errors": [r for r in collect.records
@@ -561,12 +707,14 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
         for item in get_candidates(db, limit=10000)["items"]:
             media = db.get(MediaFile, item["id"])
             pre = probe(media.path)
+            pre_holds = stream_hashes(media.path, pre)
             try:
                 job = add_to_queue(QueueForgeRequest(file_id=media.id), db)
             except HTTPException as exc:
                 find(20, media.path, f"a Forge candidate was refused: {exc.detail}")
                 continue
-            added[media.id] = {"job": job["id"], "path": media.path, "pre": pre}
+            added[media.id] = {"job": job["id"], "path": media.path, "pre": pre,
+                               "pre_holds": pre_holds}
     asyncio.run(run_forge_jobs())
 
     forged = []
@@ -609,6 +757,19 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
             if rest != was:
                 find(21, j["path"], "beside the AC3: " + _first_difference(
                     was, rest, now="after the add", was="before"))
+            # What each holds too, packet for packet: the add copies them.
+            holds = stream_hashes(j["path"], post)
+            if j["pre_holds"] is None or holds is None:
+                find(21, j["path"], "could not checksum the streams of the file "
+                                    f"{'before' if j['pre_holds'] is None else 'after'} the add")
+            else:
+                differing, _ = content_differences(
+                    j["pre"]["streams"], j["pre_holds"],
+                    [h for i, h in enumerate(holds) if i != marked[0]], rest == was)
+                if differing:
+                    find(21, j["path"], "beside the AC3: " + _content_finding(
+                        j["pre"]["streams"], differing, rest == was,
+                        "after the add", "before"))
             j["post"] = post
 
     # 23. A rescan queues nothing for a forged file that had nothing left to
@@ -657,6 +818,18 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
                     if now != was:
                         find(24, j["path"], _first_difference(
                             was, now, now="after the undo", was="before the add"))
+                    holds = stream_hashes(j["path"], post)
+                    if j["pre_holds"] is None or holds is None:
+                        if j["pre_holds"] is not None:   # check 21 said so otherwise
+                            find(24, j["path"], "could not checksum the streams of "
+                                                "the file after the undo")
+                    else:
+                        differing, _ = content_differences(
+                            j["pre"]["streams"], j["pre_holds"], holds, now == was)
+                        if differing:
+                            find(24, j["path"], _content_finding(
+                                j["pre"]["streams"], differing, now == was,
+                                "after the undo", "before the add"))
 
     # 25. Nothing left over: no Forge temp file, no job still on its way,
     # and nothing in the library changed but the forged files.
@@ -886,6 +1059,40 @@ def _check_answers_stick(find, db, files, source_of):
                                f"{sorted(again)} again")
 
 
+def _scan_outcome(db, file_id: int) -> dict:
+    """
+    What a scan decided for a file and asks of the user (check 14): its
+    waiting queue item's status and plan, the subtitles a review asks
+    about, and its Language Review questions.
+    """
+    from app.api.routes.queue import _flagged_entries
+    from app.database.models import (AudioLanguageFlag, PlannedAction, QueueItem,
+                                     SubtitleLanguageFlag)
+
+    item = (db.query(QueueItem)
+            .filter(QueueItem.file_id == file_id,
+                    QueueItem.status.in_(["pending", "manual_review"]))
+            .order_by(QueueItem.id.desc()).first())
+    plan = review = None
+    if item is not None:
+        plan = _plan_of(db.query(PlannedAction)
+                        .filter(PlannedAction.queue_item_id == item.id)
+                        .order_by(PlannedAction.order).all())
+        if item.status == "manual_review":
+            review = sorted(_flagged_entries(item))
+    return {
+        "item": item.status if item else None,
+        "plan": plan,
+        "review": review,
+        "audio questions": sorted(
+            f.stream_index for f in db.query(AudioLanguageFlag)
+            .filter(AudioLanguageFlag.file_id == file_id)),
+        "subtitle questions": sorted(
+            f.stream_index for f in db.query(SubtitleLanguageFlag)
+            .filter(SubtitleLanguageFlag.file_id == file_id)),
+    }
+
+
 def _plan_of(actions) -> list[list]:
     """A job's planned actions, as check 14 compares them."""
     return [[a.action_type, a.track_type, a.stream_index, a.target_language]
@@ -911,7 +1118,8 @@ def _without_attached_pic(sig: tuple) -> tuple:
 
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
-                        probes_before, faststart_before, rel, collect) -> int:
+                        probes_before, faststart_before, rel, collect,
+                        hashes_before, pristine) -> int:
     """
     Phase 2: restore every revert point through the app's own
     restore_revert_point, then check the round trip (checks 9 to 15).
@@ -919,20 +1127,19 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     """
     import asyncio
 
-    from app.api.routes.queue import _flagged_entries
     from app.api.routes.revert import _ACTIVE_QUEUE_STATES
     from app.core import scanner
     from app.core.probe import is_faststart_mp4
     from app.core.revert_restore import restore_revert_point
     from app.database import session as S
-    from app.database.models import Ac3ForgeJob, PlannedAction, QueueItem, RevertPoint
+    from app.database.models import Ac3ForgeJob, MediaFile, QueueItem, RevertPoint
 
     enabled = bool(cfg.get("revert_enabled"))
     by_id = {e["id"]: e for e in files}
     with S.SessionLocal() as db:
-        points = [(p.id, p.file_id, p.sidecar_path, p.manifest)
+        points = [(p.id, p.file_id, p.sidecar_path)
                   for p in db.query(RevertPoint).order_by(RevertPoint.id)]
-    with_point = {file_id for _, file_id, _, _ in points}
+    with_point = {file_id for _, file_id, _ in points}
 
     # 9. A point exactly when one should be.
     for e in files:
@@ -960,16 +1167,11 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     pre_revert = inventory(lib)
     first_record = len(collect.records)
     reverted = []
-    for point_id, file_id, sidecar, manifest in points:
+    for point_id, file_id, sidecar in points:
         e = by_id.get(file_id)
         if e is None or "source" not in e:
             continue
         source = e["source"]
-        # For check 14: answered tracks the revert brings back from the
-        # sidecar. Their answers do not come back with them, by design.
-        from_sidecar = {s["index"] for s in json.loads(manifest or "{}").get("streams", [])
-                        if s.get("processed_index") is None}
-        e["answers_dropped"] = sorted(from_sidecar & _answered_streams(e))
         # The revert route refuses a file that is queued, and check 7's
         # rescan can have queued it again; that is reported there.
         with S.SessionLocal() as db:
@@ -1023,6 +1225,31 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             continue
         want = [_signature(s) for s in original["streams"]]
         got = [_signature(s) for s in info["streams"]]
+        # And what each stream holds. Video or audio whose packets differ
+        # is decoded, against the library the run was given: the original
+        # here is gone, and that copy is the same file while its checksum
+        # says so.
+        held = hashes_before.get(rel(source))
+        holds = stream_hashes(restored, info)
+        if held is None or holds is None:
+            find(11, source, "could not checksum the streams of "
+                             f"{'the original' if held is None else 'the restored file'}")
+        else:
+            kept_copy = pristine / rel(source)
+
+            def decoded(i, kept_copy=kept_copy, source=source, restored=restored):
+                if not kept_copy.is_file() or sha(kept_copy) != before.get(rel(source)):
+                    return None, None
+                return decoded_hash(str(kept_copy), i), decoded_hash(restored, i)
+
+            differing, repackaged = content_differences(
+                original["streams"], held, holds, want == got, decoded)
+            if differing:
+                find(11, source, _content_finding(
+                    original["streams"], differing, want == got,
+                    "after the revert", "in the original"))
+            if repackaged:
+                e.setdefault("repackaged", {})["revert"] = repackaged
         if want != got:
             # A Matroska cover comes back as a video track, which can also
             # move it ahead of the attachments that followed it.
@@ -1090,38 +1317,38 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
     if tmp.exists() and any(p.is_file() for p in tmp.rglob("*")):
         find(15, "temp folder", "temp file(s) left behind after the reverts")
 
-    # 14. A rescan decides each restored file as it decided the original.
+    # 14. A revert forgets every answer and confirmation stored for the file
+    # (revert_restore._apply), so a rescan decides the restored file as the
+    # first scan decided the original, before any question was answered.
+    # Files with several jobs included: whatever ran, the revert put back
+    # the original that scan was made on.
     with S.SessionLocal() as db:
-        queued_before = {q.id for q in db.query(QueueItem)}
+        for e in reverted:
+            media = db.get(MediaFile, e["id"])
+            left = [a for a in scanner.ANSWER_COLUMNS + scanner.CONFIRMATION_COLUMNS
+                    if getattr(media, a)]
+            if left:
+                find(14, e["source"], f"the revert left {', '.join(left)} stored")
+        # Nothing waits for a restored file before the rescan (the revert
+        # route refuses a queued file), so whatever waits after it is the
+        # rescan's. Told apart by status, not by id: the rescan deletes the
+        # file's stale skipped record (scanner._clear_stale_status_records)
+        # and SQLite gives the row it adds the same id when that record was
+        # the newest, as it is in a one-file library.
+        waiting = {e["id"] for e in reverted if _scan_outcome(db, e["id"])["item"]}
         scanner.scan_library(db, [str(lib)], force_probe=True)
         for e in reverted:
-            fresh = [q for q in db.query(QueueItem).filter(QueueItem.file_id == e["id"])
-                     .order_by(QueueItem.id) if q.id not in queued_before]
-            if not fresh:
+            if e["id"] in waiting:
+                find(14, e["source"], "the restored file was queued before the rescan")
+                continue
+            now, first = _scan_outcome(db, e["id"]), e["first_scan"]
+            if now["item"] is None:
                 find(14, e["source"], "a rescan did not queue the restored file again")
                 continue
-            actions = db.query(PlannedAction).filter(
-                PlannedAction.queue_item_id == fresh[-1].id
-            ).order_by(PlannedAction.order).all()
-            dropped = set(e.get("answers_dropped", []))
-            plan = _plan_of(actions)
-            if fresh[-1].status == "manual_review":
-                asked = set(_flagged_entries(fresh[-1])) or dropped
-                if dropped and asked <= dropped:
-                    known.append({"file": rel(e["source"]), "lost": "answer asked again",
-                                  "why": _ANSWERS_FROM_SIDECAR})
-                else:
-                    find(14, e["source"], "a rescan made the restored file manual_review")
-            elif fresh[-1].status != "pending":
-                find(14, e["source"], f"a rescan made the restored file {fresh[-1].status}")
-            elif plan != e["plan"]:
-                differs = _differing_streams(plan, e["plan"])
-                if dropped and differs - {None} and differs - {None} <= dropped:
-                    known.append({"file": rel(e["source"]), "lost": "answer not carried back",
-                                  "why": _ANSWERS_FROM_SIDECAR})
-                else:
-                    find(14, e["source"], f"a rescan plans {plan}, "
-                                          f"the original was planned {e['plan']}")
+            for what in now:
+                if now[what] != first[what]:
+                    find(14, e["source"], f"a rescan gives {what} {now[what]}, "
+                                          f"the first scan gave {first[what]}")
     return len(reverted)
 
 
@@ -1138,29 +1365,6 @@ def _point_unavailable(collect, source: str) -> str | None:
             reason = rec["message"].split(marker, 1)[1]
             return re.sub(r" @ 0x[0-9a-f]+", "", reason).splitlines()[0][:160]
     return None
-
-
-_ANSWERS_FROM_SIDECAR = ("a track the revert brings back from the sidecar has its "
-                         "question asked again: app/core/revert_restore.py, _apply; "
-                         "look-alike tracks are stored whole, app/core/revert.py, "
-                         "match_streams")
-
-
-def _answered_streams(e: dict) -> set[int]:
-    answers = e.get("answered") or {}
-    return {int(s) for key in ("subtitle", "audio_language", "subtitle_language")
-            for s in answers.get(key) or {}}
-
-
-def _differing_streams(a: list, b: list) -> set:
-    """Stream indices whose planned actions differ between two plans."""
-    def by_stream(plan):
-        out: dict = {}
-        for action in plan:
-            out.setdefault(action[2], []).append(action)
-        return out
-    x, y = by_stream(a), by_stream(b)
-    return {k for k in set(x) | set(y) if x.get(k) != y.get(k)}
 
 
 def _first_difference(want: list, got: list, now: str = "after the revert",
@@ -1188,7 +1392,8 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
-                     before, after, cfg, canonical, allowed_changes, entry, several=False):
+                     before, after, cfg, canonical, allowed_changes, entry, several=False,
+                     source_holds=None, kept_copy=None):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -1261,6 +1466,8 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     ch_after = len(info_after.get("chapters") or [])
     if ch_before != ch_after:
         find(3, source, f"chapters {ch_before} -> {ch_after}")
+    _check_kept_content(find, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, entry)
 
     # 4. Languages as planned, matched in order within each kind.
     def lang(s):
@@ -1291,6 +1498,70 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     for p in set(srt_after) - set(srt_before):
         if not (lib / p).stat().st_size:
             find(5, source, f"empty sidecar {Path(p).name}")
+
+
+def _check_kept_content(find, lib, source, output, expected, info_before,
+                        info_after, source_holds, kept_copy, before, entry):
+    """
+    Check 3's second half: every stream the job kept holds what it held.
+
+    Kept streams are paired with the output's as check 3 counts them, by
+    kind and in order, which is how build_ffmpeg_command writes them. A
+    kind whose count is off has been reported, or accepted, just above, and
+    is left out: its positions say nothing.
+
+    A job copies what it keeps, so packets are compared first. Where video
+    or audio differs, both are decoded, the source from the library the
+    run was given, as the job may have removed its own. The same frames
+    pass, and the stream is listed as repackaged. MPEG-TS into MP4 does
+    this (the generated library's files 19 and 20): the MP4 muxer stores
+    H.264 with length prefixes where MPEG-TS has start codes
+    (ff_nal_parse_units, from mov_write_packet), and AAC without its ADTS
+    headers (aac_adtstoasc, added by mov_check_bitstream; both in
+    libavformat/movenc.c, FFmpeg 8.1). Anything else is a finding: nothing
+    in the pipeline re-encodes.
+
+    Subtitles, covers and attachments must match as stored: the pipeline
+    never converts a subtitle it keeps (a text subtitle MP4 cannot hold
+    keeps the file as MKV; decision.MP4_INCOMPATIBLE_SUBS).
+    """
+    name = Path(output).name
+    holds = stream_hashes(output, info_after)
+    if source_holds is None or holds is None:
+        find(3, source, "could not checksum the streams of "
+                        f"{'the source' if source_holds is None else name}")
+        return
+    at_before = {id(s): i for i, s in enumerate(info_before["streams"])}
+    at_after = {id(s): i for i, s in enumerate(info_after["streams"])}
+    pristine: list[bool] = []       # worked out once, and only if needed
+
+    def source_is_pristine() -> bool:
+        if not pristine:
+            pristine.append(kept_copy is not None and kept_copy.is_file() and
+                            sha(kept_copy) == before.get(Path(source).relative_to(lib).as_posix()))
+        return pristine[0]
+
+    differing, repackaged = [], []
+    for k in sorted({kk for kk, _ in expected}):
+        kept = [s for kk, s in expected if kk == k]
+        out = [s for s in info_after["streams"] if kind(s) == k]
+        if len(kept) != len(out):
+            continue
+        for src, dst in zip(kept, out):
+            i, o = at_before[id(src)], at_after[id(dst)]
+            if source_holds[i] == holds[o]:
+                continue
+            if k in ("video", "audio") and source_is_pristine():
+                was = decoded_hash(str(kept_copy), i)
+                if was is not None and was == decoded_hash(output, o):
+                    repackaged.append(i)
+                    continue
+            differing.append(i)
+    if differing:
+        find(3, source, _content_finding(info_before["streams"], differing, True,
+                                         f"in {name}", "in the source"))
+    if repackaged:
+        entry.setdefault("repackaged", {})["job"] = sorted(repackaged)
 
 
 # ── The parent: run the profiles, report ────────────────────────────────────
@@ -1391,6 +1662,17 @@ def main() -> int:
         print(f"\nAccepted losses ({len(known)} distinct, not counted):")
         for (file, lost, why), names in sorted(known.items()):
             print(f"  {file}: {lost} ({why}) in {len(names)} profile(s)")
+    repackaged: dict[tuple, list[str]] = {}
+    for r in results:
+        for k in r.get("repackaged", []):
+            repackaged.setdefault((k["file"], k["by"], tuple(k["streams"])), []
+                                  ).append(r["profile"])
+    if repackaged:
+        print(f"\nRepackaged ({len(repackaged)} distinct, not counted): "
+              "different packets that decode to the same frames")
+        for (file, by, streams), names in sorted(repackaged.items()):
+            print(f"  {file}: stream(s) {', '.join(map(str, streams))} by a {by} "
+                  f"in {len(names)} profile(s)")
 
     summary = Path(args.out).resolve() / "summary.json"
     summary.write_text(json.dumps(results, indent=1))

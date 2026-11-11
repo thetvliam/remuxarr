@@ -18,12 +18,14 @@ inconsistency to a later reader, so it is pinned here rather than left to
 the comment.
 
 Ordering matters and is not obvious from either branch alone. This check
-sits above the corrupt-audio retry, and a subtitle cascade frequently
-also emits an aost#/copy muxer line — the audio detector's docstring says
-so explicitly. The same error therefore satisfies both classifiers, and
-which one wins is decided purely by position in the function. Retrying it
-as an audio problem would re-run the whole command, fail identically, and
-still never tell the user about the subtitle.
+sits above the one for audio that cannot be copied, and a subtitle cascade
+frequently also emits an aost#/copy muxer line — the audio detector's
+docstring says so explicitly. The same error therefore satisfies both
+classifiers, and which one wins is decided purely by position in the
+function. Treated as an audio problem, the job would fail saying its audio
+cannot be copied, and never tell the user about the subtitle. (When this
+file was written the audio check was a retry that re-encoded the audio;
+it has since been removed, and the job fails instead.)
 
 Also covered here: _flag_subtitle_encoding_review's commit failure path.
 The flagger is the last step of both routing branches, and it is what
@@ -40,7 +42,8 @@ transaction un-rolled-back. All seven are killed by the tests below.
 
 An eighth — dropping the classifier so every combined failure is routed
 to review — was already killed at baseline, by
-test_audio_transcode_retry.py's combined-path test, since the audio
+test_audio_transcode_retry.py's combined-path test (the file is now
+test_uncopyable_audio.py), since the audio
 failure it drives would be diverted into review. It is recorded here as
 already covered rather than counted as this file's work.
 """
@@ -204,8 +207,8 @@ def test_every_extraction_stream_is_flagged_not_only_the_guilty_one(rig):
 def test_a_flagged_job_does_not_continue_down_the_branch(rig):
     """
     Everything below this point assumes a result worth acting on. Falling
-    through would run the audio-retry check against the cascade and then
-    settle the job as failed, on top of the review just raised.
+    through would settle the job as failed, on top of the review just
+    raised.
     """
     combined_job(rig, extraction(2, "/media/Show.eng.srt"))
     rig.results = [outcome(rig, False, CASCADE)]
