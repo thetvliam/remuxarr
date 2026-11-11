@@ -111,15 +111,19 @@ class ForgeResult:
 
 def _title_args(fmt: str, titles: dict[int, str] | None) -> list[str]:
     """
-    -metadata arguments writing each title back, for an MP4 output.
+    -metadata arguments writing each title back, for an MP4 or QuickTime
+    output.
 
     Both forge commands copy every stream, and in an MP4 FFmpeg reads a
     title as the tag "name" but writes one only from "title", so an add or
     an undo on an MP4 dropped every track's title. `titles` maps an output
-    stream index to its title (titles_after_forge). Matroska keeps titles
+    stream index to its title (titles_after_forge). The QuickTime muxer
+    (ffmpeg.output_muxer) is the same code, libavformat/movenc.c, and drops
+    them the same way: once a QuickTime file was written with it, keying
+    this on "mp4" alone lost every title again. Matroska keeps titles
     through a copy, so nothing is written for it.
     """
-    if fmt != "mp4" or not titles:
+    if fmt not in ("mp4", "mov") or not titles:
         return []
     args: list[str] = []
     for index, title in sorted(titles.items()):
@@ -141,8 +145,8 @@ def titles_after_forge(tracks: list[dict],
     Where each titled track will be in a forge command's output, with its
     title.
 
-    Titles are written only for an MP4 (_title_args), which has no
-    attachments or Matroska covers, so both commands map its streams in
+    Titles are written only for an MP4 or a QuickTime file (_title_args),
+    which has no attachments or Matroska covers, so both commands map its streams in
     order and a stream keeps its index; an undo removes one audio stream,
     and every stream after it moves down one. `removed_audio_index` is that
     stream's position among the audio tracks (the -0:a:N of
