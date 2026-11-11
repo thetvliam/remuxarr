@@ -52,6 +52,7 @@ been renamed too.
 
 import json
 import logging
+import asyncio
 import os
 from dataclasses import dataclass
 
@@ -61,7 +62,8 @@ from app.core.ffmpeg import (
     _pick_temp_dir,
     build_restore_command,
 )
-from app.core.probe import ProbeError, extract_format_info, extract_tracks, probe_file
+from app.core.probe import (ProbeError, chapter_track_indices, extract_format_info,
+                            extract_tracks, probe_file)
 from app.core.recycle import delete_sidecar
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 
@@ -459,9 +461,21 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         _pick_temp_dir(plan.current_path), f"revert_{point_id}.remuxarr_tmp"
     )
 
+    # The processed file's chapter track, which the restore leaves out
+    # (build_restore_command). Read from the file, not the manifest, so a
+    # point recorded before chapters were probed is covered too. A file
+    # that cannot be probed here is left to FFmpeg to refuse.
+    try:
+        chapter_tracks = chapter_track_indices(
+            await asyncio.get_running_loop().run_in_executor(
+                None, probe_file, plan.current_path, app_settings.FFPROBE_PATH))
+    except ProbeError:
+        chapter_tracks = []
+
     try:
         cmd = build_restore_command(
             plan.current_path, plan.sidecar_path, temp_output, plan.manifest,
+            chapter_tracks=chapter_tracks,
         )
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))

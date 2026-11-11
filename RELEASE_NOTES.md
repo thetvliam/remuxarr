@@ -62,4 +62,6 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- AC3 Forge and reverting no longer add an extra data track to an MP4 with chapters. Each Forge run, undo or revert on such a file left one more. Files that already have them keep them; they are no longer multiplied.
+- AC3 Forge and reverting work on QuickTime `.mov` files with chapters again. Since the last update they failed on such a file and left it unchanged.
 - AC3 Forge keeps track titles on QuickTime `.mov` files again. Since the last update, which writes those files as QuickTime, adding or undoing an AC3 track on one dropped the name of every track in it. A file it happened to keeps the loss, unless it has a Recycle Bin entry from before the Forge run: reverting that brings the names back.

@@ -605,10 +605,15 @@ def build_restore_command(
     sidecar_path: str,
     output_path: str,
     manifest: dict,
+    chapter_tracks: Sequence[int] = (),
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
     one plus its sidecar.
+
+    chapter_tracks are the processed file's chapter track
+    (probe.chapter_track_indices), which is never copied: -map_chapters
+    writes the chapters, and the muxer a chapter track for them.
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -675,6 +680,20 @@ def build_restore_command(
                 f"Stream {stream.get('index')} is in neither the processed "
                 f"file nor the sidecar."
             )
+
+    # An original MP4's chapter track is in the manifest like any stream,
+    # and the processed file holds the job's copy of it. Copied as well,
+    # it came back as a junk data track beside the chapter track the muxer
+    # writes from the chapters (probe.chapter_track_indices), so a revert
+    # gave back one stream more than the original had. Left out instead:
+    # the original had one chapter track, and the muxer writes one. Only
+    # the processed file's is matched, so a point made before this fix,
+    # whose manifest describes the original, still restores correctly.
+    if chapter_tracks:
+        kept = [(stream, where) for stream, where in zip(streams, located)
+                if not (where[0] == 0 and where[1] in chapter_tracks)]
+        streams = [stream for stream, _ in kept]
+        located = [where for _, where in kept]
 
     paths = [processed_path, sidecar_path]
     openings = _sparse_openings(
@@ -776,7 +795,8 @@ def build_restore_command(
     cmd += ["-c", "copy"] + codecs
     cmd += meta
     cmd += _format_tag_args(manifest)
-    # Chapters survive a remux, so the processed file still has them.
+    # Chapters survive a remux, so the processed file still has them. For
+    # an MP4 the muxer writes their chapter track (see above).
     cmd += ["-map_chapters", "0"]
     # The original's layout: an MP4 recorded as fast-start gets its index
     # back in front. Only True asks; False, None and a manifest from before

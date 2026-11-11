@@ -48,6 +48,10 @@ def probe_file(path: str, ffprobe_bin: str = "ffprobe") -> dict:
     """
     Run ffprobe and return the raw parsed JSON.
     Raises ProbeError on any failure.
+
+    Chapters are asked for so an MP4's chapter track can be told apart
+    (chapter_track_indices). Before that, nothing asked, so every revert
+    manifest recorded 0 chapters whatever the file had.
     """
     cmd = [
         ffprobe_bin,
@@ -55,6 +59,7 @@ def probe_file(path: str, ffprobe_bin: str = "ffprobe") -> dict:
         "-print_format", "json",
         "-show_format",
         "-show_streams",
+        "-show_chapters",
         path,
     ]
     try:
@@ -241,6 +246,40 @@ def is_quicktime(probe_data: dict | None) -> bool:
     """
     tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
     return tags.get("major_brand") == QUICKTIME_BRAND
+
+
+# The sample entries an MP4 or QuickTime chapter track carries: QuickTime
+# text, which FFmpeg's muxer writes, and 3GPP timed text.
+CHAPTER_TRACK_TAGS = frozenset({"text", "tx3g"})
+
+
+def chapter_track_indices(probe_data: dict | None) -> list[int]:
+    """
+    The streams that are an MP4's or QuickTime file's chapter track.
+
+    The chapters themselves are read from that track, and FFmpeg shows the
+    track as well, as a data stream of codec bin_data (mov_read_chapters
+    in libavformat/mov.c, FFmpeg 8.1.3, which makes any text chapter track
+    one). A command copying every stream copied it, as bin_data under the
+    only tag the muxer has for that codec, "gpmd" (GoPro metadata), while
+    the muxer wrote the chapters as a fresh chapter track of its own
+    (mov_create_chapter_track in movenc.c). So each AC3 Forge run and each
+    revert on an MP4 with chapters added one junk data track. Commands
+    writing an MP4 or a QuickTime file leave these streams out; chapters
+    are written from the chapter list, which -map_chapters copies by
+    default.
+
+    Only in a file with chapters, and only a bin_data stream with a text
+    sample entry. A real GoPro track is bin_data too, tagged "gpmd", and so
+    are the junk tracks those runs left; neither is a chapter track, and
+    both are copied as they are.
+    """
+    if not (probe_data or {}).get("chapters"):
+        return []
+    return [stream["index"] for stream in probe_data.get("streams", [])
+            if stream.get("codec_type") == "data"
+            and stream.get("codec_name") == "bin_data"
+            and stream.get("codec_tag_string") in CHAPTER_TRACK_TAGS]
 
 
 def extract_format_info(probe_data: dict) -> dict:

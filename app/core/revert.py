@@ -126,7 +126,9 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # Recorded, not stored in the sidecar. Chapters survive a remux
         # (verified against the real pipeline), so a revert that rebuilds
         # from the processed file keeps them for free; this is here so a
-        # future check can notice if that ever stops being true.
+        # future check can notice if that ever stops being true. Points
+        # recorded before probe_file asked for chapters hold 0 here,
+        # whatever the file had.
         "chapters": len(probe_data.get("chapters") or []),
         # Runtime, for identifying the file later. Two different releases
         # of the same episode can share every codec, resolution and

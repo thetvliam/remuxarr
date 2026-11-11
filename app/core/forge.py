@@ -40,7 +40,8 @@ from app.config import settings as app_settings
 from app.core.ffmpeg import (
     KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
 )
-from app.core.probe import ProbeError, extract_tracks, is_quicktime, probe_file
+from app.core.probe import (ProbeError, chapter_track_indices, extract_tracks, is_quicktime,
+                            probe_file)
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -139,30 +140,45 @@ def _cover_unmaps(covers: Sequence[CoverArt]) -> list[str]:
     return args
 
 
+def _chapter_track_unmaps(chapter_tracks: Sequence[int]) -> list[str]:
+    """
+    Negative maps leaving an MP4's chapter track out of a "-map 0" copy.
+    Copied, it became a junk data track beside the one the muxer writes
+    from the chapters, one more on every run (probe.chapter_track_indices).
+    """
+    args: list[str] = []
+    for index in chapter_tracks:
+        args += ["-map", f"-0:{index}"]
+    return args
+
+
 def titles_after_forge(tracks: list[dict],
-                       removed_audio_index: int | None = None) -> dict[int, str]:
+                       removed_audio_index: int | None = None,
+                       chapter_tracks: Sequence[int] = ()) -> dict[int, str]:
     """
     Where each titled track will be in a forge command's output, with its
     title.
 
     Titles are written only for an MP4 or a QuickTime file (_title_args),
-    which has no attachments or Matroska covers, so both commands map its streams in
-    order and a stream keeps its index; an undo removes one audio stream,
-    and every stream after it moves down one. `removed_audio_index` is that
-    stream's position among the audio tracks (the -0:a:N of
-    build_undo_command). The AC3 an add appends goes last and has no title.
+    which has no attachments or Matroska covers, so both commands map its
+    streams in order, leaving out only what is gone from the output: the
+    audio stream an undo removes, and the file's chapter track
+    (chapter_tracks; see chapter_track_indices). Every stream after one of
+    those moves down one. `removed_audio_index` is the undone stream's
+    position among the audio tracks (the -0:a:N of build_undo_command). The
+    AC3 an add appends goes last and has no title.
     """
-    removed: int | None = None
+    gone = set(chapter_tracks)
     if removed_audio_index is not None:
         audio = sorted(t["stream_index"] for t in tracks if t["track_type"] == "audio")
         if 0 <= removed_audio_index < len(audio):
-            removed = audio[removed_audio_index]
+            gone.add(audio[removed_audio_index])
     out: dict[int, str] = {}
     for t in tracks:
         index, title = t["stream_index"], t.get("title")
-        if not title or index == removed:
+        if not title or index in gone:
             continue
-        out[index - 1 if removed is not None and index > removed else index] = title
+        out[index - sum(1 for g in gone if g < index)] = title
     return out
 
 
@@ -183,6 +199,7 @@ def build_add_ac3_command(
     titles:            dict[int, str] | None = None,
     covers:            Sequence[CoverArt] = (),
     quicktime:         bool = False,
+    chapter_tracks:    Sequence[int] = (),
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -190,6 +207,9 @@ def build_add_ac3_command(
 
     quicktime says the file is a QuickTime movie, written back with
     FFmpeg's QuickTime muxer so it stays one (ffmpeg.output_muxer).
+
+    chapter_tracks are the file's chapter track, left out of the copy: the
+    muxer writes one from the chapters (probe.chapter_track_indices).
 
     The new AC3 always ends up at output audio index audio_track_count
     (0-based), making the undo index deterministic.
@@ -230,6 +250,7 @@ def build_add_ac3_command(
         "-map", "0",
         "-map", "-0:t",
         *_cover_unmaps(covers),
+        *_chapter_track_unmaps(chapter_tracks),
         "-c", "copy",
         # ── Map the AAC 5.1 a second time and transcode it to AC3 ─────────
         "-map", f"0:{aac_stream_index}",
@@ -284,10 +305,11 @@ def build_undo_command(
     titles:                dict[int, str] | None = None,
     covers:                Sequence[CoverArt] = (),
     quicktime:             bool = False,
+    chapter_tracks:        Sequence[int] = (),
 ) -> list[str]:
     """
-    Copy all streams EXCEPT the AC3 track added by the forge. quicktime as
-    for build_add_ac3_command.
+    Copy all streams EXCEPT the AC3 track added by the forge. quicktime and
+    chapter_tracks as for build_add_ac3_command.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection. covers are left out and attached again,
     as for build_add_ac3_command; a copy alone does not trip the muxer over
@@ -315,6 +337,7 @@ def build_undo_command(
         "-map", "0",
         "-map", f"-0:a:{ac3_audio_output_index}",   # strip the AC3 we added
         *_cover_unmaps(covers),
+        *_chapter_track_unmaps(chapter_tracks),
         "-c", "copy",
         *KEEP_STREAM_FLAGS,
         *cover_attach_args(covers),
@@ -1012,6 +1035,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
         # worker.py) since this function already has the DB session open —
         # mirrors _load_job_data's own pattern in worker.py exactly.
         app_cfg = get_app_settings(db)
+        # From the same probe. Empty for a Matroska file, whose chapters
+        # are no track.
+        chapter_tracks = chapter_track_indices(probe_data)
 
         return {
             "job_id":             job.id,
@@ -1033,7 +1059,9 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "undo_audio_output_index": undo_audio_output_index,
             # Each track's title by its index in the output, which the
             # commands write back for an MP4 (_title_args).
-            "titles":             titles_after_forge(fresh_tracks, undo_audio_output_index),
+            "chapter_tracks":     chapter_tracks,
+            "titles":             titles_after_forge(fresh_tracks, undo_audio_output_index,
+                                                     chapter_tracks),
             # The Matroska covers and the attachment count, from the same
             # probe, for the worker to copy out (copy_out_cover_art).
             "cover_art":          find_matroska_covers(probe_data),
