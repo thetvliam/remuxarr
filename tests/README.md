@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2502 tests across 117 test files, plus 775 frontend tests under
+2506 tests across 118 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -43,6 +43,9 @@ and removed by the next scan.
 Container off: an AVI keeps no language tag, so none is planned and the file
 is not queued. A job used to tag it, the tag was lost, and every full scan
 queued the file again.
+`test_avi_timestamps.py` converts a real Xvid AVI with B-frames to MP4: an
+AVI stores no presentation times, and copied without `-fflags +genpts` its
+frames' times came out in storage order, 48 of 144 going backwards.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,

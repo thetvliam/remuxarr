@@ -62,6 +62,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- AVI files converted to MP4 keep their frames in the right order. An AVI stores no display times, and for video with B-frames, as most Xvid and DivX files have, the converted file timed its frames in the order they are stored rather than the order they are shown, and FFmpeg dropped the last frame when reading it back. Files already converted keep the wrong timing, unless they have a Recycle Bin entry to revert and convert again. Xvid files with packed B-frames, which many encoders write, are not fixed by this yet.
 - An AVI file kept as AVI is no longer queued again on every full scan. With Prefer MP4 Container off and Fix Undefined Audio Language Tags set to Always Fix, Remuxarr tried to tag its untagged audio, but AVI files cannot store language tags, so the tag never stuck. Such a file is now left as it is, with the reason in History, and AVI files no longer appear in Language Review, since an answer could not be written to them. Turn on Prefer MP4 Container to convert AVI files to MP4.
 - AC3 Forge and reverting no longer add an extra data track to an MP4 with chapters. Each Forge run, undo or revert on such a file left one more. Files that already have them keep them; they are no longer multiplied.
 - AC3 Forge and reverting work on QuickTime `.mov` files with chapters again. Since the last update they failed on such a file and left it unchanged.

@@ -243,8 +243,23 @@ def build_ffmpeg_command(
         if getattr(a, "target_language", None)
     }
 
+    # An AVI stores no presentation time for its frames, only the order
+    # they are stored in. For video with B-frames, as Xvid and DivX
+    # usually have, that order is not the display order, and copied into
+    # an MP4 without -fflags +genpts every frame got its storage time as
+    # its presentation time: on a six-second Xvid, 48 of 144 frames went
+    # backwards, and FFmpeg's own frame sync dropped the last one. The
+    # pictures were all there; what showed them when was wrong. genpts
+    # works the presentation times out on input. An AVI written back as
+    # AVI comes out byte for byte the same with it, as that muxer keeps no
+    # presentation times. Packed B-frames, which many Xvid encoders write,
+    # are not fixed by this alone: tested on a synthetic file, they also
+    # need unpacking (mpeg4_unpack_bframes) in a pass of their own first.
+    genpts = ["-fflags", "+genpts"] if decision.source_container == "avi" else []
+
     cmd = [
         app_settings.FFMPEG_PATH,
+        *genpts,
         "-i", input_path,
         "-y",
         "-v", "error",  # suppress info/warnings but keep error messages

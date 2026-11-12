@@ -137,6 +137,10 @@ class ProcessingDecision:
     actions:          list[Action] = field(default_factory=list)
     is_manual_review: bool = False
     target_container: str | None = None   # None = keep current
+    # The container the file is in now, as the scan probed it. Set only on
+    # a decision to process, for the command builder: an AVI source needs
+    # its presentation times generated (ffmpeg.build_ffmpeg_command).
+    source_container: str | None = None
     # NOTE: there is deliberately no output_extension field — the output
     # path is derived in ffmpeg.determine_output_path from target_container
     # plus the presence of a change_container action. An earlier version
@@ -1793,6 +1797,7 @@ def analyze_file(
         reason="; ".join(parts),
         actions=actions,
         target_container=target_container,
+        source_container=current_container,
         audio_language_mismatch=audio_language_mismatch,
         undefined_audio_flags=undefined_audio_flags,
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
