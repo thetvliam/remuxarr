@@ -1393,6 +1393,22 @@ def analyze_file(
         ))
         order += 1
 
+    # ── A container that keeps no language tag ─────────────────────────────
+    # An AVI kept as AVI (Prefer MP4 Container off, or tracks MP4 cannot
+    # hold) stores no language for any stream (ffmpeg.stores_language).
+    # Always Fix planned a tag for its untagged audio, the job wrote a file
+    # without it, and every full scan queued it again. So nothing below
+    # plans a tag for such a file: Always Fix still takes an untagged track
+    # as Primary Language for keep and drop (the pre-pass above), an
+    # applied Language Review answer is not written, and no Language
+    # Review question is raised, as its answer could not be used. Imported
+    # here, as ffmpeg imports this module.
+    from app.core.ffmpeg import output_muxer, stores_language
+    writes_language = stores_language(target_container)
+    # Whether a tag was left unwritten for that reason, for the reason
+    # given when nothing else is to be done.
+    tag_unwritten = False
+
     # ── Fast-start (moov atom position) ────────────────────────────────────
     # Only relevant for files that ARE already MP4 — new MP4 outputs from a
     # container conversion above always get +faststart from the FFmpeg
@@ -1522,6 +1538,14 @@ def analyze_file(
                     if action.stream_index in overrides_for_type:
                         continue
                     if action.stream_index in tag_si:
+                        if action.action_type == "copy_track" and not writes_language:
+                            # Kept as Primary Language, but not tagged: the
+                            # output could not keep the tag. Not sent for
+                            # review either. An extracted subtitle is still
+                            # renamed below, as its sidecar is a file of its
+                            # own.
+                            tag_unwritten = True
+                            continue
                         if action.action_type == "extract_subtitle":
                             # The sidecar's language lives in its filename, so
                             # fixing the tag means renaming the artifact, not
@@ -1653,22 +1677,24 @@ def analyze_file(
     # separate, structurally identical blocks; see that function's
     # docstring for the full rationale, including why comparing against
     # each track's current, real language matters here.
-    override_fixed_indices.update(_apply_language_override_pass(
-        actions, "audio", audio_language_overrides, current_language_by_stream,
-    ))
-    override_fixed_indices.update(_apply_language_override_pass(
-        actions, "subtitle", subtitle_language_overrides, current_language_by_stream,
-    ))
+    # Not for an output that keeps no tag: the answer would be written into
+    # a file without it on every scan. It still decides keep and drop.
+    if writes_language:
+        override_fixed_indices.update(_apply_language_override_pass(
+            actions, "audio", audio_language_overrides, current_language_by_stream,
+        ))
+        override_fixed_indices.update(_apply_language_override_pass(
+            actions, "subtitle", subtitle_language_overrides, current_language_by_stream,
+        ))
     if override_fixed_indices:
         has_language_fix = True
 
     # A container Remuxarr has no muxer for: see where it is left alone,
     # below. Its Language Review questions are not raised, here or there:
-    # an answer could only come back to that same decision. Imported here,
-    # as ffmpeg imports this module.
-    from app.core.ffmpeg import output_muxer
+    # an answer could only come back to that same decision. Nor are they
+    # for a container that keeps no tag (above).
     cannot_write = output_muxer(target_container) is None
-    if cannot_write:
+    if cannot_write or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1683,7 +1709,12 @@ def analyze_file(
             or has_faststart_a or has_language_fix):
         return ProcessingDecision(
             should_process=False,
-            reason="File already meets all configured criteria — no changes needed.",
+            reason=((f"{target_container.upper()} files cannot store language tags, so "
+                     "this one's are left as they are. " +
+                     ("Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
+                      "Its tracks cannot go into MP4."))
+                    if tag_unwritten else
+                    "File already meets all configured criteria — no changes needed."),
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             undefined_audio_flags=undefined_audio_flags,

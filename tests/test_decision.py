@@ -621,6 +621,139 @@ def test_a_file_left_alone_asks_nothing(settings):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# A container that keeps no language tag
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# An AVI kept as AVI was queued for Always Fix to tag its untagged audio; the
+# AVI muxer keeps no language, so the job wrote the file without the tag and
+# every full scan queued it again (ffmpeg.stores_language). No tag is planned
+# for such an output, and no Language Review question is raised, as its
+# answer could not be used.
+#
+# Verified by mutation, 8 applied, 8 killed, each run first against the
+# whole suite as it stood, which all eight survived:
+#
+#   • every container keeping tags           → the tests below that keep
+#                                              an AVI, and both in
+#                                              test_avi_language_tags.py
+#   • Always Fix tagging an AVI's track      → left alone; still does its
+#                                              other work; the real scan
+#   • an applied answer written to an AVI    → an answer is not written
+#   • questions raised for an AVI            → asks nothing
+#   • the plain no-changes reason            → left alone, both reasons,
+#                                              and the real scan
+#   • the two reasons' hints swapped         → the same
+#   • the reason never given                 → the same
+#   • an extracted subtitle not renamed      → its sidecar still named
+
+def _avi(*audio, video="mpeg4", subtitles=()):
+    """An AVI with the given (codec, language) audio and subtitle tracks."""
+    tracks = [make_track(stream_index=0, track_type="video", codec=video)]
+    for codec, language in audio:
+        tracks.append(make_track(stream_index=len(tracks), track_type="audio",
+                                 codec=codec, language=language,
+                                 is_default=len(tracks) == 1))
+    for codec, language in subtitles:
+        tracks.append(make_track(stream_index=len(tracks), track_type="subtitle",
+                                 codec=codec, language=language))
+    file_info = make_file_info(path="/media/x/clip.avi", container="avi",
+                               video_codec=video)
+    return file_info, tracks
+
+
+def test_an_avi_whose_only_change_is_a_tag_is_left_alone(settings):
+    settings.update(prefer_mp4_container=False, fix_undefined_language_audio="always_fix")
+    file_info, tracks = _avi(("mp3", "und"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is False
+    assert decision.actions == []
+    assert decision.reason == ("AVI files cannot store language tags, so this one's are "
+                               "left as they are. Turn on Prefer MP4 Container to convert it.")
+
+
+def test_one_mp4_cannot_hold_says_so(settings):
+    settings.update(prefer_mp4_container=True, fix_undefined_language_audio="always_fix")
+    file_info, tracks = _avi(("mp3", "und"), video="msmpeg4v3")
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is False
+    assert decision.reason == ("AVI files cannot store language tags, so this one's are "
+                               "left as they are. Its tracks cannot go into MP4.")
+
+
+def test_an_avi_still_gets_its_other_changes_without_a_tag(settings):
+    """The untagged track is still taken as Primary Language and kept; the
+    French one is removed; nothing is tagged."""
+    settings.update(prefer_mp4_container=False, fix_undefined_language_audio="always_fix",
+                    keep_audio_languages=["eng"], keep_default_audio=False)
+    file_info, tracks = _avi(("mp3", "und"), ("mp3", "fre"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.should_process is True
+    assert decision.reason == "Remove 1 audio track"
+    kept = [a for a in decision.actions if a.action_type == "copy_track" and a.stream_index == 1]
+    assert len(kept) == 1 and kept[0].target_language is None
+    assert [a.stream_index for a in decision.actions if a.action_type == "drop_track"] == [2]
+
+
+def test_an_answer_is_not_written_to_an_avi(settings):
+    settings.update(prefer_mp4_container=False, fix_undefined_language_audio="always_leave")
+    file_info, tracks = _avi(("mp3", "und"))
+
+    decision = analyze_file(file_info, tracks, settings, audio_language_overrides={1: "jpn"})
+
+    assert decision.should_process is False
+    assert decision.actions == []
+
+
+def test_an_avi_asks_nothing(settings):
+    """Two untagged tracks: Always Ask asks about both, and Always Fix sends
+    a file it will not guess for to review. An AVI is asked about by
+    neither, nor about a defined language outside the keep list."""
+    for mode, audio in (("always_ask", (("mp3", "und"),)),
+                        ("always_fix", (("mp3", "und"), ("mp3", "und"))),
+                        ("always_ask", (("mp3", "jpn"),))):
+        settings.update(prefer_mp4_container=False, fix_undefined_language_audio=mode,
+                        keep_audio_languages=["eng"])
+        file_info, tracks = _avi(*audio)
+
+        decision = analyze_file(file_info, tracks, settings)
+
+        assert decision.undefined_audio_flags == [], (mode, audio)
+        assert decision.audio_language_mismatch is None, (mode, audio)
+        assert decision.subtitle_language_mismatches == [], (mode, audio)
+
+
+def test_the_same_file_as_mp4_is_still_tagged(settings):
+    settings.update(prefer_mp4_container=True, fix_undefined_language_audio="always_fix")
+    file_info, tracks = _avi(("mp3", "und"))
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    assert decision.target_container == "mp4"
+    kept = [a for a in decision.actions if a.action_type == "copy_track" and a.stream_index == 1]
+    assert kept[0].target_language == "eng"
+
+
+def test_an_extracted_subtitle_from_an_avi_is_still_named(settings):
+    """A sidecar's language is in its own file name, which an AVI does not
+    hold, so Always Fix still names it."""
+    settings.update(prefer_mp4_container=False, fix_undefined_language="always_fix",
+                    extract_text_subtitles_to_srt=True)
+    file_info, tracks = _avi(("mp3", "eng"), subtitles=[("subrip", "und")])
+
+    decision = analyze_file(file_info, tracks, settings)
+
+    extract = [a for a in decision.actions if a.action_type == "extract_subtitle"]
+    assert len(extract) == 1, extract
+    assert (extract[0].language, extract[0].external_path) == ("eng", "/media/x/clip.en.srt")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Undefined language fix (the bulk pass, distinct from the override pass)
 # ═══════════════════════════════════════════════════════════════════════════
 

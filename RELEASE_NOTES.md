@@ -62,6 +62,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- An AVI file kept as AVI is no longer queued again on every full scan. With Prefer MP4 Container off and Fix Undefined Audio Language Tags set to Always Fix, Remuxarr tried to tag its untagged audio, but AVI files cannot store language tags, so the tag never stuck. Such a file is now left as it is, with the reason in History, and AVI files no longer appear in Language Review, since an answer could not be written to them. Turn on Prefer MP4 Container to convert AVI files to MP4.
 - AC3 Forge and reverting no longer add an extra data track to an MP4 with chapters. Each Forge run, undo or revert on such a file left one more. Files that already have them keep them; they are no longer multiplied.
 - AC3 Forge and reverting work on QuickTime `.mov` files with chapters again. Since the last update they failed on such a file and left it unchanged.
 - AC3 Forge keeps track titles on QuickTime `.mov` files again. Since the last update, which writes those files as QuickTime, adding or undoing an AC3 track on one dropped the name of every track in it. A file it happened to keeps the loss, unless it has a Recycle Bin entry from before the Forge run: reverting that brings the names back.

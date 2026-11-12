@@ -152,6 +152,23 @@ _CONTAINER_FORMAT = {
 }
 
 
+# Muxers that keep no language for a stream. FFmpeg's AVI muxer writes 0 in
+# every stream header's language field and its demuxer skips that field
+# (libavformat/avienc.c line 393, avidec.c line 682, FFmpeg 8.1.3); only an
+# XSUB subtitle's language goes into its stream name, which is read back
+# as a title. FLV keeps none either, but has no muxer here at all.
+_NO_LANGUAGE_MUXERS = frozenset({"avi"})
+
+
+def stores_language(container: str | None) -> bool:
+    """
+    Whether a file written as `container` keeps a language tag, so that a
+    tag Remuxarr writes is still there on the next scan. A container with
+    no muxer counts as keeping one: it is not written at all
+    (decision.analyze_file leaves such a file alone).
+    """
+    return output_muxer(container) not in _NO_LANGUAGE_MUXERS
+
 def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
     """
     The FFmpeg muxer that writes `container`, or None for one this does

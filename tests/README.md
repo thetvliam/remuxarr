@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2493 tests across 116 test files, plus 775 frontend tests under
+2502 tests across 117 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -39,6 +39,10 @@ decision: an answered track is judged as the answered language and always
 kept, deciding, applying and deciding again as above. Judged by its old tag,
 a track answered in a language the keep list does not hold was kept, tagged,
 and removed by the next scan.
+`test_avi_language_tags.py` scans a real AVI under Always Fix with Prefer MP4
+Container off: an AVI keeps no language tag, so none is planned and the file
+is not queued. A job used to tag it, the tag was lost, and every full scan
+queued the file again.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
