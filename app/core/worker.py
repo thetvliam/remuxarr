@@ -31,7 +31,7 @@ from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, packed_divx_for, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -1951,6 +1951,7 @@ def _load_job_data(job_id: int):
             audio_language_overrides=audio_lang_overrides,
             subtitle_language_overrides=subtitle_lang_overrides,
             has_faststart=faststart,
+            has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
 

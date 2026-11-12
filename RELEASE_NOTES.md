@@ -60,9 +60,13 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- AVI files whose Xvid or DivX video stores its B-frames packed, as many older encoders did, are no longer converted to MP4, even with Prefer MP4 Container on. Their frames cannot be timed correctly in an MP4 without altering the video, which would stop a revert giving back the original. They stay AVI, with the reason in History, and still get any other changes they need. Most Plex clients transcode this kind of video whatever it is stored in. Files already converted stay converted; reverting one gives back the AVI, which then stays AVI.
+
 ## Fixed
 
-- AVI files converted to MP4 keep their frames in the right order. An AVI stores no display times, and for video with B-frames, as most Xvid and DivX files have, the converted file timed its frames in the order they are stored rather than the order they are shown, and FFmpeg dropped the last frame when reading it back. Files already converted keep the wrong timing, unless they have a Recycle Bin entry to revert and convert again. Xvid files with packed B-frames, which many encoders write, are not fixed by this yet.
+- AVI files converted to MP4 keep their frames in the right order. An AVI stores no display times, and for video with B-frames, as most Xvid and DivX files have, the converted file timed its frames in the order they are stored rather than the order they are shown, and FFmpeg dropped the last frame when reading it back. Files already converted keep the wrong timing, unless they have a Recycle Bin entry to revert and convert again. Xvid and DivX files with packed B-frames, which many encoders wrote, cannot be converted correctly, so they now stay AVI (see Changed).
 - An AVI file kept as AVI is no longer queued again on every full scan. With Prefer MP4 Container off and Fix Undefined Audio Language Tags set to Always Fix, Remuxarr tried to tag its untagged audio, but AVI files cannot store language tags, so the tag never stuck. Such a file is now left as it is, with the reason in History, and AVI files no longer appear in Language Review, since an answer could not be written to them. Turn on Prefer MP4 Container to convert AVI files to MP4.
 - AC3 Forge and reverting no longer add an extra data track to an MP4 with chapters. Each Forge run, undo or revert on such a file left one more. Files that already have them keep them; they are no longer multiplied.
 - AC3 Forge and reverting work on QuickTime `.mov` files with chapters again. Since the last update they failed on such a file and left it unchanged.

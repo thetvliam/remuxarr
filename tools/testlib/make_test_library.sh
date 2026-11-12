@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  28 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (44 files, about 23 MB, at the
+#  29 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (45 files, about 23 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -28,8 +28,8 @@
 #
 #  Environment: FFMPEG, FFPROBE, PYTHON override the binaries used.
 #
-#  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame
-#  (the BtbN 8.1 build the Dockerfile pins has all of them), and Python 3
+#  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame,
+#  libxvid (the BtbN 8.1 build the Dockerfile pins has all of them), and Python 3
 #  (stdlib only) for the two helpers next to this script.
 #
 #  The comment on each file below says what it is built to exercise. What
@@ -392,7 +392,7 @@ f17() {  # iTunes-style .m4v: cover art, chapters, mov_text forced by title only
     -metadata:s:s:0 language=eng -metadata:s:s:0 title="English (Forced)" \
     -movflags +faststart -f mp4 "$OUT/17 - itunes.m4v"
 }
-f18() {  # Old Xvid AVI: MPEG-4 ASP with B-frames + MP3, no language tags -> converts to MP4.
+f18() {  # Old Xvid AVI: MPEG-4 ASP with B-frames, unpacked as FFmpeg's encoder writes them, + MP3, no language tags -> converts to MP4.
   local a=(); add a video_in "18 xvid avi"; add a tone_in 440
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -c:v mpeg4 -vtag XVID -bf 2 -q:v 5 -c:a libmp3lame -b:a 96k \
     "$OUT/18 - xvid.avi"
@@ -464,8 +464,13 @@ f28() {  # AC3 Forge on an MP4: AAC 5.1 with a title, a second language, mov_tex
     -metadata:s:s:0 language=eng -disposition:a:0 default -disposition:a:1 0 -disposition:s:0 0 \
     -movflags +faststart -f mp4 "$OUT/28 - forge mp4.mp4"
 }
+f29() {  # Xvid AVI from libxvid: B-frames packed, signed DivX503b1393p -> stays AVI, as MP4 cannot take packed frames correctly.
+  local a=(); add a video_in "29 packed xvid avi"; add a tone_in 440
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -c:v libxvid -bf 2 -q:v 5 -c:a libmp3lame -b:a 96k \
+    "$OUT/29 - packed xvid.avi"
+}
 
-for n in $(seq -w 1 28); do
+for n in $(seq -w 1 29); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

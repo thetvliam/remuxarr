@@ -2,7 +2,7 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 28 files
+- `make_test_library.sh` builds a small library of unusual media: 29 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,

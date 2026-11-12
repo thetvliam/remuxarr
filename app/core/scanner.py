@@ -39,6 +39,7 @@ from app.core.probe import (
     extract_tracks,
     is_faststart_mp4,
     is_media_file,
+    is_packed_divx,
     probe_file,
 )
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
@@ -1460,6 +1461,7 @@ def _process_file(
         audio_language_overrides=audio_lang_overrides,
         subtitle_language_overrides=subtitle_lang_overrides,
         has_faststart=faststart,
+        has_packed_bframes=packed_divx_for(path, fmt_container, track_list),
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
 
@@ -2152,6 +2154,23 @@ def _load_subtitle_language_overrides(media_file: MediaFile, tracks: list[dict])
     """Subtitle counterpart to _load_audio_language_overrides above."""
     return resolve_track_answers(
         _load_track_answers(media_file, "subtitle_language_overrides"), tracks)
+
+
+def packed_divx_for(path: str, container: str | None, tracks: list[dict]) -> bool | None:
+    """
+    Whether an AVI's MPEG-4 Part 2 video has packed B-frames
+    (probe.is_packed_divx), for analyze_file's has_packed_bframes. Read
+    from the file, like fast start, wherever a decision is made: one short
+    read of its first video packet. None for any other file, which is all
+    the decision needs: packing is read only where it stops a conversion
+    to MP4 doing harm.
+    """
+    if (container or "").lower() != "avi":
+        return None
+    if not any(t.get("track_type") == "video" and (t.get("codec") or "").lower() == "mpeg4"
+               for t in tracks):
+        return None
+    return is_packed_divx(path, app_settings.FFMPEG_PATH)
 
 
 def _file_info_for(media_file: MediaFile) -> dict:

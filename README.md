@@ -104,7 +104,7 @@ Most media coming out of Sonarr/Radarr carries far more than you actually need -
 
 Remuxarr only ever touches what's cheap and lossless to touch:
 
-- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
+- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).

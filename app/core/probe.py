@@ -307,6 +307,52 @@ def is_media_file(path: str) -> bool:
     return Path(path).suffix.lower() in MEDIA_EXTENSIONS
 
 
+# The signature a DivX 5 or Xvid encoder writes into an MPEG-4 Part 2
+# stream's user data, ending in "p" when its B-frames are packed. FFmpeg's
+# own test (decode_user_data, libavcodec/mpeg4videodec.c, FFmpeg 8.1.3):
+# sscanf of "DivX%dBuild%d%c", then "DivX%db%d%c", packed when the %c read
+# is "p". A full digit run followed by "p" here is the same: a "p" cannot
+# follow a shorter run, as the next byte would be a digit.
+_PACKED_DIVX = re.compile(rb"\x00\x00\x01\xb2DivX\d+(?:Build|b)\d+p")
+
+
+def has_packed_divx_signature(data: bytes) -> bool:
+    """Whether MPEG-4 Part 2 bytes carry a packed B-frame signature, such
+    as "DivX503b1393p". "DivX500Build413" is a DivX 5 stream without."""
+    return _PACKED_DIVX.search(data) is not None
+
+
+def is_packed_divx(path: str, ffmpeg_bin: str = "ffmpeg") -> bool | None:
+    """
+    Whether the file's first video stream is MPEG-4 Part 2 with packed
+    B-frames, the way many DivX 5 and Xvid encoders stored them in AVI: a
+    B-frame carried inside the packet of the frame before it.
+
+    Such a file is not converted to MP4 (decision.analyze_file). Copied
+    into one, its frames came out timed in storage order, as generating
+    presentation times on input (ffmpeg.build_ffmpeg_command) cannot work
+    them out from packed frames; only unpacking it in a pass of its own
+    first could, which would change the video's bytes and so lose the
+    exact revert.
+
+    Reads the first video packet with the stream's extradata joined to it
+    (dump_extra), where the encoder's signature sits. None when it cannot
+    be read.
+    """
+    cmd = [ffmpeg_bin, "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+           "-c", "copy", "-bsf:v", "dump_extra=freq=all", "-f", "data", "-"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("Could not read the video of %s for packed B-frames: %s", path, exc)
+        return None
+    if result.returncode != 0:
+        logger.warning("Could not read the video of %s for packed B-frames: %s", path,
+                       result.stderr.decode(errors="replace").strip()[:200])
+        return None
+    return has_packed_divx_signature(result.stdout)
+
+
 def is_faststart_mp4(path: str, max_boxes: int = 64) -> bool | None:
     """
     Determine whether an MP4/MOV file has the 'moov' atom before 'mdat'

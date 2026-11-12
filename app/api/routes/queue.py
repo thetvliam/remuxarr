@@ -19,6 +19,7 @@ from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
                               _load_subtitle_language_overrides, _load_track_answers,
                               _get_forged_ac3_audio_index, _track_to_dict,
                               _upsert_language_flags, descriptors_by_stream,
+                              packed_divx_for,
                               forget_answers)
 from app.core.probe import is_faststart_mp4
 from app.database.models import (
@@ -211,6 +212,7 @@ def _build_analysis_inputs(db: Session, media: MediaFile):
         audio_language_overrides=_load_audio_language_overrides(media, tracks),
         subtitle_language_overrides=_load_subtitle_language_overrides(media, tracks),
         has_faststart=faststart,
+        has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
         forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
     )
     return file_info, tracks, kwargs
