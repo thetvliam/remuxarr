@@ -32,7 +32,6 @@ suite before this file:
 Run from the project root:
     pytest tests/test_planned_action_cleanup.py -v
 """
-import importlib
 import json
 import sqlite3
 
@@ -44,7 +43,7 @@ import app.core.scanner as scanner
 from app.core.scanner import scan_library
 from app.database.models import AppSetting, Base, MediaFile, PlannedAction, QueueItem
 from tests.conftest import memory_engine
-from tests.test_schema_migration import _point_the_engine_at
+from tests.test_schema_migration import _point_the_engine_at, _restore_the_engine
 
 
 def _probe(*languages):
@@ -180,13 +179,14 @@ def started(tmp_path, monkeypatch):
     conn = sqlite3.connect(path)
     yield [d for (d,) in conn.execute("SELECT description FROM planned_actions")]
     conn.close()
-    # DATABASE_PATH goes back BEFORE the reload. Reloaded while it still
-    # named this database, the session module kept an engine on it, and a
-    # module importing SessionLocal later in the run, as the worker does,
-    # took that engine: test_scan_and_cancellation then seeded one database
-    # and aborted a job in another.
-    monkeypatch.undo()
-    importlib.reload(session_mod)
+    # monkeypatch's teardown puts the session module back exactly
+    # (_point_the_engine_at). This fixture used to reload it itself, after
+    # monkeypatch.undo(): reloaded while DATABASE_PATH still named this
+    # database, the module kept an engine on it, and a module importing
+    # SessionLocal later in the run, as the worker does, took that engine:
+    # test_scan_and_cancellation then seeded one database and aborted a job
+    # in another.
+    _restore_the_engine(session_mod)
 
 
 def test_startup_removes_actions_left_behind(started):

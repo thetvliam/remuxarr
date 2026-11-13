@@ -96,6 +96,18 @@ One for a backup imported before the restart, which init_db puts in place
 first (session.apply_pending_import), surviving the suite first:
 
   • the swap made after the migrations         → killed
+
+Four for putting the session module back after a test points the engine at
+a database of its own (_point_the_engine_at, PARKED 1), each run against
+the full suite before test_the_run_gets_its_own_database_back existed. The
+first three were killed there only by file order, through
+test_planned_action_cleanup and test_scan_and_cancellation; the fourth
+survived. Against this file alone all four are killed by that test:
+
+  • the session globals never handed to monkeypatch  → killed
+  • handed over after the reload, not before         → killed
+  • only the engine handed over                      → killed
+  • the temporary engine left open                   → killed
 """
 import importlib
 import json
@@ -170,10 +182,26 @@ def _point_the_engine_at(path, monkeypatch):
     Patching the attribute on the existing object and reloading only
     session — which reads settings.DATABASE_PATH at import to build the
     engine — keeps one settings object alive throughout.
+
+    The reload rebinds session's own globals the same way, so every one of
+    them is handed to monkeypatch first, before DATABASE_PATH. monkeypatch
+    undoes newest first, so at teardown DATABASE_PATH goes back, then each
+    global goes back to the very object it was: the run's engine and
+    SessionLocal, and the functions that read them. Teardown used to reload
+    session again instead, while DATABASE_PATH still named this test's
+    database, so the engine stayed on it for the rest of the run (PARKED 1).
+    Everything that looks SessionLocal up when it runs, as every function
+    here and the function-level imports in recycle and revert_* do, then
+    reached that database. A test that wrongly reached the real SessionLocal
+    passed on its tables instead of failing on the run's empty database,
+    which is the mistake conftest empties that database to catch.
     """
     import app.config
     import app.database.session as session_mod
 
+    for name, value in list(vars(session_mod).items()):
+        if not name.startswith("__"):
+            monkeypatch.setattr(session_mod, name, value)
     monkeypatch.setattr(app.config.settings, "DATABASE_PATH", str(path))
     importlib.reload(session_mod)
     return session_mod
@@ -181,13 +209,10 @@ def _point_the_engine_at(path, monkeypatch):
 
 def _restore_the_engine(session_mod):
     """
-    Rebuild the engine against the suite-wide database.
-
-    Runs before monkeypatch undoes DATABASE_PATH, so it is reloaded once
-    more by the caller's own teardown ordering — hence the explicit second
-    reload rather than relying on it.
+    Close the engine built against this test's database. The run's own
+    engine comes back with monkeypatch's teardown (_point_the_engine_at).
     """
-    importlib.reload(session_mod)
+    session_mod.engine.dispose()
 
 
 def _columns(path):
@@ -200,6 +225,45 @@ def _columns(path):
 
 
 # ── The two failures ─────────────────────────────────────────────────────────
+
+def test_the_run_gets_its_own_database_back(tmp_path):
+    """
+    After a test points the engine at a database of its own, the session
+    module goes back exactly: the run's engine and SessionLocal, the very
+    objects, and the functions that read them (PARKED 1). Teardown used to
+    reload the module while DATABASE_PATH still named the test's database,
+    so the rest of the run used it. The temporary engine is closed.
+
+    The suite caught this only through file order: test_planned_action_
+    cleanup shares these helpers, and test_scan_and_cancellation, which
+    happens to run next, then seeded one database and read another. This
+    catches it in any order.
+    """
+    import app.config
+    import app.database.session as session_mod
+
+    run_database = app.config.settings.DATABASE_PATH
+    engine, factory = session_mod.engine, session_mod.SessionLocal
+    defaults, reader = session_mod.DEFAULT_APP_SETTINGS, session_mod.get_app_settings
+    path = tmp_path / "remuxarr.db"
+
+    with pytest.MonkeyPatch.context() as mp:
+        moved = _point_the_engine_at(path, mp)
+        moved.init_db()
+        temporary = moved.engine
+        assert str(temporary.url) == f"sqlite:///{path}"
+        assert temporary.pool.checkedin() > 0, "init_db left no connection to close"
+        _restore_the_engine(moved)
+        assert temporary.pool.checkedin() == 0, "the temporary engine was left open"
+
+    assert app.config.settings.DATABASE_PATH == run_database
+    assert str(session_mod.engine.url) == f"sqlite:///{run_database}", (
+        "the engine stayed on the test's database")
+    assert session_mod.engine is engine
+    assert session_mod.SessionLocal is factory
+    assert session_mod.DEFAULT_APP_SETTINGS is defaults
+    assert session_mod.get_app_settings is reader
+
 
 def test_the_missing_column_is_added(upgraded):
     """The half that showed: a sweep crashing on every tick."""
