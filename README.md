@@ -349,11 +349,15 @@ same rule, except that a rename never replaces a file: under Replace it takes
 the next free number too, because the name can belong to another subtitle
 extracted from the same video.
 
-**Two limitations worth knowing.** A job whose only casualty is an attachment -
+**Three limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
-tracks. And Matroska cover art comes back as a still-image video track rather
+tracks. Matroska cover art comes back as a still-image video track rather
 than an attachment, with its filename and mimetype intact; nothing is lost, but
-a player may list it as a second video stream.
+a player may list it as a second video stream. And of the data streams a
+camera or phone records beside the video, a job keeps only those FFmpeg can
+write back - GoPro telemetry and timecode tracks. Any other, such as an
+iPhone's metadata tracks, is dropped, and no revert point can be made for that
+file. In an MP4, the timecode track comes back as the last track.
 
 ## Development
 

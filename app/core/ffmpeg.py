@@ -15,6 +15,7 @@ import shutil
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
@@ -48,7 +49,7 @@ class CoverStream:
 class CoverArt:
     """
     A Matroska cover image copied out of the source to be attached again.
-    See _prepare_cover_art for why. ordinal is its place among the output's
+    See _prepare_extra_streams for why. ordinal is its place among the output's
     attachments, which is what -metadata:s:t:N addresses; stream_index is
     the source stream it came from, which AC3 Forge leaves out of its copy.
     """
@@ -211,14 +212,17 @@ def build_ffmpeg_command(
     covers: Sequence[CoverArt] = (),
     quicktime: bool = False,
     mp4_covers: Sequence[int] = (),
+    data_streams: Sequence[int] = (),
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
 
     covers are Matroska cover images already copied out of the source by
-    _prepare_cover_art, which hands over none unless the output is Matroska.
+    _prepare_extra_streams, which hands over none unless the output is Matroska.
     mp4_covers are the source's cover streams an MP4 can hold, which it
-    hands over only for an MP4 output (find_mp4_covers).
+    hands over only for an MP4 output (find_mp4_covers). data_streams are
+    the source's data streams the output can hold, which it hands over
+    only for an MP4 or a QuickTime output (find_data_streams).
     quicktime says the source is a QuickTime movie (see output_muxer).
 
     Strategy
@@ -324,6 +328,16 @@ def build_ffmpeg_command(
         cmd += title_of(t, f"s:{out_idx}")
     if kept_subs:
         cmd += ["-c:s", "copy"]
+
+    # ── Data streams, MP4 and QuickTime ────────────────────────────────────
+    # A camera's telemetry, or a QuickTime file's timecode: no track list
+    # holds one, so every job writing the file used to drop them
+    # (find_data_streams). After the tracks, which is where cameras put
+    # them, so no track's output index moves. Copied without a -c:d: FFmpeg
+    # has no encoder for one, and the file is byte for byte the same with
+    # or without it (checked with FFmpeg 8.1.3).
+    for index in data_streams:
+        cmd += ["-map", f"0:{index}"]
 
     # ── Cover art, MP4 ─────────────────────────────────────────────────────
     # Mapped after every track, so no track's output index moves. In the
@@ -946,14 +960,15 @@ async def execute_ffmpeg(
     duration = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, mp4_covers, cover_error = await _prepare_cover_art(
-        input_path, decision, tmp_dir, job_id, quicktime)
-    if cover_error:
-        return FFmpegResult(success=False, output_path=None, error=cover_error,
+    extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id, quicktime)
+    covers = extra.covers
+    if extra.error:
+        return FFmpegResult(success=False, output_path=None, error=extra.error,
                             output_size=None)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
                                covers=covers, quicktime=quicktime,
-                               mp4_covers=mp4_covers)
+                               mp4_covers=extra.mp4_covers,
+                               data_streams=extra.data_streams)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1270,19 +1285,20 @@ async def execute_ffmpeg_combined(
     duration       = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, mp4_covers, cover_error = await _prepare_cover_art(
-        input_path, decision, tmp_dir, job_id, quicktime)
-    if cover_error:
+    extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id, quicktime)
+    covers = extra.covers
+    if extra.error:
         return (
-            FFmpegResult(success=False, output_path=None, error=cover_error,
+            FFmpegResult(success=False, output_path=None, error=extra.error,
                          output_size=None),
-            [ExtractionResult(success=False, output_path=None, error=cover_error)
+            [ExtractionResult(success=False, output_path=None, error=extra.error)
              for _ in subtitle_extractions],
         )
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
                                     covers=covers, quicktime=quicktime,
-                                    mp4_covers=mp4_covers)
+                                    mp4_covers=extra.mp4_covers,
+                                    data_streams=extra.data_streams)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1472,6 +1488,63 @@ def find_mp4_covers(probe: dict) -> list[int]:
             and s.get("codec_name") in _MP4_COVER_CODECS]
 
 
+# The data tracks FFmpeg's MP4 and QuickTime muxers write properly, by
+# sample entry. The QuickTime muxer keeps a stream's own entry
+# (mov_get_codec_tag) and the MP4 muxer takes bin_data as "gpmd"
+# (codec_mp4_tags), but both write a data track's sample description only
+# for "tmcd", "gpmd" and their own RTP hint tracks (mov_write_stsd_tag,
+# libavformat/movenc.c n8.1.3); any other, an iPhone's "mebx" for one,
+# comes out a track whose description announces an entry and holds none.
+# The MP4 muxer takes no "tmcd" at all, and writes its own
+# (probe.timecode_track_indices).
+_DATA_ENTRIES = {"mp4": frozenset({"gpmd"}), "mov": frozenset({"gpmd", "tmcd"})}
+
+
+def find_data_streams(probe: dict, fmt: str) -> list[int]:
+    """
+    The stream indices of the data streams in a probe result that an
+    output written with FFmpeg's `fmt` muxer, "mp4" or "mov", writes
+    properly (_DATA_ENTRIES), so a job keeps them.
+
+    A camera's or a phone's file carries data streams beside its tracks: a
+    GoPro's telemetry (bin_data, "gpmd") and timecode (tmcd), an iPhone's
+    metadata ("mebx"). No track list holds one, so every job writing the
+    file dropped them, and a revert point could not keep them either, as a
+    Matroska sidecar holds none ("Only audio, video, and subtitles are
+    supported for Matroska"), so the data was gone for good (PARKED 38).
+    Copied, a "gpmd" track keeps its packets, in an MP4 or a QuickTime
+    file, and so does a QuickTime file's tmcd track, which a revert then
+    puts back where it was (checked with FFmpeg 8.1.3). An MP4's tmcd is
+    written again by the muxer, last, so in a GoPro file, whose timecode
+    comes before its telemetry, the two change places, in the job and in
+    a revert.
+
+    Any other data stream is still dropped, as FFmpeg cannot write it
+    back: an iPhone's metadata is lost in a job, and a revert point cannot
+    be made for it. A chapter track ("text") is no data to keep: the
+    muxer writes one from the chapters. A real GoPro track and the junk
+    ones AC3 Forge and reverts once left (PARKED 37) look alike, and both
+    are kept. A Matroska output holds no data stream and is not asked
+    about.
+    """
+    entries = _DATA_ENTRIES[fmt]
+    return [s["index"] for s in probe.get("streams") or []
+            if s.get("codec_type") == "data" and s.get("codec_tag_string") in entries]
+
+
+class ExtraStreams(NamedTuple):
+    """
+    What a job keeps that the track lists leave out (_prepare_extra_streams):
+    Matroska covers copied out to attach again, cover streams to map into
+    an MP4, data streams to map into an MP4 or a QuickTime file, and an
+    error, which stops the job.
+    """
+    covers: list[CoverArt]
+    mp4_covers: list[int]
+    data_streams: list[int]
+    error: str | None
+
+
 async def copy_out_cover_art(
     input_path: str,
     found: Sequence[CoverStream],
@@ -1514,17 +1587,17 @@ async def copy_out_cover_art(
     return covers, None
 
 
-async def _prepare_cover_art(
+async def _prepare_extra_streams(
     input_path: str,
     decision: ProcessingDecision,
     tmp_dir: str,
     job_id: int,
     quicktime: bool = False,
-) -> tuple[list[CoverArt], list[int], str | None]:
+) -> ExtraStreams:
     """
-    The source's cover art, made ready for the output: (Matroska covers
-    copied out to attach again, cover streams to map into an MP4, error).
-    At most one of the three is non-empty.
+    The source's cover art and data streams, made ready for the output
+    (ExtraStreams). Data streams are find_data_streams'; the rest of this
+    is about covers.
 
     Matroska stores cover art as an image attachment, but FFmpeg's demuxer
     reports one as a video stream with the attached_pic disposition and its
@@ -1547,30 +1620,32 @@ async def _prepare_cover_art(
     the next track's ID moves up by one (a chapter track's, in the file it
     was seen in). Its cover is lost as before; a revert point keeps it.
 
-    A probe failure returns no covers and no error, so the job runs as it
+    A probe failure returns nothing and no error, so the job runs as it
     did before this existed: the worker already decides from stored tracks
     when a probe fails rather than fail the job over it. A cover that is
     there but cannot be copied out is an error; see copy_out_cover_art.
     """
     fmt = output_muxer(decision.target_container, quicktime)
-    if fmt not in ("matroska", "mp4"):
-        return [], [], None
+    if fmt not in ("matroska", "mp4", "mov"):
+        return ExtraStreams([], [], [], None)
     loop = asyncio.get_running_loop()
     try:
         probe = await loop.run_in_executor(
             None, probe_file, input_path, app_settings.FFPROBE_PATH)
     except ProbeError as exc:
-        logger.warning("Job %d: could not probe %s for cover art (%s); "
-                       "running without it", job_id, input_path, exc)
-        return [], [], None
+        logger.warning("Job %d: could not probe %s for cover art and data "
+                       "streams (%s); running without them", job_id, input_path, exc)
+        return ExtraStreams([], [], [], None)
 
     if fmt == "mp4":
-        return [], find_mp4_covers(probe), None
+        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe, fmt), None)
+    if fmt == "mov":
+        return ExtraStreams([], [], find_data_streams(probe, fmt), None)
     found, attachments = find_matroska_covers(probe)
     covers, error = await copy_out_cover_art(
         input_path, found, attachments, tmp_dir,
         f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
-    return covers, [], error
+    return ExtraStreams(covers, [], [], error)
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

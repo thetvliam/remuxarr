@@ -417,7 +417,7 @@ def test_the_font_count_travels_with_the_container_and_duration():
 # The first was killed by a conversion to MP4 that had to succeed without
 # the cover. That test now keeps the cover
 # (test_a_conversion_to_mp4_keeps_a_matroska_cover, below); the mutant,
-# re-aimed at the new MP4 branch of _prepare_cover_art, is killed by it and
+# re-aimed at the new MP4 branch of _prepare_extra_streams, is killed by it and
 # seven other tests there.
 
 def _image(tmp_path, name, colour):
@@ -1041,7 +1041,7 @@ def test_a_quicktime_files_cover_is_not_mapped(tmp_path, settings):
     map at all. The file is the MP4 fixture with its major brand made qt,
     which FFmpeg reads as a QuickTime movie with a cover.
     """
-    from app.core.ffmpeg import _prepare_cover_art
+    from app.core.ffmpeg import _prepare_extra_streams
     from app.core.probe import is_quicktime, probe_file
 
     jpeg = _image(tmp_path, "cover.jpg", "red")
@@ -1057,8 +1057,9 @@ def test_a_quicktime_files_cover_is_not_mapped(tmp_path, settings):
     assert len(cover) == 1
 
     def prepare(quicktime):
-        return asyncio.run(_prepare_cover_art(str(source), decision, str(tmp_path),
-                                              9137, quicktime))
+        extra = asyncio.run(_prepare_extra_streams(str(source), decision, str(tmp_path),
+                                                   9137, quicktime))
+        return extra.covers, extra.mp4_covers, extra.error
 
     assert prepare(quicktime=True) == ([], [], None)
     assert prepare(quicktime=False) == ([], cover, None)
