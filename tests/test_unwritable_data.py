@@ -24,11 +24,14 @@ they always were.
 These run the real scan, worker and queue on the iPhone-style file
 test_data_streams.py builds, six seconds long.
 
-Verified by mutation, 11 applied, 11 killed. Each was first run against the
-whole suite as it stood (2556 tests): 8 survived it, and counting a track
-the muxer writes itself, ignoring QuickTime, and the file-level input
-missing the value were killed there by the GoPro, timecode, chapter-track
-and preflight tests:
+AC3 Forge refuses such a file too: it copies every stream, and would write
+the metadata track back with an empty sample description.
+
+Verified by mutation, 12 applied, 12 killed. Each was first run against the
+whole suite as it stood (2556 tests, and 2568 for Forge's): 9 survived it,
+and counting a track the muxer writes itself, ignoring QuickTime, and the
+file-level input missing the value were killed there by the GoPro,
+timecode, chapter-track and preflight tests:
 
   • the file never left alone             → the decision, the scan, the
                                             full rescan, the pickup
@@ -39,6 +42,7 @@ and preflight tests:
   • a first scan not storing it           → the scan
   • the worker not looking at pickup      → the pickup
   • the migration missing                 → the migration
+  • Forge not refusing the file           → Forge
 
 The kills are from this file.
 """
@@ -244,6 +248,41 @@ def test_a_gopro_file_is_still_processed(rig):
     unwritable, _, items = _row_and_items(rig)
     assert unwritable == ""
     assert [s for s, _ in items] == ["pending"]
+
+
+@needs_ffmpeg
+def test_forge_leaves_the_file_alone_too(rig):
+    """
+    AC3 Forge copies every stream, so it would write the metadata track
+    back with an empty sample description. It refuses, and the file is not
+    changed. The audio is AAC 5.1, so the file is a Forge candidate.
+    """
+    import subprocess
+
+    from app.core import scanner
+    from app.database.models import Ac3ForgeJob, MediaFile
+
+    movie = rig.library / "IMG_8810.mov"
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x36:rate=30000/1001:duration=6",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+                    "-map", "0", "-map", "1", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "6",
+                    "-metadata:s:a:0", "language=eng", "-timecode", "12:59:45:12",
+                    "-f", "mov", str(movie)], check=True)
+    _as_iphone_metadata(movie)
+    before = _digest(movie)
+
+    with rig.Session() as db:
+        scanner.scan_library(db, [str(rig.library)], force_probe=True)
+        job_id = rig.forge.queue_forge_job(db, db.query(MediaFile).one().id).id
+    assert asyncio.run(rig.worker._process_next_forge(_WS())) is True
+
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        assert job.status == "failed"
+        assert REASON in job.error_message and "not changed" in job.error_message
+    assert _digest(movie) == before
 
 
 # ── The migration ────────────────────────────────────────────────────────────

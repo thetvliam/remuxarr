@@ -41,7 +41,7 @@ from app.core.ffmpeg import (
     KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
 )
 from app.core.probe import (ProbeError, extract_tracks, is_quicktime, rebuilt_track_indices,
-                            probe_file)
+                            probe_file, unwritable_data_entries)
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -959,6 +959,21 @@ def load_forge_job_data(job_id: int) -> dict | None:
             what = ("locate the AC3 track for undo" if job.is_undo
                     else "find the AAC 5.1 track to build the AC3 from")
             finish_forge_job(job_id, False, None, f"Could not probe file to {what}: {exc}")
+            return None
+
+        # Forge copies every stream ("-map 0"), and FFmpeg writes no sample
+        # description for a data track it does not know, so an iPhone
+        # video's metadata tracks ("mebx") would come out as tracks that say
+        # nothing of what they hold. Such a file is left as it is, as the
+        # main pipeline leaves it (probe.unwritable_data_entries; PARKED 45).
+        unwritable = unwritable_data_entries(probe_data)
+        if unwritable:
+            finish_forge_job(
+                job_id, False, None,
+                "This file holds data tracks Remuxarr cannot write back "
+                f"({', '.join(unwritable)}), as an iPhone's video does, so AC3 "
+                "Forge leaves it as it is. The file was not changed.",
+            )
             return None
 
         if not job.is_undo:

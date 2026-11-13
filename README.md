@@ -358,7 +358,8 @@ camera or phone records beside the video, a job keeps only those FFmpeg can
 write back - GoPro telemetry and timecode tracks; in an MP4, the timecode
 track comes back as the last track. A file holding any other, such as an
 iPhone video with its metadata tracks, is left as it is, with the reason in
-History: a job could not keep that data, and no revert point could hold it.
+History, and AC3 Forge refuses it too: a job could not keep that data, and no
+revert point could hold it.
 
 ## Development
 
