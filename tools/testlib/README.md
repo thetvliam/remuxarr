@@ -2,7 +2,7 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 29 files
+- `make_test_library.sh` builds a small library of unusual media: 31 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
@@ -134,13 +134,15 @@ route function, and the worker runs the Forge jobs:
 21. The file gains exactly one AC3 5.1 track carrying Forge's marker, placed
     after the last audio track, and every other stream is as it was (the
     same comparison as check 11, with every packet checksum equal: an add
-    copies the streams it keeps).
+    copies the streams it keeps). An MP4 or QuickTime file keeps its major
+    brand and minor version; its compatible brands may gain `dby1`, which
+    the MP4 muxer lists for any file with an AC3 track.
 22. The forged file probes and decodes cleanly.
 23. A full rescan queues nothing for a forged file that had nothing left to
     do before the forge.
 24. With `_forge_undo`, every add is undone through the route function, and
     the file is back to exactly the streams it had before the add, packet
-    checksums included.
+    checksums included, and an MP4 or QuickTime file to its brand.
 25. No Forge temp file is left, no Forge job is still pending, processing
     or waiting to undo, and nothing in the library changed but the forged
     files.
@@ -154,9 +156,12 @@ restored through the app's own `restore_revert_point`, and:
    one.
 10. Every restore succeeds, onto the original name and extension, and a
     converted output goes away.
-11. The restored file matches the original stream for stream (type, codec,
-    language and title tags, disposition flags, attachment filename and
-    mimetype, order), and an MP4's fast-start layout matches too. Each
+11. The restored file matches the original stream for stream (type, codec
+    and codec tag, language and title tags, disposition flags, attachment
+    filename and mimetype, order), and an MP4's fast-start layout and an
+    MP4 or QuickTime file's brand match too. The codec tag (an MP4 sample
+    entry, an AVI fourcc) and the brand are what tell a QuickTime movie
+    from an MP4 of the same streams. Each
     stream also holds what it held: a checksum of its packets, or of an
     attachment's data, is taken before any job and compared. Tags and flags
     are written back from the revert point, so they can all be right while

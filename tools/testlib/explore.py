@@ -772,6 +772,13 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
             if rest != was:
                 find(21, j["path"], "beside the AC3: " + _first_difference(
                     was, rest, now="after the add", was="before"))
+            # The brand stays, but for the compatible brands: the MP4 muxer
+            # lists "dby1" there whenever a track is AC3, E-AC3, TrueHD or
+            # Dolby Vision (has_dolby, libavformat/movenc.c n8.1.3), so an
+            # add brings it. The undo, check 24, takes it away again.
+            if (_brand(j["pre"]) or ())[:2] != (_brand(post) or ())[:2]:
+                find(21, j["path"], f"brand {_brand(j['pre'])} before the add, "
+                                    f"{_brand(post)} after")
             # What each holds too, packet for packet: the add copies them.
             holds = stream_hashes(j["path"], post)
             if j["pre_holds"] is None or holds is None:
@@ -833,6 +840,9 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
                     if now != was:
                         find(24, j["path"], _first_difference(
                             was, now, now="after the undo", was="before the add"))
+                    if _brand(j["pre"]) != _brand(post):
+                        find(24, j["path"], f"brand {_brand(j['pre'])} before the add, "
+                                            f"{_brand(post)} after the undo")
                     holds = stream_hashes(j["path"], post)
                     if j["pre_holds"] is None or holds is None:
                         if j["pre_holds"] is not None:   # check 21 said so otherwise
@@ -1120,8 +1130,29 @@ def _signature(stream: dict) -> tuple:
     flags = sorted(k for k, v in (stream.get("disposition") or {}).items() if v == 1)
     # FFmpeg reads an MP4 track's title back as "name" (forge._title_args).
     title = tags.get("title") or tags.get("name")
+    # The codec tag is the sample entry in an MP4 or QuickTime file and the
+    # fourcc in an AVI: the codec name alone does not tell them apart. With
+    # the MP4 muxer, a QuickTime file's PCM audio went from "sowt" to "ipcm",
+    # which many players cannot play, under the same name, pcm_s16le
+    # (PARKED 7).
     return (stream.get("codec_type"), stream.get("codec_name"), tags.get("language"),
-            title, tags.get("filename"), tags.get("mimetype"), tuple(flags))
+            title, tags.get("filename"), tags.get("mimetype"), tuple(flags),
+            stream.get("codec_tag_string"))
+
+
+def _brand(info: dict) -> tuple | None:
+    """
+    An MP4 or QuickTime file's file type box as FFmpeg reports it: major
+    brand, minor version and compatible brands. None for other containers.
+    The MP4 muxer wrote a QuickTime file as "isom", so it was no longer a
+    QuickTime movie, while every stream could still compare equal
+    (PARKED 7).
+    """
+    if not is_mp4(info):
+        return None
+    tags = (info.get("format") or {}).get("tags") or {}
+    return (tags.get("major_brand"), tags.get("minor_version"),
+            tags.get("compatible_brands"))
 
 
 def _is_matroska_cover(sig: tuple) -> bool:
@@ -1129,7 +1160,7 @@ def _is_matroska_cover(sig: tuple) -> bool:
 
 
 def _without_attached_pic(sig: tuple) -> tuple:
-    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),)
+    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),) + sig[7:]
 
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
@@ -1276,6 +1307,11 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                                      "limitations worth knowing"})
             else:
                 find(11, source, _first_difference(want, got))
+        # And what kind of file it is, which can change while every stream
+        # stays the same: an MP4 or QuickTime file's brand (_brand).
+        if _brand(original) != _brand(info):
+            find(11, source, f"brand {_brand(original)} in the original, "
+                             f"{_brand(info)} after the revert")
         # The layout too, where the README's "exact original state" can
         # differ without a stream changing: an MP4's moov before or after
         # its media data.

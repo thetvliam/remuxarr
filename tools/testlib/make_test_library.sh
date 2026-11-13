@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  29 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (45 files, about 23 MB, at the
+#  31 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (47 files, about 27 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -469,8 +469,24 @@ f29() {  # Xvid AVI from libxvid: B-frames packed, signed DivX503b1393p -> stays
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -c:v libxvid -bf 2 -q:v 5 -c:a libmp3lame -b:a 96k \
     "$OUT/29 - packed xvid.avi"
 }
+f30() {  # QuickTime .mov with chapters: titled AAC 5.1 (an AC3 Forge candidate), PCM ("sowt") in fra to drop -> the only QuickTime file with a revert point.
+  # fra, not fre: the QuickTime muxer writes only languages in the Macintosh table, which has fra (PARKED 42).
+  local a=(); add a video_in "30 quicktime two languages"; add a tone_in 440; add a tone_in 550
+  a+=(-i "$A/chapters.txt")
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map_chapters 3 "${H264[@]}" \
+    -c:a:0 aac -ac:a:0 6 -c:a:1 pcm_s16le -metadata:s:v:0 language=eng \
+    -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=fra \
+    -disposition:a:0 default -disposition:a:1 0 -f mov "$OUT/30 - quicktime two languages.mov"
+}
+f31() {  # QuickTime .mov, fast start already, all English: nothing to do where English is kept, so AC3 Forge gets the untouched original.
+  local a=(); add a video_in "31 quicktime forge"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" \
+    -c:a:0 aac -ac:a:0 6 -c:a:1 pcm_s16le -metadata:s:v:0 language=eng \
+    -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=eng \
+    -disposition:a:0 default -disposition:a:1 0 -movflags +faststart -f mov "$OUT/31 - quicktime forge.mov"
+}
 
-for n in $(seq -w 1 29); do
+for n in $(seq -w 1 31); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done
