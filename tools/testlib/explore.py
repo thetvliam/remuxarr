@@ -173,9 +173,24 @@ _UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, 
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
                   "attachment map in build_ffmpeg_command",
-    "cover": "cover art is not mapped into MP4; app/core/probe.py, "
-             "extract_tracks skipping attached_pic",
+    "cover": "an MP4 holds only JPEG, PNG and BMP covers, and a QuickTime file "
+             "none; app/core/ffmpeg.py, find_mp4_covers and _prepare_cover_art",
 }
+
+# The covers an MP4 output can hold, written out here rather than imported
+# so the check does not take its answer from the code it is checking
+# (app/core/ffmpeg.py, _MP4_COVER_CODECS). A cover of one of these types
+# lost from an MP4 output, other than a QuickTime file, is a finding.
+MP4_COVER_CODECS = {"mjpeg", "png", "bmp"}
+
+
+def _covers_mp4_cannot_hold(expected: list[tuple[str, dict]], info_after: dict) -> int:
+    """How many of the covers a job should keep its MP4 output could not."""
+    covers = [s for k, s in expected if k == "cover"]
+    brand = ((info_after.get("format") or {}).get("tags") or {}).get("major_brand", "")
+    if brand.strip() == "qt":
+        return len(covers)
+    return sum(1 for s in covers if s.get("codec_name") not in MP4_COVER_CODECS)
 
 
 # ── Profiles ────────────────────────────────────────────────────────────────
@@ -1455,11 +1470,14 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     for k in sorted(set(got) | set(want)):
         missing = want[k] - got[k]
         if missing > 0:
-            if k in KNOWN_LOSSES and is_mp4(info_after):
+            accepted = missing if k in KNOWN_LOSSES and is_mp4(info_after) else 0
+            if k == "cover":
+                accepted = min(accepted, _covers_mp4_cannot_hold(expected, info_after))
+            if accepted:
                 known.append({"file": Path(source).relative_to(lib).as_posix(),
-                              "lost": f"{missing} {k}", "why": KNOWN_LOSSES[k]})
-            else:
-                find(3, source, f"{missing} {k} stream(s) lost with no planned action")
+                              "lost": f"{accepted} {k}", "why": KNOWN_LOSSES[k]})
+            if missing > accepted:
+                find(3, source, f"{missing - accepted} {k} stream(s) lost with no planned action")
         elif missing < 0:
             find(3, source, f"{-missing} {k} stream(s) appeared")
     ch_before = len(info_before.get("chapters") or [])

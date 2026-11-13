@@ -98,12 +98,12 @@ def extract_tracks(probe_data: dict) -> list[dict]:
         # codec_type="video" with the "attached_pic" disposition flag. A
         # cover is not a track, so it is left out here, and with it out of
         # every track list the decision engine judges and build_ffmpeg_command
-        # maps. A Matroska cover goes back into a Matroska output on its own
-        # (ffmpeg.find_matroska_covers, cover_attach_args); a job writing
-        # an MP4 drops every cover, though not because the muxer cannot take
-        # one. An older comment here said mapping one into MP4 failed with
-        # "dimensions not set", but with FFmpeg 8.1 a JPEG or PNG cover from
-        # an MP4 or a Matroska copies into MP4 and keeps attached_pic.
+        # maps as a track. Covers go back on their own: into a Matroska
+        # output attached again (ffmpeg.find_matroska_covers,
+        # cover_attach_args), into an MP4 mapped after the tracks
+        # (ffmpeg.find_mp4_covers). An older comment here said mapping one
+        # into MP4 failed with "dimensions not set"; with FFmpeg 8.1 a JPEG,
+        # PNG or BMP cover copies into MP4 and keeps attached_pic.
         if codec_type == "video" and disposition.get("attached_pic", 0) == 1:
             continue
 

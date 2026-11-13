@@ -210,12 +210,15 @@ def build_ffmpeg_command(
     all_tracks: list[dict],
     covers: Sequence[CoverArt] = (),
     quicktime: bool = False,
+    mp4_covers: Sequence[int] = (),
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
 
     covers are Matroska cover images already copied out of the source by
     _prepare_cover_art, which hands over none unless the output is Matroska.
+    mp4_covers are the source's cover streams an MP4 can hold, which it
+    hands over only for an MP4 output (find_mp4_covers).
     quicktime says the source is a QuickTime movie (see output_muxer).
 
     Strategy
@@ -288,7 +291,12 @@ def build_ffmpeg_command(
     for out_idx, t in enumerate(video_tracks):
         cmd += ["-map", f"0:{t['stream_index']}"]
         cmd += title_of(t, f"v:{out_idx}")
-    if video_tracks:
+    # Covers are copied too: -c:v names every video stream of the output,
+    # wherever its map comes, and a cover is a video stream. Without it a
+    # cover in a file with no real video, an audio-only MP4, goes to an
+    # encoder (H.264 for an MP4 output, which cannot store a cover), and
+    # the mux fails.
+    if video_tracks or mp4_covers:
         cmd += ["-c:v", "copy"]
 
     # ── Audio ──────────────────────────────────────────────────────────────
@@ -316,6 +324,13 @@ def build_ffmpeg_command(
         cmd += title_of(t, f"s:{out_idx}")
     if kept_subs:
         cmd += ["-c:s", "copy"]
+
+    # ── Cover art, MP4 ─────────────────────────────────────────────────────
+    # Mapped after every track, so no track's output index moves. In the
+    # file a cover is iTunes metadata rather than a track, and FFmpeg reads
+    # it back as the last stream whatever order it was mapped in.
+    for index in mp4_covers:
+        cmd += ["-map", f"0:{index}"]
 
     cmd += KEEP_STREAM_FLAGS
 
@@ -927,12 +942,14 @@ async def execute_ffmpeg(
     duration = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
+    covers, mp4_covers, cover_error = await _prepare_cover_art(
+        input_path, decision, tmp_dir, job_id, quicktime)
     if cover_error:
         return FFmpegResult(success=False, output_path=None, error=cover_error,
                             output_size=None)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
-                               covers=covers, quicktime=quicktime)
+                               covers=covers, quicktime=quicktime,
+                               mp4_covers=mp4_covers)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1249,7 +1266,8 @@ async def execute_ffmpeg_combined(
     duration       = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
+    covers, mp4_covers, cover_error = await _prepare_cover_art(
+        input_path, decision, tmp_dir, job_id, quicktime)
     if cover_error:
         return (
             FFmpegResult(success=False, output_path=None, error=cover_error,
@@ -1259,7 +1277,8 @@ async def execute_ffmpeg_combined(
         )
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
-                                    covers=covers, quicktime=quicktime)
+                                    covers=covers, quicktime=quicktime,
+                                    mp4_covers=mp4_covers)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1426,6 +1445,29 @@ def find_matroska_covers(probe: dict) -> tuple[list[CoverStream], int]:
     return found, attachments
 
 
+# The image types FFmpeg's MP4 muxer can store as cover art
+# (codec_cover_image_tags, libavformat/movenc.c n8.1.3). The Matroska
+# demuxer also reports GIF and TIFF attachments as covers, and mapping one
+# of those into an MP4 fails the whole mux at header write ("Could not find
+# tag for codec gif"), so they are left out: such a cover is lost in the
+# conversion, as fonts are, and a revert point keeps it.
+_MP4_COVER_CODECS = frozenset({"mjpeg", "png", "bmp"})
+
+
+def find_mp4_covers(probe: dict) -> list[int]:
+    """
+    The stream indices of the covers in a probe result that an MP4 output
+    can hold: from an MP4 or a Matroska alike, as both demuxers report a
+    cover as a stream with the attached_pic disposition. Copied into an MP4
+    each keeps its bytes and its disposition (checked with FFmpeg 8.1.3).
+    A still-image track without the flag is a real track, which the
+    command maps with the other video already.
+    """
+    return [s["index"] for s in probe.get("streams") or []
+            if (s.get("disposition") or {}).get("attached_pic")
+            and s.get("codec_name") in _MP4_COVER_CODECS]
+
+
 async def copy_out_cover_art(
     input_path: str,
     found: Sequence[CoverStream],
@@ -1473,10 +1515,12 @@ async def _prepare_cover_art(
     decision: ProcessingDecision,
     tmp_dir: str,
     job_id: int,
-) -> tuple[list[CoverArt], str | None]:
+    quicktime: bool = False,
+) -> tuple[list[CoverArt], list[int], str | None]:
     """
-    Copy each Matroska cover image out of the source so the remux can attach
-    it again. Returns the covers and an error, at most one of them non-empty.
+    The source's cover art, made ready for the output: (Matroska covers
+    copied out to attach again, cover streams to map into an MP4, error).
+    At most one of the three is non-empty.
 
     Matroska stores cover art as an image attachment, but FFmpeg's demuxer
     reports one as a video stream with the attached_pic disposition and its
@@ -1485,15 +1529,28 @@ async def _prepare_cover_art(
     dropped its cover. Mapping the stream does not help: the muxer writes
     it as a real still-image video track, which a player can offer as a
     second video. Copying the image out and attaching that file restores it
-    exactly. Only for Matroska output: MP4 cannot hold an attachment.
+    exactly.
+
+    An MP4 holds a cover as the image itself in its iTunes metadata, not
+    as a track, and FFmpeg's MP4 muxer writes a mapped cover stream there,
+    so for an MP4 output the cover streams are mapped (find_mp4_covers).
+    Every job writing an MP4 used to drop them all, a Matroska's included,
+    as the track lists the command is built from leave covers out. Not for
+    a QuickTime file kept as one: FFmpeg's QuickTime muxer writes no iTunes
+    metadata (mov_write_udta_tag, libavformat/movenc.c n8.1.3), so it
+    accepts a mapped cover, writes nothing and reports success. The cover
+    still takes a track ID, so mapping it would change the file anyway:
+    the next track's ID moves up by one (a chapter track's, in the file it
+    was seen in). Its cover is lost as before; a revert point keeps it.
 
     A probe failure returns no covers and no error, so the job runs as it
     did before this existed: the worker already decides from stored tracks
     when a probe fails rather than fail the job over it. A cover that is
     there but cannot be copied out is an error; see copy_out_cover_art.
     """
-    if _CONTAINER_FORMAT.get(decision.target_container) != "matroska":
-        return [], None
+    fmt = output_muxer(decision.target_container, quicktime)
+    if fmt not in ("matroska", "mp4"):
+        return [], [], None
     loop = asyncio.get_running_loop()
     try:
         probe = await loop.run_in_executor(
@@ -1501,11 +1558,15 @@ async def _prepare_cover_art(
     except ProbeError as exc:
         logger.warning("Job %d: could not probe %s for cover art (%s); "
                        "running without it", job_id, input_path, exc)
-        return [], None
+        return [], [], None
 
+    if fmt == "mp4":
+        return [], find_mp4_covers(probe), None
     found, attachments = find_matroska_covers(probe)
-    return await copy_out_cover_art(input_path, found, attachments, tmp_dir,
-                                    f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
+    covers, error = await copy_out_cover_art(
+        input_path, found, attachments, tmp_dir,
+        f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
+    return covers, [], error
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:
