@@ -652,15 +652,16 @@ def build_restore_command(
     sidecar_path: str,
     output_path: str,
     manifest: dict,
-    chapter_tracks: Sequence[int] = (),
+    rebuilt_tracks: Sequence[int] = (),
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
     one plus its sidecar.
 
-    chapter_tracks are the processed file's chapter track
-    (probe.chapter_track_indices), which is never copied: -map_chapters
-    writes the chapters, and the muxer a chapter track for them.
+    rebuilt_tracks are the processed file's chapter and timecode tracks
+    (probe.rebuilt_track_indices), which are never copied: -map_chapters
+    writes the chapters, and the muxer a chapter track for them, and the
+    muxer writes the timecode track from the video's timecode.
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -736,9 +737,12 @@ def build_restore_command(
     # the original had one chapter track, and the muxer writes one. Only
     # the processed file's is matched, so a point made before this fix,
     # whose manifest describes the original, still restores correctly.
-    if chapter_tracks:
+    # An MP4's timecode track the same way, for another reason: the MP4
+    # muxer refuses a copied one outright, so every such revert failed
+    # (probe.timecode_track_indices). It comes back last.
+    if rebuilt_tracks:
         kept = [(stream, where) for stream, where in zip(streams, located)
-                if not (where[0] == 0 and where[1] in chapter_tracks)]
+                if not (where[0] == 0 and where[1] in rebuilt_tracks)]
         streams = [stream for stream, _ in kept]
         located = [where for _, where in kept]
 

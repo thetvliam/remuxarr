@@ -91,9 +91,9 @@ def test_titles_skip_the_chapter_track():
         {"stream_index": 4, "track_type": "subtitle", "title": "Signs"},
     ]
 
-    assert titles_after_forge(tracks, chapter_tracks=[3]) == {
+    assert titles_after_forge(tracks, rebuilt_tracks=[3]) == {
         1: "Surround", 2: "Stereo", 3: "Signs"}
-    assert titles_after_forge(tracks, 0, chapter_tracks=[3]) == {1: "Stereo", 2: "Signs"}
+    assert titles_after_forge(tracks, 0, rebuilt_tracks=[3]) == {1: "Stereo", 2: "Signs"}
 
 
 # ── Real files ───────────────────────────────────────────────────────────────

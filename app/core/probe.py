@@ -282,6 +282,50 @@ def chapter_track_indices(probe_data: dict | None) -> list[int]:
             and stream.get("codec_tag_string") in CHAPTER_TRACK_TAGS]
 
 
+def timecode_track_indices(probe_data: dict | None) -> list[int]:
+    """
+    The streams that are a timecode track (tmcd) the muxer writes again
+    itself, so a command writing an MP4 leaves them out with the chapter
+    track (rebuilt_track_indices).
+
+    FFmpeg's MP4 muxer cannot copy a tmcd stream at all: it takes only the
+    codecs in its MP4 tag table, which has none for one, and fails at
+    header write ("Could not find tag for codec none"; mov_init in
+    libavformat/movenc.c, FFmpeg 8.1.3). So every revert of an MP4 with a
+    timecode track failed, as did every AC3 Forge add and undo on one, and
+    many cameras write one (GoPro, for one). A job never maps it and still
+    keeps it: the MP4 and QuickTime muxers write one tmcd track for each
+    video stream with a timecode (mov_init again), and FFmpeg's demuxer
+    gives the video the timecode of the tmcd track that belongs to it, or
+    the file the timecode of one no video claims (mov_read_header,
+    export_orphan_timecode, libavformat/mov.c). The track written again
+    holds the same sample (checked at 24 and at 29.97 frames a second).
+
+    It goes after every other track, as the muxer adds it last: in a file
+    where it was not last, a GoPro file's for one, it moves. So not for a
+    QuickTime file, which is written back as one (is_quicktime): FFmpeg's
+    QuickTime muxer copies a tmcd track where it stands. And only with a
+    video stream to give it the timecode: in a file without one it is not
+    written again, so it is copied, which the MP4 muxer refuses, as before.
+    """
+    streams = (probe_data or {}).get("streams", [])
+    if is_quicktime(probe_data):
+        return []
+    if not any(s.get("codec_type") == "video" for s in streams):
+        return []
+    return [s["index"] for s in streams
+            if s.get("codec_type") == "data" and s.get("codec_tag_string") == "tmcd"]
+
+
+def rebuilt_track_indices(probe_data: dict | None) -> list[int]:
+    """
+    The streams a command writing an MP4 or a QuickTime file leaves out
+    because the muxer writes them itself: the chapter track, and an MP4's
+    timecode track.
+    """
+    return sorted(chapter_track_indices(probe_data) + timecode_track_indices(probe_data))
+
+
 def extract_format_info(probe_data: dict) -> dict:
     """Extract file-level format metadata.
 

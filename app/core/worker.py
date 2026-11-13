@@ -3410,7 +3410,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             titles                  = job_data.get("titles"),
             covers                  = covers,
             quicktime               = job_data.get("quicktime", False),
-            chapter_tracks          = job_data.get("chapter_tracks", ()),
+            rebuilt_tracks          = job_data.get("rebuilt_tracks", ()),
         )
     else:
         action_label = "Adding AC3 5.1 track"
@@ -3424,7 +3424,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             titles            = job_data.get("titles"),
             covers            = covers,
             quicktime         = job_data.get("quicktime", False),
-            chapter_tracks    = job_data.get("chapter_tracks", ()),
+            rebuilt_tracks    = job_data.get("rebuilt_tracks", ()),
         )
 
     result = await run_forge_command(

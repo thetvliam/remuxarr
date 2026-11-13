@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2535 tests across 119 test files, plus 775 frontend tests under
+2548 tests across 120 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -148,7 +148,8 @@ acts on it.
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
 `test_existing_subtitle_files.py`, `test_timeout_logging.py`,
 `test_mp4_track_titles.py`, `test_stream_flags.py`,
-`test_quicktime_files.py`, `test_mp4_chapter_track.py`. Some run a
+`test_quicktime_files.py`, `test_mp4_chapter_track.py`,
+`test_timecode_track.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -172,6 +173,11 @@ track through an AC3 Forge add and undo and a revert. FFmpeg shows the track
 as a bin_data data stream, and copying it added a junk data track on every
 run in an MP4 and made FFmpeg fail in a QuickTime file; it is now left out,
 and the muxer writes the chapter track from the chapters.
+`test_timecode_track.py` covers an MP4's timecode track, as cameras write
+one, through an AC3 Forge add and undo and a revert. FFmpeg's MP4 muxer
+cannot copy one, so each failed; it is now left out, and the muxer writes it
+again from the video's timecode. A QuickTime file's is still copied, which
+keeps its place.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless
