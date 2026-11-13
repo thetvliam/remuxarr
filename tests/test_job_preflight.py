@@ -501,7 +501,8 @@ def test_an_action_keeps_the_language_it_targets(rig):
 
 def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
     media_row(rig, container="mkv", video_codec="hevc",
-              und_audio_threshold_acknowledged=True, font_attachments=3)
+              und_audio_threshold_acknowledged=True, font_attachments=3,
+              unwritable_data="")
     queue_row(rig)
     track_row(rig, track_id=1, stream_index=0, track_type="video", codec="hevc")
     track_row(rig, track_id=2, stream_index=1, track_type="audio",
@@ -516,6 +517,7 @@ def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
         "container": "mkv",
         "video_codec": "hevc",
         "font_attachments": 3,
+        "unwritable_data": "",
         "und_audio_threshold_acknowledged": True,
         "original_language": None,
         # The rig's folder holds only the video itself.

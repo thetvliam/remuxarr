@@ -18,18 +18,18 @@ QuickTime file, and a QuickTime file's tmcd, which the QuickTime muxer
 copies, so a revert puts it back where it was. An MP4's tmcd is written
 again by the muxer, last (probe.timecode_track_indices), so in the GoPro's
 layout, timecode before telemetry, the two change places, in the job and in
-the revert alike. Any other data stream is still dropped: both muxers write
-a data track's sample description only for "tmcd" and "gpmd"
+the revert alike. No other data stream can be kept: both muxers write a
+data track's sample description only for "tmcd" and "gpmd"
 (mov_write_stsd_tag, libavformat/movenc.c n8.1.3), so a copied "mebx" track
-would come out with an empty one. The iPhone file's metadata is still lost
-in a job, with no revert point.
+would come out with an empty one. A file holding one, the iPhone's, is left
+as it is (test_unwritable_data.py).
 
 These run the real scan, worker and revert on files shaped like the user's,
 six seconds long. Telemetry is made as GoPro-style "gpmd" by copying a
 chapter track into an MP4 (probe.chapter_track_indices tells why that
 gives one); the iPhone's track is a QuickTime timecode track whose sample
 entry and handler are rewritten to "mebx" and "meta", as nothing in FFmpeg
-writes one.
+writes one (_as_iphone_metadata, which test_unwritable_data.py uses).
 
 Verified by mutation, 8 applied, 8 killed. Each was first run against the
 whole suite as it stood (2548 tests): 6 survived it, and the MP4 taking a
@@ -41,8 +41,9 @@ timecode and chapter-track tests:
                                              the combined pass
   • an MP4 taking "tmcd" too               → which streams, the GoPro job
                                              and revert, the combined pass
-  • QuickTime taking any data stream       → which streams, the
-                                             iPhone-style track
+  • QuickTime taking any data stream       → which streams (and, when
+                                             first run, an iPhone-style
+                                             track this file then held)
   • QuickTime leaving out "tmcd"           → which streams, the QuickTime
                                              file
   • execute_ffmpeg not passing them        → the GoPro job and revert,
@@ -165,12 +166,15 @@ def _camera(path, *, brand, telemetry=True):
            "-timecode", TIMECODE, "-f", "mov", str(staged)]
     subprocess.run(cmd, check=True)
     inputs, order = ["-i", str(staged)], ["-map", "0:0", "-map", "0:3", "-map", "0:1", "-map", "0:2"]
-    if telemetry:
-        inputs += ["-i", str(_telemetry(path.parent))]
+    telemetry_file = _telemetry(path.parent) if telemetry else None
+    if telemetry_file:
+        inputs += ["-i", str(telemetry_file)]
         order += ["-map", "1:0"]
     subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, *order, "-c", "copy",
                     "-movflags", "+faststart", "-f", "mov", str(path)], check=True)
     staged.unlink()
+    if telemetry_file:
+        telemetry_file.unlink()   # not left in a library a scan reads
     with open(path, "r+b") as f:
         f.seek(8)
         f.write(brand.encode())
@@ -293,26 +297,6 @@ def test_a_quicktime_job_keeps_its_data_where_it_was(rig):
 
     assert _streams(movie) == before
     assert (_packets(movie, "gpmd"), _packets(movie, "tmcd")) == (telemetry, timecode)
-
-
-@needs_ffmpeg
-def test_an_iphone_metadata_track_is_still_dropped(rig):
-    """
-    Neither muxer writes a sample description for "mebx", so a copy would
-    be a track whose description holds nothing. The job drops it, as it
-    always has, and records no revert point, as the sidecar cannot hold it.
-    """
-    from app.database.models import RevertPoint
-
-    movie = _as_iphone_metadata(_camera(rig.library / "IMG_8810.mov", brand="qt  ",
-                                        telemetry=False))
-    assert _streams(movie) == [VIDEO, ("data", "mebx", "eng"), ENG, GER], "fixture changed"
-
-    assert "drop_track" in _run_job(rig, movie)
-
-    assert _streams(movie) == [VIDEO, ENG]
-    with rig.Session() as db:
-        assert db.query(RevertPoint).count() == 0
 
 
 @needs_ffmpeg

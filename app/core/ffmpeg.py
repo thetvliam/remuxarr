@@ -19,7 +19,7 @@ from typing import NamedTuple
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
-from app.core.probe import QUICKTIME_BRAND, ProbeError, probe_file
+from app.core.probe import DATA_ENTRIES, QUICKTIME_BRAND, ProbeError, probe_file
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -1488,23 +1488,11 @@ def find_mp4_covers(probe: dict) -> list[int]:
             and s.get("codec_name") in _MP4_COVER_CODECS]
 
 
-# The data tracks FFmpeg's MP4 and QuickTime muxers write properly, by
-# sample entry. The QuickTime muxer keeps a stream's own entry
-# (mov_get_codec_tag) and the MP4 muxer takes bin_data as "gpmd"
-# (codec_mp4_tags), but both write a data track's sample description only
-# for "tmcd", "gpmd" and their own RTP hint tracks (mov_write_stsd_tag,
-# libavformat/movenc.c n8.1.3); any other, an iPhone's "mebx" for one,
-# comes out a track whose description announces an entry and holds none.
-# The MP4 muxer takes no "tmcd" at all, and writes its own
-# (probe.timecode_track_indices).
-_DATA_ENTRIES = {"mp4": frozenset({"gpmd"}), "mov": frozenset({"gpmd", "tmcd"})}
-
-
 def find_data_streams(probe: dict, fmt: str) -> list[int]:
     """
     The stream indices of the data streams in a probe result that an
     output written with FFmpeg's `fmt` muxer, "mp4" or "mov", writes
-    properly (_DATA_ENTRIES), so a job keeps them.
+    properly (probe.DATA_ENTRIES), so a job keeps them.
 
     A camera's or a phone's file carries data streams beside its tracks: a
     GoPro's telemetry (bin_data, "gpmd") and timecode (tmcd), an iPhone's
@@ -1519,15 +1507,15 @@ def find_data_streams(probe: dict, fmt: str) -> list[int]:
     comes before its telemetry, the two change places, in the job and in
     a revert.
 
-    Any other data stream is still dropped, as FFmpeg cannot write it
-    back: an iPhone's metadata is lost in a job, and a revert point cannot
-    be made for it. A chapter track ("text") is no data to keep: the
-    muxer writes one from the chapters. A real GoPro track and the junk
+    Any other data stream FFmpeg cannot write back, an iPhone's metadata
+    for one, so no job runs on a file holding one: it is left as it is
+    (probe.unwritable_data_entries). A chapter track ("text") is no data to
+    keep: the muxer writes one from the chapters. A real GoPro track and the junk
     ones AC3 Forge and reverts once left (PARKED 37) look alike, and both
     are kept. A Matroska output holds no data stream and is not asked
     about.
     """
-    entries = _DATA_ENTRIES[fmt]
+    entries = DATA_ENTRIES[fmt]
     return [s["index"] for s in probe.get("streams") or []
             if s.get("codec_type") == "data" and s.get("codec_tag_string") in entries]
 

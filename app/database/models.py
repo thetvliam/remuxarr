@@ -50,6 +50,13 @@ class MediaFile(Base):
     # scans; the worker probes it once at job pickup — see _load_job_data.
     font_attachments = Column(Integer)
 
+    # The sample entries of the file's data tracks FFmpeg cannot write back
+    # ("mebx" for an iPhone video), joined by commas, from the same probe
+    # (probe.unwritable_data_entries); "" for none. A file with any is left
+    # as it is. Null, as for font_attachments, means not probed since the
+    # column was added, and the worker fills it at job pickup.
+    unwritable_data = Column(String)
+
     # Lifecycle state
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)

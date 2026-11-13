@@ -206,7 +206,7 @@ def test_the_decision_input_lists_the_folder(tmp_path):
     (tmp_path / "Movie.mkv").write_bytes(b"x")
     (tmp_path / "Movie.en.srt").write_text("bazarr")
     media = SimpleNamespace(path=str(tmp_path / "Movie.mkv"), container="mkv",
-                            video_codec="h264", font_attachments=0,
+                            video_codec="h264", font_attachments=0, unwritable_data="",
                             und_audio_threshold_acknowledged=False,
                             original_language=None)
 

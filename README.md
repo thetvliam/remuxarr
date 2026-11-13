@@ -355,9 +355,10 @@ tracks. Matroska cover art comes back as a still-image video track rather
 than an attachment, with its filename and mimetype intact; nothing is lost, but
 a player may list it as a second video stream. And of the data streams a
 camera or phone records beside the video, a job keeps only those FFmpeg can
-write back - GoPro telemetry and timecode tracks. Any other, such as an
-iPhone's metadata tracks, is dropped, and no revert point can be made for that
-file. In an MP4, the timecode track comes back as the last track.
+write back - GoPro telemetry and timecode tracks; in an MP4, the timecode
+track comes back as the last track. A file holding any other, such as an
+iPhone video with its metadata tracks, is left as it is, with the reason in
+History: a job could not keep that data, and no revert point could hold it.
 
 ## Development
 

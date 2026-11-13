@@ -1716,12 +1716,14 @@ def analyze_file(
     if override_fixed_indices:
         has_language_fix = True
 
-    # A container Remuxarr has no muxer for: see where it is left alone,
-    # below. Its Language Review questions are not raised, here or there:
-    # an answer could only come back to that same decision. Nor are they
-    # for a container that keeps no tag (above).
+    # A container Remuxarr has no muxer for, or a file holding data tracks
+    # FFmpeg cannot write back: see where each is left alone, below. Their
+    # Language Review questions are not raised, here or there: an answer
+    # could only come back to that same decision. Nor are they for a
+    # container that keeps no tag (above).
     cannot_write = output_muxer(target_container) is None
-    if cannot_write or not writes_language:
+    unwritable = file_info.get("unwritable_data")
+    if cannot_write or unwritable or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1744,6 +1746,25 @@ def analyze_file(
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
+            faststart_enabled=add_faststart,
+        )
+
+    # ── Data tracks FFmpeg cannot write back ───────────────────────────────
+    # An iPhone video's metadata tracks ("mebx"), say: any job would drop
+    # them, and a revert point could not keep them, as a Matroska sidecar
+    # holds no data stream, so they would be gone for good. With Require
+    # Revert Point on, the job failed instead, and every full scan queued
+    # it again. Left as it is, with the reason in History: Remuxarr is for
+    # downloaded media, not for a phone's or camera's own recordings
+    # (probe.unwritable_data_entries; PARKED 45).
+    if unwritable:
+        return ProcessingDecision(
+            should_process=False,
+            reason=(f"This file holds data tracks Remuxarr cannot write back "
+                    f"({unwritable.replace(',', ', ')}), as an iPhone's video "
+                    "does, so it is left as it is."),
+            actions=[],
+            mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             faststart_enabled=add_faststart,
         )
 

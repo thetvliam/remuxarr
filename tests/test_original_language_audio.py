@@ -248,7 +248,7 @@ def test_the_stored_value_reaches_file_info(tmp_path):
     from app.core.scanner import _file_info_for
 
     media = SimpleNamespace(path=str(tmp_path / "Film.mkv"), container="mkv",
-                            video_codec="h264", font_attachments=0,
+                            video_codec="h264", font_attachments=0, unwritable_data="",
                             und_audio_threshold_acknowledged=False,
                             original_language="fre")
 

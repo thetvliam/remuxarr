@@ -317,6 +317,48 @@ def timecode_track_indices(probe_data: dict | None) -> list[int]:
             if s.get("codec_type") == "data" and s.get("codec_tag_string") == "tmcd"]
 
 
+# The data tracks FFmpeg's MP4 and QuickTime muxers write properly, by
+# sample entry. The QuickTime muxer keeps a stream's own entry
+# (mov_get_codec_tag) and the MP4 muxer takes bin_data as "gpmd"
+# (codec_mp4_tags), but both write a data track's sample description only
+# for "tmcd", "gpmd" and their own RTP hint tracks (mov_write_stsd_tag,
+# libavformat/movenc.c n8.1.3); any other, an iPhone's "mebx" for one,
+# comes out a track whose description announces an entry and holds none.
+# The MP4 muxer takes no "tmcd" at all, and writes its own
+# (timecode_track_indices). A job keeps these (ffmpeg.find_data_streams);
+# a file holding any other is left alone (unwritable_data_entries).
+DATA_ENTRIES = {"mp4": frozenset({"gpmd"}), "mov": frozenset({"gpmd", "tmcd"})}
+
+
+def unwritable_data_entries(probe_data: dict | None) -> list[str]:
+    """
+    The sample entries of an MP4 or QuickTime file's data tracks that
+    FFmpeg cannot write back, each once: none of DATA_ENTRIES for the
+    muxer that writes the file, nor a track the muxer writes itself
+    (rebuilt_track_indices). ["mebx"] for an iPhone video, whose metadata
+    tracks they are.
+
+    A job would drop such a track, and a revert point could not keep it,
+    as a Matroska sidecar holds no data stream, so the file is left as it
+    is (analyze_file), the user's call (PARKED 45): Remuxarr is for
+    downloaded media, and a phone's or camera's own recording is not worth
+    losing data over. Empty for any other container: a TS recording's data
+    streams are still dropped, as they always were.
+    """
+    fmt = (probe_data or {}).get("format") or {}
+    if "mov" not in fmt.get("format_name", "").split(","):
+        return []
+    entries = DATA_ENTRIES["mov" if is_quicktime(probe_data) else "mp4"]
+    rebuilt = set(rebuilt_track_indices(probe_data))
+    found: list[str] = []
+    for s in probe_data.get("streams", []):
+        tag = s.get("codec_tag_string")
+        if (s.get("codec_type") == "data" and s["index"] not in rebuilt
+                and tag not in entries and tag not in found):
+            found.append(tag)
+    return found
+
+
 def rebuilt_track_indices(probe_data: dict | None) -> list[int]:
     """
     The streams a command writing an MP4 or a QuickTime file leaves out
@@ -336,7 +378,8 @@ def extract_format_info(probe_data: dict) -> dict:
 
     font_attachments is here rather than in extract_tracks because it is a
     property of the file, not of a track, and because extract_tracks
-    cannot carry it — see count_font_attachments.
+    cannot carry it — see count_font_attachments. unwritable_data too, as
+    its entries joined by commas, "" for none (unwritable_data_entries).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
@@ -344,6 +387,7 @@ def extract_format_info(probe_data: dict) -> dict:
         "container":        _normalise_container(format_names),
         "duration":         _float_or_none(fmt.get("duration")),
         "font_attachments": count_font_attachments(probe_data),
+        "unwritable_data":  ",".join(unwritable_data_entries(probe_data)),
     }
 
 

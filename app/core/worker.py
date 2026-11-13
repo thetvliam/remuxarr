@@ -1926,6 +1926,11 @@ def _load_job_data(job_id: int):
         # would have before the count existed.
         if media.font_attachments is None and probe_data is not None:
             media.font_attachments = count_font_attachments(probe_data)
+        # The same for data tracks FFmpeg cannot write back: a file in the
+        # library before the column was added is looked at here, before
+        # anything is written to it (probe.unwritable_data_entries).
+        if media.unwritable_data is None and probe_data is not None:
+            media.unwritable_data = extract_format_info(probe_data)["unwritable_data"]
 
         # In stream order: analyze_file reads position (the last audio
         # track is the forge copy), and the FFmpeg map follows the list.

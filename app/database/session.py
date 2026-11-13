@@ -883,6 +883,10 @@ def _migrate_schema() -> None:
         # font-free, and the worker would never look.
         ("media_files", "font_attachments",
          "ALTER TABLE media_files ADD COLUMN font_attachments INTEGER"),
+        # No DEFAULT either, for the same reason: null tells the worker the
+        # file's data tracks were never looked at, so it looks at pickup.
+        ("media_files", "unwritable_data",
+         "ALTER TABLE media_files ADD COLUMN unwritable_data TEXT"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",
