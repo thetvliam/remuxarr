@@ -20,6 +20,7 @@ from typing import NamedTuple
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
 from app.core.probe import DATA_ENTRIES, QUICKTIME_BRAND, ProbeError, probe_file
+from app.core.probe import creation_time as source_creation_time
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -213,6 +214,7 @@ def build_ffmpeg_command(
     quicktime: bool = False,
     mp4_covers: Sequence[int] = (),
     data_streams: Sequence[int] = (),
+    creation_time: str | None = None,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
@@ -224,6 +226,8 @@ def build_ffmpeg_command(
     the source's data streams the output can hold, which it hands over
     only for an MP4 or a QuickTime output (find_data_streams).
     quicktime says the source is a QuickTime movie (see output_muxer).
+    creation_time is the date the source says it was made
+    (probe.creation_time), which it also hands over.
 
     Strategy
     --------
@@ -347,6 +351,27 @@ def build_ffmpeg_command(
         cmd += ["-map", f"0:{index}"]
 
     cmd += KEEP_STREAM_FLAGS
+
+    # ── The date the file was made ─────────────────────────────────────────
+    # FFmpeg copies a file's own tags to the output and then takes this
+    # one out again (copy_meta in fftools/ffmpeg_mux_init.c, FFmpeg 8.1.3),
+    # so every job that wrote an MP4, a QuickTime file or a Matroska left
+    # it with no date, on the file and, in an MP4 or QuickTime file, on
+    # each track. For a phone's or a camera's recording that is the day it
+    # was shot, which photo libraries sort by: a fast-start rewrite of an
+    # Android phone's video removed it. Named outright, it is written.
+    #
+    # Those three muxers are the ones that store it. Given to the AVI,
+    # MPEG-TS and ASF muxers it is accepted and nothing is written, and a
+    # value FFmpeg cannot read as a date ("40096-09-19T03:52:44.000000Z",
+    # from a real phone video) is passed over the same way with the job
+    # still succeeding, so nothing here checks the muxer or the value.
+    #
+    # A track whose own date differs from the file's comes out with the
+    # file's: the MP4 muxer stamps every track with the one date, and a
+    # date given for a single track changed nothing (tested).
+    if creation_time:
+        cmd += ["-metadata", f"creation_time={creation_time}"]
 
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which
@@ -968,7 +993,8 @@ async def execute_ffmpeg(
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
                                covers=covers, quicktime=quicktime,
                                mp4_covers=extra.mp4_covers,
-                               data_streams=extra.data_streams)
+                               data_streams=extra.data_streams,
+                               creation_time=extra.creation_time)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1298,7 +1324,8 @@ async def execute_ffmpeg_combined(
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
                                     covers=covers, quicktime=quicktime,
                                     mp4_covers=extra.mp4_covers,
-                                    data_streams=extra.data_streams)
+                                    data_streams=extra.data_streams,
+                                    creation_time=extra.creation_time)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1524,13 +1551,14 @@ class ExtraStreams(NamedTuple):
     """
     What a job keeps that the track lists leave out (_prepare_extra_streams):
     Matroska covers copied out to attach again, cover streams to map into
-    an MP4, data streams to map into an MP4 or a QuickTime file, and an
-    error, which stops the job.
+    an MP4, data streams to map into an MP4 or a QuickTime file, an error,
+    which stops the job, and the date the source says it was made.
     """
     covers: list[CoverArt]
     mp4_covers: list[int]
     data_streams: list[int]
     error: str | None
+    creation_time: str | None = None
 
 
 async def copy_out_cover_art(
@@ -1584,8 +1612,10 @@ async def _prepare_extra_streams(
 ) -> ExtraStreams:
     """
     The source's cover art and data streams, made ready for the output
-    (ExtraStreams). Data streams are find_data_streams'; the rest of this
-    is about covers.
+    (ExtraStreams), with the date it says it was made (probe.creation_time;
+    build_ffmpeg_command says why). The three outputs probed for are also
+    the three that store that date. Data streams are find_data_streams';
+    the rest of this is about covers.
 
     Matroska stores cover art as an image attachment, but FFmpeg's demuxer
     reports one as a video stream with the attached_pic disposition and its
@@ -1625,15 +1655,17 @@ async def _prepare_extra_streams(
                        "streams (%s); running without them", job_id, input_path, exc)
         return ExtraStreams([], [], [], None)
 
+    made = source_creation_time(probe)
     if fmt == "mp4":
-        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe, fmt), None)
+        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe, fmt),
+                            None, made)
     if fmt == "mov":
-        return ExtraStreams([], [], find_data_streams(probe, fmt), None)
+        return ExtraStreams([], [], find_data_streams(probe, fmt), None, made)
     found, attachments = find_matroska_covers(probe)
     covers, error = await copy_out_cover_art(
         input_path, found, attachments, tmp_dir,
         f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
-    return ExtraStreams(covers, [], [], error)
+    return ExtraStreams(covers, [], [], error, made)
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

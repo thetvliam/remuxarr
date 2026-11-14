@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2569 tests across 122 test files, plus 775 frontend tests under
+2591 tests across 123 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -150,7 +150,7 @@ acts on it.
 `test_mp4_track_titles.py`, `test_stream_flags.py`,
 `test_quicktime_files.py`, `test_mp4_chapter_track.py`,
 `test_timecode_track.py`, `test_data_streams.py`,
-`test_unwritable_data.py`. Some run a
+`test_unwritable_data.py`, `test_creation_date.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -185,6 +185,11 @@ used to drop with no revert point possible. `test_unwritable_data.py` covers
 a file holding a data track FFmpeg cannot write back, such as an iPhone video:
 it is left as it is, through the scan, a full rescan and the worker's pickup,
 raises no Language Review questions, and AC3 Forge refuses it.
+`test_creation_date.py` covers the date a file says it was made, through a
+job on an MP4, a QuickTime file and a Matroska, a conversion to MP4, a job
+that also extracts a subtitle, and a revert. FFmpeg copies a file's tags and
+then removes that one, so every job used to leave the file undated; for a
+phone's or a camera's recording it is the day it was shot.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless

@@ -248,6 +248,17 @@ def is_quicktime(probe_data: dict | None) -> bool:
     return tags.get("major_brand") == QUICKTIME_BRAND
 
 
+def creation_time(probe_data: dict | None) -> str | None:
+    """
+    The date the file says it was made, as ffprobe shows it in the file's
+    own tags, or None when it gives none. For a phone's or a camera's
+    recording this is when it was shot. A job writes it back
+    (ffmpeg.build_ffmpeg_command), as FFmpeg does not carry it across.
+    """
+    tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
+    return tags.get("creation_time") or None
+
+
 # The sample entries an MP4 or QuickTime chapter track carries: QuickTime
 # text, which FFmpeg's muxer writes, and 3GPP timed text.
 CHAPTER_TRACK_TAGS = frozenset({"text", "tx3g"})
