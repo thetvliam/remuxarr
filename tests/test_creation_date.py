@@ -232,6 +232,7 @@ def _run_job(rig, path):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @pytest.mark.parametrize("name, muxer, tracks_dated", [
     ("Phone.mp4", "mp4", True),
     ("Camera.mov", "mov", True),

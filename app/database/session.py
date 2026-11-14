@@ -884,9 +884,10 @@ def _migrate_schema() -> None:
         ("media_files", "font_attachments",
          "ALTER TABLE media_files ADD COLUMN font_attachments INTEGER"),
         # No DEFAULT either, for the same reason: null tells the worker the
-        # file's data tracks were never looked at, so it looks at pickup.
-        ("media_files", "unwritable_data",
-         "ALTER TABLE media_files ADD COLUMN unwritable_data TEXT"),
+        # file was never looked at for the signs of a recording, so it
+        # looks at pickup.
+        ("media_files", "recording_signs",
+         "ALTER TABLE media_files ADD COLUMN recording_signs TEXT"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",

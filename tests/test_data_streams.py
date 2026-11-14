@@ -22,14 +22,16 @@ the revert alike. No other data stream can be kept: both muxers write a
 data track's sample description only for "tmcd" and "gpmd"
 (mov_write_stsd_tag, libavformat/movenc.c n8.1.3), so a copied "mebx" track
 would come out with an empty one. A file holding one, the iPhone's, is left
-as it is (test_unwritable_data.py).
+as it is, as any phone's or camera's own recording now is, a real GoPro's
+among them (test_recording_signs.py). The GoPro-layout file here has
+neither of a real one's signs, so a job still runs on it.
 
 These run the real scan, worker and revert on files shaped like the user's,
 six seconds long. Telemetry is made as GoPro-style "gpmd" by copying a
 chapter track into an MP4 (probe.chapter_track_indices tells why that
 gives one); the iPhone's track is a QuickTime timecode track whose sample
 entry and handler are rewritten to "mebx" and "meta", as nothing in FFmpeg
-writes one (_as_iphone_metadata, which test_unwritable_data.py uses).
+writes one (_as_iphone_metadata, which test_recording_signs.py uses).
 
 Verified by mutation, 8 applied, 8 killed. Each was first run against the
 whole suite as it stood (2548 tests): 6 survived it, and the MP4 taking a
@@ -276,6 +278,7 @@ def test_a_gopro_job_keeps_the_telemetry_and_the_revert_gives_it_back(rig):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_quicktime_job_keeps_its_data_where_it_was(rig):
     """
     The QuickTime muxer copies the timecode track and the telemetry, which

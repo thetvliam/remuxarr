@@ -41,7 +41,7 @@ from app.core.ffmpeg import (
     KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
 )
 from app.core.probe import (ProbeError, extract_tracks, is_quicktime, rebuilt_track_indices,
-                            probe_file, unwritable_data_entries)
+                            probe_file, recording_signs)
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -484,7 +484,7 @@ def get_candidates(
     Returns {"total": N, "items": [...]}.
     """
     from app.database.models import Ac3ForgeJob, MediaFile, Track
-    from sqlalchemy import case as sa_case
+    from sqlalchemy import case as sa_case, or_
 
     # File IDs that have an AAC 5.1 track
     has_aac51 = (
@@ -525,11 +525,16 @@ def get_candidates(
         .scalar_subquery()
     )
 
+    # A phone's or camera's own recording is no candidate: the job would
+    # only refuse it (load_forge_job_data, probe.recording_signs), and a button
+    # that always fails is worse than none. A row not looked at yet (null)
+    # is still listed, and the job looks.
     query = (
         db.query(MediaFile)
         .filter(
             MediaFile.id.in_(has_aac51),
             ~MediaFile.id.in_(is_forged),
+            or_(MediaFile.recording_signs.is_(None), MediaFile.recording_signs == ""),
         )
     )
 
@@ -961,18 +966,20 @@ def load_forge_job_data(job_id: int) -> dict | None:
             finish_forge_job(job_id, False, None, f"Could not probe file to {what}: {exc}")
             return None
 
-        # Forge copies every stream ("-map 0"), and FFmpeg writes no sample
-        # description for a data track it does not know, so an iPhone
-        # video's metadata tracks ("mebx") would come out as tracks that say
-        # nothing of what they hold. Such a file is left as it is, as the
-        # main pipeline leaves it (probe.unwritable_data_entries; PARKED 45).
-        unwritable = unwritable_data_entries(probe_data)
-        if unwritable:
+        # A phone's or camera's own recording is left as it is, as the main
+        # pipeline leaves it (probe.recording_signs; PARKED 45). Forge
+        # copies every stream ("-map 0") and would cost it the same: FFmpeg
+        # writes no sample description for a data track it does not know,
+        # so an iPhone video's metadata tracks ("mebx") would come out as
+        # tracks that say nothing of what they hold, and the device tags
+        # and the brand would go as in any job.
+        recording = recording_signs(probe_data)
+        if recording:
             finish_forge_job(
                 job_id, False, None,
-                "This file holds data tracks Remuxarr cannot write back "
-                f"({', '.join(unwritable)}), as an iPhone's video does, so AC3 "
-                "Forge leaves it as it is. The file was not changed.",
+                "This looks like a phone's or camera's own recording "
+                f"({', '.join(recording)}), so AC3 Forge leaves it as it is. "
+                "The file was not changed.",
             )
             return None
 

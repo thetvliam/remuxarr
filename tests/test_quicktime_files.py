@@ -18,6 +18,13 @@ recorded for the original; by Forge, from its own probe.
 
 These run the real scan, worker, revert and forge against real files.
 
+A QuickTime movie has since become one of the files left as they are: no
+job or Forge run starts on one (probe.recording_signs,
+test_recording_signs.py). A revert point made before then is still
+restored, and restored as QuickTime. The three real-file tests here run
+with that rule off (before_recordings_were_left_alone in conftest.py), as
+a job is how they make a revert point.
+
 Verified by mutation, 12 applied, 12 killed. Each was first run against
 the whole suite as it stood (2459 tests, with test_job_preflight.py's
 plain-data test expecting the new quicktime key), and all 12 survived it:
@@ -215,6 +222,7 @@ def _run_job(rig, path):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_fast_start_rewrite_keeps_a_quicktime_movie_one(rig):
     """
     A camera .mov with its index at the end and nothing else to change:
@@ -235,6 +243,7 @@ def test_a_fast_start_rewrite_keeps_a_quicktime_movie_one(rig):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_job_and_its_revert_keep_a_quicktime_movie_one(rig):
     """
     The job drops the German track. It and the revert that puts the track
@@ -264,6 +273,7 @@ def test_a_job_and_its_revert_keep_a_quicktime_movie_one(rig):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_forge_add_and_undo_keep_a_quicktime_movie_one(rig):
     """The add writes QuickTime with its AC3 appended, and the undo gives
     the original's shape and packets back. Track titles survive both: Forge

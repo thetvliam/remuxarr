@@ -154,6 +154,7 @@ def test_the_probe_reads_chapters_and_finds_the_track(rig, fmt, name):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @FORMATS
 def test_forge_add_and_undo_write_the_chapter_track_once(rig, fmt, name):
     from app.core import scanner
@@ -188,6 +189,7 @@ def test_forge_add_and_undo_write_the_chapter_track_once(rig, fmt, name):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @FORMATS
 def test_a_revert_gives_back_one_chapter_track(rig, fmt, name):
     """

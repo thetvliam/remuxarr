@@ -178,6 +178,7 @@ def test_the_probe_finds_only_an_mp4s_timecode_track(rig, fmt, name):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @FORMATS
 def test_forge_add_and_undo_keep_the_timecode(rig, fmt, name):
     movie = _movie(rig.library / name, fmt, [("eng", 6)])
@@ -196,6 +197,7 @@ def test_forge_add_and_undo_keep_the_timecode(rig, fmt, name):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @FORMATS
 def test_a_revert_gives_back_the_timecode(rig, fmt, name):
     """The job drops the German track; the revert puts it back, and the
@@ -221,6 +223,7 @@ def test_a_revert_gives_back_the_timecode(rig, fmt, name):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_quicktime_timecode_track_keeps_its_place(rig):
     """
     Copied, not written again: a track written again would go last. Forge

@@ -1535,12 +1535,13 @@ def find_data_streams(probe: dict, fmt: str) -> list[int]:
     a revert.
 
     Any other data stream FFmpeg cannot write back, an iPhone's metadata
-    for one, so no job runs on a file holding one: it is left as it is
-    (probe.unwritable_data_entries). A chapter track ("text") is no data to
-    keep: the muxer writes one from the chapters. A real GoPro track and the junk
-    ones AC3 Forge and reverts once left (PARKED 37) look alike, and both
-    are kept. A Matroska output holds no data stream and is not asked
-    about.
+    for one, so no job runs on a file holding one: it is taken for a
+    phone's or camera's own recording and left as it is
+    (probe.recording_signs). A chapter track ("text") is no data to
+    keep: the muxer writes one from the chapters. A real GoPro track and
+    the junk ones AC3 Forge and reverts once left (PARKED 37) look alike,
+    and both are kept. A Matroska output holds no data stream and is not
+    asked about.
     """
     entries = DATA_ENTRIES[fmt]
     return [s["index"] for s in probe.get("streams") or []

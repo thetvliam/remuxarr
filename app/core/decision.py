@@ -1716,14 +1716,14 @@ def analyze_file(
     if override_fixed_indices:
         has_language_fix = True
 
-    # A container Remuxarr has no muxer for, or a file holding data tracks
-    # FFmpeg cannot write back: see where each is left alone, below. Their
-    # Language Review questions are not raised, here or there: an answer
-    # could only come back to that same decision. Nor are they for a
-    # container that keeps no tag (above).
+    # A container Remuxarr has no muxer for, or a phone's or camera's own
+    # recording: see where each is left alone, below. Their Language
+    # Review questions are not raised, here or there: an answer could only
+    # come back to that same decision. Nor are they for a container that
+    # keeps no tag (above).
     cannot_write = output_muxer(target_container) is None
-    unwritable = file_info.get("unwritable_data")
-    if cannot_write or unwritable or not writes_language:
+    recording = file_info.get("recording_signs")
+    if cannot_write or recording or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1749,20 +1749,19 @@ def analyze_file(
             faststart_enabled=add_faststart,
         )
 
-    # ── Data tracks FFmpeg cannot write back ───────────────────────────────
-    # An iPhone video's metadata tracks ("mebx"), say: any job would drop
-    # them, and a revert point could not keep them, as a Matroska sidecar
-    # holds no data stream, so they would be gone for good. With Require
-    # Revert Point on, the job failed instead, and every full scan queued
-    # it again. Left as it is, with the reason in History: Remuxarr is for
-    # downloaded media, not for a phone's or camera's own recordings
-    # (probe.unwritable_data_entries; PARKED 45).
-    if unwritable:
+    # ── A phone's or camera's own recording ────────────────────────────────
+    # Left as it is, whatever the settings say: nothing above or below
+    # this can turn it into a job. Remuxarr is for downloaded media, the
+    # user's call (PARKED 45), and a job costs a recording what a download
+    # does not have: an iPhone video's metadata tracks, which no revert
+    # point could hold either, a phone's device tags, the camera's brand
+    # (probe.recording_signs, which says what marks one). The reason goes
+    # in History.
+    if recording:
         return ProcessingDecision(
             should_process=False,
-            reason=(f"This file holds data tracks Remuxarr cannot write back "
-                    f"({unwritable.replace(',', ', ')}), as an iPhone's video "
-                    "does, so it is left as it is."),
+            reason=("This looks like a phone's or camera's own recording "
+                    f"({recording.replace(',', ', ')}), so it is left as it is."),
             actions=[],
             mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             faststart_enabled=add_faststart,

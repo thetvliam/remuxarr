@@ -1392,7 +1392,7 @@ def _process_file(
             existing.duration      = fmt_info.get("duration")
             existing.video_codec   = primary_video_codec
             existing.font_attachments = fmt_info.get("font_attachments")
-            existing.unwritable_data = fmt_info.get("unwritable_data")
+            existing.recording_signs = fmt_info.get("recording_signs")
             existing.last_scanned  = utcnow()
             if reevaluate:
                 existing.reevaluate_after_job = False
@@ -1408,7 +1408,7 @@ def _process_file(
                 duration    = fmt_info.get("duration"),
                 video_codec = primary_video_codec,
                 font_attachments = fmt_info.get("font_attachments"),
-                unwritable_data = fmt_info.get("unwritable_data"),
+                recording_signs = fmt_info.get("recording_signs"),
                 last_scanned = utcnow(),
             )
             db.add(media_file)
@@ -2202,7 +2202,7 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "container":        media_file.container,
         "video_codec":      media_file.video_codec,
         "font_attachments": media_file.font_attachments,
-        "unwritable_data":  media_file.unwritable_data,
+        "recording_signs":  media_file.recording_signs,
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
         "folder_entries":   _folder_entries(media_file.path),

@@ -337,37 +337,90 @@ def timecode_track_indices(probe_data: dict | None) -> list[int]:
 # comes out a track whose description announces an entry and holds none.
 # The MP4 muxer takes no "tmcd" at all, and writes its own
 # (timecode_track_indices). A job keeps these (ffmpeg.find_data_streams);
-# a file holding any other is left alone (unwritable_data_entries).
+# a file holding any other is taken for a phone's or camera's own
+# recording and left alone (recording_signs).
 DATA_ENTRIES = {"mp4": frozenset({"gpmd"}), "mov": frozenset({"gpmd", "tmcd"})}
 
 
-def unwritable_data_entries(probe_data: dict | None) -> list[str]:
-    """
-    The sample entries of an MP4 or QuickTime file's data tracks that
-    FFmpeg cannot write back, each once: none of DATA_ENTRIES for the
-    muxer that writes the file, nor a track the muxer writes itself
-    (rebuilt_track_indices). ["mebx"] for an iPhone video, whose metadata
-    tracks they are.
+# What marks an MP4 or QuickTime file as a phone's or camera's own
+# recording (recording_signs). Each is from a real recording's probe
+# (tests/real_recordings/probes.json): the brands from iPhones' QuickTime
+# movies, a Sony camera ("XAVC"), a file of Sony's "MSNV" brand, a Nokia
+# phone and a 3GPP video; the tags from iPhones, Android phones and GoPro
+# cameras, but for "make" and "model", which no sample has: they are the
+# names FFmpeg gives the maker's atoms, as "firmware" is its name for
+# GoPro's and "location" for the GPS position, which it also gives per
+# language, as "location-eng" (mov_read_udta_string, mov_metadata_loci,
+# libavformat/mov.c, FFmpeg 8.1.3).
+RECORDING_BRANDS = frozenset({QUICKTIME_BRAND, "XAVC", "MSNV", "nvr1"})
+RECORDING_BRAND_PREFIX = "3g"
+DEVICE_TAGS = frozenset({"make", "model", "firmware"})
+DEVICE_TAG_PREFIXES = ("com.apple.", "com.android.")
+LOCATION_TAGS = frozenset({"location", "com.apple.quicktime.location.ISO6709"})
+LOCATION_TAG_PREFIX = "location-"
+UNMARKED_DATA_TRACKS = frozenset({"tmcd", "gpmd"})
 
-    A job would drop such a track, and a revert point could not keep it,
-    as a Matroska sidecar holds no data stream, so the file is left as it
-    is (analyze_file), the user's call (PARKED 45): Remuxarr is for
-    downloaded media, and a phone's or camera's own recording is not worth
-    losing data over. Empty for any other container: a TS recording's data
-    streams are still dropped, as they always were.
+
+def recording_signs(probe_data: dict | None) -> list[str]:
+    """
+    What marks an MP4 or QuickTime file as a phone's or camera's own
+    recording, in words for the user, in this order: "data tracks", "GPS
+    location", "device tags", "camera brand". Empty for a file with none,
+    and for any other container.
+
+    Remuxarr is for downloaded media, the user's call (PARKED 45), and a
+    file with any of these is left as it is whatever the settings say
+    (decision.analyze_file; AC3 Forge too, forge.load_forge_job_data). A job
+    would cost a recording what a download does not have: FFmpeg's MP4
+    muxer writes back neither an iPhone's metadata tracks nor a phone's
+    device tags (a fast-start rewrite of an Android phone's video lost its
+    "com.android.version"), and the brand is rewritten. No revert point
+    could hold a data track either, as a Matroska sidecar has none.
+
+      - A data track that is not the chapter track, a timecode track
+        ("tmcd") or a "gpmd" track: an iPhone's "mebx", a GoPro's "fdsc",
+        a Sony camera's "rtmd". The three left out are no sign of a
+        camera. The muxer writes any MP4's chapters as a track, and FFmpeg
+        writes a timecode track for any file it is given a timecode for.
+        And "gpmd", GoPro's telemetry, is also what released versions of
+        AC3 Forge and of revert left behind in a download: each run on an
+        MP4 with chapters copied the chapter track in as one more "gpmd"
+        track (chapter_track_indices). Counting it would leave those
+        downloads alone for good, a Forge undo included. A GoPro file is
+        known by its "fdsc" track and "firmware" tag, which all five real
+        ones have, and a job keeps a "gpmd" track where it does run
+        (DATA_ENTRIES).
+      - A GPS tag (LOCATION_TAGS).
+      - A device tag (DEVICE_TAGS, DEVICE_TAG_PREFIXES). An iTunes-style
+        download's own tags are not among them: FFmpeg shows
+        "com.apple.iTunes" tags by their short names, "iTunEXTC" for one
+        (checked on a file tagged that way).
+      - A camera's brand (RECORDING_BRANDS), which is all that marked the
+        "MSNV" file. A QuickTime movie counts, an editor's export among
+        them: every one is left alone, the user's call.
+
+    Not every recording has one. An editor's MP4 export and a video a
+    messaging app has rewritten carry none of this, look like any
+    download, and are processed like one.
     """
     fmt = (probe_data or {}).get("format") or {}
     if "mov" not in fmt.get("format_name", "").split(","):
         return []
-    entries = DATA_ENTRIES["mov" if is_quicktime(probe_data) else "mp4"]
-    rebuilt = set(rebuilt_track_indices(probe_data))
-    found: list[str] = []
-    for s in probe_data.get("streams", []):
-        tag = s.get("codec_tag_string")
-        if (s.get("codec_type") == "data" and s["index"] not in rebuilt
-                and tag not in entries and tag not in found):
-            found.append(tag)
-    return found
+    tags = fmt.get("tags") or {}
+    chapter_tracks = set(chapter_track_indices(probe_data))
+    brand = tags.get("major_brand") or ""
+    found = {
+        "data tracks": any(
+            s.get("codec_type") == "data" and s["index"] not in chapter_tracks
+            and s.get("codec_tag_string") not in UNMARKED_DATA_TRACKS
+            for s in probe_data.get("streams", [])),
+        "GPS location": any(
+            key in LOCATION_TAGS or key.startswith(LOCATION_TAG_PREFIX) for key in tags),
+        "device tags": any(
+            key in DEVICE_TAGS or key.startswith(DEVICE_TAG_PREFIXES) for key in tags),
+        "camera brand": brand in RECORDING_BRANDS or brand.startswith(RECORDING_BRAND_PREFIX),
+    }
+    return [sign for sign, present in found.items() if present]
 
 
 def rebuilt_track_indices(probe_data: dict | None) -> list[int]:
@@ -389,8 +442,8 @@ def extract_format_info(probe_data: dict) -> dict:
 
     font_attachments is here rather than in extract_tracks because it is a
     property of the file, not of a track, and because extract_tracks
-    cannot carry it — see count_font_attachments. unwritable_data too, as
-    its entries joined by commas, "" for none (unwritable_data_entries).
+    cannot carry it — see count_font_attachments. recording_signs too,
+    joined by commas, "" for none (recording_signs).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
@@ -398,7 +451,7 @@ def extract_format_info(probe_data: dict) -> dict:
         "container":        _normalise_container(format_names),
         "duration":         _float_or_none(fmt.get("duration")),
         "font_attachments": count_font_attachments(probe_data),
-        "unwritable_data":  ",".join(unwritable_data_entries(probe_data)),
+        "recording_signs":  ",".join(recording_signs(probe_data)),
     }
 
 
