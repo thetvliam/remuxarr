@@ -19,9 +19,10 @@ and AC3 Forge refuses the file too, though it still undoes an add it
 made before this rule, which costs the file nothing more. The scan
 records the signs on the file's row (media_files.recording_signs), as it
 records its fonts, so a full scan, which decides an unchanged file from
-its row, leaves it alone too; and the worker looks at a row from before
-the column, at pickup, before writing anything. The reason goes in History, and no Language
-Review question is raised.
+its row, leaves it alone too; and the worker reads the signs again from
+the file at every pickup, before writing anything, which covers a row
+from before the column and a file replaced since the scan. The reason
+goes in History, and no Language Review question is raised.
 
 tests/real_recordings/probes.json holds what ffprobe says of 23 real files,
 tag values removed: the 18 recordings (iPhones, Android phones, GoPro and
@@ -91,6 +92,16 @@ there by the Forge refusal test:
   • the undo still refused                  → the undo
   • the add let through too                 → the refusal, the undo
   • the check dropped                       → the refusal
+
+Reading the signs at every pickup came after that, with 2 applied and 2
+killed. Reading them only for a row never looked at is the code as it
+stood, which the suite as it stood (2708 tests) passed; not reading them
+at all was killed there by the pickup of a row from before the column:
+
+  • not read at pickup                      → the pickup, the recording put
+                                              in a queued file's place
+  • read only for a row never looked at     → the recording put in a queued
+                                              file's place
 """
 import asyncio
 import hashlib
@@ -487,6 +498,43 @@ def test_the_worker_looks_at_a_row_from_before_at_pickup(rig):
     assert status == "skipped"
     assert [s for s, _ in items] == ["skipped"] and items[0][1].startswith(REASON)
     assert _digest(movie) == before
+
+
+@needs_ffmpeg
+def test_a_recording_put_in_a_queued_files_place_is_left_alone(rig):
+    """
+    A download is scanned and queued, and before its job starts the file
+    is replaced by a phone's video with the same tracks. The worker's track
+    check passes it, so the row's answer, "no recording", is all that
+    stood between the job and the video. The worker reads the signs from
+    the file at pickup, and leaves it alone.
+    """
+    video = _android_video(rig)
+    download = rig.library / "copy.tmp"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(video), "-map", "0",
+                    "-c", "copy", "-map_metadata", "-1",
+                    "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=ger",
+                    "-f", "mp4", str(download)], check=True)
+    phone_video = video.read_bytes()
+    download.replace(video)
+    assert recording_signs(probe_file(str(video))) == [], "fixture"
+    _scan(rig)
+    stored, _, items = _row_and_items(rig)
+    assert stored == "" and [s for s, _ in items] == ["pending"], "fixture"
+
+    video.write_bytes(phone_video)
+    before = _digest(video)
+
+    async def go():
+        job_id = rig.worker._claim_next()
+        await rig.worker._run_and_broadcast(job_id, _WS(), asyncio.get_running_loop())
+    asyncio.run(go())
+
+    stored, status, items = _row_and_items(rig)
+    assert stored == "GPS location"
+    assert status == "skipped"
+    assert [s for s, _ in items] == ["skipped"] and items[0][1].startswith(REASON)
+    assert _digest(video) == before
 
 
 @needs_ffmpeg

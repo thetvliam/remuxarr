@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2708 tests across 125 test files, plus 775 frontend tests under
+2709 tests across 125 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -190,7 +190,7 @@ used to drop with no revert point possible. `test_recording_signs.py` covers
 a phone's or camera's own recording: an MP4 or QuickTime file with a data
 track cameras write, a GPS tag, a device tag or a camera's brand is left as it
 is whatever the settings, through the scan, a full rescan and the worker's
-pickup, raises no Language Review questions, and AC3 Forge neither offers nor
+pickup, where the signs are read again from the file, raises no Language Review questions, and AC3 Forge neither offers nor
 accepts it, though it can still undo an add made before. `real_recordings/probes.json` holds ffprobe's output for 23 real
 files, tag values removed, with the signs expected of each written by hand.
 `test_creation_date.py` covers the date a file says it was made, through a

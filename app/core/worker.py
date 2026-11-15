@@ -1966,10 +1966,14 @@ def _load_job_data(job_id: int):
         # would have before the count existed.
         if media.font_attachments is None and probe_data is not None:
             media.font_attachments = count_font_attachments(probe_data)
-        # The same for the signs of a phone's or camera's own recording: a
-        # file in the library before the column was added is looked at
-        # here, before anything is written to it (probe.recording_signs).
-        if media.recording_signs is None and probe_data is not None:
+        # The signs of a phone's or camera's own recording are taken from
+        # the probe above every time, not only for a row from before the
+        # column was added (probe.recording_signs). The track check above
+        # passes a file replaced on disk since the scan by one with the same
+        # tracks, and a recording can have a download's tracks: with the
+        # stored answer trusted, the job ran on it. Left as stored when the
+        # probe failed.
+        if probe_data is not None:
             media.recording_signs = extract_format_info(probe_data)["recording_signs"]
 
         # In stream order: analyze_file reads position (the last audio
