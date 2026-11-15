@@ -112,6 +112,13 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
    until the file or its plan changes.
 8. No temp file is left behind, and the source is gone only when the
    container changed.
+26. Every kept video, audio and subtitle track keeps its own tags, its title
+    above all (an MP4 track's title is the tag FFmpeg shows as `name`). The
+    language is check 4's, and `DURATION` and `ENCODER` are the muxer's own.
+    A Matroska track's other tags going in a conversion to MP4, which has no
+    place for them, is listed as an accepted loss, not a finding: Remuxarr
+    does not refuse a conversion over one. Only this tool checks track tags;
+    the worker checks the file's own (see the main README).
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its

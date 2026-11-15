@@ -29,6 +29,11 @@ Each profile is checked against invariants instead:
      copied.
   8. No temp file is left behind, and the source is gone only when the
      container changed.
+ 26. Every kept video, audio and subtitle track keeps its own tags, its
+     title above all. Its language is check 4's, and DURATION and ENCODER
+     are the muxer's own. A Matroska track's other tags going in a
+     conversion to MP4, which has no place for them, is an accepted loss:
+     a conversion is not refused over one, the user's call.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -421,6 +426,30 @@ def kind(stream: dict) -> str | None:
     if t == "attachment":
         return "attachment"
     return None     # data streams: an MP4 chapter track, for one
+
+
+# Check 26. A track's tags a job is not held to: the language is check 4's,
+# and the Matroska muxer writes DURATION and ENCODER for itself.
+_TRACK_TAGS_NOT_COMPARED = frozenset({"language", "duration", "encoder"})
+_TRACK_TAGS_MP4 = ("MP4 has no place for a Matroska track's own tags beyond its "
+                   "title and language, and a conversion is not refused over "
+                   "one: the user's call; tools/testlib/README.md, check 26")
+
+
+def _track_tags(stream: dict) -> dict:
+    """A track's own tags by lower-case name. FFmpeg shows an MP4 track's
+    title as "name" and a Matroska's as "title": both are "title" here."""
+    tags = {k.lower(): v for k, v in (stream.get("tags") or {}).items()}
+    if "name" in tags and "title" not in tags:
+        tags["title"] = tags.pop("name")
+    return {k: v for k, v in tags.items() if k not in _TRACK_TAGS_NOT_COMPARED}
+
+
+def lost_track_tags(before: dict, after: dict) -> list[str]:
+    """The tags of the track `before` that `after` lacks or holds another
+    value for, by lower-case name, in order."""
+    now = _track_tags(after)
+    return sorted(k for k, v in _track_tags(before).items() if now.get(k) != v)
 
 
 def is_mp4(info: dict) -> bool:
@@ -1552,6 +1581,26 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
         actual = [lang(s) for s in info_after["streams"] if kind(s) == k]
         if len(planned) == len(actual) and planned != actual:
             find(4, source, f"{k} languages {actual}, planned {planned}")
+
+    # 26. Every kept track keeps its own tags, matched as for check 4. A
+    # count that differs is check 3's finding, not another one here.
+    for k in ("video", "audio", "text-sub", "image-sub"):
+        kept = [s for kk, s in expected if kk == k]
+        written = [s for s in info_after["streams"] if kind(s) == k]
+        if len(kept) != len(written):
+            continue
+        for s, t in zip(kept, written):
+            lost = lost_track_tags(s, t)
+            if not lost:
+                continue
+            to_mp4 = is_mp4(info_after) and not is_mp4(info_before)
+            if "title" in lost or not to_mp4:
+                find(26, source, f"{k} stream {s['index']} lost or changed "
+                                 f"its tag(s): {', '.join(lost)}")
+            else:
+                known.append({"file": Path(source).relative_to(lib).as_posix(),
+                              "lost": f"track tag(s) {', '.join(lost)}",
+                              "why": _TRACK_TAGS_MP4})
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")
