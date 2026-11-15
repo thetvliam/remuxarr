@@ -62,7 +62,7 @@ class ScanStats:
     errors:        int = 0
     removed:       int = 0   # records removed: file gone from disk, or now excluded
     excluded:      int = 0   # files the exclude settings passed over this scan
-    held:          int = 0   # not queued again: audio cannot be copied (_held_back)
+    held:          int = 0   # not queued again: audio cannot be copied, or tags would be lost (_held_back)
     cancelled:     bool = False   # True if the scan was stopped early by the user
 
 
@@ -1186,7 +1186,8 @@ def _plan_key(actions) -> list[tuple]:
 def _held_back(db: Session, file_id: int, decision) -> bool:
     """
     Whether a scan leaves this file unqueued: its newest job failed because
-    its audio cannot be copied, and the plan now is the plan that job ran.
+    its audio cannot be copied, or because the output would have lost some
+    of the file's own tags, and the plan now is the plan that job ran.
 
     The caller has already checked that the file is unchanged on disk and
     that the call is a scan's.
@@ -1196,18 +1197,21 @@ def _held_back(db: Session, file_id: int, decision) -> bool:
     failure that is no retry: the audio is the same, nothing re-encodes it
     (worker._explain_failure), and the job fails again, at the cost of an
     FFmpeg run and another failed entry in History, on every such scan.
+    Nor for lost tags: the same plan writes the same container, which can
+    hold the same tags as before (worker._lost_tags_error).
 
     Any change is worth another try, so it is queued after one: a new file
     (the caller's check), or a plan that differs, such as a keep list that
-    now drops the track that would not copy. Retry and Retry All delete the
+    now drops the track that would not copy, or Prefer MP4 turned off, so
+    that a Matroska is left a Matroska. Retry and Retry All delete the
     failed job before deciding the file again, so there is no failed job
     here for them, and the file is queued.
 
     Only the newest job counts: one after the failure, of any outcome, means
     the failure is no longer what the file last did.
     """
-    # worker imports this module, so its message is fetched when asked for.
-    from app.core.worker import UNCOPYABLE_AUDIO
+    # worker imports this module, so its messages are fetched when asked for.
+    from app.core.worker import LOST_TAGS, UNCOPYABLE_AUDIO
 
     newest = (
         db.query(QueueItem)
@@ -1216,7 +1220,7 @@ def _held_back(db: Session, file_id: int, decision) -> bool:
         .first()
     )
     if (newest is None or newest.status != "failed"
-            or not (newest.error_message or "").startswith(UNCOPYABLE_AUDIO)):
+            or not (newest.error_message or "").startswith((UNCOPYABLE_AUDIO, LOST_TAGS))):
         return False
     return _plan_key(newest.planned_actions) == _plan_key(decision.actions)
 
@@ -1710,8 +1714,9 @@ def _process_file(
         stats.held += 1
         logger.info(
             "Not queuing %s again: its last job failed because its audio "
-            "cannot be copied, and neither the file nor what it would do has "
-            "changed since. Retry it in History to try again.",
+            "cannot be copied or it would have lost the file's own tags, and "
+            "neither the file nor what it would do has changed since. Retry "
+            "it in History to try again.",
             path,
         )
         return

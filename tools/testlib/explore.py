@@ -170,6 +170,11 @@ IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
 _UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, "
                      '"Nothing is ever re-encoded"; app/core/worker.py, _explain_failure')
 
+# A job or a Forge run whose output would lose some of the file's own tags
+# fails and leaves the file alone, rather than drop them.
+_LOST_TAGS = ("a file's own tags are not dropped: app/core/worker.py, "
+              "_lost_tags_error; app/core/probe.py, lost_file_tags")
+
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
                   "attachment map in build_ffmpeg_command",
@@ -597,6 +602,11 @@ def run_child(spec_path: str) -> None:
                     entry["refused"] = True
                     entry["uncopyable_audio"] = True
                     continue
+                if j.status == "failed" and error.startswith(worker.LOST_TAGS):
+                    known.append({"file": rel(source), "lost": "job refused",
+                                  "why": f"{_LOST_TAGS} ({error.split('It would lose: ')[-1]})"})
+                    entry["refused"] = True
+                    continue
                 find(1, source, f"job {j.status}: {error[:300]}")
             done = [j for j in jobs if j.status == "success"]
             if not done:
@@ -662,7 +672,7 @@ def run_child(spec_path: str) -> None:
         # 19. Answers stick: the rescan asks nothing already answered.
         _check_answers_stick(find, db, files, source_of)
 
-    forge = _forge_round_trips(find, lib, scratch, files, rel, collect,
+    forge = _forge_round_trips(find, known, lib, scratch, files, rel, collect,
                                choices["_forge_undo"])
 
     reverts = _revert_round_trips(
@@ -693,7 +703,7 @@ def run_child(spec_path: str) -> None:
 
 # ── AC3 Forge (checks 20 to 25) ──────────────────────────────────────────────
 
-def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> dict:
+def _forge_round_trips(find, known, lib, scratch, files, rel, collect, undo: bool) -> dict:
     """
     Queue every Forge candidate through the app's own route function, run
     the Forge jobs through the worker, and check the result (20 to 23);
@@ -737,6 +747,11 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
         for file_id, j in added.items():
             job = db.get(Ac3ForgeJob, j["job"])
             # 20. Every add succeeds.
+            if job.status == "failed" and (job.error_message or "").startswith(worker.LOST_TAGS):
+                known.append({"file": rel(j["path"]), "lost": "Forge add refused",
+                              "why": f"{_LOST_TAGS} "
+                                     f"({job.error_message.split('It would lose: ')[-1]})"})
+                continue
             if job.status != "success":
                 find(20, j["path"], f"Forge add {job.status}: {(job.error_message or '')[:200]}")
                 continue

@@ -453,6 +453,13 @@ def capturing_rig(rig, monkeypatch):
 
     monkeypatch.setattr(capture_mod, "capture", capture)
 
+    # The outputs here are not media files, so the tag check, which probes
+    # both files, would refuse every run; it has its own tests
+    # (test_kept_file_tags.py).
+    async def keeps_its_tags(input_path, produced_path):
+        return None
+    monkeypatch.setattr(worker, "_lost_tags_error", keeps_its_tags)
+
     async def staging_ffmpeg(**kwargs):
         rig.ffmpeg_calls.append(kwargs)
         result = rig.results.pop(0)

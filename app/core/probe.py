@@ -248,6 +248,39 @@ def is_quicktime(probe_data: dict | None) -> bool:
     return tags.get("major_brand") == QUICKTIME_BRAND
 
 
+# A file's own tags a muxer writes for itself, whatever it is given: the
+# MP4 and QuickTime muxers their brand fields, every muxer but AVI's the
+# program that wrote the file ("encoder"), the AVI muxer that program as
+# "software" (its ISFT chunk). A rewrite changes them however carefully it
+# copies the rest, and none is the file's own: lost_file_tags passes them
+# over. Each was seen changed by an ordinary job on the test library.
+REWRITTEN_TAGS = frozenset({"major_brand", "minor_version", "compatible_brands",
+                            "encoder", "software"})
+
+
+def lost_file_tags(source: dict | None, output: dict | None) -> list[str]:
+    """
+    The source's own tags, as ffprobe shows them on the file, that the
+    output does not have with the same value, by the source's names. Names
+    are matched ignoring case, as a Matroska stores them in capitals and an
+    MP4 in lower case. Tags the output has and the source does not are no
+    concern, nor are REWRITTEN_TAGS.
+
+    A job and an AC3 Forge run refuse to replace a file that would lose any
+    (worker._lost_tags_error). FFmpeg's MP4 muxer writes a fixed list of
+    tags and no others (mov_write_ilst_box, libavformat/movenc.c, FFmpeg
+    8.1.3): an MP4 rewritten as an MP4 lost an iTunes-style file's content
+    rating ("iTunEXTC"), cast ("iTunMOVI"), purchase date, rating and sort
+    name, measured with a real job. No revert could give them back, as a
+    revert writes an MP4 the same way.
+    """
+    def tags(probe_data):
+        return ((probe_data or {}).get("format") or {}).get("tags") or {}
+    kept = {key.lower(): value for key, value in tags(output).items()}
+    return [key for key, value in tags(source).items()
+            if key.lower() not in REWRITTEN_TAGS and kept.get(key.lower()) != value]
+
+
 def creation_time(probe_data: dict | None) -> str | None:
     """
     The date the file says it was made, as ffprobe shows it in the file's

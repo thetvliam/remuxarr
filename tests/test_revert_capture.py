@@ -1281,6 +1281,13 @@ def job(tmp_path, recycle, monkeypatch):
     source.write_bytes(b"ORIGINAL")
     state = {"recorded": [], "finished": {}, "sidecars": []}
 
+    # The outputs here are not media files, so the tag check, which probes
+    # both files, would refuse every run; it has its own tests
+    # (test_kept_file_tags.py).
+    async def keeps_its_tags(input_path, produced_path):
+        return None
+    monkeypatch.setattr(worker, "_lost_tags_error", keeps_its_tags)
+
     def build(*, success=True, raises=False, hook_calls=1, same_path=False,
               extracts=None):
         # extract_subtitle actions are what the worker reads to decide

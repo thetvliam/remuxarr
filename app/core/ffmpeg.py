@@ -364,8 +364,11 @@ def build_ffmpeg_command(
     # Those three muxers are the ones that store it. Given to the AVI,
     # MPEG-TS and ASF muxers it is accepted and nothing is written, and a
     # value FFmpeg cannot read as a date ("40096-09-19T03:52:44.000000Z",
-    # from a real phone video) is passed over the same way with the job
-    # still succeeding, so nothing here checks the muxer or the value.
+    # from a real phone video) is passed over the same way, so nothing here
+    # checks the muxer or the value. A date that does not come out is lost
+    # all the same: the tag check refuses the job before the source is
+    # touched (worker._lost_tags_error); converting to AVI, MPEG-TS or ASF
+    # is never planned (output_muxer).
     #
     # A track whose own date differs from the file's comes out with the
     # file's: the MP4 muxer stamps every track with the one date, and a

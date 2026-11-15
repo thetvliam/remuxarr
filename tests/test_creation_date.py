@@ -17,7 +17,8 @@ the probe it already makes for cover art and data streams
 
 What is not kept, each measured: a track's own date where it differs from
 the file's, as the MP4 muxer stamps every track with the file's; and a date
-FFmpeg cannot read back as one, which it passes over.
+FFmpeg cannot read back as one, which it passes over. A job that would come
+out without it is now refused, the file untouched (test_kept_file_tags.py).
 
 The real-file tests run the real scan, worker and revert.
 
@@ -36,8 +37,7 @@ that either.
                                               the combined pass, the revert
   • the current time written, not the
     source's                                → the command, every real file
-                                              that has a date, and the one
-                                              whose date cannot be read
+                                              that has a date
   • a revert leaving the date out           → the revert
   • the rule always None                    → the rule, every real file
                                               that has a date
@@ -320,25 +320,35 @@ def test_a_revert_gives_back_the_date(rig):
 
 
 @needs_ffmpeg
-def test_a_date_ffmpeg_cannot_read_does_not_fail_the_job(rig, monkeypatch):
+def test_a_date_ffmpeg_cannot_write_stops_the_job(rig, monkeypatch):
     """
     A real phone video gave its date as "40096-09-19T03:52:44.000000Z".
-    FFmpeg cannot write a file with such a date, so the probe the job makes
-    is given it here. The job succeeds, and the file comes out with no date
-    rather than a wrong one.
+    FFmpeg cannot write a file with such a date, so every probe of the
+    source is given it here. FFmpeg passes it over and writes a file with no
+    date, and the tag check refuses that output: the job fails, and the
+    file is left as it was.
     """
     import app.core.ffmpeg as ffmpeg_module
+    import app.core.worker as worker
+    from app.database.models import QueueItem
 
     source = _file(rig.library / "Phone.mp4", "mp4")
     real_probe = ffmpeg_module.probe_file
 
     def probe(path, *args, **kwargs):
         data = real_probe(path, *args, **kwargs)
-        data["format"]["tags"]["creation_time"] = "40096-09-19T03:52:44.000000Z"
+        if str(path) == str(source):
+            data["format"]["tags"]["creation_time"] = "40096-09-19T03:52:44.000000Z"
         return data
     monkeypatch.setattr(ffmpeg_module, "probe_file", probe)
+    monkeypatch.setattr(worker, "probe_file", probe)
 
     _run_job(rig, source)
 
-    assert _audio_languages(source) == ["eng"], "the job did not run"
-    assert _dates(source) == (None, [None, None])
+    with rig.Session() as db:
+        job = db.query(QueueItem).one()
+        assert job.status == "failed"
+        assert job.error_message.startswith(worker.LOST_TAGS)
+        assert job.error_message.endswith("It would lose: creation_time.")
+    assert _audio_languages(source) == ["eng", "ger"]
+    assert _dates(source)[0] == MADE

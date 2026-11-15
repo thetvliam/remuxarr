@@ -25,6 +25,7 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, is_faststart_mp4, is_quicktime, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.probe import lost_file_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
@@ -839,6 +840,39 @@ UNCOPYABLE_AUDIO = (
 )
 
 
+# What a job or an AC3 Forge run is recorded as failing with when its
+# output would lose some of the file's own tags (_lost_tags_error). The
+# testlib explorer reads the first sentence, as for UNCOPYABLE_AUDIO, and so
+# does a scan, which does not queue such a file again unchanged
+# (scanner._held_back).
+LOST_TAGS = (
+    "Writing this file would lose tags it holds, and Remuxarr does not drop "
+    "a file's own tags. The file has been left as it was."
+)
+
+
+async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
+    """
+    None when the finished output keeps every one of the source's own tags,
+    or else the error that stops the run before the source is touched
+    (probe.lost_file_tags). Run in the staging hook, where both files exist
+    and nothing has been written over.
+
+    A file that cannot be probed stops the run too, with that said: a tag
+    cannot be shown kept on a file nothing could read.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        source = await loop.run_in_executor(None, probe_file, input_path)
+        output = await loop.run_in_executor(None, probe_file, produced_path)
+    except ProbeError as exc:
+        return f"Could not check that the file keeps its own tags, so it has been left as it was: {exc}"
+    lost = lost_file_tags(source, output)
+    if lost:
+        return f"{LOST_TAGS} It would lose: {', '.join(lost)}."
+    return None
+
+
 def _explain_failure(error: str | None) -> str | None:
     """
     The error a failed job is recorded with: FFmpeg's own, or, for audio
@@ -1380,6 +1414,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         stopped = stop_if_changed()
         if stopped:
             return stopped
+
+        # Before the capture, so a run that is refused spends nothing on a
+        # revert point it would only discard.
+        lost = await _lost_tags_error(input_path, produced_path)
+        if lost:
+            return lost
 
         result, error = await revert_capture.capture(
             input_path    = input_path,
@@ -3524,6 +3564,12 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
         # Unlike _run_job's, this fires at most once: a forge run has no
         # retry that re-runs the command, so there is no earlier capture
         # to clear first.
+        #
+        # An add or an undo that would lose the file's own tags is refused
+        # as a job is (_lost_tags_error), before the capture.
+        lost = await _lost_tags_error(input_path, produced_path)
+        if lost:
+            return lost
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
