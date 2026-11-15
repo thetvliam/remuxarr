@@ -42,6 +42,7 @@ from app.core.ffmpeg import (
 )
 from app.core.probe import (ProbeError, extract_tracks, is_quicktime, rebuilt_track_indices,
                             probe_file, recording_signs)
+from app.core.probe import creation_time as source_creation_time
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -132,6 +133,21 @@ def _title_args(fmt: str, titles: dict[int, str] | None) -> list[str]:
     return args
 
 
+def _creation_time_args(made: str | None) -> list[str]:
+    """
+    The -metadata argument writing back the date the file says it was made
+    (probe.creation_time), or nothing when it gives none.
+
+    Both forge commands copy the file's own tags, and FFmpeg takes this one
+    out of them again (copy_meta in fftools/ffmpeg_mux_init.c, FFmpeg
+    8.1.3), so every add and every undo left an MP4, a QuickTime file or a
+    Matroska with no date. Named outright, it is written, as by a job
+    (ffmpeg.build_ffmpeg_command, which says more). The AVI, MPEG-TS and
+    ASF muxers store no date, and take the argument without writing it.
+    """
+    return ["-metadata", f"creation_time={made}"] if made else []
+
+
 def _cover_unmaps(covers: Sequence[CoverArt]) -> list[str]:
     """Negative maps leaving each Matroska cover out of a "-map 0" copy."""
     args: list[str] = []
@@ -203,10 +219,14 @@ def build_add_ac3_command(
     covers:            Sequence[CoverArt] = (),
     quicktime:         bool = False,
     rebuilt_tracks:    Sequence[int] = (),
+    creation_time:     str | None = None,
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
     transcoded from the AAC 5.1 stream at aac_stream_index.
+
+    creation_time is the date the file says it was made, written back
+    (_creation_time_args).
 
     quicktime says the file is a QuickTime movie, written back with
     FFmpeg's QuickTime muxer so it stays one (ffmpeg.output_muxer).
@@ -276,6 +296,7 @@ def build_add_ac3_command(
         "-map", "0:t?",
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
+        *_creation_time_args(creation_time),
         # ── Output ────────────────────────────────────────────────────────
         "-f", fmt,
     ]
@@ -309,10 +330,11 @@ def build_undo_command(
     covers:                Sequence[CoverArt] = (),
     quicktime:             bool = False,
     rebuilt_tracks:        Sequence[int] = (),
+    creation_time:         str | None = None,
 ) -> list[str]:
     """
-    Copy all streams EXCEPT the AC3 track added by the forge. quicktime and
-    rebuilt_tracks as for build_add_ac3_command.
+    Copy all streams EXCEPT the AC3 track added by the forge. quicktime,
+    rebuilt_tracks and creation_time as for build_add_ac3_command.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection. covers are left out and attached again,
     as for build_add_ac3_command; a copy alone does not trip the muxer over
@@ -345,6 +367,7 @@ def build_undo_command(
         *KEEP_STREAM_FLAGS,
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
+        *_creation_time_args(creation_time),
         "-f", fmt,
     ]
 
@@ -1079,6 +1102,8 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "container":          media.container,
             # From the same probe: a QuickTime movie is written back as one.
             "quicktime":          is_quicktime(probe_data),
+            # And the date the file says it was made (_creation_time_args).
+            "creation_time":      source_creation_time(probe_data),
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,
