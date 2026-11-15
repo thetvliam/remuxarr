@@ -996,8 +996,14 @@ def load_forge_job_data(job_id: int) -> dict | None:
         # so an iPhone video's metadata tracks ("mebx") would come out as
         # tracks that say nothing of what they hold, and the device tags
         # and the brand would go as in any job.
+        #
+        # An undo is let through: it can only be of an add made before
+        # recordings were left alone, the add already cost the file all of
+        # that, and the undo costs nothing more. Measured on a real iPhone
+        # movie and a real Android video, the undone file was the forged
+        # one less its AC3 track, tags and tracks alike.
         recording = recording_signs(probe_data)
-        if recording:
+        if recording and not job.is_undo:
             finish_forge_job(
                 job_id, False, None,
                 "This looks like a phone's or camera's own recording "

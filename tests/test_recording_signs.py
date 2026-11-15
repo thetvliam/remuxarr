@@ -15,11 +15,12 @@ An MP4 or QuickTime file with any sign of a recording is now left alone
 (probe.recording_signs): a data track beyond its chapters, timecode and
 "gpmd", a GPS tag, a device tag, or a camera's brand, a QuickTime movie's
 among them. Nothing in the settings changes that (decision.analyze_file),
-and AC3 Forge refuses the file too. The scan records the signs on the
-file's row (media_files.recording_signs), as it records its fonts, so a
-full scan, which decides an unchanged file from its row, leaves it alone
-too; and the worker looks at a row from before the column, at pickup,
-before writing anything. The reason goes in History, and no Language
+and AC3 Forge refuses the file too, though it still undoes an add it
+made before this rule, which costs the file nothing more. The scan
+records the signs on the file's row (media_files.recording_signs), as it
+records its fonts, so a full scan, which decides an unchanged file from
+its row, leaves it alone too; and the worker looks at a row from before
+the column, at pickup, before writing anything. The reason goes in History, and no Language
 Review question is raised.
 
 tests/real_recordings/probes.json holds what ffprobe says of 23 real files,
@@ -81,6 +82,15 @@ job in test_data_streams.py and by test_forge_candidates.py:
   • Forge not refusing the file             → Forge
   • Forge offering recordings, Forge not
     offering a row not looked at yet        → what Forge offers
+
+Letting a Forge undo through came after, with 3 more applied and 3 killed.
+Against the suite as it stood (2681 tests) the undo still being refused
+survived; an add let through with it, and the check dropped, were killed
+there by the Forge refusal test:
+
+  • the undo still refused                  → the undo
+  • the add let through too                 → the refusal, the undo
+  • the check dropped                       → the refusal
 """
 import asyncio
 import hashlib
@@ -497,6 +507,29 @@ def test_a_file_with_only_a_gpmd_and_a_timecode_track_is_still_processed(rig):
     assert [s for s, _ in items] == ["pending"]
 
 
+def _android_video_51(rig):
+    """The Android video of _android_video with one English AAC 5.1 track,
+    so a Forge candidate but for its GPS tag, and a creation date."""
+    movie = rig.library / "VID_20170222.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x36:rate=10:duration=1",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-map", "0", "-map", "1", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "6",
+                    "-metadata:s:a:0", "language=eng",
+                    "-metadata", "location=+51.5074-000.1278/",
+                    "-metadata", "creation_time=2017-02-22T08:20:28.000000Z",
+                    "-f", "mp4", str(movie)], check=True)
+    return movie
+
+
+def _tags_and_audio(path):
+    probe = probe_file(str(path))
+    tags = probe["format"].get("tags") or {}
+    return ({key: tags.get(key) for key in ("location", "creation_time")},
+            [s["codec_name"] for s in probe["streams"] if s["codec_type"] == "audio"])
+
+
 @needs_ffmpeg
 def test_forge_leaves_the_file_alone_too(rig):
     """
@@ -507,15 +540,7 @@ def test_forge_leaves_the_file_alone_too(rig):
     from app.core import scanner
     from app.database.models import Ac3ForgeJob, MediaFile
 
-    movie = rig.library / "VID_20170222.mp4"
-    subprocess.run(["ffmpeg", "-v", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=64x36:rate=10:duration=1",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                    "-map", "0", "-map", "1", "-c:v", "libx264", "-preset", "ultrafast",
-                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "6",
-                    "-metadata:s:a:0", "language=eng",
-                    "-metadata", "location=+51.5074-000.1278/",
-                    "-f", "mp4", str(movie)], check=True)
+    movie = _android_video_51(rig)
     before = _digest(movie)
 
     with rig.Session() as db:
@@ -529,6 +554,48 @@ def test_forge_leaves_the_file_alone_too(rig):
         assert job.error_message == (f"{REASON} (GPS location), so AC3 Forge leaves it "
                                      "as it is. The file was not changed.")
     assert _digest(movie) == before
+
+
+@needs_ffmpeg
+def test_forge_can_undo_an_add_made_before_recordings_were_left_alone(rig, monkeypatch):
+    """
+    A released version forged the Android video. Its undo is let through:
+    the add already cost the file what a rewrite costs, and the undo costs
+    nothing more. The file comes back with its one AAC track, and with its
+    GPS tag and date as they were.
+    """
+    import app.core.forge as forge
+    import app.core.probe as probe
+    from app.core import scanner
+    from app.database.models import Ac3ForgeJob, MediaFile
+
+    movie = _android_video_51(rig)
+    before = _tags_and_audio(movie)
+    assert before == ({"location": "+51.5074-000.1278/",
+                       "creation_time": "2017-02-22T08:20:28.000000Z"}, ["aac"]), "fixture"
+
+    with monkeypatch.context() as released:
+        released.setattr(probe, "recording_signs", lambda probe_data: [])
+        released.setattr(forge, "recording_signs", lambda probe_data: [])
+        with rig.Session() as db:
+            scanner.scan_library(db, [str(rig.library)], force_probe=True)
+            job_id = rig.forge.queue_forge_job(db, db.query(MediaFile).one().id).id
+        assert asyncio.run(rig.worker._process_next_forge(_WS())) is True
+    with rig.Session() as db:
+        assert db.get(Ac3ForgeJob, job_id).status == "success"
+    assert _tags_and_audio(movie) == (before[0], ["aac", "ac3"])
+    assert recording_signs(probe_file(str(movie))) == [GPS], "no longer a recording"
+
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        job.status, job.is_undo, job.progress = "undo_pending", True, 0.0
+        db.commit()
+    assert asyncio.run(rig.worker._process_next_forge(_WS())) is True
+
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        assert job.status == "undone", job.error_message
+    assert _tags_and_audio(movie) == before
 
 
 def test_forge_does_not_offer_a_recording():
