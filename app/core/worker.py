@@ -3429,7 +3429,8 @@ def _requeue_cut_off_forge_job(job_id: int) -> None:
 
 
 async def _forge_run(job_data, input_path, temp_path, covers,
-                     on_progress, on_before_staging, timeout_seconds):
+                     on_progress, on_before_staging, on_before_swap,
+                     timeout_seconds):
     """
     Build a forge job's command and run it, for _run_forge_job.
 
@@ -3487,6 +3488,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
         progress_callback = on_progress,
         timeout_seconds   = timeout_seconds,
         before_staging    = on_before_staging,
+        before_swap       = on_before_swap,
     )
     return result
 
@@ -3564,11 +3566,42 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
     # a write that never happened describes nothing.
     captured: list[CapturedRevertPoint] = []
 
+    # The file as the run found it, checked the way _run_job checks its
+    # source: first in the staging hook and again just before the swap.
+    # Sonarr or Radarr importing an upgrade at this name, or deleting or
+    # renaming the file, while FFmpeg ran used to end in a success that
+    # overwrote the upgrade with the forged old file, or wrote a deleted
+    # file back. A change fails the run (undo_failed for an undo), where a
+    # job in the same position is cancelled: a cancelled forge job is not
+    # listed in the Forge panel, so nobody would learn of it, and a failed
+    # add puts the file back among the candidates. The Forge panel shows
+    # the filename above the first 60 characters of the error, so the
+    # message starts with what happened.
+    source_print = _fingerprint(input_path)
+
+    def changed_on_disk() -> str | None:
+        now = _fingerprint(input_path)
+        if now == source_print:
+            return None
+        what = "Deleted or renamed" if now is None else "Replaced or modified"
+        message = (f"{what} on disk while AC3 Forge was running. "
+                   f"Nothing was written.")
+        logger.warning("Forge job %d: %s: %s", job_id, input_path, message)
+        return message
+
+    async def on_before_swap() -> str | None:
+        return changed_on_disk()
+
     async def on_before_staging(produced_path: str) -> str | None:
         # Unlike _run_job's, this fires at most once: a forge run has no
         # retry that re-runs the command, so there is no earlier capture
         # to clear first.
         #
+        # The change check comes first: the tag check probes the file, and
+        # would refuse one deleted during the encode for the wrong reason.
+        changed = changed_on_disk()
+        if changed:
+            return changed
         # An add or an undo that would lose the file's own tags is refused
         # as a job is (_lost_tags_error), before the capture.
         lost = await _lost_tags_error(input_path, produced_path)
@@ -3617,7 +3650,8 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
             else:
                 result = await _forge_run(
                     job_data, input_path, temp_path, covers,
-                    on_progress, on_before_staging, timeout_seconds,
+                    on_progress, on_before_staging, on_before_swap,
+                    timeout_seconds,
                 )
         finally:
             discard_cover_art(covers)
