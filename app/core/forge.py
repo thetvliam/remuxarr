@@ -392,6 +392,7 @@ async def run_forge_command(
     progress_callback: Callable[[ForgeProgress], Awaitable[None]] | None = None,
     timeout_seconds:   float | None = None,
     before_staging:    Callable[[str], Awaitable[str | None]] | None = None,
+    before_swap:       Callable[[], Awaitable[str | None]] | None = None,
 ) -> ForgeResult:
     """
     Run a forge FFmpeg command with real-time progress tracking.
@@ -400,6 +401,11 @@ async def run_forge_command(
     output before it replaces the file, exactly as for a queue job: a
     non-None return aborts the run with the file untouched. The worker
     uses it to capture a revert point.
+
+    before_swap, if given, is awaited once the output has been copied
+    beside the file and before it replaces it, as in execute_ffmpeg; an
+    error string from it fails the run with nothing written. The worker
+    uses it to stop if the file changed on disk while the run went on.
 
     Writes to temp_path, then atomically renames to output_path on success.
     Always cleans up the temp file on failure.
@@ -462,6 +468,7 @@ async def run_forge_command(
         timeout_seconds=timeout_seconds,
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=on_staging if progress_callback else None,
+        before_swap=before_swap,
     )
 
     if not result.success:
