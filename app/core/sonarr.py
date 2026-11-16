@@ -43,8 +43,12 @@ def notify_sonarr(base_url: str, api_key: str, series_id: int) -> None:
     logger.info("Sonarr: triggering RescanSeries for series %d", series_id)
     try:
         resp = arr_post(base_url, api_key, {"name": "RescanSeries", "seriesId": series_id})
+        # The id is only logged. An empty reply (arr_post returns None) or
+        # one that is not an object raised here, and the except below then
+        # logged a rescan that had been accepted as a failure.
         logger.debug(
-            "Sonarr: RescanSeries queued (command id=%s)", resp.get("id", "?")
+            "Sonarr: RescanSeries queued (command id=%s)",
+            resp.get("id", "?") if isinstance(resp, dict) else "?",
         )
     except urllib.error.HTTPError as exc:
         logger.error(

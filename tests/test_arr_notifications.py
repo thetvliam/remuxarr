@@ -285,6 +285,32 @@ def test_a_missing_command_id_in_the_response_is_tolerated(arr, caplog):
     )
 
 
+
+@pytest.mark.parametrize("service", ["sonarr", "radarr"])
+@pytest.mark.parametrize("response", [None, [], "queued"], ids=["empty", "list", "text"])
+def test_a_reply_that_is_not_an_object_is_not_logged_as_a_failure(arr, caplog, service, response):
+    """
+    arr_post returns None for an empty reply. resp.get() then raised, and
+    the notifier's own except logged a rescan that had been accepted as a
+    failed one, with a traceback. Each service's own notifier, since the two
+    are separate copies.
+
+    Mutation: each notifier's guard removed in turn survived the whole
+    2778-test suite first and is killed here by its own three cases.
+    """
+    import logging
+
+    arr.state["response"] = response
+    notify = (arr.sonarr.notify_sonarr if service == "sonarr"
+              else arr.radarr.notify_radarr)
+
+    with caplog.at_level(logging.DEBUG, logger=f"app.core.{service}"):
+        notify("http://arr:8989", "key", 31)
+
+    assert len(arr.calls) == 1
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert any("queued (command id=?)" in r.getMessage() for r in caplog.records)
+
 # ── notify_radarr ────────────────────────────────────────────────────────────
 
 def test_radarr_is_asked_to_rescan_the_movie(arr):

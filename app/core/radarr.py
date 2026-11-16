@@ -38,8 +38,12 @@ def notify_radarr(base_url: str, api_key: str, movie_id: int) -> None:
     logger.info("Radarr: triggering RescanMovie for movie %d", movie_id)
     try:
         resp = arr_post(base_url, api_key, {"name": "RescanMovie", "movieId": movie_id})
+        # The id is only logged. An empty reply (arr_post returns None) or
+        # one that is not an object raised here, and the except below then
+        # logged a rescan that had been accepted as a failure.
         logger.debug(
-            "Radarr: RescanMovie queued (command id=%s)", resp.get("id", "?")
+            "Radarr: RescanMovie queued (command id=%s)",
+            resp.get("id", "?") if isinstance(resp, dict) else "?",
         )
     except urllib.error.HTTPError as exc:
         logger.error(
