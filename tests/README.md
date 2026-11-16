@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2738 tests across 126 test files, plus 775 frontend tests under
+2745 tests across 127 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -238,8 +238,8 @@ traceback, and the other three left the reason out.
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
 `test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`,
-`test_forge_source_changed.py`, `test_forge_undo_identity.py`,
-`test_forged_ac3_keep.py`.
+`test_forge_source_changed.py`, `test_forge_unexpected_errors.py`,
+`test_forge_undo_identity.py`, `test_forged_ac3_keep.py`.
 `test_forge_undo_identity.py` runs a real forge, a job and an undo on a
 file that had an AC3 5.1 of its own: once the job had dropped the forged
 AC3, undo removed the original's and could leave a file with no audio.
@@ -258,6 +258,10 @@ untouched.
 forge add or undo is running, as `test_source_changed_mid_job.py` does for a
 job: the run used to swap its output in regardless, overwriting an upgrade
 Sonarr had just imported or writing a deleted file back.
+`test_forge_unexpected_errors.py` injects an error where a forge run had no
+handling for one. Before the file was touched the job stayed at Processing
+until the next start; after the add, the restart failed it and a second add
+gave the file two AC3 tracks.
 `test_forged_ac3_keep.py` covers a scan of a forged file: the AC3 is kept
 whenever a kept audio track has its language. Keep Default Audio and the
 last-resort fallback used to keep the AAC and not its copy, so the next scan

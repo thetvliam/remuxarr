@@ -64,6 +64,16 @@ _active_task_registry: dict[int, asyncio.Task] = {}
 # after the lifespan had returned. Nothing then updated its row, and the
 # next start failed it as a crash.
 _forge_task: asyncio.Task | None = None
+# Forge runs that may have replaced their file and have not yet recorded an
+# outcome: added when the swap check lets the run go on, which is the only
+# way to the swap, and removed once the outcome is written. While a job is
+# here _process_next_forge's net leaves its row alone: "the file was not
+# changed" would be false. Left at "processing", the next start marks it
+# interrupted, with a message that says the file may have changed. The
+# shutdown requeue needs no such check: a stop that arrives while the
+# outcome is being written waits for it (_run_forge_job), and if writing it
+# fails, that error comes out rather than the cancellation.
+_forge_unsettled: set[int] = set()
 
 
 def pause_worker() -> None:
@@ -3384,7 +3394,7 @@ async def _trigger_email_notify(data: dict, loop: asyncio.AbstractEventLoop) -> 
 
 async def _process_next_forge(ws_manager) -> bool:
     """Claim and run the next pending forge job. Returns True if a job ran."""
-    from app.core.forge import claim_next_forge_job
+    from app.core.forge import claim_next_forge_job, load_forge_final_state
 
     loop   = asyncio.get_running_loop()
     job_id = await loop.run_in_executor(None, claim_next_forge_job)
@@ -3402,6 +3412,58 @@ async def _process_next_forge(ws_manager) -> bool:
     except asyncio.CancelledError:
         await loop.run_in_executor(None, _requeue_cut_off_forge_job, job_id)
         raise
+    except Exception as exc:
+        # The forge counterpart of _run_and_broadcast's net. Nothing else
+        # caught an error raised outside _run_forge_job's own try, loading
+        # the job's data for instance: the task ended with it unretrieved,
+        # nothing was logged until the app stopped, and the row stayed at
+        # "processing" until the next start, refusing a cancel and keeping
+        # the file's queue job from being claimed.
+        logger.exception("Forge job %d raised outside its own error handling", job_id)
+        if job_id in _forge_unsettled:
+            logger.error(
+                "Forge job %d may have rewritten its file and its outcome "
+                "could not be recorded; it is left as it is, and the next "
+                "start marks it interrupted", job_id)
+            return True
+        try:
+            failed = await loop.run_in_executor(
+                None, _fail_unfinished_forge_job, job_id,
+                f"Stopped by an unexpected error before the file was changed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            if failed:
+                final = await loop.run_in_executor(None, load_forge_final_state, job_id)
+                if final:
+                    await ws_manager.broadcast_json({
+                        "event":    "forge_job_completed",
+                        "job_id":   job_id,
+                        "status":   final["status"],
+                        "filename": final["filename"],
+                        "error":    final.get("error"),
+                    })
+        except Exception:
+            logger.exception("Could not mark forge job %d failed", job_id)
+        return True
+    finally:
+        _forge_unsettled.discard(job_id)
+
+
+def _fail_unfinished_forge_job(job_id: int, error: str) -> bool:
+    """
+    Fail a forge job still at "processing", for _process_next_forge's net.
+    One that recorded its outcome before the error is left as it is. True
+    when the row was changed.
+    """
+    with SessionLocal() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        if job is None or job.status != "processing":
+            return False
+        job.status        = "undo_failed" if job.is_undo else "failed"
+        job.error_message = error
+        job.completed_at  = utcnow()
+        db.commit()
+        return True
 
 
 def _requeue_cut_off_forge_job(job_id: int) -> None:
@@ -3590,7 +3652,11 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
         return message
 
     async def on_before_swap() -> str | None:
-        return changed_on_disk()
+        changed = changed_on_disk()
+        if changed is None:
+            # The run goes on to the swap, with no await in between.
+            _forge_unsettled.add(job_id)
+        return changed
 
     async def on_before_staging(produced_path: str) -> str | None:
         # Unlike _run_job's, this fires at most once: a forge run has no
@@ -3680,14 +3746,40 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
                         job_data["file_id"], captured[0], input_path,
                     )
                 # For the Track refresh finish_forge_job does with the status.
-                fresh_tracks = probe_tracks_after_forge(input_path)
+                # Nothing here may stop the outcome being written: the file
+                # has been rewritten, and a row left at "processing" is
+                # failed at the next start, which puts a forged file back
+                # among the candidates, and adding again gave it a second
+                # AC3. Without fresh tracks the stored ones stay until the
+                # next scan, which re-probes a file whose size and mtime
+                # changed, as after a probe that fails outright.
+                try:
+                    fresh_tracks = probe_tracks_after_forge(input_path)
+                except Exception:
+                    logger.exception(
+                        "Forge job %d: could not re-read the tracks of %s after "
+                        "the run; recording the outcome without them",
+                        job_id, input_path)
             else:
                 for stale in captured:
                     delete_sidecar(stale.sidecar_path)
-            finish_forge_job(
-                job_id, result.success, result.output_size, result.error,
-                fresh_tracks=fresh_tracks,
-            )
+            # One retry, for a database briefly locked by a scan's writes.
+            # A second failure is let through, and _process_next_forge's net
+            # leaves the row as it is (_forge_unsettled).
+            for attempt in (1, 2):
+                try:
+                    finish_forge_job(
+                        job_id, result.success, result.output_size, result.error,
+                        fresh_tracks=fresh_tracks,
+                    )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    logger.exception(
+                        "Forge job %d: recording its outcome failed; trying once more",
+                        job_id)
+            _forge_unsettled.discard(job_id)
 
         # One executor call that a cancellation does not interrupt, as in
         # _run_job. The run is over and its outcome known, and after a
