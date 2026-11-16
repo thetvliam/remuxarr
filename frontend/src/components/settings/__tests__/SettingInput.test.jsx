@@ -54,14 +54,16 @@ function renderInput(f, value) {
   return { onChange, input: screen.getByLabelText(f.label) };
 }
 
-// The five integer settings in the real schema, with their production
-// defaults and the value the old blur handler resolved them to.
+// The five integer settings the old blur handler changed, with their
+// production defaults and the value it resolved them to. und_audio_threshold
+// has since been retired. The other four had no minimum then; the minimums
+// here are the ones the schema gives them now.
 const INTEGER_SETTINGS = [
   { key: "und_audio_threshold", min: 1, stored: 2, oldResult: 1 },
-  { key: "max_concurrent_jobs", min: undefined, stored: 1, oldResult: 0 },
-  { key: "job_timeout_minutes", min: undefined, stored: 120, oldResult: 0 },
-  { key: "email_smtp_port", min: undefined, stored: 587, oldResult: 0 },
-  { key: "email_failure_threshold", min: undefined, stored: 5, oldResult: 0 },
+  { key: "max_concurrent_jobs", min: 1, stored: 1, oldResult: 0 },
+  { key: "job_timeout_minutes", min: 0, stored: 120, oldResult: 0 },
+  { key: "email_smtp_port", min: 0, stored: 587, oldResult: 0 },
+  { key: "email_failure_threshold", min: 1, stored: 5, oldResult: 0 },
 ];
 
 describe("IntegerInput — untouched field", () => {

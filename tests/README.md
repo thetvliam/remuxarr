@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2727 tests across 126 test files, plus 775 frontend tests under
+2738 tests across 126 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -70,11 +70,12 @@ whether a setting is reachable at all — default, accepted key, schema entry an
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
 `test_setting_values.py` covers values of the wrong kind: the settings routes
-refuse them, an import skips and reports them, and a stored one, which a full
-backup restore or a hand edit can leave, is read as the default. It also
-covers the start converting an old true or false for
-`fix_undefined_language` to the three-state value it meant: read as the
-default, an old true had become Always Leave.
+refuse them, an integer below its minimum included (a negative Job Timeout
+stopped every job at once), an import skips and reports them, and a stored
+one of the wrong type, which a full backup restore or a hand edit can leave,
+is read as the default. It also covers the start converting an old true
+or false for `fix_undefined_language` to the three-state value it meant:
+read as the default, an old true had become Always Leave.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan

@@ -194,6 +194,29 @@ def test_the_retention_limits_accept_zero():
         assert field.get("min", 0) == 0, f"{field['key']} cannot be set to 0"
 
 
+def test_the_job_timeout_accepts_zero():
+    """
+    0 turns the timeout off, as its description says, for jobs, Forge runs
+    and reverts alike. A minimum of 1 would make that unreachable.
+    """
+    (timeout,) = [f for f in SETTINGS_SCHEMA if f["key"] == "job_timeout_minutes"]
+
+    assert timeout.get("min") == 0
+
+
+def test_every_integer_setting_declares_a_minimum():
+    """
+    The schema's minimum is what the server checks and what the Settings
+    page clamps a field to, and an integer setting without one took any
+    value: a negative Job Timeout stopped every job at once. A new integer
+    setting has to say what its lowest sensible value is.
+    """
+    unbounded = [f["key"] for f in SETTINGS_SCHEMA
+                 if f["type"] == "integer" and f.get("min") is None]
+
+    assert unbounded == []
+
+
 # ── Labels, and the Container Path pairs ─────────────────────────────────────
 #
 # Verified by mutation, 4 applied, 4 killed, each surviving the whole suite

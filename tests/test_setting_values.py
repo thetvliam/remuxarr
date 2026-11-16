@@ -37,6 +37,20 @@ Verified by mutation, 15 applied 15 killed, each surviving the whole
 
 The import toast's two mutants are recorded in BackupRestoreSection.test.jsx.
 
+The minimums of the four integer settings that had none (Job Timeout, SMTP
+Port, Concurrent Jobs, Consecutive Failure Threshold), 8 applied, each
+surviving the whole 2727-test suite first, 8 killed:
+
+  each of the four minimums removed     → below its floor; the timeout's
+                                          also by the bulk save and, in
+                                          test_settings_schema.py, by every
+                                          integer declaring a minimum
+  the timeout's minimum made 1          → at its floor, below its floor,
+                                          bulk save, the timeout accepts 0
+  the port's minimum made 1             → at its floor, below its floor
+  Concurrent Jobs' minimum made 0       → below its floor
+  the threshold's minimum made 0        → below its floor
+
 The start's conversion of an old true or false for fix_undefined_language
 (the tests at the end), 6 applied, each surviving the whole 2720-test suite
 first, 5 killed:
@@ -143,6 +157,42 @@ def test_a_bad_value_is_named_with_what_it_should_be(key, value, says):
     problem = setting_problem(key, value)
 
     assert problem and problem.startswith(key) and says in problem
+
+
+# The four integer settings that had no minimum. A negative Job Timeout
+# stopped every job, Forge run and revert at once ("timed out after -5
+# minute(s)"); below 1, Concurrent Jobs and the failure threshold acted as 1;
+# a negative port failed Test Email with a socket error.
+_FLOORS = {
+    "job_timeout_minutes":     0,   # 0 turns the limit off
+    "email_smtp_port":         0,   # 0 is read as the default port
+    "max_concurrent_jobs":     1,
+    "email_failure_threshold": 1,
+}
+
+
+@pytest.mark.parametrize("key, floor", _FLOORS.items())
+def test_an_integer_below_its_floor_is_refused(key, floor):
+    problem = setting_problem(key, floor - 1)
+
+    assert problem == f"{key} must be at least {floor}, not {floor - 1}"
+
+
+@pytest.mark.parametrize("key, floor", _FLOORS.items())
+def test_an_integer_at_its_floor_is_accepted(key, floor):
+    assert setting_problem(key, floor) is None
+
+
+def test_the_bulk_save_refuses_a_negative_timeout_and_writes_nothing(client, factory):
+    reply = client.put("/api/settings/", json={
+        "job_timeout_minutes": -5,
+        "max_concurrent_jobs": 2,
+    })
+
+    assert reply.status_code == 400
+    assert "job_timeout_minutes must be at least 0" in reply.json()["detail"]
+    assert _stored(factory, "job_timeout_minutes") is None
+    assert _stored(factory, "max_concurrent_jobs") is None
 
 
 # ── The routes ───────────────────────────────────────────────────────────────

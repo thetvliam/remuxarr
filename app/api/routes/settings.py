@@ -873,6 +873,9 @@ SETTINGS_SCHEMA = [
         "group":       "Worker",
         "label":       "Concurrent Jobs",
         "type":        "integer",
+        # The worker runs at least one job whatever is stored (max(1, ...)),
+        # so anything lower only made the field disagree with the app.
+        "min":         1,
         "description": "Maximum number of files that can be processed "
                        "simultaneously. Increasing this speeds up large queues "
                        "if your CPU and storage can keep up. Changes take "
@@ -896,6 +899,9 @@ SETTINGS_SCHEMA = [
         "group":       "Worker",
         "label":       "Job Timeout (minutes)",
         "type":        "integer",
+        # 0 turns the limit off. Below it, every job, Forge run and revert
+        # was stopped at once, "timed out after -5 minute(s)".
+        "min":         0,
         "description": "Maximum time in minutes a single FFmpeg job may run "
                        "before it is killed and marked as failed. Protects the "
                        "queue from stalling if FFmpeg hangs on a corrupt or "
@@ -1165,6 +1171,10 @@ SETTINGS_SCHEMA = [
         "group":       "Email",
         "label":       "SMTP Port",
         "type":        "integer",
+        # 0, not 1: a field cleared on the Settings page falls back to its
+        # minimum, and 0 is read as the default port (email_notify._send),
+        # where 1 would be used as port 1.
+        "min":         0,
         "description": "Common values: 587 (STARTTLS), 465 (SSL), 25 (none, rare).",
     },
     {
@@ -1220,6 +1230,9 @@ SETTINGS_SCHEMA = [
         "group":       "Email",
         "label":       "Consecutive Failure Threshold",
         "type":        "integer",
+        # 0 or below acted exactly as 1: the first failure sent the combined
+        # warning and individual emails paused.
+        "min":         1,
         "description": "After this many consecutive job failures, one "
                        "combined warning email is sent and individual "
                        "failure emails pause automatically — protecting "
