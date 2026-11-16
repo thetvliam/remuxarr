@@ -183,14 +183,20 @@ async def import_backup(file: UploadFile = File(...)):
         except zipfile.BadZipFile:
             raise HTTPException(400, "That file isn't a valid zip archive.")
 
+        # A manifest whose bytes could not be decoded as text, or that was
+        # JSON but not an object (a list, a string, null), answered 500: the
+        # decode error was not caught, and manifest.get() raised. Both now
+        # get the 400 their cousins already get, as the settings import does.
+        # The export writes the manifest with json.dump, all ASCII, so the
+        # encoding open() uses cannot matter to a real backup.
         manifest_path = os.path.join(tmp, "manifest.json")
         try:
             with open(manifest_path) as f:
                 manifest = json.load(f)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             raise HTTPException(400, "manifest.json inside the zip isn't valid JSON.")
 
-        if manifest.get("remuxarr_export") != "full_backup":
+        if not isinstance(manifest, dict) or manifest.get("remuxarr_export") != "full_backup":
             raise HTTPException(
                 400,
                 "This doesn't look like a Remuxarr full database backup "

@@ -52,6 +52,13 @@ it and are killed here: deleting the database instead of keeping it, keeping
 it but deleting its journal, keeping the journal under a name SQLite does not
 pair with it, and one name for every kept copy, so that a second restart
 overwrote the first one's.
+
+A manifest of the wrong kind (a list, a string, null, or bytes that are not
+text) answered 500 rather than 400; four rows in bad_uploads. Mutation, 3
+applied: the object check removed and the decode error left uncaught each
+survived the whole 2774-test suite first and are killed here. Opening the
+manifest without encoding="utf-8" survived even under an ASCII locale and
+was dropped from the change: the export writes it in ASCII.
 """
 import io
 import json
@@ -299,6 +306,17 @@ def bad_uploads():
             "database.db": b"SQLite format 3\x00rest"}),
         "database not sqlite": _zip({"manifest.json": _good_manifest(),
                                      "database.db": b"this is not a database"}),
+        # These four answered 500: manifest.get() raised on JSON that is not
+        # an object, and bytes that are not UTF-8 raised before the JSON
+        # decode error was caught.
+        "manifest a list": _zip({"manifest.json": b"[]",
+                                 "database.db": b"SQLite format 3\x00rest"}),
+        "manifest a string": _zip({"manifest.json": b'"full_backup"',
+                                   "database.db": b"SQLite format 3\x00rest"}),
+        "manifest null": _zip({"manifest.json": b"null",
+                               "database.db": b"SQLite format 3\x00rest"}),
+        "manifest not utf-8": _zip({"manifest.json": b"\xff\xfe{",
+                                    "database.db": b"SQLite format 3\x00rest"}),
     }
 
 
@@ -306,6 +324,19 @@ def test_every_malformed_upload_is_rejected(client, bad_uploads):
     for label, payload in bad_uploads.items():
         r = _upload(client, payload)
         assert r.status_code == 400, f"{label} was accepted: {r.status_code}"
+
+
+@pytest.mark.parametrize("label, says", [
+    ("manifest a list", "missing or incorrect 'remuxarr_export' marker"),
+    ("manifest a string", "missing or incorrect 'remuxarr_export' marker"),
+    ("manifest null", "missing or incorrect 'remuxarr_export' marker"),
+    ("manifest not utf-8", "isn't valid JSON"),
+])
+def test_a_manifest_of_the_wrong_kind_is_named_as_such(client, bad_uploads, label, says):
+    r = _upload(client, bad_uploads[label])
+
+    assert r.status_code == 400
+    assert says in r.json()["detail"]
 
 
 def test_a_rejected_upload_never_touches_the_live_database(client, live, bad_uploads):
