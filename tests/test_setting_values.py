@@ -36,14 +36,30 @@ Verified by mutation, 15 applied 15 killed, each surviving the whole
                warned at every read                 → warned once
 
 The import toast's two mutants are recorded in BackupRestoreSection.test.jsx.
+
+The start's conversion of an old true or false for fix_undefined_language
+(the tests at the end), 6 applied, each surviving the whole 2720-test suite
+first, 5 killed:
+
+  the conversion not run by init_db    → true, false, second start, restore
+  true converted to always_leave       → true, second start, restore
+  false converted to always_fix        → false
+  three-state values rewritten too     → left as it is (ask, leave),
+                                         second start
+  the conversion not committed         → true, false, second start, restore
+  run after the defaults are seeded    equivalent: seeding adds only missing
+                                         rows, with text, and the conversion
+                                         acts only on a stored true or false
 """
 import io
 import json
 import logging
+import sqlite3
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import app.database.session as session_module
@@ -51,6 +67,7 @@ from app.api.routes.settings import SETTINGS_SCHEMA, setting_problem
 from app.database.models import AppSetting, Base
 from app.database.session import DEFAULT_APP_SETTINGS, get_app_settings
 from tests.conftest import memory_engine
+from tests.test_schema_migration import _point_the_engine_at, _restore_the_engine
 
 
 @pytest.fixture
@@ -230,10 +247,12 @@ def test_a_value_of_the_wrong_kind_is_warned_about_once(factory, caplog):
 
 def test_an_old_true_or_false_for_fix_undefined_language_can_be_saved_over(client, factory):
     """
-    fix_undefined_language was true or false before it took three values,
-    and nothing converted the stored one. Read as its default, which is
-    also how the engine treated it, the Settings page's save, which sends
-    every setting it read, goes through.
+    fix_undefined_language was true or false before it took three values.
+    init_db converts a stored one at every start (the startup tests
+    below), so this is one written while the app runs. A false reads as
+    the default, Always Leave, which is also what it meant, and a bulk
+    save of every setting as read goes through. The Settings page itself
+    sends only the settings changed on it.
     """
     _store_raw(factory, "fix_undefined_language", False)
 
@@ -243,3 +262,115 @@ def test_an_old_true_or_false_for_fix_undefined_language_can_be_saved_over(clien
 
     assert client.put("/api/settings/", json=shown).status_code == 200
     assert _stored(factory, "fix_undefined_language") == "always_leave"
+
+
+# ── An old true or false for fix_undefined_language, at start ──────────────
+# The setting took true or false until 0673d01 made it three-state, which kept
+# a stored true working as Always Fix. Read as the default since 8a7874a, a
+# true became Always Leave, and an install that had the setting on stopped
+# tagging untagged subtitles. init_db now rewrites the stored value.
+
+_ABSENT = object()
+
+
+def _database(path, stored):
+    """A database file with every table and, unless _ABSENT, the setting."""
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with sessionmaker(bind=engine)() as db:
+        if stored is not _ABSENT:
+            db.add(AppSetting(key="fix_undefined_language", value=json.dumps(stored)))
+            db.commit()
+    engine.dispose()
+
+
+def _in_file(path):
+    conn = sqlite3.connect(path)
+    try:
+        (value,) = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'fix_undefined_language'").fetchone()
+    finally:
+        conn.close()
+    return json.loads(value)
+
+
+@pytest.fixture
+def start(monkeypatch):
+    """Run init_db on a database file, as the app does at start."""
+    started = []
+
+    def run(path):
+        session_mod = _point_the_engine_at(path, monkeypatch)
+        started.append(session_mod)
+        session_mod.init_db()
+        return session_mod
+    yield run
+    for session_mod in started:
+        _restore_the_engine(session_mod)
+
+
+_UNTAGGED_SUBTITLE = [
+    {"stream_index": 0, "track_type": "video", "codec": "h264", "language": "und", "title": None},
+    {"stream_index": 1, "track_type": "audio", "codec": "ac3", "language": "eng",
+     "channels": 6, "is_default": True, "title": None},
+    {"stream_index": 2, "track_type": "subtitle", "codec": "subrip", "language": "und",
+     "is_default": False, "is_forced": False, "title": None},
+]
+
+
+def test_an_old_true_becomes_always_fix_and_the_subtitle_is_tagged(tmp_path, start):
+    from app.core.decision import analyze_file
+
+    path = tmp_path / "remuxarr.db"
+    _database(path, True)
+    session_mod = start(path)
+    assert _in_file(path) == "always_fix"
+
+    # What the engine is given, with nothing else for the file to need:
+    # tagging the subtitle is the whole job.
+    with session_mod.SessionLocal() as db:
+        cfg = dict(get_app_settings(db), prefer_mp4_container=False,
+                   extract_text_subtitles_to_srt=False, undefined_language_value="eng")
+    decision = analyze_file({"path": "/tv/Show - S01E01.mkv", "container": "mkv"},
+                            _UNTAGGED_SUBTITLE, cfg)
+    assert decision.should_process is True
+    subtitle = next(a for a in decision.actions if a.stream_index == 2)
+    assert subtitle.target_language == "eng"
+
+
+def test_an_old_false_becomes_always_leave(tmp_path, start):
+    path = tmp_path / "remuxarr.db"
+    _database(path, False)
+    start(path)
+    assert _in_file(path) == "always_leave"
+
+
+@pytest.mark.parametrize("mode", ["always_fix", "always_ask", "always_leave"])
+def test_a_three_state_value_is_left_as_it_is(tmp_path, start, mode):
+    path = tmp_path / "remuxarr.db"
+    _database(path, mode)
+    start(path)
+    assert _in_file(path) == mode
+
+
+def test_a_second_start_changes_nothing(tmp_path, start, caplog):
+    path = tmp_path / "remuxarr.db"
+    _database(path, True)
+    start(path)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="app.database.session"):
+        start(path)
+    assert _in_file(path) == "always_fix"
+    assert not [r for r in caplog.records if "fix_undefined_language" in r.getMessage()]
+
+
+def test_a_restored_backup_holding_an_old_true_comes_back_as_always_fix(tmp_path, start):
+    # A full backup import stages the file beside the database, and the next
+    # start puts it in place before anything else (apply_pending_import).
+    import app.database.session as session_mod
+
+    path = tmp_path / "remuxarr.db"
+    _database(path, "always_leave")
+    _database(session_mod.pending_import_path(str(path)), True)
+    start(path)
+    assert _in_file(path) == "always_fix"

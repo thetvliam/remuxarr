@@ -346,6 +346,7 @@ def init_db() -> None:
     # threshold's row is still there, which makes it a one-time step.
     _copy_undefined_audio_confirmations()
     _delete_retired_settings()
+    _convert_old_undefined_language_flag()
     with SessionLocal() as db:
         _seed_defaults(db)
     logger.info("Database ready: %s", settings.DATABASE_PATH)
@@ -428,6 +429,47 @@ def _copy_undefined_audio_confirmations() -> None:
         db.commit()
     if copied:
         logger.info("Carried Confirm correct over to the untagged audio of %d file(s)", copied)
+
+
+def _convert_old_undefined_language_flag() -> None:
+    """
+    Give fix_undefined_language the three-state value its old true or false
+    meant. Safe on every start.
+
+    The setting took true or false until it became Always Fix, Always Ask
+    or Always Leave (0673d01), and that commit kept a stored true working as
+    Always Fix and a false as Always Leave, so that an upgrade changed
+    nothing; the stored value was never rewritten. Since get_app_settings
+    began reading a value of the wrong kind as the default (8a7874a), a
+    stored true has read as Always Leave: an install that had turned the
+    setting on before then stopped tagging untagged subtitles, and the
+    Settings page showed Always Leave. The Settings page saves only the
+    settings changed on it, so the old value stays until this one is.
+
+    Rewritten here rather than mapped where it is read, so the stored value
+    is the one in force: the Settings page shows it, and an export carries
+    a value the import takes. A full backup restore comes through here too
+    (apply_pending_import runs first in init_db). Only this key: the audio
+    setting was split from it later and has only ever held text.
+    """
+    with SessionLocal() as db:
+        row = db.get(AppSetting, "fix_undefined_language")
+        if row is None:
+            return
+        try:
+            stored = json.loads(row.value)
+        except (TypeError, json.JSONDecodeError):
+            return
+        if stored is True:
+            converted = "always_fix"
+        elif stored is False:
+            converted = "always_leave"
+        else:
+            return
+        row.value = json.dumps(converted)
+        db.commit()
+    logger.info("fix_undefined_language held %s from before it took three values; "
+                "converted to %s", json.dumps(stored), converted)
 
 
 def _delete_retired_settings() -> None:
@@ -1009,10 +1051,10 @@ def get_app_settings(db: Session) -> dict[str, Any]:
     check what they write, but a full backup restore replaces the database
     file with whatever it holds, and a row can be edited by hand; either way
     the engine took a list setting stored as "eng" as {"e", "n", "g"}, and a
-    flag stored as "false" as true. One install's rows also predate a type
-    change: fix_undefined_language was true or false before it took three
-    values, and nothing converted the stored one. Read as its default, which
-    is also how the engine treated it, the Settings page saves a valid value.
+    flag stored as "false" as true. fix_undefined_language's old true or
+    false is converted to the three-state value it meant at every start
+    (_convert_old_undefined_language_flag), so it reaches this only when
+    written while the app runs.
     """
     rows = db.query(AppSetting).all()
     result = deepcopy(DEFAULT_APP_SETTINGS)      # fall back to defaults
