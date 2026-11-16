@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2784 tests across 127 test files, plus 775 frontend tests under
+2791 tests across 128 test files, plus 775 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -155,7 +155,8 @@ acts on it.
 `test_quicktime_files.py`, `test_mp4_chapter_track.py`,
 `test_timecode_track.py`, `test_data_streams.py`,
 `test_recording_signs.py`, `test_creation_date.py`,
-`test_forge_creation_date.py`, `test_kept_file_tags.py`. Some run a
+`test_forge_creation_date.py`, `test_kept_file_tags.py`,
+`test_ffprobe_path_setting.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -234,6 +235,10 @@ job now removes them.
 `test_timeout_logging.py` covers what the container log says when a run hits
 the job time limit: the remux's log line raised instead and left a
 traceback, and the other three left the reason out.
+`test_ffprobe_path_setting.py` runs the tags check, revert capture and
+attaching a revert point with `REMUXARR_FFPROBE_PATH` naming an ffprobe and
+none on PATH. Those calls ran the ffprobe on PATH instead, so every job
+stopped at the tags check and no revert point could be recorded or attached.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,

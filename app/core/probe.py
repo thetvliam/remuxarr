@@ -12,6 +12,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from app.config import settings as app_settings
+
 logger = logging.getLogger(__name__)
 
 MEDIA_EXTENSIONS = {
@@ -44,15 +46,22 @@ class ProbeError(Exception):
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def probe_file(path: str, ffprobe_bin: str = "ffprobe") -> dict:
+def probe_file(path: str, ffprobe_bin: str | None = None) -> dict:
     """
     Run ffprobe and return the raw parsed JSON.
     Raises ProbeError on any failure.
+
+    With no binary given it runs the one REMUXARR_FFPROBE_PATH names, read
+    at each call. The default used to be "ffprobe" from PATH, and the calls
+    that left the binary out, the tags check and revert capture and
+    matching among them, ran that one instead of the configured one.
 
     Chapters are asked for so an MP4's chapter track can be told apart
     (chapter_track_indices). Before that, nothing asked, so every revert
     manifest recorded 0 chapters whatever the file had.
     """
+    if ffprobe_bin is None:
+        ffprobe_bin = app_settings.FFPROBE_PATH
     cmd = [
         ffprobe_bin,
         "-v", "quiet",
@@ -507,7 +516,7 @@ def has_packed_divx_signature(data: bytes) -> bool:
     return _PACKED_DIVX.search(data) is not None
 
 
-def is_packed_divx(path: str, ffmpeg_bin: str = "ffmpeg") -> bool | None:
+def is_packed_divx(path: str, ffmpeg_bin: str | None = None) -> bool | None:
     """
     Whether the file's first video stream is MPEG-4 Part 2 with packed
     B-frames, the way many DivX 5 and Xvid encoders stored them in AVI: a
@@ -522,8 +531,11 @@ def is_packed_divx(path: str, ffmpeg_bin: str = "ffmpeg") -> bool | None:
 
     Reads the first video packet with the stream's extradata joined to it
     (dump_extra), where the encoder's signature sits. None when it cannot
-    be read.
+    be read. With no binary given it runs the one REMUXARR_FFMPEG_PATH
+    names, as probe_file does REMUXARR_FFPROBE_PATH.
     """
+    if ffmpeg_bin is None:
+        ffmpeg_bin = app_settings.FFMPEG_PATH
     cmd = [ffmpeg_bin, "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
            "-c", "copy", "-bsf:v", "dump_extra=freq=all", "-f", "data", "-"]
     try:
