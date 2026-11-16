@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, func
+from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session
 
 from app.core.forge import get_candidates, queue_forge_job
@@ -60,11 +60,20 @@ def get_active(db: Session = Depends(get_db)):
     loop actually got to it — which, under a busy main-queue backlog,
     could be a long, silent wait with zero visible confirmation anything
     was queued at all.
+
+    A running job comes first, then the oldest waiting one. It was the
+    oldest of either, which is the one the worker claims only when it can:
+    a job whose file has a queue job running, or is being reverted, waits
+    while a newer one runs (forge.claim_next_forge_job). The panel then
+    showed the waiting job as queued "for a free worker slot", the running
+    one out of sight, and dropped its progress messages, which it applies
+    only to the job it shows.
     """
     job = (
         db.query(Ac3ForgeJob)
         .filter(Ac3ForgeJob.status.in_(["processing", "pending"]))
-        .order_by(Ac3ForgeJob.created_at.asc())
+        .order_by(case((Ac3ForgeJob.status == "processing", 0), else_=1),
+                  Ac3ForgeJob.created_at.asc())
         .first()
     )
     return _serialize(job, include_file=True) if job else None
