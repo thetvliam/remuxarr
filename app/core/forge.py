@@ -95,9 +95,8 @@ _FORMAT_MAP = {
 
 @dataclass
 class ForgeProgress:
+    # Percent and label only, like FFmpegProgress and for the same reason.
     percent:      float
-    current_time: float
-    speed:        str
     action:       str
 
 
@@ -435,8 +434,6 @@ async def run_forge_command(
         pct  = min(100.0, secs / duration * 100)
         await progress_callback(ForgeProgress(
             percent=subprocess_percent(pct),
-            current_time=secs,
-            speed=progress_kv.get("speed", "?x"),
             action=action_label,
         ))
 
@@ -452,8 +449,6 @@ async def run_forge_command(
         # why a fixed share is the honest thing to give it.
         await progress_callback(ForgeProgress(
             percent=staging_percent(fraction),
-            current_time=duration or 0.0,
-            speed="",
             action=STAGING_ACTION,
         ))
 

@@ -1351,7 +1351,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             "job_id":         job_id,
             "progress":       round(prog.percent, 1),
             "current_action": prog.current_action,
-            "speed":          prog.speed,
         })
 
     # ── Execute ────────────────────────────────────────────────────────────
@@ -1535,7 +1534,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 await loop.run_in_executor(None, _update_progress, job_id, 0.0, label)
                 await ws_manager.broadcast_json({
                     "event": "job_progress", "job_id": job_id,
-                    "progress": 0.0, "current_action": label, "speed": "",
+                    "progress": 0.0, "current_action": label,
                 })
                 # Each extraction gets the full timeout, as each FFmpeg
                 # command in this function does. A timeout here is a hard failure:
@@ -3719,7 +3718,6 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
             "job_id":         job_id,
             "progress":       round(prog.percent, 1),
             "current_action": prog.action,
-            "speed":          prog.speed,
         })
 
     try:

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2810 tests across 128 test files, plus 783 frontend tests under
+2811 tests across 128 test files, plus 783 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -310,7 +310,9 @@ breaker's own decision lives in `test_assorted_regressions.py`.
 WebSocket hub every UI event leaves through: connection bookkeeping, the
 fan-out and its pruning of sockets whose tab has gone, the `/ws` endpoint that
 registers one, and the hand-off scan and revert use to broadcast from a worker
-thread onto the loop that started them.
+thread onto the loop that started them. The event list in `ws_manager.py`'s
+docstring is read against every payload in `app/`, so an event or a key added
+to one and not the other fails.
 
 **Release notes** — `test_release_notes.py`. The endpoint the update dialog
 reads and the version hash that decides whether it is shown at all. The failure

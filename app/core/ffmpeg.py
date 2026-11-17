@@ -63,15 +63,15 @@ class CoverArt:
 
 @dataclass
 class FFmpegProgress:
+    # Only what the UI reads. It also carried the seconds processed and
+    # FFmpeg's speed figure, and job_progress sent the speed, but no screen
+    # has ever shown either.
     percent: float  # 0–100
-    current_time: float  # seconds processed so far
-    speed: str  # "2.50x"
     current_action: str  # human label shown in the UI
 
 
 def _staging_progress(
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
-    duration: float | None,
 ) -> Callable[[float], Awaitable[None]] | None:
     """
     Adapt run_staged_subprocess's 0.0-1.0 staging fraction to FFmpegProgress.
@@ -84,11 +84,6 @@ def _staging_progress(
 
     Returns None when there is no callback to feed, which also keeps the
     runner from measuring a copy nobody is watching.
-
-    current_time stays at the full duration: the media is entirely processed
-    by this point, and winding it back to zero would read as a restart.
-    Speed is blank rather than invented — this phase is bytes to disk, not
-    multiples of realtime, and the UI does not show the field anyway.
     """
     if progress_callback is None:
         return None
@@ -97,8 +92,6 @@ def _staging_progress(
         await progress_callback(
             FFmpegProgress(
                 percent=staging_percent(fraction),
-                current_time=duration or 0.0,
-                speed="",
                 current_action=STAGING_ACTION,
             )
         )
@@ -1006,12 +999,9 @@ async def execute_ffmpeg(
             return
         secs  = parse_out_time_seconds(progress_kv)
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
-        speed = progress_kv.get("speed", "?x")
         await progress_callback(
             FFmpegProgress(
                 percent=subprocess_percent(pct),
-                current_time=secs,
-                speed=speed,
                 current_action=current_action,
             )
         )
@@ -1029,7 +1019,7 @@ async def execute_ffmpeg(
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             before_staging=_before_staging if before_staging else None,
-            on_staging_progress=_staging_progress(progress_callback, duration),
+            on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
         )
@@ -1356,8 +1346,6 @@ async def execute_ffmpeg_combined(
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
         await progress_callback(FFmpegProgress(
             percent=subprocess_percent(pct),
-            current_time=secs,
-            speed=progress_kv.get("speed", "?x"),
             current_action=current_action,
         ))
 
@@ -1392,7 +1380,7 @@ async def execute_ffmpeg_combined(
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             before_staging=_before_staging if before_staging else None,
-            on_staging_progress=_staging_progress(progress_callback, duration),
+            on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
         )

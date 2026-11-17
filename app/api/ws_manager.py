@@ -2,16 +2,18 @@
 WebSocket Connection Manager
 ============================
 A simple broadcast hub. Every connected client (browser tab) receives every
-event. The UI uses event.type to decide what to update.
+event. The UI switches on each message's "event" field (useAppData.js) to
+decide what to update.
 
 Event types broadcast on this socket
 ------------------------------------
 Emitted by worker.py:
 job_started          { job_id }
-job_progress         { job_id, progress, current_action, speed }
+job_progress         { job_id, progress, current_action }
 job_completed        { job_id, status, filename, error }
+worker_paused        { }
 forge_job_started    { job_id }
-forge_job_progress   { job_id, progress, current_action, speed }
+forge_job_progress   { job_id, progress, current_action }
 forge_job_completed  { job_id, status, filename, error }
 
 Emitted by the routes:
@@ -21,6 +23,8 @@ scan_started         { }
 scan_progress        { scanned, total }
 scan_completed       { queued, manual_review, errors, total, removed,
                        cancelled, excluded }
+                       — removed, cancelled and excluded are absent on the
+                         exception path
 cleanup_completed    { removed }
 revert_complete      { point_id, success, error, restored_path }
                        — restored_path is absent on the exception path
@@ -29,6 +33,8 @@ The heading used to read "emitted by the worker" while already listing three
 events the routes send, so a reader checking whether an event belonged here
 got no useful answer either way. Anything added to this socket belongs in the
 list — it is the only inventory of the protocol the frontend consumes.
+test_ws_manager.py reads it against the payloads in app/ and fails when the
+two disagree, as they did over worker_paused.
 """
 import asyncio
 import json
