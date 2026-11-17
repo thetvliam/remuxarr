@@ -68,6 +68,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Clear Database is now refused while a job, an AC3 Forge run, a revert or a scan is running, with the reason shown. Clearing during a job let it save its revert point afterwards, and the point then appeared in the Recycle Bin under an unrelated file.
 - The AC3 Forge page shows the job that is running. When the oldest waiting job had to wait, because its file was being processed or reverted, the page showed that one as queued and "waiting for a free worker slot" while a newer job ran unseen, with no progress shown.
 - An AC3 Forge job no longer stays at Processing after an unexpected error. An error before the file was touched left it there until the container restarted, unable to be cancelled and holding up that file's other processing; it now fails at once, with the error in the Forge page and the container log. An error after the track was added used to leave the job unfinished too, so that after a restart the file was offered again and a second add gave it two AC3 tracks; it is now recorded as done.
 - Settings no longer accepts a negative Job Timeout, which stopped every job, AC3 Forge run and revert as soon as it started with a "timed out" error. Job Timeout and SMTP Port now take 0 or more, where 0 still means no timeout and the default port; Concurrent Jobs and Consecutive Failure Threshold take 1 or more, which is how anything lower was already treated. A negative Job Timeout saved before this update stays until it is changed: set it to 0 or more in Settings, Worker.

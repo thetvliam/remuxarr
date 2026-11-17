@@ -14,6 +14,10 @@
  * The two-click confirmation is covered here as well, since firing the wipe
  * on a single click is the failure that cannot be undone.
  *
+ * A refusal shows the server's reason. The wipe is refused while work is
+ * running, and the bare "Failed to clear database" did not say what to wait
+ * for; ignoring the reason survived the tests as they stood.
+ *
  * The description has to say the wipe empties the recycle bin. Removing
  * that wording survived the tests as they stood; "says that it empties the
  * recycle bin" kills it.
@@ -136,7 +140,7 @@ describe("DangerZone", () => {
   it("says nothing when the wipe was refused", async () => {
     // A failed clear deleted nothing, so refreshing every panel would be a
     // pointless round of fetches — and, worse, would suggest it worked.
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500 })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
     const user = userEvent.setup();
     const { onCleared, toast } = setup();
 
@@ -144,6 +148,32 @@ describe("DangerZone", () => {
 
     expect(onCleared).not.toHaveBeenCalled();
     expect(toast).toHaveBeenCalledWith(expect.stringMatching(/failed/i), "error");
+  });
+
+  it("gives the server's reason when the wipe is refused", async () => {
+    // Refused while work is running; "failed" alone did not say what to wait for.
+    const detail = "The database can't be cleared while a job is running. "
+      + "Try again once it has finished.";
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 409, json: async () => ({ detail }) })));
+    const user = userEvent.setup();
+    const { onCleared, toast } = setup();
+
+    await confirmClear(user);
+
+    expect(onCleared).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(detail, "error");
+  });
+
+  it("says it failed when a refusal carries no reason", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false, status: 502, json: async () => { throw new SyntaxError("not JSON"); },
+    })));
+    const user = userEvent.setup();
+    const { toast } = setup();
+
+    await confirmClear(user);
+
+    expect(toast).toHaveBeenCalledWith("Failed to clear database", "error");
   });
 
   it("says nothing when the request never arrived", async () => {

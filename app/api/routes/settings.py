@@ -320,30 +320,68 @@ def clear_database(db: Session = Depends(get_db)):
     ambiguity. The sidecars go too — nothing else records their paths once
     the rows are gone, so skipping that leaks the recycle volume until the
     retention sweep's orphan pass ages them out.
+
+    Refused with 409 while a job or an AC3 Forge run is processing, a
+    revert is running or a scan is in progress. Each went on writing after
+    a wipe: a job finishing afterwards recorded its revert point under the
+    file id it started with, the next file scanned was given that id, and
+    the Recycle Bin listed the point under it, where the file's next job
+    would have extended it. Pending jobs and forge runs do not count; they
+    are among what the wipe removes.
+
+    The check and the wipe are both done under revert_lock.CLAIM_LOCK, which
+    the queue and the forge claim under and a revert starts under, so no job
+    is claimed and no revert starts in between. A scan is not claimed that
+    way: its flag is set on the event loop, and one starting in the moment
+    between the check and the wipe is not caught.
     """
+    from app.api.routes import scan as scan_route
+    from app.core import revert_lock
     from app.core.recycle import delete_sidecar
     from app.database.models import (
         Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction,
         PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track,
     )
 
-    # Unlinked before the rows go, since the rows are what name the files.
-    for point in db.query(RevertPoint).all():
-        delete_sidecar(point.sidecar_path)
+    with revert_lock.CLAIM_LOCK:
+        running = []
+        if db.query(QueueItem).filter(QueueItem.status == "processing").first():
+            running.append("a job")
+        if db.query(Ac3ForgeJob).filter(Ac3ForgeJob.status == "processing").first():
+            running.append("an AC3 Forge run")
+        if revert_lock.is_running():
+            running.append("a revert")
+        if scan_route._scan_running:
+            running.append("a scan")
+        if running:
+            if len(running) == 1:
+                what, after = f"{running[0]} is", "it has"
+            else:
+                what = f"{', '.join(running[:-1])} and {running[-1]} are"
+                after = "they have"
+            raise HTTPException(
+                409,
+                f"The database can't be cleared while {what} running. "
+                f"Try again once {after} finished.",
+            )
 
-    # Delete in FK-dependency order — children before parents.
-    deleted = {
-        "planned_actions":      db.query(PlannedAction).delete(),
-        "queue_items":          db.query(QueueItem).delete(),
-        "forge_jobs":           db.query(Ac3ForgeJob).delete(),
-        "plex_analyze_backlog": db.query(PlexAnalyzeBacklog).delete(),
-        "audio_language_flags": db.query(AudioLanguageFlag).delete(),
-        "subtitle_language_flags": db.query(SubtitleLanguageFlag).delete(),
-        "revert_points":        db.query(RevertPoint).delete(),
-        "tracks":               db.query(Track).delete(),
-        "media_files":          db.query(MediaFile).delete(),
-    }
-    db.commit()
+        # Unlinked before the rows go, since the rows are what name the files.
+        for point in db.query(RevertPoint).all():
+            delete_sidecar(point.sidecar_path)
+
+        # Delete in FK-dependency order — children before parents.
+        deleted = {
+            "planned_actions":      db.query(PlannedAction).delete(),
+            "queue_items":          db.query(QueueItem).delete(),
+            "forge_jobs":           db.query(Ac3ForgeJob).delete(),
+            "plex_analyze_backlog": db.query(PlexAnalyzeBacklog).delete(),
+            "audio_language_flags": db.query(AudioLanguageFlag).delete(),
+            "subtitle_language_flags": db.query(SubtitleLanguageFlag).delete(),
+            "revert_points":        db.query(RevertPoint).delete(),
+            "tracks":               db.query(Track).delete(),
+            "media_files":          db.query(MediaFile).delete(),
+        }
+        db.commit()
 
     return {"success": True, "deleted": deleted}
 

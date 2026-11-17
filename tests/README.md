@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2791 tests across 128 test files, plus 775 frontend tests under
+2798 tests across 128 test files, plus 777 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -65,7 +65,10 @@ referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
 by name; `test_clear_database.py` guards the same omission at the other end,
 where three tables have been left out of the wipe so far and SQLite's
-unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
+unenforced foreign keys mean nothing complains. It also covers the wipe being
+refused while a job, a forge run, a revert or a scan is running: a job
+finishing after one saved its revert point under an id the next scanned file
+was given. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.

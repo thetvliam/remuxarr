@@ -20,7 +20,10 @@ import { ActionRow } from "./ActionRow";
  * and this component is reached from Settings while the dashboard panels are
  * unmounted, so without it the queue kept listing rows the wipe had already
  * deleted — clicking one opened a detail fetch that 404'd, and dismissing one
- * addressed a dead id. ─────────────────────────────────────────────────────*/
+ * addressed a dead id.
+ *
+ * A refusal shows the server's reason: the wipe is refused while work is
+ * running, and "Failed to clear database" did not say what to wait for. ───*/
 export const DangerZone = ({ api, toast, onCleared, first = false }) => {
     const { palette } = useTheme();
     // Two clicks, disarming itself after CONFIRM_MS: see useArmedConfirm.
@@ -42,7 +45,11 @@ export const DangerZone = ({ api, toast, onCleared, first = false }) => {
                 onCleared?.();
                 toast?.("Database cleared — next scan will treat all files as new", "success");
             } else {
-                toast?.("Failed to clear database", "error");
+                // Refused while a job, a forge run, a revert or a scan is
+                // running, and the server says which; that is more use than
+                // ours.
+                const body = await r.json().catch(() => null);
+                toast?.(body?.detail || "Failed to clear database", "error");
             }
         } catch (err) {
             console.error("Clear database failed", err);
