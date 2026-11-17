@@ -117,10 +117,18 @@ def plex(monkeypatch):
 
 
 def _sections(*locations):
-    """A /library/sections response. locations is (section_id, path) pairs."""
+    """
+    A /library/sections response. locations is (section_id, path) pairs;
+    path is a list for a section with several folders, and None for a
+    location with no path.
+    """
+    def folders(paths):
+        return [{} if path is None else {"path": path}
+                for path in (paths if isinstance(paths, list) else [paths])]
+
     return {"MediaContainer": {"Directory": [
-        {"key": str(sid), "Location": [{"path": path}]}
-        for sid, path in locations
+        {"key": str(sid), "Location": folders(paths)}
+        for sid, paths in locations
     ]}}
 
 
@@ -213,6 +221,43 @@ def test_a_section_whose_name_is_a_prefix_of_another_is_not_matched(plex):
     plex._routes["/library/sections"] = _sections((3, "/data/tv"))
 
     assert plex._find_section_for_path(URL, TOKEN, "/data/tv2/a.mkv") is None
+
+
+@pytest.mark.parametrize("films_first", [True, False])
+def test_the_deepest_section_holding_the_path_wins(plex, films_first):
+    """
+    Plex lets one library's folder sit inside another's. The first match in
+    Plex's order won, so with Films listed first a file of the 4K library
+    inside it was refreshed and analyzed in Films, and the 4K library never
+    heard of it. Both orders, as the last match winning would pass with
+    Films first.
+
+    Verified by mutation, with the next two tests: 3 applied, 3 killed, all
+    three surviving the whole suite first: the first match returned (the
+    old code), the last match returned, and a location with no path matched
+    as the root. Matching on a bare string prefix is killed by the test of
+    a section whose name is a prefix of another's.
+    """
+    films, uhd = (3, "/data/films"), (8, "/data/films/4k")
+    plex._routes["/library/sections"] = _sections(
+        *((films, uhd) if films_first else (uhd, films)))
+
+    assert plex._find_section_for_path(URL, TOKEN, "/data/films/4k/a.mkv") == 8
+    assert plex._find_section_for_path(URL, TOKEN, "/data/films/a.mkv") == 3
+
+
+def test_the_deepest_folder_counts_across_a_sections_locations(plex):
+    plex._routes["/library/sections"] = _sections(
+        (3, "/data/films"), (8, ["/data/other", "/data/films/4k"]))
+
+    assert plex._find_section_for_path(URL, TOKEN, "/data/films/4k/a.mkv") == 8
+
+
+def test_a_location_with_no_path_is_not_matched(plex):
+    """To swap_prefix an empty prefix is the root, which holds every path."""
+    plex._routes["/library/sections"] = _sections((5, None), (3, "/data/tv"))
+
+    assert plex._find_section_for_path(URL, TOKEN, "/elsewhere/a.mkv") is None
 
 
 def test_a_failed_section_listing_returns_none_rather_than_raising(plex):

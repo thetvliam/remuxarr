@@ -142,8 +142,18 @@ def translate_path_to_plex(local_path: str, mappings: list[str]) -> str | None:
 
 def _find_section_for_path(base_url: str, token: str, plex_path: str) -> int | None:
     """
-    Return the library section ID whose configured folder location is a
-    prefix of plex_path, or None if no section matches.
+    Return the ID of the library section whose folder holds plex_path, or
+    None if no section's does.
+
+    The deepest folder wins. Plex lets one library's folder sit inside
+    another's (4K films inside Films), and the first match in Plex's own
+    order could be the outer one: the inner library was then never
+    refreshed or analyzed for its own files. Two libraries on the same
+    folder resolve to the first listed; both hold the file.
+
+    The match is on whole folder names, through swap_prefix. A location
+    with no path is passed over: to swap_prefix an empty prefix is the
+    root, which every path sits under.
     """
     try:
         data = _plex_request(base_url, token, "/library/sections")
@@ -151,14 +161,14 @@ def _find_section_for_path(base_url: str, token: str, plex_path: str) -> int | N
         logger.exception("Plex: failed to list library sections")
         return None
 
-    directories = data.get("MediaContainer", {}).get("Directory", [])
-    for d in directories:
-        locations = d.get("Location", [])
-        for loc in locations:
+    best_id, best_len = None, -1
+    for d in data.get("MediaContainer", {}).get("Directory", []):
+        for loc in d.get("Location", []):
             loc_path = (loc.get("path") or "").rstrip("/")
-            if loc_path and (plex_path == loc_path or plex_path.startswith(loc_path + "/")):
-                return int(d["key"])
-    return None
+            if (loc_path and len(loc_path) > best_len
+                    and swap_prefix(plex_path, loc_path, loc_path) is not None):
+                best_id, best_len = int(d["key"]), len(loc_path)
+    return best_id
 
 
 def _get_section_items(
