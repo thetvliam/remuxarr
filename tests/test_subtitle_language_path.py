@@ -31,7 +31,16 @@ What was broken, on a stock install:
 Every test below runs at production defaults unless it says otherwise.
 """
 
+import asyncio
+import json
+import shutil
+import subprocess
+
+import pytest
+
 from app.core.decision import analyze_file
+from app.core.ffmpeg import execute_ffmpeg
+from app.core.probe import extract_tracks, probe_file
 from app.database.session import DEFAULT_APP_SETTINGS
 
 
@@ -491,3 +500,80 @@ def test_a_dropped_subtitle_says_what_fix_took_it_as():
     assert action.action_type == "drop_track"
     assert "(undefined, taken as eng by Fix Undefined Subtitle Language Tags)" in \
         action.description
+
+
+# ── A kept subtitle, through to the file ─────────────────────────────────────
+
+ffmpeg_required = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not available",
+)
+
+
+def _languages(path):
+    """(codec_type, language tag) for every stream of a real file."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)],
+        capture_output=True, text=True, check=True).stdout
+    return [(s["codec_type"], s.get("tags", {}).get("language"))
+            for s in json.loads(out)["streams"]]
+
+
+@ffmpeg_required
+def test_a_kept_subtitle_always_fix_tags_is_written_with_the_tag(tmp_path):
+    """
+    With extraction off a kept subtitle stays in the file, and the tag
+    Always Fix gives it is written by the subtitle loop of
+    build_ffmpeg_command. The tests above stop at the action's
+    target_language; nothing ran that loop, and a mutant of it passed the
+    whole suite.
+
+    The French track comes before the untagged one and a German track
+    before both, which the job drops: the tag has to land on the second
+    subtitle of the output, which is neither the first subtitle nor the
+    untagged track's place among the source's subtitles. FFmpeg accepts a
+    tag aimed at a stream the output does not have and writes nothing, so
+    only the file can tell.
+
+    Verified by mutation, 4 applied, 4 killed, all four surviving the whole
+    suite first: the tag never written, written to the first subtitle,
+    written to the track's place among the source's subtitles (the dropped
+    one counted), and written as an audio tag.
+    """
+    def srt(name):
+        path = tmp_path / f"{name}.srt"
+        path.write_text(f"1\n00:00:00,000 --> 00:00:01,500\n{name}\n")
+        return str(path)
+
+    source = tmp_path / "Movie.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=2",
+        "-f", "lavfi", "-i", "sine=duration=2",
+        "-i", srt("ger"), "-i", srt("fre"), "-i", srt("und"),
+        *[a for i in range(5) for a in ("-map", str(i))],
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-c:s", "copy",
+        "-metadata:s:a:0", "language=jpn",
+        "-metadata:s:s:0", "language=ger", "-metadata:s:s:1", "language=fre",
+        "-metadata:s:s:2", "language=und", str(source)], check=True)
+    # Matroska stores "und" as its default, so the third is read back
+    # untagged, which the scanner reads as und.
+    assert [lang for kind, lang in _languages(source) if kind == "subtitle"] == \
+        ["ger", "fre", None], "fixture changed"
+
+    tracks = extract_tracks(probe_file(str(source)))
+    cfg = _prod(prefer_mp4_container=False, extract_text_subtitles_to_srt=False,
+                fix_undefined_language="always_fix", undefined_language_value="eng",
+                keep_audio_languages=["jpn"], keep_subtitle_languages=["fre", "eng"])
+    decision = analyze_file(_fmt(str(source)), tracks, cfg)
+    assert decision.target_container == "mkv", "fixture changed"
+    assert [(a.action_type, a.stream_index, a.target_language)
+            for a in decision.actions if a.track_type == "subtitle"] == [
+        ("drop_track", 2, None), ("copy_track", 3, None),
+        ("copy_track", 4, "eng")], "fixture changed"
+
+    result = asyncio.run(execute_ffmpeg(str(source), str(source), decision, tracks, job_id=1))
+    assert result.success, result.error_message
+    assert _languages(result.output_path) == [
+        ("video", None), ("audio", "jpn"), ("subtitle", "fre"), ("subtitle", "eng")]
