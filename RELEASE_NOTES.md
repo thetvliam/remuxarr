@@ -68,6 +68,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- Retry, Re-process and Process Now in a job's window now say what happened: queued again, waiting in Review, or needing no changes. They said "Re-queued" every time, including when nothing was queued. When a retry is refused, the message now gives the reason, such as the file no longer being on disk.
 - Clear Database is now refused while a job, an AC3 Forge run, a revert or a scan is running, with the reason shown. Clearing during a job let it save its revert point afterwards, and the point then appeared in the Recycle Bin under an unrelated file.
 - The AC3 Forge page shows the job that is running. When the oldest waiting job had to wait, because its file was being processed or reverted, the page showed that one as queued and "waiting for a free worker slot" while a newer job ran unseen, with no progress shown.
 - An AC3 Forge job no longer stays at Processing after an unexpected error. An error before the file was touched left it there until the container restarted, unable to be cancelled and holding up that file's other processing; it now fails at once, with the error in the Forge page and the container log. An error after the track was added used to leave the job unfinished too, so that after a restart the file was offered again and a second add gave it two AC3 tracks; it is now recorded as done.

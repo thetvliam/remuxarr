@@ -313,6 +313,74 @@ describe("useActions — retryItem", () => {
   });
 });
 
+/* What the toast says a retry did. queue._retry_with_reprobe replies with the
+ * new item when it queued one or sent the file to Review, and otherwise with
+ * the file's status: "skipped" when it needs nothing, or the status of a job
+ * already running for it, when nothing new is queued either. Every success
+ * said "Re-queued", and a refusal left out the server's reason. The reply
+ * shapes were taken from the real endpoint, the review one from its code.
+ *
+ * Verified by mutation, 6 applied, 6 killed, all six surviving these tests'
+ * absence first: no review branch, no needs-no-changes branch, any reply
+ * without an item read as needing no changes, the reason left out of a
+ * refusal, no re-queued branch, and "Re-queued" for every success as before.
+ * Run against the three test files that reach useActions (this one,
+ * useAppData.test.js and App.test.jsx) on both sides. */
+describe("useActions — what a retry says it did", () => {
+  it("says the file was queued again when it was", async () => {
+    mockFetch({ ok: true, body: { id: 12, status: "pending" } });
+    await useSubject().retryItem(ITEM);
+
+    expect(deps.toast).toHaveBeenCalledWith("Re-queued: Movie.mkv", "notice");
+  });
+
+  it("says the file is waiting in Review when that is where it went", async () => {
+    mockFetch({ ok: true, body: { id: 12, status: "manual_review" } });
+    await useSubject().retryItem(ITEM);
+
+    expect(deps.toast).toHaveBeenCalledWith("Movie.mkv is waiting in Review", "notice");
+    expect(deps.setModal).toHaveBeenCalledWith(null);
+  });
+
+  it("says the file needs no changes when nothing was queued for it", async () => {
+    mockFetch({ ok: true, body: {
+      success: true, message: "File re-evaluated — no further action needed.",
+      media_status: "skipped" } });
+    await useSubject().retryItem(ITEM);
+
+    expect(deps.toast).toHaveBeenCalledWith("Re-checked: Movie.mkv needs no changes", "notice");
+  });
+
+  it("does not say a file with a job already running needs no changes", async () => {
+    // The reply's message says "no further action needed" here too, which is
+    // why the toast is chosen from the status and not from the message.
+    mockFetch({ ok: true, body: {
+      success: true, message: "File re-evaluated — no further action needed.",
+      media_status: "processing" } });
+    await useSubject().retryItem({ ...ITEM, status: "success" });
+
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Re-checked: Movie.mkv, nothing new was queued", "notice");
+  });
+
+  it("keeps the modal open and gives the server's reason when refused", async () => {
+    mockFetch({ ok: false, body: { detail: "File no longer exists on disk: /media/Movie.mkv" } });
+    await useSubject().retryItem(ITEM);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith(
+      "Could not re-queue Movie.mkv: File no longer exists on disk: /media/Movie.mkv", "error");
+  });
+
+  it("reports a request that never arrived, with no reason to give", async () => {
+    mockFetch({ throws: true });
+    await useSubject().retryItem(ITEM);
+
+    expect(deps.setModal).not.toHaveBeenCalled();
+    expect(deps.toast).toHaveBeenCalledWith("Could not re-queue Movie.mkv", "error");
+  });
+});
+
 describe("useActions — dismissItem", () => {
   it("invalidates history so the dismissed row leaves the panel", async () => {
     // fetchAll refetches queue/active/review/worker/scan — never history.
