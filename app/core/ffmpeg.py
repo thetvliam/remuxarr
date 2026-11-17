@@ -139,9 +139,9 @@ _CONTAINER_FORMAT = {
     # intent (matching probe.py's annotated copy): _normalise_container
     # can never return "webm" (its format_name always contains
     # "matroska", matched first) and maps "mov"→"mp4", and
-    # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
-    # either value. Nothing reaches these; they just document the
-    # intended format if that ever changes.
+    # target_container is only ever the file's own normalised container
+    # or "mp4" — so it is never either value. Nothing reaches these; they
+    # just document the intended format if that ever changes.
     "webm": "webm",
     "mov": "mov",
 }

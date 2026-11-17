@@ -2421,17 +2421,14 @@ def _finish_job(
                         media.path      = output_path
                         media.filename  = os.path.basename(output_path)
                         media.directory = os.path.dirname(output_path)
-                        # Update stored container so the history panel
-                        # shows the correct format (e.g. MP4 not MKV)
-                        new_ext = os.path.splitext(output_path)[1].lower()
-                        _EXT_TO_CONTAINER = {
-                            ".mp4": "mp4", ".m4v": "mp4", ".mov": "mp4",
-                            ".mkv": "mkv", ".avi": "avi", ".ts": "ts",
-                            ".m2ts": "ts", ".wmv": "wmv", ".webm": "webm",
-                        }
-                        new_container = _EXT_TO_CONTAINER.get(new_ext)
-                        if new_container:
-                            media.container = new_container
+                        # The container History shows. The probe below
+                        # replaces it with what the file itself says; this
+                        # stays only if that probe fails. A path changes only
+                        # when determine_output_path renames a conversion's
+                        # output, which it names after the target container,
+                        # so the extension is the container: mp4, the only
+                        # one a job converts to.
+                        media.container = os.path.splitext(output_path)[1].lstrip(".")
 
                     # Refresh stored size + mtime to the processed file's
                     # on-disk stats.  Without this, the DB still holds the
