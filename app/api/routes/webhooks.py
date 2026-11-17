@@ -493,9 +493,10 @@ def _tell_plex_if_unchanged(path: str, started) -> None:
     Told when the file is excluded, or when it needed no changes, which is
     the skipped row this attempt wrote: one completed at or after `started`.
     That is what tells it apart from every other outcome. A file queued for a
-    job, or held for review, has no such row: its job tells Plex itself, and
-    a review tells Plex when it ends with nothing to change
-    (queue.left_alone_after_review). Nor does a file that vanished, failed to
+    job, or held for review, has no such row: its job tells Plex itself, when
+    it finishes or when it is skipped at pickup
+    (worker._tell_plex_skipped_at_pickup), and a review tells Plex when it
+    ends with nothing to change (queue.left_alone_after_review). Nor does a file that vanished, failed to
     probe, or already has a job running. An earlier skip of the same path
     does not count either; it was a different file.
 

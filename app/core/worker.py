@@ -30,7 +30,7 @@ from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
-from app.core.plex import notify_plex_new_file, plex_connection
+from app.core.plex import notify_plex_new_file, plex_connection, refresh_in_background
 from app.core.radarr import notify_radarr, restore_movie_quality
 from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, packed_divx_for, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
@@ -1794,6 +1794,28 @@ def _clear_leftover_rows(db, file_id: int) -> None:
     _clear_stale_status_records(db, file_id, ("skipped", "manual_review"))
 
 
+def _tell_plex_skipped_at_pickup(job: QueueItem, path: str, app_cfg: dict) -> None:
+    """
+    Refresh a newly found file's folder in Plex when its job is skipped at
+    pickup: excluded by settings changed since it was queued, or decided
+    again with nothing left to do.
+
+    Plex hears about a file when a job finishes, and about one nothing will
+    change when the webhook skips the import (webhooks._tell_plex_if_unchanged)
+    or a review ends (queue.left_alone_after_review). A job skipped here got
+    neither, so a new import stayed out of Plex until Plex's own scan found
+    it. Gated on is_new_file, as the review is: a file seen before is one
+    Plex already has. A job that turns into a review here is left to that
+    review, and one that runs to its own refresh.
+
+    In the background, as the review routes send it: pickup does not wait
+    on Plex. refresh_in_background sends nothing while dry run is on, or
+    when Plex notifications are off.
+    """
+    if job.is_new_file:
+        refresh_in_background(app_cfg, [path], f"job {job.id}, skipped at pickup")
+
+
 def _load_job_data(job_id: int):
     """
     Load everything _run_job needs, re-running the decision engine fresh —
@@ -1806,7 +1828,8 @@ def _load_job_data(job_id: int):
         returns None — no execution.
       Either way the file's other skipped and review rows are cleared
       first (_clear_leftover_rows), and so they are for a job skipped
-      because the file has been excluded since it was queued.
+      because the file has been excluded since it was queued. A skipped
+      job for a newly found file tells Plex (_tell_plex_skipped_at_pickup).
       • otherwise → PlannedActions refreshed to the FRESH decision's
         actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
         for execution. Everything returned is plain Python — no ORM
@@ -1919,6 +1942,7 @@ def _load_job_data(job_id: int):
             db.commit()
             logger.info("Job %d: %s is excluded (%s) — skipped",
                         job_id, media.path, excluded_by)
+            _tell_plex_skipped_at_pickup(job, media.path, app_cfg)
             return None
 
         # The job is decided below from the stored tracks, so they are
@@ -2041,6 +2065,7 @@ def _load_job_data(job_id: int):
             job.completed_at = utcnow()
             media.status = "skipped"
             db.commit()
+            _tell_plex_skipped_at_pickup(job, media.path, app_cfg)
             return None
 
         # Proceeding — refresh stored PlannedActions to match the FRESH

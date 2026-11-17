@@ -68,6 +68,7 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- A new import whose job turned out to need nothing, or to be excluded, by the time it was picked up is now passed to Plex, as one skipped when it arrives already is. It was left for Plex's own scan to find.
 - With one Plex library's folder inside another's (such as 4K films inside Films), Remuxarr now tells the library the file actually belongs to. It could tell the outer library instead, so the inner one did not pick up new or changed files.
 - Retry, Re-process and Process Now in a job's window now say what happened: queued again, waiting in Review, or needing no changes. They said "Re-queued" every time, including when nothing was queued. When a retry is refused, the message now gives the reason, such as the file no longer being on disk.
 - Clear Database is now refused while a job, an AC3 Forge run, a revert or a scan is running, with the reason shown. Clearing during a job let it save its revert point afterwards, and the point then appeared in the Recycle Bin under an unrelated file.
