@@ -1719,6 +1719,11 @@ def _process_file(
             "it in History to try again.",
             path,
         )
+        # Kept as on every other way out: the re-probe, the original language
+        # and the language flags above were flushed, and were saved only if a
+        # later file committed: the last file walked, or one before a file
+        # that failed, lost them.
+        db.commit()
         return
 
     _clear_stale_status_records(db, media_file.id, ("skipped", "manual_review"))
