@@ -1073,12 +1073,11 @@ def test_fix_undefined_language_writes_target_language(settings):
     """
     The core, original feature this whole area of the code exists for.
 
-    Sets the audio key, since the track under test is audio. Still the
-    legacy boolean rather than "always_fix" on purpose — that back-compat
-    coercion has to keep working for the new key too, and this is the test
-    that exercises it.
+    Sets the audio key, since the track under test is audio. It set the old
+    true until the engine stopped mapping one, because nothing can hand it
+    one any more (_resolve_und_mode).
     """
-    settings["fix_undefined_language_audio"] = True
+    settings["fix_undefined_language_audio"] = "always_fix"
     settings["undefined_language_value"] = "eng"
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
@@ -1354,7 +1353,7 @@ def test_reason_text_distinguishes_undefined_from_wrong(settings):
     "corrected a wrong tag" — they were sharing one counter and one
     message at one point in this project's history.
     """
-    settings["fix_undefined_language"] = True
+    settings["fix_undefined_language"] = "always_fix"
     tracks = [
         make_track(stream_index=0, track_type="video", codec="h264"),
         make_track(stream_index=1, track_type="audio", codec="aac",
@@ -1417,8 +1416,8 @@ def test_image_subtitle_always_keep_resolves_automatically(settings):
     """
     settings["extract_text_subtitles_to_srt"] = True
     settings["image_subtitle_handling"] = "always_keep"
-    settings["fix_undefined_language_audio"] = True  # gives the file
-                                                # something else to actually do
+    # Gives the file something else to actually do.
+    settings["fix_undefined_language_audio"] = "always_fix"
     decision = analyze_file(make_file_info(), _image_sub_tracks(), settings)
 
     assert decision.is_manual_review is False
@@ -1431,7 +1430,7 @@ def test_image_subtitle_always_remove_resolves_automatically(settings):
     """Same as above, but for the remove policy — the track must be dropped."""
     settings["extract_text_subtitles_to_srt"] = True
     settings["image_subtitle_handling"] = "always_remove"
-    settings["fix_undefined_language_audio"] = True
+    settings["fix_undefined_language_audio"] = "always_fix"
     decision = analyze_file(make_file_info(), _image_sub_tracks(), settings)
 
     assert decision.is_manual_review is False

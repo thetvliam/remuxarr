@@ -109,10 +109,9 @@ def memory_engine():
 # the gap survived: the default never mattered to the tests that cared, and no
 # test combined extraction with always_ask at all.
 #
-# fix_undefined_language was False (the boolean back-compat spelling) where
-# production writes one of three strings. The back-compat branch is worth
-# covering — but from a test that opts into it, not from the default every
-# other test inherits.
+# fix_undefined_language was False (the old boolean spelling) where
+# production writes one of three strings. The engine no longer maps a
+# boolean at all: none can reach it (decision._resolve_und_mode).
 #
 # A test needing a non-production value should set it explicitly on the
 # `settings` fixture, as the extraction tests already do.

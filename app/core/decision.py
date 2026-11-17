@@ -298,19 +298,17 @@ def _primary_language(settings: dict) -> str:
 
 def _resolve_und_mode(settings: dict, track_type: str) -> str:
     """
-    The undefined-language mode for one track type, as a three-state string.
+    The undefined-language mode for one track type: always_fix, always_ask
+    or always_leave.
 
-    Centralises the boolean back-compat that used to be inlined at both
-    read sites: this setting predates being three-state and a database
-    untouched since then still holds True/False. Two copies of that
-    coercion is how the two sites drift apart.
+    The subtitle setting took true or false before it had three values, and
+    this used to map them. None reaches it now: a stored true or false is
+    converted at every start (session._convert_old_undefined_language_flag),
+    the settings routes refuse one, and get_app_settings, where every
+    caller in app/ takes its settings from, reads a value of the wrong kind
+    as the default.
     """
-    mode = settings.get(_UND_MODE_KEYS[track_type], "always_leave")
-    if mode is True:
-        return "always_fix"
-    if mode is False:
-        return "always_leave"
-    return mode
+    return settings.get(_UND_MODE_KEYS[track_type], "always_leave")
 
 
 def _lone_undefined_track(
