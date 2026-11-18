@@ -1292,8 +1292,8 @@ def _process_file(
 
     # Read before the record is brought up to date below, which overwrites
     # the stored size and mtime: whether the file is as it was when last
-    # seen. A force_probe scan never reaches the delta check, and still
-    # needs to know (_held_back).
+    # seen. The delta check below uses it, and a force_probe scan, which
+    # never reaches that check, still needs to know (_held_back).
     unchanged_on_disk = (
         existing is not None and existing.size == current_size
         and abs(existing.mtime - current_mtime) < 1.0
@@ -1301,14 +1301,11 @@ def _process_file(
 
     from_record = False
     if existing and not force_probe:
-        size_match  = existing.size == current_size
-        mtime_match = abs(existing.mtime - current_mtime) < 1.0
-
         # A re-check decides an unchanged file again rather than skipping
         # it, from what was stored when it was last probed.
-        from_record = recheck and size_match and mtime_match and not reevaluate
+        from_record = recheck and unchanged_on_disk and not reevaluate
 
-        if size_match and mtime_match and not reevaluate and not from_record:
+        if unchanged_on_disk and not reevaluate and not from_record:
             # File is identical on disk. media_file.status == "queued" is
             # set in TWO different situations that look identical from
             # this field alone: (a) the file is simply still pending its

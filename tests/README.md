@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2811 tests across 128 test files, plus 783 frontend tests under
+2813 tests across 128 test files, plus 783 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -82,7 +82,8 @@ read as the default, an old true had become Always Leave.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan
-does.
+does. It also pins that both scans notice a file rewritten at the same size,
+from its mtime.
 `test_replaced_file_answers.py` covers what a file replaced at the same path
 does to the answers stored for it: they are forgotten when the file changed on
 disk and its tracks differ, and kept through Remuxarr's own jobs, reverts and
