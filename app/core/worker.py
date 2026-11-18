@@ -246,10 +246,6 @@ def recover_interrupted_jobs(db, finished: list[int] | None = None) -> tuple[int
     # NOT in the candidate-exclusion list, so the file becomes re-addable.
     # An undo goes to "undo_failed", which IS excluded from candidates but
     # is explicitly accepted by the undo route as a retryable state.
-    # Imported locally, matching the other Ac3ForgeJob references in this
-    # module (see _has_pending_forge and _process_next_forge).
-    from app.database.models import Ac3ForgeJob
-
     stuck_forge = (
         db.query(Ac3ForgeJob)
         .filter(Ac3ForgeJob.status == "processing")
@@ -969,8 +965,6 @@ def _flag_subtitle_encoding_review(
     transitions the QueueItem to status = "manual_review", and populates
     review_subtitles with the track details for the Review page UI.
     """
-    from app.database.models import MediaFile
-
     failed_stream_indices = {si for si, _ in subtitle_pairs}
 
     # Build the review_subtitles payload from the track metadata we already
@@ -1091,7 +1085,6 @@ def _has_pending_forge() -> bool:
     never create a forge_task and the job would sit at "undo_pending"
     (shown as "REMOVING…" in the UI) forever.
     """
-    from app.database.models import Ac3ForgeJob
     with SessionLocal() as db:
         return db.query(Ac3ForgeJob).filter(
             Ac3ForgeJob.status.in_(["pending", "undo_pending"])
@@ -3130,8 +3123,6 @@ def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
     Returns the same {url, token, mappings, local_path} payload
     _trigger_plex_notify expects, or None when Plex is off or unconfigured.
     """
-    from app.database.models import Ac3ForgeJob
-
     with SessionLocal() as db:
         job = db.get(Ac3ForgeJob, forge_job_id)
         if not job:

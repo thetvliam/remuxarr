@@ -695,7 +695,6 @@ def _key_track_answers_by_descriptor() -> None:
     Only integer keys are converted, so a second start finds nothing to do.
     """
     from app.core.scanner import _track_to_dict, descriptors_by_stream
-    from app.database.models import MediaFile, Track
 
     converted = dropped = 0
     with SessionLocal() as db:
@@ -883,8 +882,6 @@ def _allow_one_audio_flag_per_track() -> None:
     logger.info(
         "Migrating database: allowing one audio language flag per track"
     )
-
-    from app.database.models import AudioLanguageFlag
 
     columns = {c["name"] for c in
                inspector.get_columns("audio_language_flags")}
