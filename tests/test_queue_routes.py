@@ -1982,7 +1982,7 @@ def test_an_mp4_missing_fast_start_still_has_a_pass_to_do(db, monkeypatch):
     That miss once left MP4s un-optimised until a forced rescan, and it is
     recorded on _build_analysis_inputs.
     """
-    import app.api.routes.queue as queue_routes
+    import app.core.scanner as scanner
 
     media, item = _reviewable(db, path="/m/Show.mp4", container="mp4", tracks=[
         (0, "video", "h264", None),
@@ -1994,7 +1994,8 @@ def test_an_mp4_missing_fast_start_still_has_a_pass_to_do(db, monkeypatch):
         [{"stream_index": 2, "codec": "mov_text", "language": "eng",
           "is_forced": False, "title": None, "reason": "encoding"}])
     db.commit()
-    monkeypatch.setattr(queue_routes, "is_faststart_mp4", lambda _path: False)
+    # Read through scanner._build_analysis_inputs, so faked where it looks.
+    monkeypatch.setattr(scanner, "is_faststart_mp4", lambda _path: False)
 
     (outcome,) = _preview(db, [(1, {2: "keep"})])["outcomes"]
 

@@ -94,6 +94,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.core.scanner as scanner
 import app.core.worker as worker
 from app.core.decision import Action, ProcessingDecision
 from app.database.models import MediaFile, PlannedAction, QueueItem, Track
@@ -151,7 +152,8 @@ def rig(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(worker, "analyze_file", fake_analyze)
-    monkeypatch.setattr(worker, "is_faststart_mp4", fake_faststart)
+    # Read through scanner._build_analysis_inputs, so faked where it looks.
+    monkeypatch.setattr(scanner, "is_faststart_mp4", fake_faststart)
     monkeypatch.setattr(worker, "_finish_job",
                         lambda *args: rig.finish_calls.append(args))
     monkeypatch.setattr(worker, "_upsert_language_flags",
