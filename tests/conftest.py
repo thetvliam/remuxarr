@@ -194,25 +194,6 @@ key is always present in production too.
 
 
 @pytest.fixture
-def before_recordings_were_left_alone(monkeypatch):
-    """
-    Nothing marks a file as a phone's or camera's own recording, as before
-    such a file was left as it is (probe.recording_signs,
-    test_recording_signs.py).
-
-    For the tests of what a job does to a QuickTime movie, which no job
-    starts on any more. A revert or a Forge undo on one runs on what a
-    released version left instead (test_quicktime_files._left_by_a_job,
-    _left_by_a_forge_add).
-    """
-    import app.core.forge as forge
-    import app.core.probe as probe
-
-    monkeypatch.setattr(probe, "recording_signs", lambda probe_data: [])
-    monkeypatch.setattr(forge, "recording_signs", lambda probe_data: [])
-
-
-@pytest.fixture
 def settings():
     """A fresh copy of BASE_SETTINGS per test — mutate freely, no cross-test leakage."""
     return dict(BASE_SETTINGS)

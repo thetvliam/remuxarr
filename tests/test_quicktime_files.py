@@ -11,51 +11,45 @@ whose PCM audio carried the ISO "ipcm" sample entry rather than QuickTime's
 language. The packets were the same. AC3 Forge wrote its add and undo the
 same way.
 
-A file whose major brand is "qt  " (probe.is_quicktime) is now written with
-FFmpeg's QuickTime muxer (ffmpeg.output_muxer): by a job, from the probe the
-worker makes before it runs; by a revert, from the brand the revert point
-recorded for the original; by Forge, from its own probe.
+A file whose major brand is "qt  " (probe.is_quicktime) was then written
+with FFmpeg's QuickTime muxer (ffmpeg.output_muxer) by a job, a revert and
+Forge alike. A QuickTime movie has since become one of the files left as
+they are: no job or Forge add starts on one (probe.recording_signs,
+test_recording_signs.py), and the job's and the add's QuickTime handling
+has gone. A revert point or a forged file made before then is still
+restored, or undone, as QuickTime: a revert from the brand the revert
+point recorded for the original, a Forge undo from its own probe.
 
-These run the real scan, worker, revert and forge against real files.
-
-A QuickTime movie has since become one of the files left as they are: no
-job or Forge run starts on one (probe.recording_signs,
-test_recording_signs.py). A revert point or a forged file made before then
-is still restored, or undone, as QuickTime. The revert and the undo here
-run on what a released version left, which the helpers below make
-(_left_by_a_job, _left_by_a_forge_add): the file written with the
-QuickTime muxer, as the last release to process one wrote it, or with the
-MP4 muxer, as the releases before that did, and the revert point or the
-Forge job the run recorded. The fast-start test still runs a job, with
-that rule off (before_recordings_were_left_alone in conftest.py).
+The revert and the undo here run on what a released version left, which
+the helpers below make (_left_by_a_job, _left_by_a_forge_add): the file
+written with the QuickTime muxer, as the last release to process one
+wrote it, or with the MP4 muxer, as the releases before that did, and the
+revert point or the Forge job the run recorded. Then the real revert, or
+the real worker's undo, runs on it.
 
 Verified by mutation, 12 applied, 12 killed. Each was first run against
 the whole suite as it stood (2459 tests, with test_job_preflight.py's
 plain-data test expecting the new quicktime key), and all 12 survived it.
-When the revert and the undo moved to the helpers, all 12 were run again
-against the whole suite before and after (2817 and 2818 tests); after,
-11 are killed:
+Four were of the job's and the add's QuickTime handling, which has since
+gone, as no job or add starts on a QuickTime movie: the worker never
+reporting QuickTime, execute_ffmpeg not passing it, the worker not
+passing it to execute_ffmpeg, and the add not passing it. The other 8,
+run again against the whole suite when the revert and the undo moved to
+the helpers and again when that handling went (2818 and 2810 tests), are
+killed by:
 
-  • output_muxer ignoring quicktime          → the rule, the job command,
-                                               the fast-start rewrite and
-                                               the revert, both kinds
-  • output_muxer ignoring the container      → the rule, the job command
-  • the worker never reporting QuickTime     → the fast-start rewrite
-  • is_quicktime always False                → the brand, and every real
-                                               file test
+  • output_muxer ignoring quicktime          → the rule, and the revert,
+                                               both kinds
+  • output_muxer ignoring the container      → the rule
+  • is_quicktime always False                → the brand, and forge undo
   • the restore ignoring the recorded brand  → the revert, both kinds
   • the restore's fast start for MP4 only    → the revert, both kinds
   • Forge's muxer ignoring quicktime         → forge undo
   • Forge's job data never QuickTime         → forge undo
   • the undo not passing it                  → forge undo
-  • execute_ffmpeg not passing it            → the fast-start rewrite
-  • the worker not passing it to
-    execute_ffmpeg                           → the same
 
-The add not passing it, killed by forge add and undo before, survives:
-no add starts on a QuickTime movie, so what it passes is never True.
-Those the fast-start rewrite alone kills were killed by the job and
-revert too, before.
+The revert takes the brand from its point, not from is_quicktime, so
+is_quicktime always False leaves it as it is.
 
 Forge's titles were then found lost on a QuickTime file: _title_args wrote
 them back for the "mp4" muxer only. The forge test now gives its tracks
@@ -72,8 +66,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.decision import ProcessingDecision
-from app.core.ffmpeg import build_ffmpeg_command, output_muxer
+from app.core.ffmpeg import output_muxer
 from app.core.probe import is_quicktime, probe_file
 
 needs_ffmpeg = pytest.mark.skipif(
@@ -107,21 +100,6 @@ def test_only_an_mp4_container_is_written_as_quicktime(container, quicktime, mux
     assert output_muxer(container, quicktime) == muxer
 
 
-def _format_of(cmd: list[str]) -> str:
-    return cmd[len(cmd) - 1 - cmd[::-1].index("-f") + 1]
-
-
-@pytest.mark.parametrize("target, muxer", [("mp4", "mov"), ("mkv", "matroska")])
-def test_the_job_command_writes_a_quicktime_source_with_its_muxer(target, muxer):
-    video = {"stream_index": 0, "track_type": "video", "codec": "h264",
-             "language": "und"}
-    decision = ProcessingDecision(should_process=True, reason="", target_container=target)
-
-    cmd = build_ffmpeg_command("in.mov", "out.tmp", decision, [video], quicktime=True)
-
-    assert _format_of(cmd) == muxer
-
-
 # ── Real files ───────────────────────────────────────────────────────────────
 
 class _WS:
@@ -129,11 +107,12 @@ class _WS:
         pass
 
 
-def _mov(path, audio, *, faststart):
+def _mov(path, audio):
     """
-    A QuickTime movie written by FFmpeg's QuickTime muxer: brand "qt  ".
-    audio holds (language, codec, channels) per track, or (language, codec,
-    channels, title); pcm_s16le gets QuickTime's "sowt" sample entry.
+    A QuickTime movie written by FFmpeg's QuickTime muxer: brand "qt  ",
+    its index at the front. audio holds (language, codec, channels) per
+    track, or (language, codec, channels, title); pcm_s16le gets
+    QuickTime's "sowt" sample entry.
     """
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "lavfi", "-i", "testsrc=size=64x36:rate=10:duration=1"]
@@ -145,10 +124,8 @@ def _mov(path, audio, *, faststart):
                 f"-metadata:s:a:{n}", f"language={language}"]
         if title:
             cmd += [f"-metadata:s:a:{n}", f"title={title[0]}"]
-    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
-    if faststart:
-        cmd += ["-movflags", "+faststart"]
-    cmd += ["-f", "mov", str(path)]
+    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", "-f", "mov", str(path)]
     subprocess.run(cmd, check=True)
     return path
 
@@ -324,27 +301,6 @@ def _undo(rig, job_id):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
-def test_a_fast_start_rewrite_keeps_a_quicktime_movie_one(rig):
-    """
-    A camera .mov with its index at the end and nothing else to change:
-    the job only moves the index to the front, and changes nothing else.
-    """
-    from app.core.probe import is_faststart_mp4
-
-    movie = _mov(rig.library / "Camera.mov", [("eng", "pcm_s16le", 2)], faststart=False)
-    before, packets = _shape(movie), _packets(movie)
-    assert before[0] == "qt  " and before[1][1][2] == "sowt", "fixture is not QuickTime"
-    assert is_faststart_mp4(str(movie)) is False
-
-    assert [a for a in _run_job(rig, movie) if a != "copy_track"] == ["add_faststart"]
-
-    assert _shape(movie) == before
-    assert _packets(movie) == packets
-    assert is_faststart_mp4(str(movie)) is True
-
-
-@needs_ffmpeg
 @pytest.mark.parametrize("muxer, brand", [("mov", "qt  "), ("mp4", "isom")],
                          ids=["written as QuickTime", "written as MP4"])
 def test_a_revert_gives_back_a_quicktime_movie(rig, muxer, brand):
@@ -359,7 +315,7 @@ def test_a_revert_gives_back_a_quicktime_movie(rig, muxer, brand):
     from app.database.models import RevertPoint
 
     movie = _mov(rig.library / "Camera.mov",
-                 [("eng", "pcm_s16le", 2), ("ger", "pcm_s16le", 2)], faststart=True)
+                 [("eng", "pcm_s16le", 2), ("ger", "pcm_s16le", 2)])
     before, packets = _shape(movie), _packets(movie)
 
     _left_by_a_job(rig, movie, keep=[0, 1], drop=[2], muxer=muxer)
@@ -381,8 +337,7 @@ def test_forge_undo_gives_back_a_quicktime_movie(rig):
     original's shape and packets back. Track titles survive: Forge wrote
     them back for "mp4" only, so a QuickTime file lost them."""
     movie = _mov(rig.library / "Camera.mov",
-                 [("eng", "aac", 6, "Surround Mix"), ("eng", "pcm_s16le", 2, "Stereo")],
-                 faststart=True)
+                 [("eng", "aac", 6, "Surround Mix"), ("eng", "pcm_s16le", 2, "Stereo")])
     before, packets = _shape(movie), _packets(movie)
     assert [s[4] for s in before[1]] == [None, "Surround Mix", "Stereo"], "fixture has no titles"
 

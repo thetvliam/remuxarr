@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2818 tests across 129 test files, plus 785 frontend tests under
+2810 tests across 129 test files, plus 785 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -186,13 +186,11 @@ restored, or undone, as QuickTime. Its helpers make what a released version
 left (`_left_by_a_job`, `_left_by_a_forge_add`): the file written with the
 QuickTime muxer, as the last release to process one wrote it, or with the MP4
 muxer, as the releases before that did, and what the run recorded. The
-QuickTime cases in the next three files use them too. Two tests still run a
-job on one with the recording rule off (`before_recordings_were_left_alone`
-in `conftest.py`): its fast-start rewrite and the QuickTime case in
-`test_creation_date.py`. A `.mov` normalises to the `mp4` container,
-and FFmpeg's MP4 muxer used to write it: the brand became `isom`, PCM audio's
-`sowt` sample entry became `ipcm`, and the video gained an `und` language.
-A file whose major brand is `qt  ` is now written with the QuickTime muxer.
+QuickTime cases in the next three files use them too. A `.mov` normalises
+to the `mp4` container, and FFmpeg's MP4 muxer used to write it: the brand
+became `isom`, PCM audio's `sowt` sample entry became `ipcm`, and the video
+gained an `und` language. A revert or an undo now writes a file whose major
+brand is `qt  ` with the QuickTime muxer.
 `test_mp4_chapter_track.py` covers an MP4's or QuickTime file's chapter
 track through an AC3 Forge add and undo and a revert. FFmpeg shows the track
 as a bin_data data stream, and copying it added a junk data track on every
@@ -204,8 +202,9 @@ cannot copy one, so each failed; it is now left out, and the muxer writes it
 again from the video's timecode. A QuickTime file's is still copied, which
 keeps its place.
 `test_data_streams.py` covers the data streams a camera or phone records:
-a job keeps GoPro telemetry and a QuickTime file's timecode, which every job
-used to drop with no revert point possible. `test_recording_signs.py` covers
+a job keeps GoPro telemetry, which every job used to drop with no revert
+point possible, and a revert gives a QuickTime file's timecode back where
+it was. `test_recording_signs.py` covers
 a phone's or camera's own recording: an MP4 or QuickTime file with a data
 track cameras write, a GPS tag, a device tag or a camera's brand is left as it
 is whatever the settings, through the scan, a full rescan and the worker's
@@ -213,7 +212,7 @@ pickup, where the signs are read again from the file, raises no Language Review 
 accepts it, though it can still undo an add made before. `real_recordings/probes.json` holds ffprobe's output for 23 real
 files, tag values removed, with the signs expected of each written by hand.
 `test_creation_date.py` covers the date a file says it was made, through a
-job on an MP4, a QuickTime file and a Matroska, a conversion to MP4, a job
+job on an MP4 and a Matroska, a conversion to MP4, a job
 that also extracts a subtitle, and a revert. FFmpeg copies a file's tags and
 then removes that one, so every job used to leave the file undated; for a
 phone's or a camera's recording it is the day it was shot.

@@ -26,13 +26,14 @@ Verified by mutation, 11 applied, 11 killed. Each was first run against
 the whole suite as it stood (2569 tests) with the change in place, and all
 11 survived it. One of them is not about the change: a revert already wrote
 the date back, from the tags its revert point records, and nothing pinned
-that either.
+that either. Another, the QuickTime branch not reading it, killed by the
+QuickTime job, has since gone with the job's QuickTime handling, as no job
+starts on a QuickTime movie. The other 10:
 
   • the argument never written              → the command, and every real
                                               file that has a date
   • written with no date to write           → the command
   • the Matroska branch not reading it      → the Matroska job
-  • the QuickTime branch not reading it     → the QuickTime job
   • the MP4 branch not reading it           → the MP4 job, the conversion,
                                               the combined pass, the revert
   • the current time written, not the
@@ -42,8 +43,8 @@ that either.
   • the rule always None                    → the rule, every real file
                                               that has a date
   • the rule keeping an empty date          → the rule
-  • execute_ffmpeg not passing it on        → the three jobs, the
-                                              conversion, the revert
+  • execute_ffmpeg not passing it on        → the MP4 and Matroska jobs,
+                                              the conversion, the revert
   • execute_ffmpeg_combined not passing it  → the combined pass
 """
 import asyncio
@@ -88,14 +89,13 @@ def test_the_date_is_the_files_own_creation_time_tag(probe, expected):
 _VIDEO = {"stream_index": 0, "track_type": "video", "codec": "h264", "language": "und"}
 
 
-@pytest.mark.parametrize("target, quicktime", [("mp4", False), ("mp4", True), ("mkv", False)])
-def test_the_job_command_names_the_date_for_the_output(target, quicktime):
+@pytest.mark.parametrize("target", ["mp4", "mkv"])
+def test_the_job_command_names_the_date_for_the_output(target):
     """Before the output's format, so it belongs to the file being written
     and not to anything named after it."""
     decision = ProcessingDecision(should_process=True, reason="", target_container=target)
 
-    cmd = build_ffmpeg_command("in", "out.tmp", decision, [_VIDEO],
-                               quicktime=quicktime, creation_time=MADE)
+    cmd = build_ffmpeg_command("in", "out.tmp", decision, [_VIDEO], creation_time=MADE)
 
     at = cmd.index(f"creation_time={MADE}")
     assert cmd[at - 1] == "-metadata"
@@ -232,17 +232,15 @@ def _run_job(rig, path):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
 @pytest.mark.parametrize("name, muxer, tracks_dated", [
     ("Phone.mp4", "mp4", True),
-    ("Camera.mov", "mov", True),
     ("Film.mkv", "matroska", False),
 ])
 def test_a_job_keeps_the_date_the_file_was_made(rig, name, muxer, tracks_dated):
     """
-    The job drops the German track and changes nothing else. An MP4 and a
-    QuickTime file carry the date on each track as well; a Matroska has it
-    on the file alone.
+    The job drops the German track and changes nothing else. An MP4
+    carries the date on each track as well; a Matroska has it on the file
+    alone.
     """
     source = _file(rig.library / name, muxer)
     before = _dates(source)

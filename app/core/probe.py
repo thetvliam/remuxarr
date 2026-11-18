@@ -250,8 +250,9 @@ QUICKTIME_BRAND = "qt  "
 def is_quicktime(probe_data: dict | None) -> bool:
     """
     Whether the probed file is a QuickTime movie rather than an MP4, by its
-    major brand. Remuxarr writes one with FFmpeg's QuickTime muxer, so it
-    stays one (ffmpeg.output_muxer).
+    major brand. A revert or an AC3 Forge undo writes one back with FFmpeg's
+    QuickTime muxer, so it stays one (ffmpeg.output_muxer); no job or add
+    starts on one (recording_signs).
     """
     tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
     return tags.get("major_brand") == QUICKTIME_BRAND
@@ -370,18 +371,17 @@ def timecode_track_indices(probe_data: dict | None) -> list[int]:
             if s.get("codec_type") == "data" and s.get("codec_tag_string") == "tmcd"]
 
 
-# The data tracks FFmpeg's MP4 and QuickTime muxers write properly, by
-# sample entry. The QuickTime muxer keeps a stream's own entry
-# (mov_get_codec_tag) and the MP4 muxer takes bin_data as "gpmd"
-# (codec_mp4_tags), but both write a data track's sample description only
-# for "tmcd", "gpmd" and their own RTP hint tracks (mov_write_stsd_tag,
-# libavformat/movenc.c n8.1.3); any other, an iPhone's "mebx" for one,
-# comes out a track whose description announces an entry and holds none.
-# The MP4 muxer takes no "tmcd" at all, and writes its own
-# (timecode_track_indices). A job keeps these (ffmpeg.find_data_streams);
-# a file holding any other is taken for a phone's or camera's own
-# recording and left alone (recording_signs).
-DATA_ENTRIES = {"mp4": frozenset({"gpmd"}), "mov": frozenset({"gpmd", "tmcd"})}
+# The data tracks FFmpeg's MP4 muxer writes properly, by sample entry. It
+# takes bin_data as "gpmd" (codec_mp4_tags), but writes a data track's
+# sample description only for "tmcd", "gpmd" and its own RTP hint tracks
+# (mov_write_stsd_tag, libavformat/movenc.c n8.1.3); any other, an
+# iPhone's "mebx" for one, comes out a track whose description announces
+# an entry and holds none. It refuses a copied "tmcd" stream, and writes
+# its own (timecode_track_indices). A job keeps these
+# (ffmpeg.find_data_streams); a file holding any other is taken for a
+# phone's or camera's own recording and left alone (recording_signs), as
+# is every QuickTime movie.
+MP4_DATA_ENTRIES = frozenset({"gpmd"})
 
 
 # What marks an MP4 or QuickTime file as a phone's or camera's own
@@ -431,7 +431,7 @@ def recording_signs(probe_data: dict | None) -> list[str]:
         downloads alone for good, a Forge undo included. A GoPro file is
         known by its "fdsc" track and "firmware" tag, which all five real
         ones have, and a job keeps a "gpmd" track where it does run
-        (DATA_ENTRIES).
+        (MP4_DATA_ENTRIES).
       - A GPS tag (LOCATION_TAGS).
       - A device tag (DEVICE_TAGS, DEVICE_TAG_PREFIXES). An iTunes-style
         download's own tags are not among them: FFmpeg shows

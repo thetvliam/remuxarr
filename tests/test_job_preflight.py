@@ -431,8 +431,7 @@ def test_a_proceeding_job_returns_plain_data_for_execution(rig):
     assert loaded is not None
     job_dict, file_dict, tracks, app_cfg, decision = loaded
     assert job_dict == {"id": 1, "is_dry_run": True}
-    assert file_dict == {"id": 1, "path": rig.path,
-                         "filename": "Show.mkv", "size": 18, "quicktime": False}
+    assert file_dict == {"id": 1, "path": rig.path, "filename": "Show.mkv", "size": 18}
     assert all(isinstance(t, dict) for t in tracks)
     assert isinstance(app_cfg, dict)
     assert decision is rig.decision

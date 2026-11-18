@@ -24,7 +24,7 @@ from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
-from app.core.probe import count_font_attachments, is_faststart_mp4, is_quicktime, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.probe import count_font_attachments, is_faststart_mp4, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.probe import lost_file_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
@@ -1602,7 +1602,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 before_staging    = on_before_staging,
                 before_swap       = on_before_swap,
                 on_swap_ready     = on_swap_ready,
-                quicktime         = file_dict.get("quicktime", False),
             )
 
     except asyncio.CancelledError:
@@ -2101,11 +2100,8 @@ def _load_job_data(job_id: int):
 
         return (
             {"id": job.id, "is_dry_run": job.is_dry_run},
-            # quicktime from the probe above, as the stored record does not
-            # hold the brand. With no probe, False: the MP4 muxer, as before
-            # QuickTime files were told apart (ffmpeg.output_muxer).
             {"id": media.id, "path": media.path, "filename": media.filename,
-             "size": media.size, "quicktime": is_quicktime(probe_data)},
+             "size": media.size},
             tracks,
             app_cfg,
             decision,
@@ -3548,7 +3544,6 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             add_faststart     = job_data["add_faststart"],
             titles            = job_data.get("titles"),
             covers            = covers,
-            quicktime         = job_data.get("quicktime", False),
             rebuilt_tracks    = job_data.get("rebuilt_tracks", ()),
             creation_time     = job_data.get("creation_time"),
         )
