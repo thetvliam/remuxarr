@@ -39,21 +39,26 @@ tmcd and QuickTime taking any data stream were killed there by the
 timecode and chapter-track tests:
 
   • the data maps removed                  → argv, the GoPro job and
-                                             revert, the QuickTime file,
-                                             the combined pass
+                                             revert, the combined pass
   • an MP4 taking "tmcd" too               → which streams, the GoPro job
                                              and revert, the combined pass
   • QuickTime taking any data stream       → which streams (and, when
                                              first run, an iPhone-style
                                              track this file then held)
-  • QuickTime leaving out "tmcd"           → which streams, the QuickTime
-                                             file
-  • execute_ffmpeg not passing them        → the GoPro job and revert,
-                                             the QuickTime file
+  • QuickTime leaving out "tmcd"           → which streams
+  • execute_ffmpeg not passing them        → the GoPro job and revert
   • the combined pass not passing them     → the combined pass
-  • the QuickTime branch handing none      → the QuickTime file
+  • the QuickTime branch handing none      → nothing now (below)
   • the MP4 branch handing none            → the GoPro job and revert,
                                              the combined pass
+
+The QuickTime file was a job until no job started on a QuickTime movie;
+it is now a revert of what a job left (test_quicktime_files
+._left_by_a_job). The four it killed were run again against the whole
+suite before and after (2817 and 2818 tests). The data maps removed,
+QuickTime leaving out "tmcd" and execute_ffmpeg not passing them are
+still killed as above. The QuickTime branch handing none, killed by that
+job alone, survives: no job reaches the branch.
 
 The kills are from this file, run with test_timecode_track.py,
 test_mp4_chapter_track.py, test_quicktime_files.py and
@@ -278,20 +283,21 @@ def test_a_gopro_job_keeps_the_telemetry_and_the_revert_gives_it_back(rig):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
-def test_a_quicktime_job_keeps_its_data_where_it_was(rig):
+def test_a_quicktime_revert_gives_back_its_data_where_it_was(rig):
     """
-    The QuickTime muxer copies the timecode track and the telemetry, which
-    the job maps after the tracks it keeps; the revert maps every stream in
-    the original's order, so it gives back exactly the file the job was
-    handed, the timecode before the audio again.
+    A processed QuickTime movie holding the timecode track and the
+    telemetry after the tracks it kept: the QuickTime muxer copies both. No
+    job starts on one now, so the revert point is made as one would have
+    left it (_left_by_a_job). The revert maps every stream in the
+    original's order, so it gives back exactly the file the job was handed,
+    the timecode before the audio again.
     """
     movie = _camera(rig.library / "Camera.mov", brand="qt  ")
     before = _streams(movie)
     assert before == [VIDEO, TMCD, ENG, GER, GPMD], "fixture changed"
     telemetry, timecode = _packets(movie, "gpmd"), _packets(movie, "tmcd")
 
-    assert "drop_track" in _run_job(rig, movie)
+    _qt._left_by_a_job(rig, movie, keep=[0, 2, 1, 4], drop=[3])
 
     assert _streams(movie) == [VIDEO, ENG, TMCD, GPMD]
     assert (_packets(movie, "gpmd"), _packets(movie, "tmcd")) == (telemetry, timecode)

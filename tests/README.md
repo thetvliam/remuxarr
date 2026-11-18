@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2817 tests across 129 test files, plus 785 frontend tests under
+2818 tests across 129 test files, plus 785 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -179,12 +179,17 @@ muxer refused every add on an MKV with fonts.
 `test_mp4_track_titles.py` covers track titles through a job, an AC3 Forge add
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.
-`test_quicktime_files.py` covers QuickTime movies through a job, a revert,
-and an AC3 Forge add and undo, as they went before a recording was left as it
-is (below): no job or Forge run starts on one now, but a revert point made
-before then is still restored as QuickTime, and a job is how these tests make
-one (`before_recordings_were_left_alone` in `conftest.py`). The QuickTime
-cases in the next three files and in `test_creation_date.py` run the same way. A `.mov` normalises to the `mp4` container,
+`test_quicktime_files.py` covers QuickTime movies through a revert and an AC3
+Forge undo. No job or Forge add starts on one now that a recording is left as
+it is (below), but a revert point or a forged file made before then is still
+restored, or undone, as QuickTime. Its helpers make what a released version
+left (`_left_by_a_job`, `_left_by_a_forge_add`): the file written with the
+QuickTime muxer, as the last release to process one wrote it, or with the MP4
+muxer, as the releases before that did, and what the run recorded. The
+QuickTime cases in the next three files use them too. Two tests still run a
+job on one with the recording rule off (`before_recordings_were_left_alone`
+in `conftest.py`): its fast-start rewrite and the QuickTime case in
+`test_creation_date.py`. A `.mov` normalises to the `mp4` container,
 and FFmpeg's MP4 muxer used to write it: the brand became `isom`, PCM audio's
 `sowt` sample entry became `ipcm`, and the video gained an `und` language.
 A file whose major brand is `qt  ` is now written with the QuickTime muxer.

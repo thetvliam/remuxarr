@@ -200,10 +200,10 @@ def before_recordings_were_left_alone(monkeypatch):
     such a file was left as it is (probe.recording_signs,
     test_recording_signs.py).
 
-    For the tests of what a job, a revert and AC3 Forge do to a QuickTime
-    movie. No job or Forge run starts on one any more, but a revert point
-    made before then is still restored, and restored as QuickTime, and a
-    job is how these tests make one.
+    For the tests of what a job does to a QuickTime movie, which no job
+    starts on any more. A revert or a Forge undo on one runs on what a
+    released version left instead (test_quicktime_files._left_by_a_job,
+    _left_by_a_forge_add).
     """
     import app.core.forge as forge
     import app.core.probe as probe

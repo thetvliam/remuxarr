@@ -24,15 +24,27 @@ whole suite as it stood (2480 tests), and all 13 survived it:
                                               tests, both formats
   • the track found without chapters,       → telling it apart, one case
     with any sample entry, or of any codec    each
-  • the add, or the undo, copying it        → forge add and undo, both
+  • the add copying it                      → forge add and undo, MP4
+  • the undo copying it                     → forge add and undo, MP4, and
+                                              the QuickTime undo
   • Forge's job data never finding it       → the same
   • titles not skipping it                  → titles skip it
-  • the worker not passing it to the add,
-    or to the undo                          → forge add and undo, both
+  • the worker not passing it to the add    → forge add and undo, MP4
+  • the worker not passing it to the undo   → forge add and undo, MP4, and
+                                              the QuickTime undo
   • the restore copying it                  → the revert, both formats
   • the restore skipping a sidecar stream
     at the same index                       → the revert (MP4)
   • the restore not being told it           → the revert, both formats
+
+The QuickTime add and the revert's QuickTime point are made by helpers
+now (test_quicktime_files._left_by_a_forge_add, _left_by_a_job). The
+probe's, Forge's, the worker's and the restore's mutants were run again
+before and after that, on this file, test_timecode_track.py,
+test_quicktime_files.py, test_data_streams.py and
+test_attachment_preservation.py: the add copying it and the worker not
+passing it to the add were also killed by the QuickTime add before,
+which no longer runs; the rest are killed as they were.
 """
 import asyncio
 import json
@@ -154,13 +166,11 @@ def test_the_probe_reads_chapters_and_finds_the_track(rig, fmt, name):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
-@FORMATS
-def test_forge_add_and_undo_write_the_chapter_track_once(rig, fmt, name):
+def test_forge_add_and_undo_write_an_mp4s_chapter_track_once(rig):
     from app.core import scanner
     from app.database.models import Ac3ForgeJob, MediaFile
 
-    movie = _movie(rig.library / name, fmt, [("eng", "aac", 6)])
+    movie = _movie(rig.library / "Movie.mp4", "mp4", [("eng", "aac", 6)])
     before = _streams(movie)
     assert before == [("video", "h264", "avc1"), ("audio", "aac", "mp4a"),
                       ("data", "bin_data", "text")], "fixture changed"
@@ -178,23 +188,39 @@ def test_forge_add_and_undo_write_the_chapter_track_once(rig, fmt, name):
     assert len(after_add) == len(before) + 1
     assert _chapters(movie) == CHAPTERS
 
-    with rig.Session() as db:
-        job = db.get(Ac3ForgeJob, job_id)
-        job.status, job.is_undo, job.progress = "undo_pending", True, 0.0
-        db.commit()
-    assert asyncio.run(rig.worker._process_next_forge(_WS())) is True
+    _qt._undo(rig, job_id)
 
     assert _streams(movie) == before
     assert _chapters(movie) == CHAPTERS
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
+def test_forge_undo_writes_a_quicktime_movies_chapter_track_once(rig):
+    """An add made before a QuickTime movie was left as it is left the
+    chapter track out, and its muxer wrote it again; the undo does the same."""
+    movie = _movie(rig.library / "Camera.mov", "mov", [("eng", "aac", 6)])
+    before = _streams(movie)
+    assert before == [("video", "h264", "avc1"), ("audio", "aac", "mp4a"),
+                      ("data", "bin_data", "text")], "fixture changed"
+
+    job_id = _qt._left_by_a_forge_add(rig, movie, leave_out=[2])
+    assert [s for s in _streams(movie) if s[0] == "data"] == [("data", "bin_data", "text")], (
+        "fixture is not what the add wrote")
+
+    _qt._undo(rig, job_id)
+
+    assert _streams(movie) == before
+    assert _chapters(movie) == CHAPTERS
+
+
+@needs_ffmpeg
 @FORMATS
 def test_a_revert_gives_back_one_chapter_track(rig, fmt, name):
     """
-    The job drops three tracks; the revert puts them back, and the
-    original's single chapter track and its chapters with it.
+    A job dropped three tracks; the revert puts them back, and the
+    original's single chapter track and its chapters with it. An MP4's job
+    runs here. A QuickTime movie's ran before such a file was left as it is,
+    so its revert point is made as that job left it.
 
     Three, so the sidecar holds a stream at the index the processed file's
     chapter track has (2: video, English, chapters). Only the processed
@@ -207,7 +233,10 @@ def test_a_revert_gives_back_one_chapter_track(rig, fmt, name):
                                              ("fre", "aac", 2), ("spa", "aac", 2)])
     before = _streams(movie)
 
-    assert "drop_track" in _run_job(rig, movie)
+    if fmt == "mp4":
+        assert "drop_track" in _run_job(rig, movie)
+    else:
+        _qt._left_by_a_job(rig, movie, keep=[0, 1], drop=[2, 3, 4])
     assert [s for s in _streams(movie) if s[0] == "data"] == [("data", "bin_data", "text")]
 
     with rig.Session() as db:

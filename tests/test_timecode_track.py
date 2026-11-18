@@ -27,14 +27,19 @@ whole suite as it stood (2535 tests), and all 5 survived it:
   • the timecode track never found        → telling it apart, the probe,
                                             forge and the revert, MP4
   • found in a file with no video         → telling it apart
-  • found in a QuickTime file too         → telling it apart, the probe and
-                                            forge on QuickTime, and the
-                                            QuickTime track keeping its place
+  • found in a QuickTime file too         → telling it apart, the probe on
+                                            QuickTime, and the QuickTime
+                                            track keeping its place
   • the restore not leaving it out        → the revert, MP4
   • Forge not leaving it out              → forge add and undo, MP4
 
 The kills are from this file, test_mp4_chapter_track.py and
-test_quicktime_files.py, the files that share its rig.
+test_quicktime_files.py. The QuickTime add and the revert's QuickTime
+point are made by helpers now (test_quicktime_files._left_by_a_forge_add,
+_left_by_a_job). The first and third were run again before and after
+that, on those files, test_data_streams.py and
+test_attachment_preservation.py: forge on QuickTime also killed the third
+before, and no longer does; the first is killed as it was.
 """
 import asyncio
 import hashlib
@@ -178,39 +183,57 @@ def test_the_probe_finds_only_an_mp4s_timecode_track(rig, fmt, name):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
-@FORMATS
-def test_forge_add_and_undo_keep_the_timecode(rig, fmt, name):
-    movie = _movie(rig.library / name, fmt, [("eng", 6)])
+def test_forge_add_and_undo_keep_an_mp4s_timecode(rig):
+    movie = _movie(rig.library / "GoPro.mp4", "mp4", [("eng", 6)])
     before, sample = _streams(movie), _sample(movie)
     assert before == [("video", "avc1", TIMECODE), ("audio", "mp4a", None), TMCD]
 
     after_add, sample_after_add = _forge_add_and_undo(rig, movie)
 
-    # The AC3 is appended. An MP4's timecode track is written again, after
-    # it; a QuickTime file's is copied where it stood.
-    ac3 = ("audio", "ac-3", None)
-    assert after_add == ([*before[:2], ac3, TMCD] if fmt == "mp4" else [*before, ac3])
+    # The AC3 is appended, and the timecode track written again after it.
+    assert after_add == [*before[:2], ("audio", "ac-3", None), TMCD]
     assert sample_after_add == sample
     assert _streams(movie) == before
     assert _sample(movie) == sample
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
+def test_forge_undo_keeps_a_quicktime_movies_timecode(rig):
+    """An add made before a QuickTime movie was left as it is copied its
+    timecode track where it stood, and the undo does too."""
+    movie = _movie(rig.library / "Camera.mov", "mov", [("eng", 6)])
+    before, sample = _streams(movie), _sample(movie)
+    assert before == [("video", "avc1", TIMECODE), ("audio", "mp4a", None), TMCD]
+
+    job_id = _qt._left_by_a_forge_add(rig, movie)
+    assert _streams(movie) == [*before, ("audio", "ac-3", None)], (
+        "fixture is not what the add wrote")
+
+    _qt._undo(rig, job_id)
+
+    assert _streams(movie) == before
+    assert _sample(movie) == sample
+
+
+@needs_ffmpeg
 @FORMATS
 def test_a_revert_gives_back_the_timecode(rig, fmt, name):
-    """The job drops the German track; the revert puts it back, and the
-    timecode track with its sample. German, not French: the QuickTime
-    muxer writes only languages in the Macintosh table, which spells
-    French fra, not fre (PARKED 42)."""
+    """A job dropped the German track; the revert puts it back, and the
+    timecode track with its sample. An MP4's job runs here. A QuickTime
+    movie's ran before such a file was left as it is, so its revert point is
+    made as that job left it. German, not French: the QuickTime muxer
+    writes only languages in the Macintosh table, which spells French fra,
+    not fre (PARKED 42)."""
     from app.core.revert_restore import restore_revert_point
     from app.database.models import RevertPoint
 
     movie = _movie(rig.library / name, fmt, [("eng", 2), ("ger", 2)])
     before, sample = _streams(movie), _sample(movie)
 
-    assert "drop_track" in _run_job(rig, movie)
+    if fmt == "mp4":
+        assert "drop_track" in _run_job(rig, movie)
+    else:
+        _qt._left_by_a_job(rig, movie, keep=[0, 1, 3], drop=[2])
     assert _streams(movie) == [before[0], before[1], TMCD]
 
     with rig.Session() as db:
@@ -223,19 +246,21 @@ def test_a_revert_gives_back_the_timecode(rig, fmt, name):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_quicktime_timecode_track_keeps_its_place(rig):
     """
-    Copied, not written again: a track written again would go last. Forge
-    on a QuickTime file whose timecode track comes before its audio, as a
-    camera can write it.
+    Copied, not written again: a track written again would go last. A Forge
+    undo on a QuickTime file whose timecode track comes before its audio,
+    as a camera can write it.
     """
     movie = _movie(rig.library / "Camera.mov", "mov", [("eng", 6)], timecode_first=True)
     before, sample = _streams(movie), _sample(movie)
     assert before == [("video", "avc1", TIMECODE), TMCD, ("audio", "mp4a", None)]
 
-    after_add, _ = _forge_add_and_undo(rig, movie)
+    job_id = _qt._left_by_a_forge_add(rig, movie)
+    assert _streams(movie) == [*before, ("audio", "ac-3", None)], (
+        "fixture is not what the add wrote")
 
-    assert after_add == [*before, ("audio", "ac-3", None)]
+    _qt._undo(rig, job_id)
+
     assert _streams(movie) == before
     assert _sample(movie) == sample
