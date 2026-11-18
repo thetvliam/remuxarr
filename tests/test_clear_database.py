@@ -208,3 +208,134 @@ def test_settings_survive_the_wipe(client):
     api.post("/api/settings/clear-database")
 
     assert db.query(AppSetting).count() == 1
+
+
+# ── Refused while something is running ───────────────────────────────────────
+#
+# Each of these went on writing after a wipe. A job finishing afterwards
+# recorded its revert point under the file id it started with; the next file
+# scanned was given that id, and the Recycle Bin listed the point under it.
+#
+# Verified by mutation, 7 applied, 7 killed. Each of the four checks removed,
+# pending queue items counted as running, and the check made outside
+# CLAIM_LOCK survived the suite as it stood. The seventh, pending and
+# undo_pending forge runs counted as running, was already killed: _populate
+# adds a pending forge run, so every wipe test above was refused.
+
+def _queue_processing(db, media):
+    from app.database.models import QueueItem
+
+    db.add(QueueItem(file_id=media.id, status="processing"))
+    db.commit()
+
+
+def _forge_processing(db, media):
+    from app.database.models import Ac3ForgeJob
+
+    db.add(Ac3ForgeJob(file_id=media.id, status="processing"))
+    db.commit()
+
+
+def _reverting(db, media, monkeypatch):
+    from app.core import revert_lock
+
+    monkeypatch.setattr(revert_lock, "_status", {"point_id": 1, "path": media.path})
+
+
+def _scanning(db, media, monkeypatch):
+    from app.api.routes import scan as scan_route
+
+    monkeypatch.setattr(scan_route, "_scan_running", True)
+
+
+@pytest.mark.parametrize("start, named", [
+    (lambda db, media, _mp: _queue_processing(db, media), "a job"),
+    (lambda db, media, _mp: _forge_processing(db, media), "an AC3 Forge run"),
+    (_reverting, "a revert"),
+    (_scanning, "a scan"),
+], ids=["job", "forge", "revert", "scan"])
+def test_the_wipe_is_refused_while_work_is_running(client, monkeypatch, start, named):
+    from app.database.models import MediaFile, RevertPoint
+
+    api, db, recycle = client
+    media, sidecar = _populate(db, recycle)
+    start(db, media, monkeypatch)
+
+    r = api.post("/api/settings/clear-database")
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == (f"The database can't be cleared while {named} "
+                                  f"is running. Try again once it has finished.")
+    db.expire_all()
+    assert db.query(MediaFile).count() == 1
+    assert db.query(RevertPoint).count() == 1
+    assert sidecar.exists(), "a refused wipe deleted a sidecar"
+
+
+def test_everything_running_is_named(client, monkeypatch):
+    api, db, recycle = client
+    media, _sidecar = _populate(db, recycle)
+    _queue_processing(db, media)
+    _forge_processing(db, media)
+    _reverting(db, media, monkeypatch)
+    _scanning(db, media, monkeypatch)
+
+    r = api.post("/api/settings/clear-database")
+
+    assert r.status_code == 409
+    assert r.json()["detail"] == (
+        "The database can't be cleared while a job, an AC3 Forge run, a revert "
+        "and a scan are running. Try again once they have finished.")
+
+
+def test_waiting_jobs_do_not_stop_the_wipe(client):
+    """Pending jobs and forge runs are among what it removes."""
+    from app.database.models import Ac3ForgeJob, MediaFile, QueueItem
+
+    api, db, recycle = client
+    media, _sidecar = _populate(db, recycle)  # adds a pending forge run
+    db.add_all([QueueItem(file_id=media.id, status="pending"),
+                Ac3ForgeJob(file_id=media.id, status="undo_pending")])
+    db.commit()
+
+    assert api.post("/api/settings/clear-database").status_code == 200
+
+    db.expire_all()
+    assert db.query(QueueItem).count() == 0
+    assert db.query(Ac3ForgeJob).count() == 0
+    assert db.query(MediaFile).count() == 0
+
+
+def test_a_job_claimed_while_the_wipe_waits_is_seen(client):
+    """
+    The queue and the forge claim under CLAIM_LOCK, and so does the wipe,
+    so a job cannot be claimed between the check that found nothing running
+    and the delete. Here the lock is held while a clear is sent and a job is
+    claimed before letting go: the clear has to wait for the lock, then see
+    the job. Checked outside the lock, it wiped first and answered 200.
+    """
+    import threading
+
+    from app.core import revert_lock
+    from app.database.models import MediaFile, QueueItem
+
+    api, db, recycle = client
+    media, _sidecar = _populate(db, recycle)
+    db.add(QueueItem(file_id=media.id, status="pending"))
+    db.commit()
+
+    answer = {}
+    with revert_lock.CLAIM_LOCK:
+        sender = threading.Thread(
+            target=lambda: answer.update(r=api.post("/api/settings/clear-database")))
+        sender.start()
+        sender.join(0.5)
+        assert sender.is_alive(), "the clear did not wait for the claim lock"
+        db.query(QueueItem).filter(QueueItem.status == "pending") \
+          .update({"status": "processing"})
+        db.commit()
+    sender.join(10)
+
+    assert answer["r"].status_code == 409
+    db.expire_all()
+    assert db.query(MediaFile).count() == 1

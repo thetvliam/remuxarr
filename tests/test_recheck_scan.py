@@ -27,8 +27,16 @@ it to scan_library; and Force Full Rescan losing to a re-check. The first
 three and the last are killed here; the three hand-ons are killed in
 test_scan_library.py and test_scan_routes.py, beside the tests for the
 other scan modes.
+
+The change test came later, when the delta check's own copy of it gave way
+to unchanged_on_disk. Four mutants of the merged code, each run against the
+whole suite first: the skip ignoring it, a re-check deciding a changed file
+from its record, and the test ignoring the size were killed already; the
+test ignoring the mtime survived. Killed now, for a routine scan and a
+re-check, by test_a_file_rewritten_at_the_same_size_is_probed_again.
 """
 import json
+import os
 
 import pytest
 
@@ -138,6 +146,27 @@ def test_a_file_changed_on_disk_is_probed_during_a_recheck(lib):
 
     lib.media("Ep1.mkv", _probe("eng", "ger"), size=128)
     lib.scan(recheck=True)
+
+    assert lib.probed == [path]
+    assert lib.items()[-1] == ("pending", False)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"recheck": True}],
+                         ids=["routine scan", "re-check"])
+def test_a_file_rewritten_at_the_same_size_is_probed_again(lib, kwargs):
+    """
+    Only its mtime tells a file rewritten at the same size from one left
+    alone. Nothing pinned that the mtime counts: a change test comparing
+    sizes alone passed the whole suite, and both scans would then have
+    kept this file's French-for-German swap from ever being seen.
+    """
+    path = lib.media("Ep1.mkv", _probe("eng", "fre"))
+    lib.scan()
+    seen = os.stat(path).st_mtime
+
+    lib.media("Ep1.mkv", _probe("eng", "ger"))
+    os.utime(path, (seen + 60, seen + 60))
+    lib.scan(**kwargs)
 
     assert lib.probed == [path]
     assert lib.items()[-1] == ("pending", False)

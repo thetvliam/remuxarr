@@ -137,6 +137,10 @@ class ProcessingDecision:
     actions:          list[Action] = field(default_factory=list)
     is_manual_review: bool = False
     target_container: str | None = None   # None = keep current
+    # The container the file is in now, as the scan probed it. Set only on
+    # a decision to process, for the command builder: an AVI source needs
+    # its presentation times generated (ffmpeg.build_ffmpeg_command).
+    source_container: str | None = None
     # NOTE: there is deliberately no output_extension field — the output
     # path is derived in ffmpeg.determine_output_path from target_container
     # plus the presence of a change_container action. An earlier version
@@ -294,19 +298,17 @@ def _primary_language(settings: dict) -> str:
 
 def _resolve_und_mode(settings: dict, track_type: str) -> str:
     """
-    The undefined-language mode for one track type, as a three-state string.
+    The undefined-language mode for one track type: always_fix, always_ask
+    or always_leave.
 
-    Centralises the boolean back-compat that used to be inlined at both
-    read sites: this setting predates being three-state and a database
-    untouched since then still holds True/False. Two copies of that
-    coercion is how the two sites drift apart.
+    The subtitle setting took true or false before it had three values, and
+    this used to map them. None reaches it now: a stored true or false is
+    converted at every start (session._convert_old_undefined_language_flag),
+    the settings routes refuse one, and get_app_settings, where every
+    caller in app/ takes its settings from, reads a value of the wrong kind
+    as the default.
     """
-    mode = settings.get(_UND_MODE_KEYS[track_type], "always_leave")
-    if mode is True:
-        return "always_fix"
-    if mode is False:
-        return "always_leave"
-    return mode
+    return settings.get(_UND_MODE_KEYS[track_type], "always_leave")
 
 
 def _lone_undefined_track(
@@ -425,6 +427,7 @@ def analyze_file(
     subtitle_language_overrides: dict[int, str] | None = None,
     has_faststart: bool | None = None,
     forged_ac3_audio_index: int | None = None,
+    has_packed_bframes: bool | None = None,
 ) -> ProcessingDecision:
     """
     Analyse a media file and return a ProcessingDecision.
@@ -465,6 +468,11 @@ def analyze_file(
         (non-MP4 container, probe failed, or setting disabled).  Only
         relevant for existing MP4 files; new MP4 outputs from a container
         conversion always get +faststart from the FFmpeg command builder.
+    has_packed_bframes : bool | None
+        Whether the file's MPEG-4 Part 2 video has packed B-frames
+        (scanner.packed_divx_for, read from the file like has_faststart).
+        True keeps the file out of MP4; None means not read, as for any
+        file but an AVI with such video.
     forged_ac3_audio_index : int | None
         Set when a completed (or undo-in-progress/undo-failed)
         Ac3ForgeJob exists for this file — i.e.
@@ -1364,6 +1372,20 @@ def analyze_file(
     # track holds the file as MKV.
     video_audio_ok = _video_audio_mp4_compatible(video_tracks, kept_audio)
 
+    # Packed B-frames (a DivX 5 or Xvid AVI, probe.is_packed_divx) keep a
+    # file out of MP4 as an incompatible codec does. Copied into an MP4,
+    # their frames came out timed in storage order: generating presentation
+    # times cannot work them out from packed frames, and unpacking the
+    # video first would change its bytes, so a revert could no longer give
+    # back the original. The file is left in its container instead, which
+    # costs little: most Plex clients transcode MPEG-4 Part 2 video
+    # whatever it is in. packed_holds_container says this alone held a
+    # conversion that would otherwise have happened, for the reason given
+    # when nothing else is to be done.
+    packed_holds_container = bool(has_packed_bframes) and video_audio_ok
+    if has_packed_bframes:
+        video_audio_ok = False
+
     # Whether anything OTHER than the kept subtitles keeps this file out of
     # MP4. The Review page needs it to tell two sentences apart: "keeping
     # this track is what holds the file as MKV" and "this file stays MKV
@@ -1384,6 +1406,9 @@ def analyze_file(
 
     target_container = current_container
 
+    packed_holds_container = (packed_holds_container and prefer_mp4
+                              and current_container != "mp4" and not subs_block_mp4)
+
     if prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4:
         target_container = "mp4"
         actions.append(Action(
@@ -1392,6 +1417,22 @@ def analyze_file(
             order=order,
         ))
         order += 1
+
+    # ── A container that keeps no language tag ─────────────────────────────
+    # An AVI kept as AVI (Prefer MP4 Container off, or tracks MP4 cannot
+    # hold) stores no language for any stream (ffmpeg.stores_language).
+    # Always Fix planned a tag for its untagged audio, the job wrote a file
+    # without it, and every full scan queued it again. So nothing below
+    # plans a tag for such a file: Always Fix still takes an untagged track
+    # as Primary Language for keep and drop (the pre-pass above), an
+    # applied Language Review answer is not written, and no Language
+    # Review question is raised, as its answer could not be used. Imported
+    # here, as ffmpeg imports this module.
+    from app.core.ffmpeg import output_muxer, stores_language
+    writes_language = stores_language(target_container)
+    # Whether a tag was left unwritten for that reason, for the reason
+    # given when nothing else is to be done.
+    tag_unwritten = False
 
     # ── Fast-start (moov atom position) ────────────────────────────────────
     # Only relevant for files that ARE already MP4 — new MP4 outputs from a
@@ -1522,6 +1563,14 @@ def analyze_file(
                     if action.stream_index in overrides_for_type:
                         continue
                     if action.stream_index in tag_si:
+                        if action.action_type == "copy_track" and not writes_language:
+                            # Kept as Primary Language, but not tagged: the
+                            # output could not keep the tag. Not sent for
+                            # review either. An extracted subtitle is still
+                            # renamed below, as its sidecar is a file of its
+                            # own.
+                            tag_unwritten = True
+                            continue
                         if action.action_type == "extract_subtitle":
                             # The sidecar's language lives in its filename, so
                             # fixing the tag means renaming the artifact, not
@@ -1653,22 +1702,26 @@ def analyze_file(
     # separate, structurally identical blocks; see that function's
     # docstring for the full rationale, including why comparing against
     # each track's current, real language matters here.
-    override_fixed_indices.update(_apply_language_override_pass(
-        actions, "audio", audio_language_overrides, current_language_by_stream,
-    ))
-    override_fixed_indices.update(_apply_language_override_pass(
-        actions, "subtitle", subtitle_language_overrides, current_language_by_stream,
-    ))
+    # Not for an output that keeps no tag: the answer would be written into
+    # a file without it on every scan. It still decides keep and drop.
+    if writes_language:
+        override_fixed_indices.update(_apply_language_override_pass(
+            actions, "audio", audio_language_overrides, current_language_by_stream,
+        ))
+        override_fixed_indices.update(_apply_language_override_pass(
+            actions, "subtitle", subtitle_language_overrides, current_language_by_stream,
+        ))
     if override_fixed_indices:
         has_language_fix = True
 
-    # A container Remuxarr has no muxer for: see where it is left alone,
-    # below. Its Language Review questions are not raised, here or there:
-    # an answer could only come back to that same decision. Imported here,
-    # as ffmpeg imports this module.
-    from app.core.ffmpeg import output_muxer
+    # A container Remuxarr has no muxer for, or a phone's or camera's own
+    # recording: see where each is left alone, below. Their Language
+    # Review questions are not raised, here or there: an answer could only
+    # come back to that same decision. Nor are they for a container that
+    # keeps no tag (above).
     cannot_write = output_muxer(target_container) is None
-    if cannot_write:
+    recording = file_info.get("recording_signs")
+    if cannot_write or recording or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1683,13 +1736,32 @@ def analyze_file(
             or has_faststart_a or has_language_fix):
         return ProcessingDecision(
             should_process=False,
-            reason="File already meets all configured criteria — no changes needed.",
+            reason=_unchanged_reason(target_container, prefer_mp4,
+                                     packed_holds_container, tag_unwritten),
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             undefined_audio_flags=undefined_audio_flags,
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             subtitle_language_mismatches=subtitle_language_mismatches,
             source_already_faststart=has_faststart is True,
+            faststart_enabled=add_faststart,
+        )
+
+    # ── A phone's or camera's own recording ────────────────────────────────
+    # Left as it is, whatever the settings say: nothing above or below
+    # this can turn it into a job. Remuxarr is for downloaded media, the
+    # user's call (PARKED 45), and a job costs a recording what a download
+    # does not have: an iPhone video's metadata tracks, which no revert
+    # point could hold either, a phone's device tags, the camera's brand
+    # (probe.recording_signs, which says what marks one). The reason goes
+    # in History.
+    if recording:
+        return ProcessingDecision(
+            should_process=False,
+            reason=("This looks like a phone's or camera's own recording "
+                    f"({recording.replace(',', ', ')}), so it is left as it is."),
+            actions=[],
+            mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             faststart_enabled=add_faststart,
         )
 
@@ -1762,6 +1834,7 @@ def analyze_file(
         reason="; ".join(parts),
         actions=actions,
         target_container=target_container,
+        source_container=current_container,
         audio_language_mismatch=audio_language_mismatch,
         undefined_audio_flags=undefined_audio_flags,
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
@@ -1843,6 +1916,29 @@ def _apply_language_override_pass(
             fixed_indices.add(action.stream_index)
 
     return fixed_indices
+
+
+def _unchanged_reason(target_container: str, prefer_mp4: bool,
+                      packed: bool, tag_unwritten: bool) -> str:
+    """
+    The reason given when a file is left as it is: what kept it from MP4,
+    and a language tag its container could not keep, when either is so.
+    """
+    if not (packed or tag_unwritten):
+        return "File already meets all configured criteria — no changes needed."
+    name = target_container.upper()
+    parts = []
+    if packed:
+        parts.append(f"Its video stores B-frames packed, the way some DivX and Xvid "
+                     f"encoders did, which cannot be converted to MP4 correctly, so it "
+                     f"stays {name}.")
+    if tag_unwritten:
+        tags = f"{name} files cannot store language tags, so this one's are left as they are."
+        if not packed:
+            tags += (" Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
+                     " Its tracks cannot go into MP4.")
+        parts.append(tags)
+    return " ".join(parts)
 
 
 def _video_audio_mp4_compatible(

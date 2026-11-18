@@ -18,6 +18,13 @@ recorded for the original; by Forge, from its own probe.
 
 These run the real scan, worker, revert and forge against real files.
 
+A QuickTime movie has since become one of the files left as they are: no
+job or Forge run starts on one (probe.recording_signs,
+test_recording_signs.py). A revert point made before then is still
+restored, and restored as QuickTime. The three real-file tests here run
+with that rule off (before_recordings_were_left_alone in conftest.py), as
+a job is how they make a revert point.
+
 Verified by mutation, 12 applied, 12 killed. Each was first run against
 the whole suite as it stood (2459 tests, with test_job_preflight.py's
 plain-data test expecting the new quicktime key), and all 12 survived it:
@@ -40,6 +47,12 @@ plain-data test expecting the new quicktime key), and all 12 survived it:
                                                job and revert
   • the worker not passing it to
     execute_ffmpeg                           → the same two
+
+Forge's titles were then found lost on a QuickTime file: _title_args wrote
+them back for the "mp4" muxer only. The forge test now gives its tracks
+titles. Its mutant, titles for "mp4" only again, survived the full suite
+before that and is killed by forge add and undo alone; titles for "mov"
+only is killed by test_mp4_track_titles.py.
 """
 import asyncio
 import json
@@ -109,17 +122,19 @@ class _WS:
 def _mov(path, audio, *, faststart):
     """
     A QuickTime movie written by FFmpeg's QuickTime muxer: brand "qt  ".
-    audio holds (language, codec, channels) per track; pcm_s16le gets
-    QuickTime's "sowt" sample entry.
+    audio holds (language, codec, channels) per track, or (language, codec,
+    channels, title); pcm_s16le gets QuickTime's "sowt" sample entry.
     """
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "lavfi", "-i", "testsrc=size=64x36:rate=10:duration=1"]
     for n, _ in enumerate(audio):
         cmd += ["-f", "lavfi", "-i", f"sine=frequency={440 + 110 * n}:duration=1"]
     cmd += ["-map", "0:v"]
-    for n, (language, codec, channels) in enumerate(audio):
+    for n, (language, codec, channels, *title) in enumerate(audio):
         cmd += ["-map", f"{n + 1}:a", f"-c:a:{n}", codec, f"-ac:a:{n}", str(channels),
                 f"-metadata:s:a:{n}", f"language={language}"]
+        if title:
+            cmd += [f"-metadata:s:a:{n}", f"title={title[0]}"]
     cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
     if faststart:
         cmd += ["-movflags", "+faststart"]
@@ -129,8 +144,10 @@ def _mov(path, audio, *, faststart):
 
 
 def _shape(path):
-    """The brand, and what each stream says it is: codec, sample entry and
-    language. Every one of them changed under the MP4 muxer."""
+    """The brand, and what each stream says it is: codec, sample entry,
+    language and title (read back from QuickTime as the tag "name"). All
+    but the title changed under the MP4 muxer, and Forge dropped the title
+    under the QuickTime one."""
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json",
          "-show_format", "-show_streams", str(path)],
@@ -138,7 +155,7 @@ def _shape(path):
     probe = json.loads(out)
     return ((probe["format"].get("tags") or {}).get("major_brand"),
             [(s["codec_type"], s["codec_name"], s.get("codec_tag_string"),
-              (s.get("tags") or {}).get("language"))
+              (s.get("tags") or {}).get("language"), (s.get("tags") or {}).get("name"))
              for s in probe["streams"]])
 
 
@@ -205,6 +222,7 @@ def _run_job(rig, path):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_fast_start_rewrite_keeps_a_quicktime_movie_one(rig):
     """
     A camera .mov with its index at the end and nothing else to change:
@@ -225,6 +243,7 @@ def test_a_fast_start_rewrite_keeps_a_quicktime_movie_one(rig):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_a_job_and_its_revert_keep_a_quicktime_movie_one(rig):
     """
     The job drops the German track. It and the revert that puts the track
@@ -254,15 +273,19 @@ def test_a_job_and_its_revert_keep_a_quicktime_movie_one(rig):
 
 
 @needs_ffmpeg
+@pytest.mark.usefixtures("before_recordings_were_left_alone")
 def test_forge_add_and_undo_keep_a_quicktime_movie_one(rig):
     """The add writes QuickTime with its AC3 appended, and the undo gives
-    the original's shape and packets back."""
+    the original's shape and packets back. Track titles survive both: Forge
+    wrote them back for "mp4" only, so a QuickTime file lost them."""
     from app.core import scanner
     from app.database.models import Ac3ForgeJob, MediaFile
 
     movie = _mov(rig.library / "Camera.mov",
-                 [("eng", "aac", 6), ("eng", "pcm_s16le", 2)], faststart=True)
+                 [("eng", "aac", 6, "Surround Mix"), ("eng", "pcm_s16le", 2, "Stereo")],
+                 faststart=True)
     before, packets = _shape(movie), _packets(movie)
+    assert [s[4] for s in before[1]] == [None, "Surround Mix", "Stereo"], "fixture has no titles"
     with rig.Session() as db:
         scanner.scan_library(db, [str(rig.library)], force_probe=True)
         job_id = rig.forge.queue_forge_job(db, db.query(MediaFile).one().id).id

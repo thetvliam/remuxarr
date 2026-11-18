@@ -25,13 +25,14 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, is_faststart_mp4, is_quicktime, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.probe import lost_file_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
-from app.core.plex import notify_plex_new_file, plex_connection
+from app.core.plex import notify_plex_new_file, plex_connection, refresh_in_background
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, packed_divx_for, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -63,6 +64,16 @@ _active_task_registry: dict[int, asyncio.Task] = {}
 # after the lifespan had returned. Nothing then updated its row, and the
 # next start failed it as a crash.
 _forge_task: asyncio.Task | None = None
+# Forge runs that may have replaced their file and have not yet recorded an
+# outcome: added when the swap check lets the run go on, which is the only
+# way to the swap, and removed once the outcome is written. While a job is
+# here _process_next_forge's net leaves its row alone: "the file was not
+# changed" would be false. Left at "processing", the next start marks it
+# interrupted, with a message that says the file may have changed. The
+# shutdown requeue needs no such check: a stop that arrives while the
+# outcome is being written waits for it (_run_forge_job), and if writing it
+# fails, that error comes out rather than the cancellation.
+_forge_unsettled: set[int] = set()
 
 
 def pause_worker() -> None:
@@ -235,10 +246,6 @@ def recover_interrupted_jobs(db, finished: list[int] | None = None) -> tuple[int
     # NOT in the candidate-exclusion list, so the file becomes re-addable.
     # An undo goes to "undo_failed", which IS excluded from candidates but
     # is explicitly accepted by the undo route as a retryable state.
-    # Imported locally, matching the other Ac3ForgeJob references in this
-    # module (see _has_pending_forge and _process_next_forge).
-    from app.database.models import Ac3ForgeJob
-
     stuck_forge = (
         db.query(Ac3ForgeJob)
         .filter(Ac3ForgeJob.status == "processing")
@@ -839,6 +846,39 @@ UNCOPYABLE_AUDIO = (
 )
 
 
+# What a job or an AC3 Forge run is recorded as failing with when its
+# output would lose some of the file's own tags (_lost_tags_error). The
+# testlib explorer reads the first sentence, as for UNCOPYABLE_AUDIO, and so
+# does a scan, which does not queue such a file again unchanged
+# (scanner._held_back).
+LOST_TAGS = (
+    "Writing this file would lose tags it holds, and Remuxarr does not drop "
+    "a file's own tags. The file has been left as it was."
+)
+
+
+async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
+    """
+    None when the finished output keeps every one of the source's own tags,
+    or else the error that stops the run before the source is touched
+    (probe.lost_file_tags). Run in the staging hook, where both files exist
+    and nothing has been written over.
+
+    A file that cannot be probed stops the run too, with that said: a tag
+    cannot be shown kept on a file nothing could read.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        source = await loop.run_in_executor(None, probe_file, input_path)
+        output = await loop.run_in_executor(None, probe_file, produced_path)
+    except ProbeError as exc:
+        return f"Could not check that the file keeps its own tags, so it has been left as it was: {exc}"
+    lost = lost_file_tags(source, output)
+    if lost:
+        return f"{LOST_TAGS} It would lose: {', '.join(lost)}."
+    return None
+
+
 def _explain_failure(error: str | None) -> str | None:
     """
     The error a failed job is recorded with: FFmpeg's own, or, for audio
@@ -925,8 +965,6 @@ def _flag_subtitle_encoding_review(
     transitions the QueueItem to status = "manual_review", and populates
     review_subtitles with the track details for the Review page UI.
     """
-    from app.database.models import MediaFile
-
     failed_stream_indices = {si for si, _ in subtitle_pairs}
 
     # Build the review_subtitles payload from the track metadata we already
@@ -1047,7 +1085,6 @@ def _has_pending_forge() -> bool:
     never create a forge_task and the job would sit at "undo_pending"
     (shown as "REMOVING…" in the UI) forever.
     """
-    from app.database.models import Ac3ForgeJob
     with SessionLocal() as db:
         return db.query(Ac3ForgeJob).filter(
             Ac3ForgeJob.status.in_(["pending", "undo_pending"])
@@ -1307,7 +1344,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
             "job_id":         job_id,
             "progress":       round(prog.percent, 1),
             "current_action": prog.current_action,
-            "speed":          prog.speed,
         })
 
     # ── Execute ────────────────────────────────────────────────────────────
@@ -1380,6 +1416,12 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
         stopped = stop_if_changed()
         if stopped:
             return stopped
+
+        # Before the capture, so a run that is refused spends nothing on a
+        # revert point it would only discard.
+        lost = await _lost_tags_error(input_path, produced_path)
+        if lost:
+            return lost
 
         result, error = await revert_capture.capture(
             input_path    = input_path,
@@ -1485,7 +1527,7 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 await loop.run_in_executor(None, _update_progress, job_id, 0.0, label)
                 await ws_manager.broadcast_json({
                     "event": "job_progress", "job_id": job_id,
-                    "progress": 0.0, "current_action": label, "speed": "",
+                    "progress": 0.0, "current_action": label,
                 })
                 # Each extraction gets the full timeout, as each FFmpeg
                 # command in this function does. A timeout here is a hard failure:
@@ -1744,6 +1786,28 @@ def _clear_leftover_rows(db, file_id: int) -> None:
     _clear_stale_status_records(db, file_id, ("skipped", "manual_review"))
 
 
+def _tell_plex_skipped_at_pickup(job: QueueItem, path: str, app_cfg: dict) -> None:
+    """
+    Refresh a newly found file's folder in Plex when its job is skipped at
+    pickup: excluded by settings changed since it was queued, or decided
+    again with nothing left to do.
+
+    Plex hears about a file when a job finishes, and about one nothing will
+    change when the webhook skips the import (webhooks._tell_plex_if_unchanged)
+    or a review ends (queue.left_alone_after_review). A job skipped here got
+    neither, so a new import stayed out of Plex until Plex's own scan found
+    it. Gated on is_new_file, as the review is: a file seen before is one
+    Plex already has. A job that turns into a review here is left to that
+    review, and one that runs to its own refresh.
+
+    In the background, as the review routes send it: pickup does not wait
+    on Plex. refresh_in_background sends nothing while dry run is on, or
+    when Plex notifications are off.
+    """
+    if job.is_new_file:
+        refresh_in_background(app_cfg, [path], f"job {job.id}, skipped at pickup")
+
+
 def _load_job_data(job_id: int):
     """
     Load everything _run_job needs, re-running the decision engine fresh —
@@ -1756,7 +1820,8 @@ def _load_job_data(job_id: int):
         returns None — no execution.
       Either way the file's other skipped and review rows are cleared
       first (_clear_leftover_rows), and so they are for a job skipped
-      because the file has been excluded since it was queued.
+      because the file has been excluded since it was queued. A skipped
+      job for a newly found file tells Plex (_tell_plex_skipped_at_pickup).
       • otherwise → PlannedActions refreshed to the FRESH decision's
         actions, returns (job_dict, file_dict, tracks, app_cfg, decision)
         for execution. Everything returned is plain Python — no ORM
@@ -1869,6 +1934,7 @@ def _load_job_data(job_id: int):
             db.commit()
             logger.info("Job %d: %s is excluded (%s) — skipped",
                         job_id, media.path, excluded_by)
+            _tell_plex_skipped_at_pickup(job, media.path, app_cfg)
             return None
 
         # The job is decided below from the stored tracks, so they are
@@ -1926,6 +1992,15 @@ def _load_job_data(job_id: int):
         # would have before the count existed.
         if media.font_attachments is None and probe_data is not None:
             media.font_attachments = count_font_attachments(probe_data)
+        # The signs of a phone's or camera's own recording are taken from
+        # the probe above every time, not only for a row from before the
+        # column was added (probe.recording_signs). The track check above
+        # passes a file replaced on disk since the scan by one with the same
+        # tracks, and a recording can have a download's tracks: with the
+        # stored answer trusted, the job ran on it. Left as stored when the
+        # probe failed.
+        if probe_data is not None:
+            media.recording_signs = extract_format_info(probe_data)["recording_signs"]
 
         # In stream order: analyze_file reads position (the last audio
         # track is the forge copy), and the FFmpeg map follows the list.
@@ -1951,6 +2026,7 @@ def _load_job_data(job_id: int):
             audio_language_overrides=audio_lang_overrides,
             subtitle_language_overrides=subtitle_lang_overrides,
             has_faststart=faststart,
+            has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
             forged_ac3_audio_index=forged_ac3_audio_index,
         )
 
@@ -1981,6 +2057,7 @@ def _load_job_data(job_id: int):
             job.completed_at = utcnow()
             media.status = "skipped"
             db.commit()
+            _tell_plex_skipped_at_pickup(job, media.path, app_cfg)
             return None
 
         # Proceeding — refresh stored PlannedActions to match the FRESH
@@ -2337,17 +2414,14 @@ def _finish_job(
                         media.path      = output_path
                         media.filename  = os.path.basename(output_path)
                         media.directory = os.path.dirname(output_path)
-                        # Update stored container so the history panel
-                        # shows the correct format (e.g. MP4 not MKV)
-                        new_ext = os.path.splitext(output_path)[1].lower()
-                        _EXT_TO_CONTAINER = {
-                            ".mp4": "mp4", ".m4v": "mp4", ".mov": "mp4",
-                            ".mkv": "mkv", ".avi": "avi", ".ts": "ts",
-                            ".m2ts": "ts", ".wmv": "wmv", ".webm": "webm",
-                        }
-                        new_container = _EXT_TO_CONTAINER.get(new_ext)
-                        if new_container:
-                            media.container = new_container
+                        # The container History shows. The probe below
+                        # replaces it with what the file itself says; this
+                        # stays only if that probe fails. A path changes only
+                        # when determine_output_path renames a conversion's
+                        # output, which it names after the target container,
+                        # so the extension is the container: mp4, the only
+                        # one a job converts to.
+                        media.container = os.path.splitext(output_path)[1].lstrip(".")
 
                     # Refresh stored size + mtime to the processed file's
                     # on-disk stats.  Without this, the DB still holds the
@@ -3049,8 +3123,6 @@ def _load_forge_plex_notify_data(forge_job_id: int) -> dict | None:
     Returns the same {url, token, mappings, local_path} payload
     _trigger_plex_notify expects, or None when Plex is off or unconfigured.
     """
-    from app.database.models import Ac3ForgeJob
-
     with SessionLocal() as db:
         job = db.get(Ac3ForgeJob, forge_job_id)
         if not job:
@@ -3334,7 +3406,7 @@ async def _trigger_email_notify(data: dict, loop: asyncio.AbstractEventLoop) -> 
 
 async def _process_next_forge(ws_manager) -> bool:
     """Claim and run the next pending forge job. Returns True if a job ran."""
-    from app.core.forge import claim_next_forge_job
+    from app.core.forge import claim_next_forge_job, load_forge_final_state
 
     loop   = asyncio.get_running_loop()
     job_id = await loop.run_in_executor(None, claim_next_forge_job)
@@ -3352,6 +3424,58 @@ async def _process_next_forge(ws_manager) -> bool:
     except asyncio.CancelledError:
         await loop.run_in_executor(None, _requeue_cut_off_forge_job, job_id)
         raise
+    except Exception as exc:
+        # The forge counterpart of _run_and_broadcast's net. Nothing else
+        # caught an error raised outside _run_forge_job's own try, loading
+        # the job's data for instance: the task ended with it unretrieved,
+        # nothing was logged until the app stopped, and the row stayed at
+        # "processing" until the next start, refusing a cancel and keeping
+        # the file's queue job from being claimed.
+        logger.exception("Forge job %d raised outside its own error handling", job_id)
+        if job_id in _forge_unsettled:
+            logger.error(
+                "Forge job %d may have rewritten its file and its outcome "
+                "could not be recorded; it is left as it is, and the next "
+                "start marks it interrupted", job_id)
+            return True
+        try:
+            failed = await loop.run_in_executor(
+                None, _fail_unfinished_forge_job, job_id,
+                f"Stopped by an unexpected error before the file was changed: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            if failed:
+                final = await loop.run_in_executor(None, load_forge_final_state, job_id)
+                if final:
+                    await ws_manager.broadcast_json({
+                        "event":    "forge_job_completed",
+                        "job_id":   job_id,
+                        "status":   final["status"],
+                        "filename": final["filename"],
+                        "error":    final.get("error"),
+                    })
+        except Exception:
+            logger.exception("Could not mark forge job %d failed", job_id)
+        return True
+    finally:
+        _forge_unsettled.discard(job_id)
+
+
+def _fail_unfinished_forge_job(job_id: int, error: str) -> bool:
+    """
+    Fail a forge job still at "processing", for _process_next_forge's net.
+    One that recorded its outcome before the error is left as it is. True
+    when the row was changed.
+    """
+    with SessionLocal() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        if job is None or job.status != "processing":
+            return False
+        job.status        = "undo_failed" if job.is_undo else "failed"
+        job.error_message = error
+        job.completed_at  = utcnow()
+        db.commit()
+        return True
 
 
 def _requeue_cut_off_forge_job(job_id: int) -> None:
@@ -3379,7 +3503,8 @@ def _requeue_cut_off_forge_job(job_id: int) -> None:
 
 
 async def _forge_run(job_data, input_path, temp_path, covers,
-                     on_progress, on_before_staging, timeout_seconds):
+                     on_progress, on_before_staging, on_before_swap,
+                     timeout_seconds):
     """
     Build a forge job's command and run it, for _run_forge_job.
 
@@ -3409,6 +3534,8 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             titles                  = job_data.get("titles"),
             covers                  = covers,
             quicktime               = job_data.get("quicktime", False),
+            rebuilt_tracks          = job_data.get("rebuilt_tracks", ()),
+            creation_time           = job_data.get("creation_time"),
         )
     else:
         action_label = "Adding AC3 5.1 track"
@@ -3422,6 +3549,8 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             titles            = job_data.get("titles"),
             covers            = covers,
             quicktime         = job_data.get("quicktime", False),
+            rebuilt_tracks    = job_data.get("rebuilt_tracks", ()),
+            creation_time     = job_data.get("creation_time"),
         )
 
     result = await run_forge_command(
@@ -3433,6 +3562,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
         progress_callback = on_progress,
         timeout_seconds   = timeout_seconds,
         before_staging    = on_before_staging,
+        before_swap       = on_before_swap,
     )
     return result
 
@@ -3510,10 +3640,51 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
     # a write that never happened describes nothing.
     captured: list[CapturedRevertPoint] = []
 
+    # The file as the run found it, checked the way _run_job checks its
+    # source: first in the staging hook and again just before the swap.
+    # Sonarr or Radarr importing an upgrade at this name, or deleting or
+    # renaming the file, while FFmpeg ran used to end in a success that
+    # overwrote the upgrade with the forged old file, or wrote a deleted
+    # file back. A change fails the run (undo_failed for an undo), where a
+    # job in the same position is cancelled: a cancelled forge job is not
+    # listed in the Forge panel, so nobody would learn of it, and a failed
+    # add puts the file back among the candidates. The Forge panel shows
+    # the filename above the first 60 characters of the error, so the
+    # message starts with what happened.
+    source_print = _fingerprint(input_path)
+
+    def changed_on_disk() -> str | None:
+        now = _fingerprint(input_path)
+        if now == source_print:
+            return None
+        what = "Deleted or renamed" if now is None else "Replaced or modified"
+        message = (f"{what} on disk while AC3 Forge was running. "
+                   f"Nothing was written.")
+        logger.warning("Forge job %d: %s: %s", job_id, input_path, message)
+        return message
+
+    async def on_before_swap() -> str | None:
+        changed = changed_on_disk()
+        if changed is None:
+            # The run goes on to the swap, with no await in between.
+            _forge_unsettled.add(job_id)
+        return changed
+
     async def on_before_staging(produced_path: str) -> str | None:
         # Unlike _run_job's, this fires at most once: a forge run has no
         # retry that re-runs the command, so there is no earlier capture
         # to clear first.
+        #
+        # The change check comes first: the tag check probes the file, and
+        # would refuse one deleted during the encode for the wrong reason.
+        changed = changed_on_disk()
+        if changed:
+            return changed
+        # An add or an undo that would lose the file's own tags is refused
+        # as a job is (_lost_tags_error), before the capture.
+        lost = await _lost_tags_error(input_path, produced_path)
+        if lost:
+            return lost
         result, error = await revert_capture.capture(
             input_path    = input_path,
             produced_path = produced_path,
@@ -3535,7 +3706,6 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
             "job_id":         job_id,
             "progress":       round(prog.percent, 1),
             "current_action": prog.action,
-            "speed":          prog.speed,
         })
 
     try:
@@ -3557,7 +3727,8 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
             else:
                 result = await _forge_run(
                     job_data, input_path, temp_path, covers,
-                    on_progress, on_before_staging, timeout_seconds,
+                    on_progress, on_before_staging, on_before_swap,
+                    timeout_seconds,
                 )
         finally:
             discard_cover_art(covers)
@@ -3586,14 +3757,40 @@ async def _run_forge_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoo
                         job_data["file_id"], captured[0], input_path,
                     )
                 # For the Track refresh finish_forge_job does with the status.
-                fresh_tracks = probe_tracks_after_forge(input_path)
+                # Nothing here may stop the outcome being written: the file
+                # has been rewritten, and a row left at "processing" is
+                # failed at the next start, which puts a forged file back
+                # among the candidates, and adding again gave it a second
+                # AC3. Without fresh tracks the stored ones stay until the
+                # next scan, which re-probes a file whose size and mtime
+                # changed, as after a probe that fails outright.
+                try:
+                    fresh_tracks = probe_tracks_after_forge(input_path)
+                except Exception:
+                    logger.exception(
+                        "Forge job %d: could not re-read the tracks of %s after "
+                        "the run; recording the outcome without them",
+                        job_id, input_path)
             else:
                 for stale in captured:
                     delete_sidecar(stale.sidecar_path)
-            finish_forge_job(
-                job_id, result.success, result.output_size, result.error,
-                fresh_tracks=fresh_tracks,
-            )
+            # One retry, for a database briefly locked by a scan's writes.
+            # A second failure is let through, and _process_next_forge's net
+            # leaves the row as it is (_forge_unsettled).
+            for attempt in (1, 2):
+                try:
+                    finish_forge_job(
+                        job_id, result.success, result.output_size, result.error,
+                        fresh_tracks=fresh_tracks,
+                    )
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    logger.exception(
+                        "Forge job %d: recording its outcome failed; trying once more",
+                        job_id)
+            _forge_unsettled.discard(job_id)
 
         # One executor call that a cancellation does not interrupt, as in
         # _run_job. The run is over and its outcome known, and after a

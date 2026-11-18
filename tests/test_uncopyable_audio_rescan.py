@@ -25,7 +25,7 @@ import pytest
 import app.core.scanner as scanner
 import app.core.worker as worker
 from app.core.scanner import ScanStats, scan_library
-from app.database.models import AppSetting, QueueItem
+from app.database.models import AppSetting, MediaFile, QueueItem
 
 CORRUPT_AUDIO = (
     "[aac @ 0x55d0c0a1b2c0] Invalid data found when processing input\n"
@@ -125,6 +125,31 @@ def test_a_routine_scan_leaves_it_as_before(lib):
 
     assert lib.items() == ["failed"]
     assert stats.held == 0 and stats.unchanged == 1
+
+
+# ── Kept ─────────────────────────────────────────────────────────────────────
+
+def test_what_a_full_scan_learns_about_a_held_file_is_saved(lib, monkeypatch):
+    """
+    Holding a file back returned without a commit, unlike every other way
+    out of _process_file. Its re-probe, the original language the scan had
+    from Sonarr or Radarr and its language flags were flushed, and saved
+    only if a later file committed. This film is the only file walked and
+    the cleanup pass removes nothing, so nothing did, and the scan's runner
+    only closes the session; the rollback here is that close.
+
+    Verified by mutation, 3 applied, 3 killed: the commit left out (the old
+    code), a flush in its place and a rollback in its place, the last two
+    surviving the whole suite first.
+    """
+    monkeypatch.setattr(scanner, "original_languages", lambda cfg: lambda path: "jpn")
+
+    stats = lib.scan(force_probe=True)
+    assert stats.held == 1, "fixture changed"
+    lib.db.rollback()
+
+    media = lib.db.query(MediaFile).one()
+    assert media.original_language == "jpn"
 
 
 # ── Queued: something changed ────────────────────────────────────────────────

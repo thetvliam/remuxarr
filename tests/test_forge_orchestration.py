@@ -30,6 +30,13 @@ recorded after a failure, fingerprinted from the temp file, the sidecar
 kept after a failed run, kept after an exception, capture not told it is a
 forge run, a capture refusal ignored, and forge sidecars named like a
 queue job's (the last by test_revert_capture).
+
+forge_job_progress's label is checked in
+test_progress_reaches_both_the_database_and_the_socket, which pinned FFmpeg's
+speed figure until that left the payload. Its mutant, the label blanked
+while FFmpeg runs and kept for the copy into place, survived the suite
+first. Blanking it throughout did not: test_forge_shutdown waits for the
+copy's label to hold a run there, and times out without it.
 """
 import asyncio
 from dataclasses import dataclass
@@ -199,6 +206,13 @@ def forge(monkeypatch, tmp_path):
         ), None
 
     monkeypatch.setattr(capture_mod, "capture", capture)
+
+    # The outputs here are not media files, so the tag check, which probes
+    # both files, would refuse every run; it has its own tests
+    # (test_kept_file_tags.py).
+    async def keeps_its_tags(input_path, produced_path):
+        return None
+    monkeypatch.setattr(worker, "_lost_tags_error", keeps_its_tags)
     monkeypatch.setattr(
         worker, "_record_revert_point",
         lambda *args: calls["recorded"].append(args),
@@ -463,8 +477,7 @@ def test_progress_reaches_both_the_database_and_the_socket(forge, monkeypatch):
 
     async def _run_with_progress(**kw):
         await kw["progress_callback"](
-            ForgeProgress(percent=41.5, current_time=12.0,
-                          speed="2.1x", action="Adding AC3 5.1 track")
+            ForgeProgress(percent=41.5, action="Adding AC3 5.1 track")
         )
         return _Result(True, kw["output_path"], 10, None)
 
@@ -475,7 +488,7 @@ def test_progress_reaches_both_the_database_and_the_socket(forge, monkeypatch):
     assert forge._calls["progress"] == [(7, 41.5, "Adding AC3 5.1 track")]
     prog = ws.first("forge_job_progress")
     assert prog["progress"] == 41.5
-    assert prog["speed"] == "2.1x"
+    assert prog["current_action"] == "Adding AC3 5.1 track"
 
 
 def test_a_finished_job_broadcasts_its_final_state(forge):

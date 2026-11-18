@@ -109,10 +109,9 @@ def memory_engine():
 # the gap survived: the default never mattered to the tests that cared, and no
 # test combined extraction with always_ask at all.
 #
-# fix_undefined_language was False (the boolean back-compat spelling) where
-# production writes one of three strings. The back-compat branch is worth
-# covering — but from a test that opts into it, not from the default every
-# other test inherits.
+# fix_undefined_language was False (the old boolean spelling) where
+# production writes one of three strings. The engine no longer maps a
+# boolean at all: none can reach it (decision._resolve_und_mode).
 #
 # A test needing a non-production value should set it explicitly on the
 # `settings` fixture, as the extraction tests already do.
@@ -192,6 +191,25 @@ key is always present in production too.
         "font_attachments": font_attachments,
         "original_language": original_language,
     }
+
+
+@pytest.fixture
+def before_recordings_were_left_alone(monkeypatch):
+    """
+    Nothing marks a file as a phone's or camera's own recording, as before
+    such a file was left as it is (probe.recording_signs,
+    test_recording_signs.py).
+
+    For the tests of what a job, a revert and AC3 Forge do to a QuickTime
+    movie. No job or Forge run starts on one any more, but a revert point
+    made before then is still restored, and restored as QuickTime, and a
+    job is how these tests make one.
+    """
+    import app.core.forge as forge
+    import app.core.probe as probe
+
+    monkeypatch.setattr(probe, "recording_signs", lambda probe_data: [])
+    monkeypatch.setattr(forge, "recording_signs", lambda probe_data: [])
 
 
 @pytest.fixture

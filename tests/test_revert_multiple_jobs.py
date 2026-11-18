@@ -510,6 +510,106 @@ def test_restored_attachments_keep_their_own_filenames(with_cover_art):
     )
 
 
+# ── Cover art a job keeps in an MP4 ──────────────────────────────────────────
+#
+# A job writing an MP4 now keeps the covers an MP4 can hold
+# (ffmpeg.find_mp4_covers) where it used to drop them, so the revert point
+# finds the cover in the processed file rather than storing it. Matching
+# pairs it with the original's by codec and size, as for any video stream,
+# so the restore takes it from there. These pin that this gives the
+# original back as before: exactly for an MP4, and for a Matroska as the
+# README's limitation says, a still-image track with its filename and
+# mimetype, the bytes unchanged.
+
+def _cover_library(tmp_path, monkeypatch, *, container):
+    """_library's eng and fre file with a JPEG cover, as MP4 or Matroska."""
+    lib = _library(tmp_path, monkeypatch, audio=[(440, "eng"), (880, "fre")])
+    cover = tmp_path / "cover.jpg"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "color=c=red:s=64x48", "-frames:v", "1", str(cover)],
+                   check=True)
+    source = lib["path"]
+    path = source.with_name(f"Show.{container}")
+    staged = tmp_path / f"staged.{container}"
+    if container == "mp4":
+        args = ["-i", str(cover), "-map", "0", "-map", "1", "-c", "copy",
+                "-disposition:v:1", "attached_pic", "-f", "mp4"]
+    else:
+        args = ["-map", "0", "-c", "copy", "-attach", str(cover),
+                "-metadata:s:t:0", "mimetype=image/jpeg",
+                "-metadata:s:t:0", "filename=cover.jpg", "-f", "matroska"]
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), *args,
+                    str(staged)], check=True)
+    os.remove(source)
+    os.replace(staged, path)
+    stat = path.stat()
+    lib["path"] = path
+    lib["media"].path, lib["media"].filename = str(path), path.name
+    lib["media"].container = container
+    lib["media"].size, lib["media"].mtime = stat.st_size, stat.st_mtime
+    lib["db"].commit()
+    lib["pristine"] = _summarise(path)
+    lib["audio"] = _packets(path, "a")
+    lib["cover"] = cover.read_bytes()
+    (lib["cover_index"],) = [s["index"] for s in _streams(path)
+                             if (s.get("disposition") or {}).get("attached_pic")]
+    return lib
+
+
+def _mjpeg_bytes(path, tmp_path):
+    """The bytes of every MJPEG stream in `path`: the cover, flag or no flag."""
+    found = []
+    for s in _streams(path):
+        if s.get("codec_name") == "mjpeg":
+            dest = tmp_path / f"mjpeg_{len(found)}.bin"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(path),
+                            "-map", f"0:{s['index']}", "-c", "copy",
+                            "-f", "rawvideo", str(dest)], check=True)
+            found.append(dest.read_bytes())
+    return found
+
+
+def _cover_entry(lib):
+    from app.database.models import RevertPoint
+
+    lib["db"].expire_all()
+    manifest = json.loads(lib["db"].query(RevertPoint).one().manifest)
+    (entry,) = [s for s in manifest["streams"] if s["index"] == lib["cover_index"]]
+    return entry
+
+
+def test_a_cover_an_mp4_job_kept_comes_back_exactly(tmp_path, monkeypatch):
+    lib = _cover_library(tmp_path, monkeypatch, container="mp4")
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:1", "-map", f"0:{lib['cover_index']}",
+                        "-c", "copy"], job_id=1, fmt="mp4", suffix=".mp4")
+    assert _mjpeg_bytes(lib["path"], tmp_path) == [lib["cover"]], "the job lost the cover"
+    entry = _cover_entry(lib)
+    assert entry.get("sidecar_index") is None and entry.get("processed_index") is not None, (
+        "the cover was stored, not found in the processed file")
+
+    outcome = _revert(lib)
+
+    _assert_pristine_content(lib, outcome)
+    assert _mjpeg_bytes(outcome.restored_path, tmp_path) == [lib["cover"]]
+    restored = [s for s in _streams(outcome.restored_path) if s.get("codec_name") == "mjpeg"]
+    assert restored[0]["disposition"]["attached_pic"] == 1
+
+
+def test_a_matroska_cover_kept_in_an_mp4_comes_back_as_before(tmp_path, monkeypatch):
+    lib = _cover_library(tmp_path, monkeypatch, container="mkv")
+    _run_job_into(lib, ["-map", "0:0", "-map", "0:1", "-map", f"0:{lib['cover_index']}",
+                        "-c", "copy"], job_id=1, fmt="mp4", suffix=".mp4")
+    assert _mjpeg_bytes(lib["path"], tmp_path) == [lib["cover"]], "the job lost the cover"
+    assert _cover_entry(lib).get("sidecar_index") is None
+
+    outcome = _revert(lib)
+
+    _assert_pristine_content(lib, outcome)
+    assert _mjpeg_bytes(outcome.restored_path, tmp_path) == [lib["cover"]]
+    (cover,) = [s for s in _streams(outcome.restored_path) if s.get("codec_name") == "mjpeg"]
+    assert (_tag(cover, "filename"), _tag(cover, "mimetype")) == ("cover.jpg", "image/jpeg")
+
+
 @pytest.fixture
 def dual_audio(tmp_path, monkeypatch):
     """

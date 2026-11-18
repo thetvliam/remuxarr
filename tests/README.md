@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2480 tests across 115 test files, plus 775 frontend tests under
+2817 tests across 129 test files, plus 783 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -39,12 +39,25 @@ decision: an answered track is judged as the answered language and always
 kept, deciding, applying and deciding again as above. Judged by its old tag,
 a track answered in a language the keep list does not hold was kept, tagged,
 and removed by the next scan.
+`test_avi_language_tags.py` scans a real AVI under Always Fix with Prefer MP4
+Container off: an AVI keeps no language tag, so none is planned and the file
+is not queued. A job used to tag it, the tag was lost, and every full scan
+queued the file again.
+`test_avi_timestamps.py` converts a real Xvid AVI with B-frames to MP4: an
+AVI stores no presentation times, and copied without `-fflags +genpts` its
+frames' times came out in storage order, 48 of 144 going backwards.
+`test_packed_divx.py` covers an AVI whose video has packed B-frames, as many
+DivX 5 and Xvid encoders wrote them: generated times cannot fix those, so
+the file is not converted. It checks the encoder's signature is read as
+FFmpeg reads it, and that the scan, the worker and the queue routes all
+leave such a file an AVI. Its real-file tests need FFmpeg with libxvid.
 
 **Scanning and the database** — `test_scan_and_cancellation.py`,
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
-`test_settings_schema.py`, `test_setting_values.py`, `test_backup_restore.py`,
+`test_settings_schema.py`, `test_setting_values.py`, `test_settings_export.py`,
+`test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
 `test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
 `test_replaced_file_answers.py`. Real
@@ -53,17 +66,29 @@ referencing `media_files` from the model metadata at runtime rather than
 hardcoding it, so adding a table and forgetting to delete from it fails there
 by name; `test_clear_database.py` guards the same omission at the other end,
 where three tables have been left out of the wipe so far and SQLite's
-unenforced foreign keys mean nothing complains. `test_settings_schema.py` asks
+unenforced foreign keys mean nothing complains. It also covers the wipe being
+refused while a job, a forge run, a revert or a scan is running: a job
+finishing after one saved its revert point under an id the next scanned file
+was given. `test_settings_schema.py` asks
 whether a setting is reachable at all — default, accepted key, schema entry and
 a UI category that renders its group — after four Recycle Bin settings shipped
 with the first two and stayed invisible for a dozen commits.
 `test_setting_values.py` covers values of the wrong kind: the settings routes
-refuse them, an import skips and reports them, and a stored one, which a full
-backup restore or a hand edit can leave, is read as the default.
+refuse them, an integer below its minimum included (a negative Job Timeout
+stopped every job at once), an import skips and reports them, and a stored
+one of the wrong type, which a full backup restore or a hand edit can leave,
+is read as the default. It also covers the start converting an old true
+or false for `fix_undefined_language` to the three-state value it meant:
+read as the default, an old true had become Always Leave.
+`test_settings_export.py` covers the settings export: without secrets it
+leaves out exactly the four credentials, with them (the default) it writes
+them, and the file imports back whole while leaving the target's own
+credentials alone.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan
-does.
+does. It also pins that both scans notice a file rewritten at the same size,
+from its mtime.
 `test_replaced_file_answers.py` covers what a file replaced at the same path
 does to the answers stored for it: they are forgotten when the file changed on
 disk and its tracks differ, and kept through Remuxarr's own jobs, reverts and
@@ -136,7 +161,11 @@ acts on it.
 `test_source_changed_mid_job.py`, `test_output_name_taken.py`,
 `test_existing_subtitle_files.py`, `test_timeout_logging.py`,
 `test_mp4_track_titles.py`, `test_stream_flags.py`,
-`test_quicktime_files.py`. Some run a
+`test_quicktime_files.py`, `test_mp4_chapter_track.py`,
+`test_timecode_track.py`, `test_data_streams.py`,
+`test_recording_signs.py`, `test_creation_date.py`,
+`test_forge_creation_date.py`, `test_kept_file_tags.py`,
+`test_ffprobe_path_setting.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -151,10 +180,44 @@ muxer refused every add on an MKV with fonts.
 and an undo on an MP4: FFmpeg reads an MP4 title as `name` and writes one only
 from `title`, so every title used to be lost.
 `test_quicktime_files.py` covers QuickTime movies through a job, a revert,
-and an AC3 Forge add and undo. A `.mov` normalises to the `mp4` container,
+and an AC3 Forge add and undo, as they went before a recording was left as it
+is (below): no job or Forge run starts on one now, but a revert point made
+before then is still restored as QuickTime, and a job is how these tests make
+one (`before_recordings_were_left_alone` in `conftest.py`). The QuickTime
+cases in the next three files and in `test_creation_date.py` run the same way. A `.mov` normalises to the `mp4` container,
 and FFmpeg's MP4 muxer used to write it: the brand became `isom`, PCM audio's
 `sowt` sample entry became `ipcm`, and the video gained an `und` language.
 A file whose major brand is `qt  ` is now written with the QuickTime muxer.
+`test_mp4_chapter_track.py` covers an MP4's or QuickTime file's chapter
+track through an AC3 Forge add and undo and a revert. FFmpeg shows the track
+as a bin_data data stream, and copying it added a junk data track on every
+run in an MP4 and made FFmpeg fail in a QuickTime file; it is now left out,
+and the muxer writes the chapter track from the chapters.
+`test_timecode_track.py` covers an MP4's timecode track, as cameras write
+one, through an AC3 Forge add and undo and a revert. FFmpeg's MP4 muxer
+cannot copy one, so each failed; it is now left out, and the muxer writes it
+again from the video's timecode. A QuickTime file's is still copied, which
+keeps its place.
+`test_data_streams.py` covers the data streams a camera or phone records:
+a job keeps GoPro telemetry and a QuickTime file's timecode, which every job
+used to drop with no revert point possible. `test_recording_signs.py` covers
+a phone's or camera's own recording: an MP4 or QuickTime file with a data
+track cameras write, a GPS tag, a device tag or a camera's brand is left as it
+is whatever the settings, through the scan, a full rescan and the worker's
+pickup, where the signs are read again from the file, raises no Language Review questions, and AC3 Forge neither offers nor
+accepts it, though it can still undo an add made before. `real_recordings/probes.json` holds ffprobe's output for 23 real
+files, tag values removed, with the signs expected of each written by hand.
+`test_creation_date.py` covers the date a file says it was made, through a
+job on an MP4, a QuickTime file and a Matroska, a conversion to MP4, a job
+that also extracts a subtitle, and a revert. FFmpeg copies a file's tags and
+then removes that one, so every job used to leave the file undated; for a
+phone's or a camera's recording it is the day it was shot.
+`test_forge_creation_date.py` covers the same date through an AC3 Forge add
+and undo on an MP4 and a Matroska, as Forge builds its own commands.
+`test_kept_file_tags.py` covers the check before a job's or a Forge run's
+output replaces the file: one that would lose any of the file's own tags is
+refused with the file untouched, and a scan does not queue it again while its
+plan is the same.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless
@@ -181,10 +244,15 @@ job now removes them.
 `test_timeout_logging.py` covers what the container log says when a run hits
 the job time limit: the remux's log line raised instead and left a
 traceback, and the other three left the reason out.
+`test_ffprobe_path_setting.py` runs the tags check, revert capture and
+attaching a revert point with `REMUXARR_FFPROBE_PATH` naming an ffprobe and
+none on PATH. Those calls ran the ffprobe on PATH instead, so every job
+stopped at the tags check and no revert point could be recorded or attached.
 
 **AC3 Forge** — `test_forge_candidates.py`, `test_forge_orchestration.py`,
 `test_forge_selection_and_counts.py`, `test_forge_undo_resolution.py`,
 `test_forge_keeps_tracks_current.py`, `test_forge_shutdown.py`,
+`test_forge_source_changed.py`, `test_forge_unexpected_errors.py`,
 `test_forge_undo_identity.py`, `test_forged_ac3_keep.py`.
 `test_forge_undo_identity.py` runs a real forge, a job and an undo on a
 file that had an AC3 5.1 of its own: once the job had dropped the forged
@@ -200,6 +268,14 @@ Matroska whatever the file was.
 progress. A stop used to leave the run going until the event loop was torn
 down, and the next start failed it as a crash, though the file was
 untouched.
+`test_forge_source_changed.py` replaces or deletes the file while a real
+forge add or undo is running, as `test_source_changed_mid_job.py` does for a
+job: the run used to swap its output in regardless, overwriting an upgrade
+Sonarr had just imported or writing a deleted file back.
+`test_forge_unexpected_errors.py` injects an error where a forge run had no
+handling for one. Before the file was touched the job stayed at Processing
+until the next start; after the add, the restart failed it and a second add
+gave the file two AC3 tracks.
 `test_forged_ac3_keep.py` covers a scan of a forged file: the AC3 is kept
 whenever a kept audio track has its language. Keep Default Audio and the
 last-resort fallback used to keep the AAC and not its copy, so the next scan
@@ -240,7 +316,9 @@ breaker's own decision lives in `test_assorted_regressions.py`.
 WebSocket hub every UI event leaves through: connection bookkeeping, the
 fan-out and its pruning of sockets whose tab has gone, the `/ws` endpoint that
 registers one, and the hand-off scan and revert use to broadcast from a worker
-thread onto the loop that started them.
+thread onto the loop that started them. The event list in `ws_manager.py`'s
+docstring is read against every payload in `app/`, so an event or a key added
+to one and not the other fails.
 
 **Release notes** — `test_release_notes.py`. The endpoint the update dialog
 reads and the version hash that decides whether it is shown at all. The failure

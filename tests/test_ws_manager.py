@@ -61,15 +61,31 @@ deliberately left alive rather than papered over:
     this project has never answered, and asserting either way would invent
     an answer.
 
+The last test reads ws_manager's own docstring, whose event list calls
+itself the only inventory of the protocol the frontend consumes, against
+every payload in app/. It came later, when worker_paused was found broadcast
+and missing from that list. Five mutants, each confirmed to survive the full
+suite first:
+
+  payloads   "speed" put back in job_progress, each job           killed
+             "speed" put back in job_progress, each extraction    killed
+             "speed" put back in forge_job_progress               killed
+  docstring  the worker_paused line removed                       killed
+             speed listed on job_progress again                   killed
+
 Run from the project root:
     pytest tests/test_ws_manager.py -v
 """
+import ast
 import asyncio
 import json
+import pathlib
+import re
 import threading
 
 import pytest
 
+import app.api.ws_manager as ws_manager_module
 from app.api.ws_manager import WebSocketManager, ws_manager
 
 try:
@@ -353,3 +369,64 @@ class TestTheWebSocketEndpoint:
             pass
 
         assert ws_manager._connections == []
+
+
+# ── The inventory in the module docstring ─────────────────────────────────────
+
+_APP_DIR = pathlib.Path(ws_manager_module.__file__).resolve().parents[1]
+
+
+def _documented_events() -> dict[str, set[str]]:
+    """The docstring's event list, as {event: the keys it lists}."""
+    pairs = re.findall(r"^(\w+)[ \t]+\{([^}]*)\}", ws_manager_module.__doc__,
+                       re.MULTILINE)
+    return {name: {k.strip() for k in keys.split(",") if k.strip()}
+            for name, keys in pairs}
+
+
+def _sent_events() -> dict[str, set[str]]:
+    """
+    Every dict literal under app/ with a constant "event" key, as
+    {event: its other keys}, pooled across every literal for one event.
+    """
+    sent: dict[str, set[str]] = {}
+    for path in sorted(_APP_DIR.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+            if not isinstance(node, ast.Dict):
+                continue
+            event = next((v.value for k, v in zip(node.keys, node.values)
+                          if isinstance(k, ast.Constant) and k.value == "event"
+                          and isinstance(v, ast.Constant)
+                          and isinstance(v.value, str)), None)
+            if event is None:
+                continue
+            keys = set()
+            for k in node.keys:
+                assert isinstance(k, ast.Constant) and isinstance(k.value, str), (
+                    f"{path.name}:{node.lineno}: a {event} payload with a key "
+                    "this test cannot read; build it from literal keys")
+                keys.add(k.value)
+            sent.setdefault(event, set()).update(keys - {"event"})
+    return sent
+
+
+def test_the_docstring_lists_every_event_with_the_keys_it_is_sent_with():
+    """
+    The module docstring calls its list the only inventory of what this
+    socket carries, and nothing read it against the code: worker_paused,
+    which sets the pause state the header and the Forge page show, was
+    broadcast and not listed.
+
+    Read from the source rather than captured at run time, because these
+    come from a job, a Forge run, a scan, a cleanup, a revert, a webhook and
+    two different pauses, and driving each of them here would be most of
+    the suite again. The keys of every literal for one event are pooled:
+    scan_completed and revert_complete send fewer on their exception paths,
+    which the docstring notes against each.
+
+    Closes: an event sent and not listed (worker_paused's line removed), a
+    listed key that is never sent (speed listed on job_progress again), and
+    a key sent and not listed (speed put back in any of the three progress
+    payloads).
+    """
+    assert _documented_events() == _sent_events()

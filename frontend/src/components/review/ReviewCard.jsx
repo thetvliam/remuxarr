@@ -46,7 +46,7 @@ const REASON_LABEL = {
     encoding: "encoding, extraction failed",
 };
 
-export const choicesForTrack = track =>
+const choicesForTrack = track =>
     CHOICES_FOR_REASON[track.reason] || DEFAULT_CHOICES;
 
 const trackName = (track, index) => track.title || `Track ${index + 1}`;

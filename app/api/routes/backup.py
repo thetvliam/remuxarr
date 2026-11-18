@@ -29,19 +29,13 @@ from app.core.timeutil import utcnow, utcnow_iso_z
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 
+from app.api.routes.settings import SECRET_KEYS
 from app.config import settings as app_settings
 from app.core.worker import pause_worker
 from app.database.session import pending_import_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
-
-# Same four genuine-credential keys as /api/settings/export — kept as a
-# separate copy rather than importing from settings.py, since this module
-# operates on the raw database file directly (including while the app
-# isn't necessarily fully initialized, e.g. mid-restore) rather than
-# through the ORM/settings-service layer that module uses.
-SECRET_KEYS = {"sonarr_api_key", "radarr_api_key", "plex_token", "email_password"}
 
 
 def _wal_safe_backup(source_path: str, dest_path: str) -> None:
@@ -183,14 +177,20 @@ async def import_backup(file: UploadFile = File(...)):
         except zipfile.BadZipFile:
             raise HTTPException(400, "That file isn't a valid zip archive.")
 
+        # A manifest whose bytes could not be decoded as text, or that was
+        # JSON but not an object (a list, a string, null), answered 500: the
+        # decode error was not caught, and manifest.get() raised. Both now
+        # get the 400 their cousins already get, as the settings import does.
+        # The export writes the manifest with json.dump, all ASCII, so the
+        # encoding open() uses cannot matter to a real backup.
         manifest_path = os.path.join(tmp, "manifest.json")
         try:
             with open(manifest_path) as f:
                 manifest = json.load(f)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             raise HTTPException(400, "manifest.json inside the zip isn't valid JSON.")
 
-        if manifest.get("remuxarr_export") != "full_backup":
+        if not isinstance(manifest, dict) or manifest.get("remuxarr_export") != "full_backup":
             raise HTTPException(
                 400,
                 "This doesn't look like a Remuxarr full database backup "

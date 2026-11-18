@@ -29,6 +29,11 @@ Each profile is checked against invariants instead:
      copied.
   8. No temp file is left behind, and the source is gone only when the
      container changed.
+ 26. Every kept video, audio and subtitle track keeps its own tags, its
+     title above all. Its language is check 4's, and DURATION and ENCODER
+     are the muxer's own. A Matroska track's other tags going in a
+     conversion to MP4, which has no place for them, is an accepted loss:
+     a conversion is not refused over one, the user's call.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -170,12 +175,32 @@ IMAGE_SUB_CODECS = {"hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvdsub",
 _UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, "
                      '"Nothing is ever re-encoded"; app/core/worker.py, _explain_failure')
 
+# A job or a Forge run whose output would lose some of the file's own tags
+# fails and leaves the file alone, rather than drop them.
+_LOST_TAGS = ("a file's own tags are not dropped: app/core/worker.py, "
+              "_lost_tags_error; app/core/probe.py, lost_file_tags")
+
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
                   "attachment map in build_ffmpeg_command",
-    "cover": "cover art is not mapped into MP4; app/core/probe.py, "
-             "extract_tracks skipping attached_pic",
+    "cover": "an MP4 holds only JPEG, PNG and BMP covers, and a QuickTime file "
+             "none; app/core/ffmpeg.py, find_mp4_covers and _prepare_cover_art",
 }
+
+# The covers an MP4 output can hold, written out here rather than imported
+# so the check does not take its answer from the code it is checking
+# (app/core/ffmpeg.py, _MP4_COVER_CODECS). A cover of one of these types
+# lost from an MP4 output, other than a QuickTime file, is a finding.
+MP4_COVER_CODECS = {"mjpeg", "png", "bmp"}
+
+
+def _covers_mp4_cannot_hold(expected: list[tuple[str, dict]], info_after: dict) -> int:
+    """How many of the covers a job should keep its MP4 output could not."""
+    covers = [s for k, s in expected if k == "cover"]
+    brand = ((info_after.get("format") or {}).get("tags") or {}).get("major_brand", "")
+    if brand.strip() == "qt":
+        return len(covers)
+    return sum(1 for s in covers if s.get("codec_name") not in MP4_COVER_CODECS)
 
 
 # ── Profiles ────────────────────────────────────────────────────────────────
@@ -403,6 +428,30 @@ def kind(stream: dict) -> str | None:
     return None     # data streams: an MP4 chapter track, for one
 
 
+# Check 26. A track's tags a job is not held to: the language is check 4's,
+# and the Matroska muxer writes DURATION and ENCODER for itself.
+_TRACK_TAGS_NOT_COMPARED = frozenset({"language", "duration", "encoder"})
+_TRACK_TAGS_MP4 = ("MP4 has no place for a Matroska track's own tags beyond its "
+                   "title and language, and a conversion is not refused over "
+                   "one: the user's call; tools/testlib/README.md, check 26")
+
+
+def _track_tags(stream: dict) -> dict:
+    """A track's own tags by lower-case name. FFmpeg shows an MP4 track's
+    title as "name" and a Matroska's as "title": both are "title" here."""
+    tags = {k.lower(): v for k, v in (stream.get("tags") or {}).items()}
+    if "name" in tags and "title" not in tags:
+        tags["title"] = tags.pop("name")
+    return {k: v for k, v in tags.items() if k not in _TRACK_TAGS_NOT_COMPARED}
+
+
+def lost_track_tags(before: dict, after: dict) -> list[str]:
+    """The tags of the track `before` that `after` lacks or holds another
+    value for, by lower-case name, in order."""
+    now = _track_tags(after)
+    return sorted(k for k, v in _track_tags(before).items() if now.get(k) != v)
+
+
 def is_mp4(info: dict) -> bool:
     return "mp4" in ((info.get("format") or {}).get("format_name") or "")
 
@@ -582,6 +631,11 @@ def run_child(spec_path: str) -> None:
                     entry["refused"] = True
                     entry["uncopyable_audio"] = True
                     continue
+                if j.status == "failed" and error.startswith(worker.LOST_TAGS):
+                    known.append({"file": rel(source), "lost": "job refused",
+                                  "why": f"{_LOST_TAGS} ({error.split('It would lose: ')[-1]})"})
+                    entry["refused"] = True
+                    continue
                 find(1, source, f"job {j.status}: {error[:300]}")
             done = [j for j in jobs if j.status == "success"]
             if not done:
@@ -647,7 +701,7 @@ def run_child(spec_path: str) -> None:
         # 19. Answers stick: the rescan asks nothing already answered.
         _check_answers_stick(find, db, files, source_of)
 
-    forge = _forge_round_trips(find, lib, scratch, files, rel, collect,
+    forge = _forge_round_trips(find, known, lib, scratch, files, rel, collect,
                                choices["_forge_undo"])
 
     reverts = _revert_round_trips(
@@ -678,7 +732,7 @@ def run_child(spec_path: str) -> None:
 
 # ── AC3 Forge (checks 20 to 25) ──────────────────────────────────────────────
 
-def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> dict:
+def _forge_round_trips(find, known, lib, scratch, files, rel, collect, undo: bool) -> dict:
     """
     Queue every Forge candidate through the app's own route function, run
     the Forge jobs through the worker, and check the result (20 to 23);
@@ -722,6 +776,11 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
         for file_id, j in added.items():
             job = db.get(Ac3ForgeJob, j["job"])
             # 20. Every add succeeds.
+            if job.status == "failed" and (job.error_message or "").startswith(worker.LOST_TAGS):
+                known.append({"file": rel(j["path"]), "lost": "Forge add refused",
+                              "why": f"{_LOST_TAGS} "
+                                     f"({job.error_message.split('It would lose: ')[-1]})"})
+                continue
             if job.status != "success":
                 find(20, j["path"], f"Forge add {job.status}: {(job.error_message or '')[:200]}")
                 continue
@@ -757,6 +816,13 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
             if rest != was:
                 find(21, j["path"], "beside the AC3: " + _first_difference(
                     was, rest, now="after the add", was="before"))
+            # The brand stays, but for the compatible brands: the MP4 muxer
+            # lists "dby1" there whenever a track is AC3, E-AC3, TrueHD or
+            # Dolby Vision (has_dolby, libavformat/movenc.c n8.1.3), so an
+            # add brings it. The undo, check 24, takes it away again.
+            if (_brand(j["pre"]) or ())[:2] != (_brand(post) or ())[:2]:
+                find(21, j["path"], f"brand {_brand(j['pre'])} before the add, "
+                                    f"{_brand(post)} after")
             # What each holds too, packet for packet: the add copies them.
             holds = stream_hashes(j["path"], post)
             if j["pre_holds"] is None or holds is None:
@@ -818,6 +884,9 @@ def _forge_round_trips(find, lib, scratch, files, rel, collect, undo: bool) -> d
                     if now != was:
                         find(24, j["path"], _first_difference(
                             was, now, now="after the undo", was="before the add"))
+                    if _brand(j["pre"]) != _brand(post):
+                        find(24, j["path"], f"brand {_brand(j['pre'])} before the add, "
+                                            f"{_brand(post)} after the undo")
                     holds = stream_hashes(j["path"], post)
                     if j["pre_holds"] is None or holds is None:
                         if j["pre_holds"] is not None:   # check 21 said so otherwise
@@ -1105,8 +1174,29 @@ def _signature(stream: dict) -> tuple:
     flags = sorted(k for k, v in (stream.get("disposition") or {}).items() if v == 1)
     # FFmpeg reads an MP4 track's title back as "name" (forge._title_args).
     title = tags.get("title") or tags.get("name")
+    # The codec tag is the sample entry in an MP4 or QuickTime file and the
+    # fourcc in an AVI: the codec name alone does not tell them apart. With
+    # the MP4 muxer, a QuickTime file's PCM audio went from "sowt" to "ipcm",
+    # which many players cannot play, under the same name, pcm_s16le
+    # (PARKED 7).
     return (stream.get("codec_type"), stream.get("codec_name"), tags.get("language"),
-            title, tags.get("filename"), tags.get("mimetype"), tuple(flags))
+            title, tags.get("filename"), tags.get("mimetype"), tuple(flags),
+            stream.get("codec_tag_string"))
+
+
+def _brand(info: dict) -> tuple | None:
+    """
+    An MP4 or QuickTime file's file type box as FFmpeg reports it: major
+    brand, minor version and compatible brands. None for other containers.
+    The MP4 muxer wrote a QuickTime file as "isom", so it was no longer a
+    QuickTime movie, while every stream could still compare equal
+    (PARKED 7).
+    """
+    if not is_mp4(info):
+        return None
+    tags = (info.get("format") or {}).get("tags") or {}
+    return (tags.get("major_brand"), tags.get("minor_version"),
+            tags.get("compatible_brands"))
 
 
 def _is_matroska_cover(sig: tuple) -> bool:
@@ -1114,7 +1204,7 @@ def _is_matroska_cover(sig: tuple) -> bool:
 
 
 def _without_attached_pic(sig: tuple) -> tuple:
-    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),)
+    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),) + sig[7:]
 
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
@@ -1261,6 +1351,11 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                                      "limitations worth knowing"})
             else:
                 find(11, source, _first_difference(want, got))
+        # And what kind of file it is, which can change while every stream
+        # stays the same: an MP4 or QuickTime file's brand (_brand).
+        if _brand(original) != _brand(info):
+            find(11, source, f"brand {_brand(original)} in the original, "
+                             f"{_brand(info)} after the revert")
         # The layout too, where the README's "exact original state" can
         # differ without a stream changing: an MP4's moov before or after
         # its media data.
@@ -1455,11 +1550,14 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     for k in sorted(set(got) | set(want)):
         missing = want[k] - got[k]
         if missing > 0:
-            if k in KNOWN_LOSSES and is_mp4(info_after):
+            accepted = missing if k in KNOWN_LOSSES and is_mp4(info_after) else 0
+            if k == "cover":
+                accepted = min(accepted, _covers_mp4_cannot_hold(expected, info_after))
+            if accepted:
                 known.append({"file": Path(source).relative_to(lib).as_posix(),
-                              "lost": f"{missing} {k}", "why": KNOWN_LOSSES[k]})
-            else:
-                find(3, source, f"{missing} {k} stream(s) lost with no planned action")
+                              "lost": f"{accepted} {k}", "why": KNOWN_LOSSES[k]})
+            if missing > accepted:
+                find(3, source, f"{missing - accepted} {k} stream(s) lost with no planned action")
         elif missing < 0:
             find(3, source, f"{-missing} {k} stream(s) appeared")
     ch_before = len(info_before.get("chapters") or [])
@@ -1483,6 +1581,26 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
         actual = [lang(s) for s in info_after["streams"] if kind(s) == k]
         if len(planned) == len(actual) and planned != actual:
             find(4, source, f"{k} languages {actual}, planned {planned}")
+
+    # 26. Every kept track keeps its own tags, matched as for check 4. A
+    # count that differs is check 3's finding, not another one here.
+    for k in ("video", "audio", "text-sub", "image-sub"):
+        kept = [s for kk, s in expected if kk == k]
+        written = [s for s in info_after["streams"] if kind(s) == k]
+        if len(kept) != len(written):
+            continue
+        for s, t in zip(kept, written):
+            lost = lost_track_tags(s, t)
+            if not lost:
+                continue
+            to_mp4 = is_mp4(info_after) and not is_mp4(info_before)
+            if "title" in lost or not to_mp4:
+                find(26, source, f"{k} stream {s['index']} lost or changed "
+                                 f"its tag(s): {', '.join(lost)}")
+            else:
+                known.append({"file": Path(source).relative_to(lib).as_posix(),
+                              "lost": f"track tag(s) {', '.join(lost)}",
+                              "why": _TRACK_TAGS_MP4})
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

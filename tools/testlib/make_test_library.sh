@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  28 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (44 files, about 23 MB, at the
+#  31 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (47 files, about 27 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -28,8 +28,8 @@
 #
 #  Environment: FFMPEG, FFPROBE, PYTHON override the binaries used.
 #
-#  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame
-#  (the BtbN 8.1 build the Dockerfile pins has all of them), and Python 3
+#  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame,
+#  libxvid (the BtbN 8.1 build the Dockerfile pins has all of them), and Python 3
 #  (stdlib only) for the two helpers next to this script.
 #
 #  The comment on each file below says what it is built to exercise. What
@@ -363,7 +363,7 @@ f15() {  # Two-letter and ISO 639-2/T tags: en / deu / fra.
     -disposition:a:0 default -disposition:a:1 0 -disposition:s:0 0 -disposition:s:1 0 "${MKV[@]}" \
     "$OUT/15 - two letter tags.mkv"
 }
-f16() {  # Camera-style QuickTime .mov: PCM audio, moov at the end behind a 64-bit mdat header (as any >4 GB file has).
+f16() {  # Camera-style QuickTime .mov: PCM audio, moov at the end behind a 64-bit mdat header (as any >4 GB file has). Left as it is under every profile, as every QuickTime movie is (probe.recording_signs).
   local a=(); add a video_in "16 camera quicktime mov"; add a tone_in 440
   "${FF[@]}" "${a[@]}" -map 0 -map 1 "${H264[@]}" -c:a pcm_s16le -metadata:s:a:0 language=eng -f mov \
     "$OUT/16 - camera quicktime.mov"
@@ -392,7 +392,7 @@ f17() {  # iTunes-style .m4v: cover art, chapters, mov_text forced by title only
     -metadata:s:s:0 language=eng -metadata:s:s:0 title="English (Forced)" \
     -movflags +faststart -f mp4 "$OUT/17 - itunes.m4v"
 }
-f18() {  # Old Xvid AVI: MPEG-4 ASP with B-frames + MP3, no language tags -> converts to MP4.
+f18() {  # Old Xvid AVI: MPEG-4 ASP with B-frames, unpacked as FFmpeg's encoder writes them, + MP3, no language tags -> converts to MP4.
   local a=(); add a video_in "18 xvid avi"; add a tone_in 440
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -c:v mpeg4 -vtag XVID -bf 2 -q:v 5 -c:a libmp3lame -b:a 96k \
     "$OUT/18 - xvid.avi"
@@ -464,8 +464,29 @@ f28() {  # AC3 Forge on an MP4: AAC 5.1 with a title, a second language, mov_tex
     -metadata:s:s:0 language=eng -disposition:a:0 default -disposition:a:1 0 -disposition:s:0 0 \
     -movflags +faststart -f mp4 "$OUT/28 - forge mp4.mp4"
 }
+f29() {  # Xvid AVI from libxvid: B-frames packed, signed DivX503b1393p -> stays AVI, as MP4 cannot take packed frames correctly.
+  local a=(); add a video_in "29 packed xvid avi"; add a tone_in 440
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -c:v libxvid -bf 2 -q:v 5 -c:a libmp3lame -b:a 96k \
+    "$OUT/29 - packed xvid.avi"
+}
+f30() {  # QuickTime .mov with chapters: titled AAC 5.1 (an AC3 Forge candidate), PCM ("sowt") in fra to drop. Left as it is too: no job, no revert point, and AC3 Forge does not offer it.
+  # fra, not fre: the QuickTime muxer writes only languages in the Macintosh table, which has fra (PARKED 42).
+  local a=(); add a video_in "30 quicktime two languages"; add a tone_in 440; add a tone_in 550
+  a+=(-i "$A/chapters.txt")
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map_chapters 3 "${H264[@]}" \
+    -c:a:0 aac -ac:a:0 6 -c:a:1 pcm_s16le -metadata:s:v:0 language=eng \
+    -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=fra \
+    -disposition:a:0 default -disposition:a:1 0 -f mov "$OUT/30 - quicktime two languages.mov"
+}
+f31() {  # QuickTime .mov, fast start already, all English: nothing to do where English is kept. Left as it is too, and AC3 Forge does not offer it.
+  local a=(); add a video_in "31 quicktime forge"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" \
+    -c:a:0 aac -ac:a:0 6 -c:a:1 pcm_s16le -metadata:s:v:0 language=eng \
+    -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=eng \
+    -disposition:a:0 default -disposition:a:1 0 -movflags +faststart -f mov "$OUT/31 - quicktime forge.mov"
+}
 
-for n in $(seq -w 1 28); do
+for n in $(seq -w 1 31); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

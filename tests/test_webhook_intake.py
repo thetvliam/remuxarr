@@ -65,6 +65,15 @@ separately). Killed here:
   • a call bringing none clearing it         → a later import without one
 
 The two upgrade steps' mutants are recorded in test_schema_migration.py.
+
+Bodies of the wrong shape, at the end: 8 mutants, each surviving the whole
+2750-test suite first, 8 killed. The object check removed (the body tests);
+each of the six places that read a field, restored to reading it unchecked:
+episodeFile, movieFile, renamedEpisodeFiles, episodeFiles, renamedMovieFiles
+and the rename pairs (the wrong-shape table, and for the rename lists the
+good-beside-bad tests); a path not required to be text (a number for a path,
+and the rename pair test). The proposal counted five field guards; the
+rename pairs are read in a sixth place, _renames.
 """
 import asyncio
 import json
@@ -490,3 +499,71 @@ def test_a_later_import_without_one_keeps_it(lib):
     lib.run(receive_twice)
 
     assert lib.stored_language() == "fre"
+
+
+# ── Bodies of the wrong shape ────────────────────────────────────────────────
+# Valid JSON that is not an object, and fields holding null, a string, a list
+# or a number where Sonarr and Radarr send an object, a list of objects or a
+# text path, answered 500: payload.get() and item.get() raised. A number for
+# a path was accepted and remembered as the text "5". Nothing shows that
+# either service sends these; the webhook now refuses a body that is not an
+# object and treats a field of the wrong shape as absent.
+
+def _call(lib, service, payload):
+    handler = webhooks.sonarr_webhook if service == "sonarr" else webhooks.radarr_webhook
+    return lib.run(lambda: handler(_Request(payload)))
+
+
+@pytest.mark.parametrize("service", ["sonarr", "radarr"])
+@pytest.mark.parametrize("body", [[], "x", 42, None], ids=["list", "string", "number", "null"])
+def test_a_body_that_is_not_an_object_is_refused(lib, service, body):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as refused:
+        _call(lib, service, body)
+
+    assert refused.value.status_code == 400
+    assert lib.rows() == []
+
+
+_WRONG_SHAPES = [
+    ("sonarr", {"eventType": "Download", "episodeFile": None}),
+    ("sonarr", {"eventType": "Download", "episodeFile": "x"}),
+    ("sonarr", {"eventType": "Download", "episodeFile": {"path": 5}}),
+    ("sonarr", {"eventType": "Download", "episodeFiles": None}),
+    ("sonarr", {"eventType": "Download", "episodeFiles": [None, "x", {"path": 5}]}),
+    ("sonarr", {"eventType": "Rename", "renamedEpisodeFiles": None}),
+    ("sonarr", {"eventType": "Rename", "renamedEpisodeFiles": {"path": "/tv/a.mkv"}}),
+    ("sonarr", {"eventType": "Rename", "renamedEpisodeFiles": ["x", {"previousPath": 5, "path": 6}]}),
+    ("radarr", {"eventType": "Download", "movieFile": None}),
+    ("radarr", {"eventType": "Download", "movieFile": [1]}),
+    ("radarr", {"eventType": "Download", "movieFile": {"path": 5}}),
+    ("radarr", {"eventType": "Rename", "renamedMovieFiles": None}),
+    ("radarr", {"eventType": "Rename", "renamedMovieFiles": ["x", {"previousPath": 5, "path": 6}]}),
+]
+
+
+@pytest.mark.parametrize("service, payload", _WRONG_SHAPES,
+                         ids=[json.dumps(p, separators=(",", ":"))[:60] for _, p in _WRONG_SHAPES])
+def test_a_field_of_the_wrong_shape_is_taken_as_absent(lib, service, payload):
+    response = _call(lib, service, payload)
+
+    assert response == {"status": "accepted", "files": 0}
+    assert lib.rows() == []
+
+
+@pytest.mark.parametrize("service, key", [("sonarr", "renamedEpisodeFiles"),
+                                          ("radarr", "renamedMovieFiles")])
+def test_good_entries_beside_bad_ones_are_still_taken_in(lib, service, key):
+    response = _call(lib, service, {"eventType": "Rename", key: [
+        None, "x", {"path": 5}, {"previousPath": lib.path + ".old", "path": lib.path}]})
+
+    assert response == {"status": "accepted", "files": 1}
+    assert [path for path, _, _ in lib.rows()] == [lib.path]
+
+
+def test_a_rename_pair_needs_two_text_paths():
+    assert webhooks._renames([
+        None, "x", {"previousPath": 5, "path": "/b"}, {"previousPath": "/a", "path": None},
+        {"previousPath": "/a", "path": "/b"},
+    ]) == [("/a", "/b")]

@@ -104,7 +104,7 @@ Most media coming out of Sonarr/Radarr carries far more than you actually need -
 
 Remuxarr only ever touches what's cheap and lossless to touch:
 
-- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this.
+- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
@@ -116,6 +116,8 @@ This application was generated entirely using Claude. I acted as the architect, 
 ## Features
 
 - **Automatic library scanning** - full probe on first sight, fast delta (size/mtime) scans afterward.
+- **Leaves your own recordings alone** - a video from a phone or a camera is skipped whatever the settings, with the reason in History: Remuxarr is for downloaded films and series, and processing a recording would cost it what a download does not have, such as an iPhone video's metadata tracks or a phone's device tag. An MP4, M4V or MOV file counts as one when it has a data track of the kind cameras write, a GPS location, a device tag or a camera's file brand, which every QuickTime `.mov` has. A recording with none of these, such as one an editor or a messaging app has rewritten, looks like any download and is processed like one.
+- **Never drops a file's own tags** - before a processed file replaces the original, its tags are compared with the original's: if any would be lost, such as the content rating and cast an iTunes-tagged MP4 carries, which Remuxarr cannot write into an MP4, the original is kept and History names the tags. AC3 Forge is checked the same way.
 - **Leaves extras alone** - trailers, featurettes and other extras named the way Plex or Jellyfin expect, and Plex's optimised versions, are skipped by default, and your own exclude patterns keep Remuxarr away from any other folder or file. Always Include brings back any file either of them catches that you do want processed.
 - **Sonarr / Radarr webhook integration** - reacts to imports and upgrades directly, with automatic path translation between how each *arr sees files and how Remuxarr does.
 - **Plex integration** - refreshes affected library sections after every job. A separate, opt-in backlog can additionally verify Plex's own metadata and force an explicit re-analyze on the rare files Plex's own maintenance misses - most installs won't need this turned on; see Settings → Integrations → Plex Analyze Backlog for why.
@@ -349,11 +351,14 @@ same rule, except that a rename never replaces a file: under Replace it takes
 the next free number too, because the name can belong to another subtitle
 extracted from the same video.
 
-**Two limitations worth knowing.** A job whose only casualty is an attachment -
+**Three limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
-tracks. And Matroska cover art comes back as a still-image video track rather
+tracks. Matroska cover art comes back as a still-image video track rather
 than an attachment, with its filename and mimetype intact; nothing is lost, but
-a player may list it as a second video stream.
+a player may list it as a second video stream. And in an MP4 with a timecode
+track, the track comes back as the last one. A phone's or camera's own
+recording never gets this far: it is left as it is, and AC3 Forge does not
+offer it (see Features).
 
 ## Development
 

@@ -493,9 +493,10 @@ def _tell_plex_if_unchanged(path: str, started) -> None:
     Told when the file is excluded, or when it needed no changes, which is
     the skipped row this attempt wrote: one completed at or after `started`.
     That is what tells it apart from every other outcome. A file queued for a
-    job, or held for review, has no such row: its job tells Plex itself, and
-    a review tells Plex when it ends with nothing to change
-    (queue.left_alone_after_review). Nor does a file that vanished, failed to
+    job, or held for review, has no such row: its job tells Plex itself, when
+    it finishes or when it is skipped at pickup
+    (worker._tell_plex_skipped_at_pickup), and a review tells Plex when it
+    ends with nothing to change (queue.left_alone_after_review). Nor does a file that vanished, failed to
     probe, or already has a job running. An earlier skip of the same path
     does not count either; it was a different file.
 
@@ -551,18 +552,18 @@ def _sonarr_paths(payload: dict) -> list[str]:
     paths: list[str] = []
 
     # v3 Download event
-    ef = payload.get("episodeFile", {})
-    if ef.get("path"):
-        paths.append(ef["path"])
+    path = _path(_object(payload.get("episodeFile")).get("path"))
+    if path:
+        paths.append(path)
 
     # v3 Rename event — renamedEpisodeFiles array
-    for item in payload.get("renamedEpisodeFiles", []):
-        if item.get("path"):
+    for item in _objects(payload.get("renamedEpisodeFiles")):
+        if _path(item.get("path")):
             paths.append(item["path"])
 
     # v3 import/upgrade — episodeFiles array
-    for item in payload.get("episodeFiles", []):
-        if item.get("path"):
+    for item in _objects(payload.get("episodeFiles")):
+        if _path(item.get("path")):
             paths.append(item["path"])
 
     return list(dict.fromkeys(paths))   # dedupe while preserving order
@@ -595,9 +596,9 @@ def _radarr_movie_id(payload: dict) -> int | None:
 def _radarr_paths(payload: dict) -> list[str]:
     paths: list[str] = []
 
-    mf = payload.get("movieFile", {})
-    if mf.get("path"):
-        paths.append(mf["path"])
+    path = _path(_object(payload.get("movieFile")).get("path"))
+    if path:
+        paths.append(path)
 
     # Rename event — renamedMovieFiles is a LIST (mirrors Sonarr's
     # renamedEpisodeFiles), each element extending WebhookMovieFile. The
@@ -614,8 +615,8 @@ def _radarr_paths(payload: dict) -> list[str]:
     # previousPath, so queuing it would just probe-fail on a missing
     # file. previousPath is read by _radarr_renames instead, which moves
     # the file's record from the old name to the new one.
-    for item in payload.get("renamedMovieFiles", []):
-        if item.get("path"):
+    for item in _objects(payload.get("renamedMovieFiles")):
+        if _path(item.get("path")):
             paths.append(item["path"])
 
     return list(dict.fromkeys(paths))
@@ -634,8 +635,8 @@ def _renames(items) -> list[tuple[str, str]]:
     either is skipped: without both there is nothing to move.
     """
     pairs = []
-    for item in items or []:
-        old, new = item.get("previousPath"), item.get("path")
+    for item in _objects(items):
+        old, new = _path(item.get("previousPath")), _path(item.get("path"))
         if old and new:
             pairs.append((old, new))
     return list(dict.fromkeys(pairs))
@@ -644,7 +645,35 @@ def _renames(items) -> list[tuple[str, str]]:
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 async def _parse_body(request: Request) -> dict:
+    """
+    The webhook body, which has to be a JSON object. Valid JSON of another
+    kind ([], "x", null) reached the handlers' payload.get() and became a
+    500; it is refused as malformed, the same as a body that is not JSON.
+    """
     try:
-        return await request.json()
+        payload = await request.json()
     except Exception:
         raise HTTPException(400, "Invalid JSON payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid JSON payload: expected an object")
+    return payload
+
+
+# The shapes the handlers read, taken as absent when a field holds something
+# else. Sonarr and Radarr send objects, lists of objects and text paths; a
+# null or a string where an object belongs raised AttributeError and the
+# webhook answered 500, losing the good entries beside it, and a number for
+# a path was accepted and remembered as the text "5". Nothing shows that
+# either service sends these shapes; _original_language already read its
+# field this way.
+
+def _object(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _objects(value) -> list[dict]:
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def _path(value) -> str | None:
+    return value if isinstance(value, str) and value else None

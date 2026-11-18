@@ -49,7 +49,7 @@ const PREVIEW_DEBOUNCE_MS = 250;
  * exceptions on top, keyed by the stream numbers THAT file has. The slots are
  * shared across the card; the numbers behind them are not, which is why the
  * endpoints take answers per file. */
-export const answersForFile = (file, answers, fileAnswers) => {
+const answersForFile = (file, answers, fileAnswers) => {
     const own = { ...answers, ...(fileAnswers || {}) };
     const out = {};
     (file.streams || []).forEach((streamIndex, slot) => {
@@ -166,7 +166,7 @@ const settledLine = (group, staged, previewed) => {
  * file read "Stays MKV, 2 deleted" when nothing would be deleted or done.
  * Those files are counted and said to need review again, and the line is
  * worked out from the rest, the way refused files are reported. */
-export const outcomeLine = (group, staged, previewed) => {
+const outcomeLine = (group, staged, previewed) => {
     if (!previewed || previewed.length === 0) return null;
     const settled = previewed.filter(o => !o.still_in_review);
     const unsettled = previewed.length - settled.length;

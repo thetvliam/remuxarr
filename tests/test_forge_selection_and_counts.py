@@ -23,6 +23,14 @@ would ever have pointed at any of them.
   * ignore_flags counted every file that existed rather than every flag it
     cleared, so re-submitting a stale selection reported work it had not
     done.
+  * /api/forge/active returned the oldest job waiting or running, so when
+    the worker skipped the oldest (its file busy) and ran a newer one, the
+    Forge panel showed the waiting job and not the running one.
+
+The last, by mutation, 4 applied, each surviving the whole 2745-test suite
+first, 4 killed: the running job not put first; waiting jobs put first;
+the newest waiting job shown instead of the oldest; waiting jobs left out.
+The last two are in behaviour older than the fix, which nothing tested.
 """
 import pytest
 
@@ -144,6 +152,74 @@ def test_completed_jobs_still_sort_newest_first(db):
 
     rows = list_processed(db)
     assert [r["output_size"] for r in rows] == [300, 200, 100]
+
+
+
+# ── Which job the Forge panel shows ──────────────────────────────────────────
+# /api/forge/active returned the oldest job waiting or running. The worker
+# claims the oldest only when it can: one whose file has a queue job running,
+# or is being reverted, waits while a newer one runs. Reproduced with the real
+# claim: the route returned the waiting job, and the panel showed it as queued
+# "for a free worker slot" with the running one out of sight.
+
+def _forge_job(db, media, status, minutes_ago, **kw):
+    import datetime as dt
+
+    from app.database.models import Ac3ForgeJob
+
+    job = Ac3ForgeJob(file_id=media.id, status=status,
+                      created_at=dt.datetime(2026, 1, 1, 12, 0)
+                      - dt.timedelta(minutes=minutes_ago), **kw)
+    db.add(job)
+    db.commit()
+    return job
+
+
+def _active(db):
+    from app.api.routes.forge import get_active
+
+    return get_active(db)
+
+
+def test_the_running_job_is_shown_over_an_older_waiting_one(db):
+    waiting = _forge_job(db, _media(db, "X.mkv"), "pending", minutes_ago=5)
+    running = _forge_job(db, _media(db, "Y.mkv"), "processing", minutes_ago=1)
+
+    shown = _active(db)
+
+    assert (shown["id"], shown["status"]) == (running.id, "processing")
+    assert waiting.id != running.id
+
+
+def test_a_running_undo_is_shown_over_an_older_waiting_add(db):
+    _forge_job(db, _media(db, "X.mkv"), "pending", minutes_ago=5)
+    undo = _forge_job(db, _media(db, "Y.mkv"), "processing", minutes_ago=1,
+                      is_undo=True)
+
+    shown = _active(db)
+
+    assert (shown["id"], shown["is_undo"]) == (undo.id, True)
+
+
+def test_with_nothing_running_the_oldest_waiting_job_is_shown(db):
+    _forge_job(db, _media(db, "Y.mkv"), "pending", minutes_ago=1)
+    oldest = _forge_job(db, _media(db, "X.mkv"), "pending", minutes_ago=5)
+
+    assert _active(db)["id"] == oldest.id
+
+
+def test_a_job_just_added_is_shown_at_once(db):
+    added = _forge_job(db, _media(db), "pending", minutes_ago=0)
+
+    assert (_active(db)["id"], _active(db)["status"]) == (added.id, "pending")
+
+
+def test_with_nothing_waiting_or_running_nothing_is_shown(db):
+    media = _media(db)
+    for status in ("success", "failed", "undo_pending", "undone", "cancelled"):
+        _forge_job(db, media, status, minutes_ago=1)
+
+    assert _active(db) is None
 
 
 def _real_run(monkeypatch):

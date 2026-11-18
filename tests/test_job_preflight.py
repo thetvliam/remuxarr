@@ -79,6 +79,14 @@ before the three tests at the end, all four survived: no clearing on the
 skip, on the review, or on the exclusion, and clearing skipped rows alone.
 The first three are killed each by its own test, the fourth by all three.
 30 applied, 30 killed.
+
+A newly found file's job skipped at pickup tells Plex, as a skipped import
+and a review left alone already did. Six more mutations, each against the
+whole 2803-test suite before the six tests at the end, all six survived:
+no telling on the nothing-to-do skip or on the exclusion (the old code,
+one each), telling for a file seen before, telling while dry run is on,
+and telling when the job becomes a review or runs. Each is killed by its
+own test. 36 applied, 36 killed.
 """
 import json
 import os
@@ -501,7 +509,8 @@ def test_an_action_keeps_the_language_it_targets(rig):
 
 def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
     media_row(rig, container="mkv", video_codec="hevc",
-              und_audio_threshold_acknowledged=True, font_attachments=3)
+              und_audio_threshold_acknowledged=True, font_attachments=3,
+              recording_signs="")
     queue_row(rig)
     track_row(rig, track_id=1, stream_index=0, track_type="video", codec="hevc")
     track_row(rig, track_id=2, stream_index=1, track_type="audio",
@@ -516,6 +525,7 @@ def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
         "container": "mkv",
         "video_codec": "hevc",
         "font_attachments": 3,
+        "recording_signs": "",
         "und_audio_threshold_acknowledged": True,
         "original_language": None,
         # The rig's folder holds only the video itself.
@@ -799,3 +809,110 @@ def test_a_job_pickup_finds_excluded_takes_the_place_of_the_files_other_rows(rig
 
     assert worker._load_job_data(1) is None
     assert _statuses(rig) == {1: "skipped"}
+
+
+# ── Telling Plex about a new file skipped at pickup ──────────────────────────
+#
+# Plex hears about a file when a job finishes, and about an import nothing
+# will change when the webhook skips it or a review ends. A job skipped here
+# got neither, and a new import stayed out of Plex until Plex's own scan
+# found it. The refresh is the real one, waited for, with only the Plex call
+# recorded, as in test_plex_after_review.py, so its dry-run check is part of
+# what is tested.
+
+PLEX_ON = {
+    "plex_enabled":       True,
+    "plex_url":           "http://plex:32400",
+    "plex_token":         "PLEX-TOKEN",
+    "plex_path_mappings": ["/=/"],
+}
+
+
+@pytest.fixture
+def told(rig, monkeypatch):
+    """
+    The paths Plex is sent, with Plex notifications on and dry run off,
+    which a new install has on.
+    """
+    import app.core.plex as plex
+
+    for key, value in {**PLEX_ON, "dry_run_mode": False}.items():
+        _setting(rig, key, value)
+    sent = []
+    monkeypatch.setattr(plex, "notify_plex_new_file",
+                        lambda url, token, mappings, path: sent.append(path))
+    real = plex.refresh_in_background
+
+    def and_wait(cfg, paths, context):
+        thread = real(cfg, paths, context)
+        if thread is not None:
+            thread.join(5)
+        return thread
+
+    monkeypatch.setattr(worker, "refresh_in_background", and_wait)
+    return sent
+
+
+def test_a_new_files_job_with_nothing_left_to_do_tells_plex(rig, told):
+    media_row(rig)
+    queue_row(rig, is_new_file=True)
+    rig.decision = nothing_to_do()
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "skipped", "fixture changed"
+    assert told == [rig.path]
+
+
+def test_a_new_files_job_excluded_at_pickup_tells_plex(rig, told, tmp_path):
+    """The webhook tells Plex about an excluded import too."""
+    _file_in(rig, tmp_path, "lib", "Kids", "Show.mkv")
+    media_row(rig)
+    queue_row(rig, is_new_file=True)
+    _setting(rig, "exclude_patterns", ["Kids"])
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).reason.startswith("Excluded:"), "fixture changed"
+    assert told == [rig.path]
+
+
+def test_a_file_seen_before_is_not_told(rig, told):
+    """Plex already has it, and nothing changed it."""
+    media_row(rig)
+    queue_row(rig, is_new_file=False)
+    rig.decision = nothing_to_do()
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "skipped", "fixture changed"
+    assert told == []
+
+
+def test_a_new_files_job_that_becomes_a_review_is_not_told_yet(rig, told):
+    """The review tells Plex when it ends with nothing to change."""
+    media_row(rig)
+    queue_row(rig, is_new_file=True)
+    rig.decision = manual_review()
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "manual_review", "fixture changed"
+    assert told == []
+
+
+def test_a_new_files_job_that_runs_is_not_told_at_pickup(rig, told):
+    """The job tells Plex when it finishes, after it has changed the file."""
+    media_row(rig)
+    queue_row(rig, is_new_file=True)
+    track_row(rig, track_id=1, stream_index=0, track_type="video", codec="h264")
+
+    assert worker._load_job_data(1) is not None, "fixture changed"
+    assert told == []
+
+
+def test_nothing_is_told_while_dry_run_is_on(rig, told):
+    media_row(rig)
+    queue_row(rig, is_new_file=True)
+    _setting(rig, "dry_run_mode", True)
+    rig.decision = nothing_to_do()
+
+    assert worker._load_job_data(1) is None
+    assert job(rig).status == "skipped", "fixture changed"
+    assert told == []

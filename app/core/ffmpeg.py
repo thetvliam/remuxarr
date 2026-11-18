@@ -15,10 +15,12 @@ import shutil
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
-from app.core.probe import QUICKTIME_BRAND, ProbeError, probe_file
+from app.core.probe import DATA_ENTRIES, QUICKTIME_BRAND, ProbeError, probe_file
+from app.core.probe import creation_time as source_creation_time
 from app.core.subprocess_runner import (
     STAGING_ACTION,
     StagedOutput,
@@ -48,7 +50,7 @@ class CoverStream:
 class CoverArt:
     """
     A Matroska cover image copied out of the source to be attached again.
-    See _prepare_cover_art for why. ordinal is its place among the output's
+    See _prepare_extra_streams for why. ordinal is its place among the output's
     attachments, which is what -metadata:s:t:N addresses; stream_index is
     the source stream it came from, which AC3 Forge leaves out of its copy.
     """
@@ -61,15 +63,15 @@ class CoverArt:
 
 @dataclass
 class FFmpegProgress:
+    # Only what the UI reads. It also carried the seconds processed and
+    # FFmpeg's speed figure, and job_progress sent the speed, but no screen
+    # has ever shown either.
     percent: float  # 0–100
-    current_time: float  # seconds processed so far
-    speed: str  # "2.50x"
     current_action: str  # human label shown in the UI
 
 
 def _staging_progress(
     progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
-    duration: float | None,
 ) -> Callable[[float], Awaitable[None]] | None:
     """
     Adapt run_staged_subprocess's 0.0-1.0 staging fraction to FFmpegProgress.
@@ -82,11 +84,6 @@ def _staging_progress(
 
     Returns None when there is no callback to feed, which also keeps the
     runner from measuring a copy nobody is watching.
-
-    current_time stays at the full duration: the media is entirely processed
-    by this point, and winding it back to zero would read as a restart.
-    Speed is blank rather than invented — this phase is bytes to disk, not
-    multiples of realtime, and the UI does not show the field anyway.
     """
     if progress_callback is None:
         return None
@@ -95,8 +92,6 @@ def _staging_progress(
         await progress_callback(
             FFmpegProgress(
                 percent=staging_percent(fraction),
-                current_time=duration or 0.0,
-                speed="",
                 current_action=STAGING_ACTION,
             )
         )
@@ -144,13 +139,30 @@ _CONTAINER_FORMAT = {
     # intent (matching probe.py's annotated copy): _normalise_container
     # can never return "webm" (its format_name always contains
     # "matroska", matched first) and maps "mov"→"mp4", and
-    # _EXT_TO_CONTAINER maps .mov→"mp4" — so target_container is never
-    # either value. Nothing reaches these; they just document the
-    # intended format if that ever changes.
+    # target_container is only ever the file's own normalised container
+    # or "mp4" — so it is never either value. Nothing reaches these; they
+    # just document the intended format if that ever changes.
     "webm": "webm",
     "mov": "mov",
 }
 
+
+# Muxers that keep no language for a stream. FFmpeg's AVI muxer writes 0 in
+# every stream header's language field and its demuxer skips that field
+# (libavformat/avienc.c line 393, avidec.c line 682, FFmpeg 8.1.3); only an
+# XSUB subtitle's language goes into its stream name, which is read back
+# as a title. FLV keeps none either, but has no muxer here at all.
+_NO_LANGUAGE_MUXERS = frozenset({"avi"})
+
+
+def stores_language(container: str | None) -> bool:
+    """
+    Whether a file written as `container` keeps a language tag, so that a
+    tag Remuxarr writes is still there on the next scan. A container with
+    no muxer counts as keeping one: it is not written at all
+    (decision.analyze_file leaves such a file alone).
+    """
+    return output_muxer(container) not in _NO_LANGUAGE_MUXERS
 
 def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
     """
@@ -193,13 +205,22 @@ def build_ffmpeg_command(
     all_tracks: list[dict],
     covers: Sequence[CoverArt] = (),
     quicktime: bool = False,
+    mp4_covers: Sequence[int] = (),
+    data_streams: Sequence[int] = (),
+    creation_time: str | None = None,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
 
     covers are Matroska cover images already copied out of the source by
-    _prepare_cover_art, which hands over none unless the output is Matroska.
+    _prepare_extra_streams, which hands over none unless the output is Matroska.
+    mp4_covers are the source's cover streams an MP4 can hold, which it
+    hands over only for an MP4 output (find_mp4_covers). data_streams are
+    the source's data streams the output can hold, which it hands over
+    only for an MP4 or a QuickTime output (find_data_streams).
     quicktime says the source is a QuickTime movie (see output_muxer).
+    creation_time is the date the source says it was made
+    (probe.creation_time), which it also hands over.
 
     Strategy
     --------
@@ -226,8 +247,23 @@ def build_ffmpeg_command(
         if getattr(a, "target_language", None)
     }
 
+    # An AVI stores no presentation time for its frames, only the order
+    # they are stored in. For video with B-frames, as Xvid and DivX
+    # usually have, that order is not the display order, and copied into
+    # an MP4 without -fflags +genpts every frame got its storage time as
+    # its presentation time: on a six-second Xvid, 48 of 144 frames went
+    # backwards, and FFmpeg's own frame sync dropped the last one. The
+    # pictures were all there; what showed them when was wrong. genpts
+    # works the presentation times out on input. An AVI written back as
+    # AVI comes out byte for byte the same with it, as that muxer keeps no
+    # presentation times. Packed B-frames, which many Xvid encoders write,
+    # are not fixed by this alone: tested on a synthetic file, they also
+    # need unpacking (mpeg4_unpack_bframes) in a pass of their own first.
+    genpts = ["-fflags", "+genpts"] if decision.source_container == "avi" else []
+
     cmd = [
         app_settings.FFMPEG_PATH,
+        *genpts,
         "-i", input_path,
         "-y",
         "-v", "error",  # suppress info/warnings but keep error messages
@@ -256,7 +292,12 @@ def build_ffmpeg_command(
     for out_idx, t in enumerate(video_tracks):
         cmd += ["-map", f"0:{t['stream_index']}"]
         cmd += title_of(t, f"v:{out_idx}")
-    if video_tracks:
+    # Covers are copied too: -c:v names every video stream of the output,
+    # wherever its map comes, and a cover is a video stream. Without it a
+    # cover in a file with no real video, an audio-only MP4, goes to an
+    # encoder (H.264 for an MP4 output, which cannot store a cover), and
+    # the mux fails.
+    if video_tracks or mp4_covers:
         cmd += ["-c:v", "copy"]
 
     # ── Audio ──────────────────────────────────────────────────────────────
@@ -285,7 +326,48 @@ def build_ffmpeg_command(
     if kept_subs:
         cmd += ["-c:s", "copy"]
 
+    # ── Data streams, MP4 and QuickTime ────────────────────────────────────
+    # A camera's telemetry, or a QuickTime file's timecode: no track list
+    # holds one, so every job writing the file used to drop them
+    # (find_data_streams). After the tracks, which is where cameras put
+    # them, so no track's output index moves. Copied without a -c:d: FFmpeg
+    # has no encoder for one, and the file is byte for byte the same with
+    # or without it (checked with FFmpeg 8.1.3).
+    for index in data_streams:
+        cmd += ["-map", f"0:{index}"]
+
+    # ── Cover art, MP4 ─────────────────────────────────────────────────────
+    # Mapped after every track, so no track's output index moves. In the
+    # file a cover is iTunes metadata rather than a track, and FFmpeg reads
+    # it back as the last stream whatever order it was mapped in.
+    for index in mp4_covers:
+        cmd += ["-map", f"0:{index}"]
+
     cmd += KEEP_STREAM_FLAGS
+
+    # ── The date the file was made ─────────────────────────────────────────
+    # FFmpeg copies a file's own tags to the output and then takes this
+    # one out again (copy_meta in fftools/ffmpeg_mux_init.c, FFmpeg 8.1.3),
+    # so every job that wrote an MP4, a QuickTime file or a Matroska left
+    # it with no date, on the file and, in an MP4 or QuickTime file, on
+    # each track. For a phone's or a camera's recording that is the day it
+    # was shot, which photo libraries sort by: a fast-start rewrite of an
+    # Android phone's video removed it. Named outright, it is written.
+    #
+    # Those three muxers are the ones that store it. Given to the AVI,
+    # MPEG-TS and ASF muxers it is accepted and nothing is written, and a
+    # value FFmpeg cannot read as a date ("40096-09-19T03:52:44.000000Z",
+    # from a real phone video) is passed over the same way, so nothing here
+    # checks the muxer or the value. A date that does not come out is lost
+    # all the same: the tag check refuses the job before the source is
+    # touched (worker._lost_tags_error); converting to AVI, MPEG-TS or ASF
+    # is never planned (output_muxer).
+    #
+    # A track whose own date differs from the file's comes out with the
+    # file's: the MP4 muxer stamps every track with the one date, and a
+    # date given for a single track changed nothing (tested).
+    if creation_time:
+        cmd += ["-metadata", f"creation_time={creation_time}"]
 
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which
@@ -605,10 +687,16 @@ def build_restore_command(
     sidecar_path: str,
     output_path: str,
     manifest: dict,
+    rebuilt_tracks: Sequence[int] = (),
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
     one plus its sidecar.
+
+    rebuilt_tracks are the processed file's chapter and timecode tracks
+    (probe.rebuilt_track_indices), which are never copied: -map_chapters
+    writes the chapters, and the muxer a chapter track for them, and the
+    muxer writes the timecode track from the video's timecode.
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -675,6 +763,23 @@ def build_restore_command(
                 f"Stream {stream.get('index')} is in neither the processed "
                 f"file nor the sidecar."
             )
+
+    # An original MP4's chapter track is in the manifest like any stream,
+    # and the processed file holds the job's copy of it. Copied as well,
+    # it came back as a junk data track beside the chapter track the muxer
+    # writes from the chapters (probe.chapter_track_indices), so a revert
+    # gave back one stream more than the original had. Left out instead:
+    # the original had one chapter track, and the muxer writes one. Only
+    # the processed file's is matched, so a point made before this fix,
+    # whose manifest describes the original, still restores correctly.
+    # An MP4's timecode track the same way, for another reason: the MP4
+    # muxer refuses a copied one outright, so every such revert failed
+    # (probe.timecode_track_indices). It comes back last.
+    if rebuilt_tracks:
+        kept = [(stream, where) for stream, where in zip(streams, located)
+                if not (where[0] == 0 and where[1] in rebuilt_tracks)]
+        streams = [stream for stream, _ in kept]
+        located = [where for _, where in kept]
 
     paths = [processed_path, sidecar_path]
     openings = _sparse_openings(
@@ -776,7 +881,8 @@ def build_restore_command(
     cmd += ["-c", "copy"] + codecs
     cmd += meta
     cmd += _format_tag_args(manifest)
-    # Chapters survive a remux, so the processed file still has them.
+    # Chapters survive a remux, so the processed file still has them. For
+    # an MP4 the muxer writes their chapter track (see above).
     cmd += ["-map_chapters", "0"]
     # The original's layout: an MP4 recorded as fast-start gets its index
     # back in front. Only True asks; False, None and a manifest from before
@@ -875,12 +981,16 @@ async def execute_ffmpeg(
     duration = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
-    if cover_error:
-        return FFmpegResult(success=False, output_path=None, error=cover_error,
+    extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id, quicktime)
+    covers = extra.covers
+    if extra.error:
+        return FFmpegResult(success=False, output_path=None, error=extra.error,
                             output_size=None)
     cmd = build_ffmpeg_command(input_path, temp_output, decision, all_tracks,
-                               covers=covers, quicktime=quicktime)
+                               covers=covers, quicktime=quicktime,
+                               mp4_covers=extra.mp4_covers,
+                               data_streams=extra.data_streams,
+                               creation_time=extra.creation_time)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -889,12 +999,9 @@ async def execute_ffmpeg(
             return
         secs  = parse_out_time_seconds(progress_kv)
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
-        speed = progress_kv.get("speed", "?x")
         await progress_callback(
             FFmpegProgress(
                 percent=subprocess_percent(pct),
-                current_time=secs,
-                speed=speed,
                 current_action=current_action,
             )
         )
@@ -912,7 +1019,7 @@ async def execute_ffmpeg(
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             before_staging=_before_staging if before_staging else None,
-            on_staging_progress=_staging_progress(progress_callback, duration),
+            on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
         )
@@ -1197,17 +1304,21 @@ async def execute_ffmpeg_combined(
     duration       = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
-    covers, cover_error = await _prepare_cover_art(input_path, decision, tmp_dir, job_id)
-    if cover_error:
+    extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id, quicktime)
+    covers = extra.covers
+    if extra.error:
         return (
-            FFmpegResult(success=False, output_path=None, error=cover_error,
+            FFmpegResult(success=False, output_path=None, error=extra.error,
                          output_size=None),
-            [ExtractionResult(success=False, output_path=None, error=cover_error)
+            [ExtractionResult(success=False, output_path=None, error=extra.error)
              for _ in subtitle_extractions],
         )
     # Base command up to (and including) the format/movflags flags
     main_cmd = build_ffmpeg_command(input_path, temp_main, decision, all_tracks,
-                                    covers=covers, quicktime=quicktime)
+                                    covers=covers, quicktime=quicktime,
+                                    mp4_covers=extra.mp4_covers,
+                                    data_streams=extra.data_streams,
+                                    creation_time=extra.creation_time)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1235,8 +1346,6 @@ async def execute_ffmpeg_combined(
         pct   = min(100.0, (secs / duration * 100)) if duration > 0 else 0.0
         await progress_callback(FFmpegProgress(
             percent=subprocess_percent(pct),
-            current_time=secs,
-            speed=progress_kv.get("speed", "?x"),
             current_action=current_action,
         ))
 
@@ -1271,7 +1380,7 @@ async def execute_ffmpeg_combined(
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             before_staging=_before_staging if before_staging else None,
-            on_staging_progress=_staging_progress(progress_callback, duration),
+            on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
         )
@@ -1374,6 +1483,76 @@ def find_matroska_covers(probe: dict) -> tuple[list[CoverStream], int]:
     return found, attachments
 
 
+# The image types FFmpeg's MP4 muxer can store as cover art
+# (codec_cover_image_tags, libavformat/movenc.c n8.1.3). The Matroska
+# demuxer also reports GIF and TIFF attachments as covers, and mapping one
+# of those into an MP4 fails the whole mux at header write ("Could not find
+# tag for codec gif"), so they are left out: such a cover is lost in the
+# conversion, as fonts are, and a revert point keeps it.
+_MP4_COVER_CODECS = frozenset({"mjpeg", "png", "bmp"})
+
+
+def find_mp4_covers(probe: dict) -> list[int]:
+    """
+    The stream indices of the covers in a probe result that an MP4 output
+    can hold: from an MP4 or a Matroska alike, as both demuxers report a
+    cover as a stream with the attached_pic disposition. Copied into an MP4
+    each keeps its bytes and its disposition (checked with FFmpeg 8.1.3).
+    A still-image track without the flag is a real track, which the
+    command maps with the other video already.
+    """
+    return [s["index"] for s in probe.get("streams") or []
+            if (s.get("disposition") or {}).get("attached_pic")
+            and s.get("codec_name") in _MP4_COVER_CODECS]
+
+
+def find_data_streams(probe: dict, fmt: str) -> list[int]:
+    """
+    The stream indices of the data streams in a probe result that an
+    output written with FFmpeg's `fmt` muxer, "mp4" or "mov", writes
+    properly (probe.DATA_ENTRIES), so a job keeps them.
+
+    A camera's or a phone's file carries data streams beside its tracks: a
+    GoPro's telemetry (bin_data, "gpmd") and timecode (tmcd), an iPhone's
+    metadata ("mebx"). No track list holds one, so every job writing the
+    file dropped them, and a revert point could not keep them either, as a
+    Matroska sidecar holds none ("Only audio, video, and subtitles are
+    supported for Matroska"), so the data was gone for good (PARKED 38).
+    Copied, a "gpmd" track keeps its packets, in an MP4 or a QuickTime
+    file, and so does a QuickTime file's tmcd track, which a revert then
+    puts back where it was (checked with FFmpeg 8.1.3). An MP4's tmcd is
+    written again by the muxer, last, so in a GoPro file, whose timecode
+    comes before its telemetry, the two change places, in the job and in
+    a revert.
+
+    Any other data stream FFmpeg cannot write back, an iPhone's metadata
+    for one, so no job runs on a file holding one: it is taken for a
+    phone's or camera's own recording and left as it is
+    (probe.recording_signs). A chapter track ("text") is no data to
+    keep: the muxer writes one from the chapters. A real GoPro track and
+    the junk ones AC3 Forge and reverts once left (PARKED 37) look alike,
+    and both are kept. A Matroska output holds no data stream and is not
+    asked about.
+    """
+    entries = DATA_ENTRIES[fmt]
+    return [s["index"] for s in probe.get("streams") or []
+            if s.get("codec_type") == "data" and s.get("codec_tag_string") in entries]
+
+
+class ExtraStreams(NamedTuple):
+    """
+    What a job keeps that the track lists leave out (_prepare_extra_streams):
+    Matroska covers copied out to attach again, cover streams to map into
+    an MP4, data streams to map into an MP4 or a QuickTime file, an error,
+    which stops the job, and the date the source says it was made.
+    """
+    covers: list[CoverArt]
+    mp4_covers: list[int]
+    data_streams: list[int]
+    error: str | None
+    creation_time: str | None = None
+
+
 async def copy_out_cover_art(
     input_path: str,
     found: Sequence[CoverStream],
@@ -1416,15 +1595,19 @@ async def copy_out_cover_art(
     return covers, None
 
 
-async def _prepare_cover_art(
+async def _prepare_extra_streams(
     input_path: str,
     decision: ProcessingDecision,
     tmp_dir: str,
     job_id: int,
-) -> tuple[list[CoverArt], str | None]:
+    quicktime: bool = False,
+) -> ExtraStreams:
     """
-    Copy each Matroska cover image out of the source so the remux can attach
-    it again. Returns the covers and an error, at most one of them non-empty.
+    The source's cover art and data streams, made ready for the output
+    (ExtraStreams), with the date it says it was made (probe.creation_time;
+    build_ffmpeg_command says why). The three outputs probed for are also
+    the three that store that date. Data streams are find_data_streams';
+    the rest of this is about covers.
 
     Matroska stores cover art as an image attachment, but FFmpeg's demuxer
     reports one as a video stream with the attached_pic disposition and its
@@ -1433,27 +1616,48 @@ async def _prepare_cover_art(
     dropped its cover. Mapping the stream does not help: the muxer writes
     it as a real still-image video track, which a player can offer as a
     second video. Copying the image out and attaching that file restores it
-    exactly. Only for Matroska output: MP4 cannot hold an attachment.
+    exactly.
 
-    A probe failure returns no covers and no error, so the job runs as it
+    An MP4 holds a cover as the image itself in its iTunes metadata, not
+    as a track, and FFmpeg's MP4 muxer writes a mapped cover stream there,
+    so for an MP4 output the cover streams are mapped (find_mp4_covers).
+    Every job writing an MP4 used to drop them all, a Matroska's included,
+    as the track lists the command is built from leave covers out. Not for
+    a QuickTime file kept as one: FFmpeg's QuickTime muxer writes no iTunes
+    metadata (mov_write_udta_tag, libavformat/movenc.c n8.1.3), so it
+    accepts a mapped cover, writes nothing and reports success. The cover
+    still takes a track ID, so mapping it would change the file anyway:
+    the next track's ID moves up by one (a chapter track's, in the file it
+    was seen in). Its cover is lost as before; a revert point keeps it.
+
+    A probe failure returns nothing and no error, so the job runs as it
     did before this existed: the worker already decides from stored tracks
     when a probe fails rather than fail the job over it. A cover that is
     there but cannot be copied out is an error; see copy_out_cover_art.
     """
-    if _CONTAINER_FORMAT.get(decision.target_container) != "matroska":
-        return [], None
+    fmt = output_muxer(decision.target_container, quicktime)
+    if fmt not in ("matroska", "mp4", "mov"):
+        return ExtraStreams([], [], [], None)
     loop = asyncio.get_running_loop()
     try:
         probe = await loop.run_in_executor(
             None, probe_file, input_path, app_settings.FFPROBE_PATH)
     except ProbeError as exc:
-        logger.warning("Job %d: could not probe %s for cover art (%s); "
-                       "running without it", job_id, input_path, exc)
-        return [], None
+        logger.warning("Job %d: could not probe %s for cover art and data "
+                       "streams (%s); running without them", job_id, input_path, exc)
+        return ExtraStreams([], [], [], None)
 
+    made = source_creation_time(probe)
+    if fmt == "mp4":
+        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe, fmt),
+                            None, made)
+    if fmt == "mov":
+        return ExtraStreams([], [], find_data_streams(probe, fmt), None, made)
     found, attachments = find_matroska_covers(probe)
-    return await copy_out_cover_art(input_path, found, attachments, tmp_dir,
-                                    f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
+    covers, error = await copy_out_cover_art(
+        input_path, found, attachments, tmp_dir,
+        f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
+    return ExtraStreams(covers, [], [], error, made)
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

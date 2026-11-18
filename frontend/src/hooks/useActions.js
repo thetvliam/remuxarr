@@ -184,9 +184,13 @@ export function useActions({
 
   // Re-queue a failed/cancelled item and close the modal
   const retryItem = async (item) => {
+    const name = item.file?.filename || "file";
     const r = await fetch(`${api}/api/history/${item.id}/retry`, { method: "POST" }).catch(() => null);
+    const body = r ? await r.json().catch(() => ({})) : {};
     if (!r?.ok) {
-      toast(`Could not re-queue: ${item.file?.filename || "file"}`, "error");
+      // The reason is the server's: the file has gone, or could not be read.
+      // It was dropped, so every refusal read the same.
+      toast(`Could not re-queue ${name}${body?.detail ? `: ${body.detail}` : ""}`, "error");
       return;
     }
     setModal(null);
@@ -206,7 +210,20 @@ export function useActions({
     // hardcoded "failed" left the Dry Run tab showing a row that no longer
     // existed.
     invalidateHistory?.(item.status || null);
-    toast(`Re-queued: ${item.file?.filename || "file"}`, "notice");
+    toast(retryOutcome(name, body), "notice");
+  };
+
+  // What a retry did, from queue._retry_with_reprobe's reply: the new item
+  // when one was queued or sent to Review, otherwise the file's status. Every
+  // success used to say "Re-queued", including a file that now needs nothing
+  // and one whose job was already running, where nothing new was queued. The
+  // reply's own message is not used: it says "no further action needed" in
+  // that second case too.
+  const retryOutcome = (name, body) => {
+    if (body?.status === "pending") return `Re-queued: ${name}`;
+    if (body?.status === "manual_review") return `${name} is waiting in Review`;
+    if (body?.media_status === "skipped") return `Re-checked: ${name} needs no changes`;
+    return `Re-checked: ${name}, nothing new was queued`;
   };
 
   // Remove a completed/failed item from history, resetting it for re-scan

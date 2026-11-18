@@ -27,7 +27,7 @@ import { parse } from "@babel/parser";
 /** Each shorthand, and the longhands that setting it resets. A list of
  *  pairs rather than an object literal: an object keyed by these names is
  *  exactly what findConflicts looks for, and would report itself. */
-export const SHORTHANDS = new Map([
+const SHORTHANDS = new Map([
   ["border", /^border(Top|Right|Bottom|Left|Width|Style|Color)/],
   ["borderTop", /^borderTop(Width|Style|Color)$/],
   ["borderRight", /^borderRight(Width|Style|Color)$/],

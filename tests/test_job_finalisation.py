@@ -66,6 +66,12 @@ The one-step renumber fails in one creation order and not the other, which
 is why both are run; the order that fails is the ORM's choice and could
 change between SQLAlchemy versions.
 
+When the container written on a path change became the new extension
+itself, in place of a lookup table of which only the .mp4 entry could be
+reached, two mutants of the new line were run against the suite first: the
+update removed, and the extension stored with its dot. Both were already
+killed, by test_extension_guess_still_applies_when_the_probe_fails.
+
 WHY THE FIXTURES LOOK LIKE THIS
 _finish_job opens its own session and closes it in a finally block. The
 established `monkeypatch.setattr(worker, "SessionLocal", lambda: db)` shortcut
@@ -522,9 +528,9 @@ def test_a_fresh_probe_beats_the_extension_guess_for_container(worker, Session,
                                                                media_dir,
                                                                monkeypatch):
     """
-    Two things write media.container on a path change: a lookup table keyed
-    on the new extension, then the probe. The probe wins — an extension is a
-    naming convention, the probe is the actual file.
+    Two things write media.container on a path change: the new extension,
+    then the probe. The probe wins — an extension is a naming convention,
+    the probe is the actual file.
     """
     src = media_dir / "movie.mkv"
     out = media_dir / "movie.mp4"

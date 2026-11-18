@@ -39,6 +39,7 @@ from app.core.probe import (
     extract_tracks,
     is_faststart_mp4,
     is_media_file,
+    is_packed_divx,
     probe_file,
 )
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
@@ -61,7 +62,7 @@ class ScanStats:
     errors:        int = 0
     removed:       int = 0   # records removed: file gone from disk, or now excluded
     excluded:      int = 0   # files the exclude settings passed over this scan
-    held:          int = 0   # not queued again: audio cannot be copied (_held_back)
+    held:          int = 0   # not queued again: audio cannot be copied, or tags would be lost (_held_back)
     cancelled:     bool = False   # True if the scan was stopped early by the user
 
 
@@ -1185,7 +1186,8 @@ def _plan_key(actions) -> list[tuple]:
 def _held_back(db: Session, file_id: int, decision) -> bool:
     """
     Whether a scan leaves this file unqueued: its newest job failed because
-    its audio cannot be copied, and the plan now is the plan that job ran.
+    its audio cannot be copied, or because the output would have lost some
+    of the file's own tags, and the plan now is the plan that job ran.
 
     The caller has already checked that the file is unchanged on disk and
     that the call is a scan's.
@@ -1195,18 +1197,21 @@ def _held_back(db: Session, file_id: int, decision) -> bool:
     failure that is no retry: the audio is the same, nothing re-encodes it
     (worker._explain_failure), and the job fails again, at the cost of an
     FFmpeg run and another failed entry in History, on every such scan.
+    Nor for lost tags: the same plan writes the same container, which can
+    hold the same tags as before (worker._lost_tags_error).
 
     Any change is worth another try, so it is queued after one: a new file
     (the caller's check), or a plan that differs, such as a keep list that
-    now drops the track that would not copy. Retry and Retry All delete the
+    now drops the track that would not copy, or Prefer MP4 turned off, so
+    that a Matroska is left a Matroska. Retry and Retry All delete the
     failed job before deciding the file again, so there is no failed job
     here for them, and the file is queued.
 
     Only the newest job counts: one after the failure, of any outcome, means
     the failure is no longer what the file last did.
     """
-    # worker imports this module, so its message is fetched when asked for.
-    from app.core.worker import UNCOPYABLE_AUDIO
+    # worker imports this module, so its messages are fetched when asked for.
+    from app.core.worker import LOST_TAGS, UNCOPYABLE_AUDIO
 
     newest = (
         db.query(QueueItem)
@@ -1215,7 +1220,7 @@ def _held_back(db: Session, file_id: int, decision) -> bool:
         .first()
     )
     if (newest is None or newest.status != "failed"
-            or not (newest.error_message or "").startswith(UNCOPYABLE_AUDIO)):
+            or not (newest.error_message or "").startswith((UNCOPYABLE_AUDIO, LOST_TAGS))):
         return False
     return _plan_key(newest.planned_actions) == _plan_key(decision.actions)
 
@@ -1287,8 +1292,8 @@ def _process_file(
 
     # Read before the record is brought up to date below, which overwrites
     # the stored size and mtime: whether the file is as it was when last
-    # seen. A force_probe scan never reaches the delta check, and still
-    # needs to know (_held_back).
+    # seen. The delta check below uses it, and a force_probe scan, which
+    # never reaches that check, still needs to know (_held_back).
     unchanged_on_disk = (
         existing is not None and existing.size == current_size
         and abs(existing.mtime - current_mtime) < 1.0
@@ -1296,14 +1301,11 @@ def _process_file(
 
     from_record = False
     if existing and not force_probe:
-        size_match  = existing.size == current_size
-        mtime_match = abs(existing.mtime - current_mtime) < 1.0
-
         # A re-check decides an unchanged file again rather than skipping
         # it, from what was stored when it was last probed.
-        from_record = recheck and size_match and mtime_match and not reevaluate
+        from_record = recheck and unchanged_on_disk and not reevaluate
 
-        if size_match and mtime_match and not reevaluate and not from_record:
+        if unchanged_on_disk and not reevaluate and not from_record:
             # File is identical on disk. media_file.status == "queued" is
             # set in TWO different situations that look identical from
             # this field alone: (a) the file is simply still pending its
@@ -1391,6 +1393,7 @@ def _process_file(
             existing.duration      = fmt_info.get("duration")
             existing.video_codec   = primary_video_codec
             existing.font_attachments = fmt_info.get("font_attachments")
+            existing.recording_signs = fmt_info.get("recording_signs")
             existing.last_scanned  = utcnow()
             if reevaluate:
                 existing.reevaluate_after_job = False
@@ -1406,6 +1409,7 @@ def _process_file(
                 duration    = fmt_info.get("duration"),
                 video_codec = primary_video_codec,
                 font_attachments = fmt_info.get("font_attachments"),
+                recording_signs = fmt_info.get("recording_signs"),
                 last_scanned = utcnow(),
             )
             db.add(media_file)
@@ -1460,6 +1464,7 @@ def _process_file(
         audio_language_overrides=audio_lang_overrides,
         subtitle_language_overrides=subtitle_lang_overrides,
         has_faststart=faststart,
+        has_packed_bframes=packed_divx_for(path, fmt_container, track_list),
         forged_ac3_audio_index=forged_ac3_audio_index,
     )
 
@@ -1706,10 +1711,16 @@ def _process_file(
         stats.held += 1
         logger.info(
             "Not queuing %s again: its last job failed because its audio "
-            "cannot be copied, and neither the file nor what it would do has "
-            "changed since. Retry it in History to try again.",
+            "cannot be copied or it would have lost the file's own tags, and "
+            "neither the file nor what it would do has changed since. Retry "
+            "it in History to try again.",
             path,
         )
+        # Kept as on every other way out: the re-probe, the original language
+        # and the language flags above were flushed, and were saved only if a
+        # later file committed: the last file walked, or one before a file
+        # that failed, lost them.
+        db.commit()
         return
 
     _clear_stale_status_records(db, media_file.id, ("skipped", "manual_review"))
@@ -2154,6 +2165,23 @@ def _load_subtitle_language_overrides(media_file: MediaFile, tracks: list[dict])
         _load_track_answers(media_file, "subtitle_language_overrides"), tracks)
 
 
+def packed_divx_for(path: str, container: str | None, tracks: list[dict]) -> bool | None:
+    """
+    Whether an AVI's MPEG-4 Part 2 video has packed B-frames
+    (probe.is_packed_divx), for analyze_file's has_packed_bframes. Read
+    from the file, like fast start, wherever a decision is made: one short
+    read of its first video packet. None for any other file, which is all
+    the decision needs: packing is read only where it stops a conversion
+    to MP4 doing harm.
+    """
+    if (container or "").lower() != "avi":
+        return None
+    if not any(t.get("track_type") == "video" and (t.get("codec") or "").lower() == "mpeg4"
+               for t in tracks):
+        return None
+    return is_packed_divx(path, app_settings.FFMPEG_PATH)
+
+
 def _file_info_for(media_file: MediaFile) -> dict:
     """
     The file-level input to analyze_file(), from the stored row.
@@ -2181,6 +2209,7 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "container":        media_file.container,
         "video_codec":      media_file.video_codec,
         "font_attachments": media_file.font_attachments,
+        "recording_signs":  media_file.recording_signs,
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
         "folder_entries":   _folder_entries(media_file.path),
