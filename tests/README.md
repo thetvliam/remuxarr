@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2813 tests across 128 test files, plus 783 frontend tests under
+2817 tests across 129 test files, plus 783 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -56,7 +56,8 @@ leave such a file an AVI. Its real-file tests need FFmpeg with libxvid.
 `test_scan_stats_and_subtitle_classifier.py`, `test_media_file_deletion.py`,
 `test_clear_database.py`, `test_scan_library.py`, `test_scan_routes.py`,
 `test_scan_maintenance_routes.py`, `test_settings_persistence.py`,
-`test_settings_schema.py`, `test_setting_values.py`, `test_backup_restore.py`,
+`test_settings_schema.py`, `test_setting_values.py`, `test_settings_export.py`,
+`test_backup_restore.py`,
 `test_exclude_rules.py`, `test_exclude_scan.py`,
 `test_cleanup_keeps_unmounted_shares.py`, `test_recheck_scan.py`,
 `test_replaced_file_answers.py`. Real
@@ -79,6 +80,10 @@ one of the wrong type, which a full backup restore or a hand edit can leave,
 is read as the default. It also covers the start converting an old true
 or false for `fix_undefined_language` to the three-state value it meant:
 read as the default, an old true had become Always Leave.
+`test_settings_export.py` covers the settings export: without secrets it
+leaves out exactly the four credentials, with them (the default) it writes
+them, and the file imports back whole while leaving the target's own
+credentials alone.
 `test_recheck_scan.py` covers the re-check scan, which decides files a
 routine scan would skip again from their stored tracks, so a settings change
 reaches them without running ffprobe on every file as a Force Full Rescan
