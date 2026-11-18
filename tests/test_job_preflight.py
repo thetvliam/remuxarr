@@ -87,6 +87,14 @@ no telling on the nothing-to-do skip or on the exclusion (the old code,
 one each), telling for a file seen before, telling while dry run is on,
 and telling when the job becomes a review or runs. Each is killed by its
 own test. 36 applied, 36 killed.
+
+An AC3 Forge add's index passed on at pickup. One more mutation, against
+the whole 2810-test suite first, which it survived: the worker leaving the
+index out of what it hands analyze_file, applied at its call. Killed by
+test_an_ac3_forge_add_is_named_to_the_decision. The shared
+scanner._build_analysis_inputs leaving it out is recorded in
+test_forge_undo_resolution, and that test kills it as well. 37 applied,
+37 killed.
 """
 import json
 import os
@@ -569,6 +577,27 @@ def test_each_language_override_set_reaches_its_own_parameter(rig):
     assert kwargs["audio_language_overrides"] == {1: "eng"}
     assert kwargs["subtitle_language_overrides"] == {2: "fre"}
     assert kwargs["subtitle_overrides"] == {3: "keep"}
+
+
+def test_an_ac3_forge_add_is_named_to_the_decision(rig):
+    """
+    The add's index is what lets analyze_file leave the forged copy out of
+    the undefined-track count. Left out, the copy counts as a second
+    untagged source: an untagged AAC 5.1 and its forged AC3, with Always
+    Fix on, are both tagged when the copy is known and left untagged when
+    it is not, with nothing reported either way.
+    """
+    from app.database.models import Ac3ForgeJob
+
+    media_row(rig)
+    rig.db.add(Ac3ForgeJob(file_id=1, status="success", is_undo=False,
+                           aac_stream_index=1, audio_track_count=1))
+    rig.db.commit()
+    queue_row(rig)
+
+    worker._load_job_data(1)
+
+    assert rig.analyze_calls[0].kwargs["forged_ac3_audio_index"] == 1
 
 
 @pytest.mark.parametrize("container", ["mkv", "avi", None])
