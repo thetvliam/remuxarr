@@ -59,6 +59,13 @@ applied: the object check removed and the decode error left uncaught each
 survived the whole 2774-test suite first and are killed here. Opening the
 manifest without encoding="utf-8" survived even under an ASCII locale and
 was dropped from the change: the export writes it in ASCII.
+
+backup.py kept its own copy of SECRET_KEYS until it imported the set from
+settings.py, where /api/settings/export reads it. Before that, settings.py's
+set losing a key survived the whole suite: nothing pinned the export's copy.
+It is killed now by test_secrets_are_deleted_not_blanked and
+test_redaction_covers_exactly_the_four_credential_keys, which pin the one
+set both use.
 """
 import io
 import json

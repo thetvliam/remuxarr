@@ -29,19 +29,13 @@ from app.core.timeutil import utcnow, utcnow_iso_z
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 
+from app.api.routes.settings import SECRET_KEYS
 from app.config import settings as app_settings
 from app.core.worker import pause_worker
 from app.database.session import pending_import_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/backup", tags=["backup"])
-
-# Same four genuine-credential keys as /api/settings/export — kept as a
-# separate copy rather than importing from settings.py, since this module
-# operates on the raw database file directly (including while the app
-# isn't necessarily fully initialized, e.g. mid-restore) rather than
-# through the ORM/settings-service layer that module uses.
-SECRET_KEYS = {"sonarr_api_key", "radarr_api_key", "plex_token", "email_password"}
 
 
 def _wal_safe_backup(source_path: str, dest_path: str) -> None:

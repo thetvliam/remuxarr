@@ -116,7 +116,8 @@ def update_bulk(
 
 # Genuine credentials only — not URLs, not email_username (typically just an
 # address, not a credential on its own), not email_recipients (notification
-# targets, not something that grants access to anything).
+# targets, not something that grants access to anything). A full backup
+# without secrets (backup.py) leaves out the same keys.
 SECRET_KEYS = {"sonarr_api_key", "radarr_api_key", "plex_token", "email_password"}
 
 
