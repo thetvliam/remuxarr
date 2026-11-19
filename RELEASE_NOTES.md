@@ -63,3 +63,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - In Settings → Recycle Bin, Match now opens under the entry you clicked it for. With a long list of unmatched entries it opened below the whole list, off the screen, so clicking Match seemed to do nothing.
+
+## Removed
+
+- The `DELETE /api/history/clear` API endpoint, which deleted finished History entries in bulk and which nothing in Remuxarr used, has been removed: a script calling it now gets an error and nothing is deleted. Dismiss in a job's window still removes one entry.

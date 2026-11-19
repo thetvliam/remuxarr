@@ -151,7 +151,7 @@ def abort_job(job_id: int) -> bool:
             if job.media_file:
                 # Reset the delta-scan sentinels alongside the status, the
                 # same as cancel_item / clear_pending / clear_dry_run and
-                # the history clear/delete paths. An aborted file's bytes
+                # the history delete path. An aborted file's bytes
                 # are unchanged on disk (staging never completed), so the
                 # scanner's size/mtime delta check would read it as
                 # "nothing to do" and never re-evaluate it — leaving it
