@@ -43,6 +43,9 @@ import { AcknowledgedSection } from "./AcknowledgedSection";
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 const PAGE_SIZE = 25;
+/* The most cards one request can ask for: list_review_groups caps limit at
+ * 200. A reload asks for as many cards as were loaded, up to this. */
+const MAX_RELOAD = 200;
 const PREVIEW_DEBOUNCE_MS = 250;
 
 /* A card's answer for one file: the card's choices with that file's own
@@ -254,12 +257,24 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
      * usePaginatedFetch does the same, for the same reason. */
     const generation = useRef(0);
 
+    /* nextOffset as of the last page that landed, for loadPage to read
+     * without depending on it. */
+    const loadedRef = useRef(0);
+
     const loadPage = useCallback(async (offset) => {
         const mine = offset === 0 ? ++generation.current : generation.current;
+        /* A first-page load reloads the list on screen, so it asks for as
+         * many cards as were loaded. Asking for one page dropped every card
+         * past it each time a job finished or a file was queued — the card
+         * being answered included: its staged answers were kept, but it left
+         * the page until scrolled back to. */
+        const limit = offset === 0
+            ? Math.min(MAX_RELOAD, Math.max(PAGE_SIZE, loadedRef.current))
+            : PAGE_SIZE;
         setLoading(true);
         try {
             const r = await fetch(
-                `${api}/api/queue/review/groups?limit=${PAGE_SIZE}&offset=${offset}`);
+                `${api}/api/queue/review/groups?limit=${limit}&offset=${offset}`);
             const data = await r.json();
             if (generation.current !== mine) return;
             const page = data.groups || [];
@@ -274,6 +289,7 @@ export const ReviewPage = ({ api, onRefresh, toast, invalidateHistory,
                 return [...prev, ...page.filter(g => !shown.has(g.key))];
             });
             setNextOffset(offset + page.length);
+            loadedRef.current = offset + page.length;
             setTotalGroups(data.total_groups || 0);
             setTotalFiles(data.total_files || 0);
         } catch (err) {
