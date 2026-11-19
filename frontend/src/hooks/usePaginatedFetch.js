@@ -23,7 +23,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
  *                   (must accept ?limit=&offset=&search= query params and
  *                   return { items, total })
  *    refreshKey   — value that increments/changes when the list may have
- *                   changed
+ *                   changed. Reloads the same list in place: the rows stay
+ *                   until the reply replaces them, and as many are asked for
+ *                   as were loaded. A change to anything else that decides
+ *                   what the list is of (api, endpoint, search, extraParams)
+ *                   is a new list, cleared up front and paged from the top.
  *    search       — debounced search string
  *    pageSize     — items requested per page (default 50)
  *    extraParams  — optional object of additional query params, e.g.
@@ -61,6 +65,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
   const abortRef      = useRef(null);
   const doFetchRef    = useRef(null);
   const generationRef = useRef(0);
+  const listKeyRef    = useRef(null);
 
   /* Callers pass a fresh object literal on every render, so extraParams can
    * never be a dependency directly — it would be a new reference each time
@@ -80,13 +85,30 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
 
     const myGeneration = ++generationRef.current;
 
-    offsetRef.current = 0;
-    setItems([]);
-    setTotal(0);
-    setHasMore(false);
-    setRaw(null);
+    /* A refresh (refreshKey changed, the list itself did not) keeps the rows
+     * on screen until the reply replaces them, and asks for as many as were
+     * loaded. Its callers bump refreshKey on every finished job, queued file,
+     * finished scan and Forge add, and clearing the rows each time collapsed
+     * the list, sent its scroll position back to the top and dropped every
+     * page loaded past the first.
+     *
+     * offsetRef stays where it was until the reply lands. A refresh that
+     * fails then leaves the list paging on from the rows still shown, rather
+     * than from 0, which would append the first page again under them. */
+    const listKey = JSON.stringify([api, endpoint, search, paramsKey]);
+    const refresh = listKeyRef.current === listKey;
+    listKeyRef.current = listKey;
+    const firstLimit = refresh ? Math.max(pageSize, offsetRef.current) : pageSize;
 
-    const doFetch = async (fetchOffset, append) => {
+    if (!refresh) {
+      offsetRef.current = 0;
+      setItems([]);
+      setTotal(0);
+      setHasMore(false);
+      setRaw(null);
+    }
+
+    const doFetch = async (fetchOffset, append, limit = pageSize) => {
       if (loadingRef.current) return;
       if (generationRef.current !== myGeneration) return;
 
@@ -96,7 +118,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
       setLoading(true);
 
       try {
-        const params = new URLSearchParams({ limit: pageSize, offset: fetchOffset });
+        const params = new URLSearchParams({ limit, offset: fetchOffset });
         if (search.trim()) params.set("search", search.trim());
         for (const [k, v] of JSON.parse(paramsKey)) params.set(k, `${v}`.trim());
 
@@ -149,7 +171,7 @@ export function usePaginatedFetch(api, endpoint, refreshKey, search, pageSize = 
     };
 
     doFetchRef.current = doFetch;
-    doFetch(0, false);
+    doFetch(0, false, firstLimit);
 
     return () => {
       if (abortRef.current) abortRef.current.abort();
