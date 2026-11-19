@@ -67,6 +67,7 @@ state for a cycle in which nothing user-visible has changed yet.
 - On the Review page, Confirmed Undefined-Audio Tracks keeps the files you have ticked, and keeps its list on screen, when a job finishes, a file is queued or a scan ends. Each of those unticked everything and blanked the list to "Loading…".
 - Audio Language Review, Subtitle Language Review and the AC3 Forge candidates list keep their rows on screen when they refresh, instead of emptying and jumping back to the top. A finished job, a queued file or a finished scan refreshed the review lists, and every ADD refreshed the candidates, each time keeping only the first page of rows.
 - On the Review page, cards you have scrolled down to stay on the page when a job finishes or a file is queued. Each of those reloaded only the first 25 cards, so the card you were answering could disappear from under you.
+- The History panel on the dashboard keeps its rows on screen when a job finishes, instead of emptying and jumping back to the top. On the Success tab every successful job did that, each time keeping only the first 50 entries.
 
 ## Removed
 

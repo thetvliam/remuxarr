@@ -29,6 +29,16 @@
  *    guards is what happens when a SUPERSEDED request finishes after the one
  *    that replaced it. deferredServer() below hands back release handles so a
  *    test can land responses in a chosen order.
+ *
+ * REFRESH IN PLACE
+ *
+ * A relevant refreshKey bump reloads the same tab without clearing it,
+ * asking for as many rows as were loaded. Mutation, 5 applied, 5 killed. One
+ * was killed already, by "a tab switch resets the visible rows immediately":
+ * a tab switch keeping the old rows. Four survived the whole frontend suite
+ * and are killed by the tests under "refresh in place": a refresh clearing
+ * the rows up front, reloading one page, both at once (the old behaviour),
+ * and resetting the offset before the reply.
  */
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -635,5 +645,99 @@ describe("aborting", () => {
     unmount();
 
     expect(signals[0].aborted).toBe(true);
+  });
+});
+
+
+// ── Refresh in place ─────────────────────────────────────────────────────────
+
+/* A relevant refreshKey bump is the same tab again. On the Success tab that
+ * is every successful job, and each one used to blank the rows mid-flight,
+ * send the list back to the top and keep only its first page. All three
+ * tests fail on the code that did. A tab switch is still a new list: see
+ * "a tab switch resets the visible rows immediately" above. */
+describe("refresh in place", () => {
+  /** Serves `total` rows, exactly the slice each request asks for. */
+  function pagingServer(total) {
+    calls = [];
+    vi.stubGlobal("fetch", vi.fn((url) => {
+      const u = new URL(String(url), "http://localhost");
+      const limit  = Number(u.searchParams.get("limit"));
+      const offset = Number(u.searchParams.get("offset"));
+      calls.push({ limit, offset });
+      const items = Array.from(
+        { length: Math.max(0, Math.min(limit, total - offset)) },
+        (_, n) => item(offset + n + 1),
+      );
+      return Promise.resolve({ ok: true, json: async () => ({ items, total }) });
+    }));
+  }
+
+  /** Loads the first two pages of a 120-row Success tab: 100 rows shown. */
+  async function twoPagesLoaded() {
+    pagingServer(120);
+    const view = renderHook(
+      ({ key }) => useHistoryData("", "success", key, ""),
+      { initialProps: { key: K1_NULL } },
+    );
+    await waitFor(() => expect(view.result.current.items).toHaveLength(50));
+    await act(async () => { view.result.current.loadMore(); });
+    await waitFor(() => expect(view.result.current.items).toHaveLength(100));
+    return view;
+  }
+
+  it("a relevant refresh keeps the rows on screen until the reply lands", async () => {
+    const pending = deferredServer();
+    const { result, rerender } = renderHook(
+      ({ key }) => useHistoryData("", "success", key, ""),
+      { initialProps: { key: K1_NULL } },
+    );
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => { pending[0].release([item(1), item(2)], 2); });
+    await waitFor(() => expect(result.current.items).toHaveLength(2));
+
+    rerender({ key: K2_SUCCESS });
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    // In flight: the old rows and total are still what is shown.
+    expect(result.current.items.map((i) => i.id)).toEqual([1, 2]);
+    expect(result.current.total).toBe(2);
+
+    await act(async () => { pending[1].release([item(2)], 1); });
+    await waitFor(() => expect(result.current.items.map((i) => i.id)).toEqual([2]));
+  });
+
+  it("a relevant refresh asks for as many rows as were loaded, and pages on after them", async () => {
+    const { result, rerender } = await twoPagesLoaded();
+
+    rerender({ key: K2_SUCCESS });
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2]).toEqual({ limit: 100, offset: 0 });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.items).toHaveLength(100);
+    expect(result.current.hasMore).toBe(true);
+
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(calls).toHaveLength(4));
+    expect(calls[3]).toEqual({ limit: 50, offset: 100 });
+  });
+
+  it("a relevant refresh that fails keeps the rows and pages on from them", async () => {
+    /* Paging from 0 again would append the first page under the rows
+     * still shown. */
+    const { result, rerender } = await twoPagesLoaded();
+    const working = globalThis.fetch;
+    const failing = vi.fn(() => Promise.resolve({ ok: false, json: async () => ({}) }));
+    vi.stubGlobal("fetch", failing);
+
+    rerender({ key: K2_SUCCESS });
+    await waitFor(() => expect(failing).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.items).toHaveLength(100);
+
+    vi.stubGlobal("fetch", working);
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(calls).toHaveLength(3));
+    expect(calls[2].offset).toBe(100);
   });
 });
