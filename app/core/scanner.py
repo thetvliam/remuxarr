@@ -2344,3 +2344,48 @@ def _get_forged_ac3_audio_index(db: Session, file_id: int) -> int | None:
     return job.audio_track_count if job else None
 
 
+def _build_analysis_inputs(db: Session, media: MediaFile):
+    """
+    Build (file_info, tracks, analyze_file-kwargs) for deciding a stored
+    MediaFile again from its Track rows. The worker decides a job from
+    these at pickup (worker._load_job_data), and so do the review routes:
+    an answer applied (queue._answer_subtitle_review), its preview
+    (queue.preview_review_decisions) and the Ask again check
+    (queue.ask_again_changes). A scan decides from the probe instead and
+    builds its own (_process_file).
+
+    One function because the copies drifted. Three near-identical inline
+    copies in queue endpoints since replaced by /review/apply
+    (resolve_subtitles, resolve_subtitles_bulk and approve_manual_review)
+    were all missing has_faststart, which the scan and the worker both
+    pass, so an MP4 in manual review whose only remaining work was
+    add_faststart resolved to "no changes needed" and was skipped. The
+    miss was sticky: the file's size and mtime never change on disk, so no
+    delta scan re-evaluated it, and the file stayed un-optimised until a
+    forced full rescan. A scan of the identical file would have queued it.
+    Those three became this function in queue.py; the worker's copy, line
+    for line the same, was folded into it when it moved here.
+    """
+    # In stream order, as the scanner's probe gives them: analyze_file reads
+    # position (the last audio track is the forge copy), and a job's FFmpeg
+    # map follows the list.
+    tracks_raw = (db.query(Track).filter(Track.file_id == media.id)
+                    .order_by(Track.stream_index).all())
+    tracks = [_track_to_dict(t) for t in tracks_raw]
+    file_info = _file_info_for(media)
+    faststart = (
+        is_faststart_mp4(media.path)
+        if (media.container or "").lower() == "mp4"
+        else None
+    )
+    kwargs = dict(
+        subtitle_overrides=_load_subtitle_overrides(media, tracks),
+        audio_language_overrides=_load_audio_language_overrides(media, tracks),
+        subtitle_language_overrides=_load_subtitle_language_overrides(media, tracks),
+        has_faststart=faststart,
+        has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
+        forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
+    )
+    return file_info, tracks, kwargs
+
+

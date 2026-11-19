@@ -1,6 +1,6 @@
 """
-A job keeps the data streams FFmpeg can write back: a GoPro's telemetry,
-and a QuickTime file's timecode, which a revert puts back where it was.
+A job keeps the data streams FFmpeg can write back into an MP4: a GoPro's
+telemetry. A revert gives a QuickTime file's timecode back where it was.
 
 A camera's or a phone's file carries data streams beside its tracks. The
 user's GoPro file GX010042.MP4 holds video, AAC, a timecode track (tmcd)
@@ -12,19 +12,20 @@ capture failed, so the data was gone for good, or with Require Revert
 Point on the job failed (PARKED 38). The explorer cannot see this: its
 check 3 counts no data stream.
 
-The executors now map each data stream the output's muxer writes properly
-(ffmpeg.find_data_streams), after its tracks: "gpmd" into an MP4 or a
-QuickTime file, and a QuickTime file's tmcd, which the QuickTime muxer
-copies, so a revert puts it back where it was. An MP4's tmcd is written
-again by the muxer, last (probe.timecode_track_indices), so in the GoPro's
-layout, timecode before telemetry, the two change places, in the job and in
-the revert alike. No other data stream can be kept: both muxers write a
-data track's sample description only for "tmcd" and "gpmd"
+The executors now map each data stream the MP4 muxer writes properly
+(ffmpeg.find_data_streams), after its tracks: "gpmd". An MP4's tmcd is
+written again by the muxer, last (probe.timecode_track_indices), so in the
+GoPro's layout, timecode before telemetry, the two change places, in the
+job and in the revert alike. No other data stream can be kept: the muxer
+writes a data track's sample description only for "tmcd" and "gpmd"
 (mov_write_stsd_tag, libavformat/movenc.c n8.1.3), so a copied "mebx" track
 would come out with an empty one. A file holding one, the iPhone's, is left
 as it is, as any phone's or camera's own recording now is, a real GoPro's
-among them (test_recording_signs.py). The GoPro-layout file here has
-neither of a real one's signs, so a job still runs on it.
+and every QuickTime movie among them (test_recording_signs.py). The
+GoPro-layout file here has neither of a real one's signs, so a job still
+runs on it. A QuickTime movie a job processed before then is still
+restored as one: the QuickTime muxer copies a tmcd track, so the revert
+puts it back where it was.
 
 These run the real scan, worker and revert on files shaped like the user's,
 six seconds long. Telemetry is made as GoPro-style "gpmd" by copying a
@@ -36,22 +37,18 @@ writes one (_as_iphone_metadata, which test_recording_signs.py uses).
 Verified by mutation, 8 applied, 8 killed. Each was first run against the
 whole suite as it stood (2548 tests): 6 survived it, and the MP4 taking a
 tmcd and QuickTime taking any data stream were killed there by the
-timecode and chapter-track tests:
+timecode and chapter-track tests. Three were of the job's QuickTime
+handling, which has since gone, as no job starts on a QuickTime movie:
+QuickTime taking any data stream, QuickTime leaving out "tmcd", and the
+QuickTime branch handing none. The other 5, run again against the whole
+suite when it went (2810 tests), are killed by:
 
   • the data maps removed                  → argv, the GoPro job and
-                                             revert, the QuickTime file,
-                                             the combined pass
+                                             revert, the combined pass
   • an MP4 taking "tmcd" too               → which streams, the GoPro job
                                              and revert, the combined pass
-  • QuickTime taking any data stream       → which streams (and, when
-                                             first run, an iPhone-style
-                                             track this file then held)
-  • QuickTime leaving out "tmcd"           → which streams, the QuickTime
-                                             file
-  • execute_ffmpeg not passing them        → the GoPro job and revert,
-                                             the QuickTime file
+  • execute_ffmpeg not passing them        → the GoPro job and revert
   • the combined pass not passing them     → the combined pass
-  • the QuickTime branch handing none      → the QuickTime file
   • the MP4 branch handing none            → the GoPro job and revert,
                                              the combined pass
 
@@ -101,14 +98,12 @@ _OTHERS = _probe(_VIDEO, _AUDIO, _data("mebx"), _data("rtmd"),
                  _data("text", "bin_data"))     # an iPhone's, a Sony's, a chapter track
 
 
-@pytest.mark.parametrize("probe, fmt, expected", [
-    (_GOPRO, "mp4", [3]),          # its tmcd the MP4 muxer writes itself
-    (_GOPRO, "mov", [1, 3]),
-    (_OTHERS, "mp4", []),
-    (_OTHERS, "mov", []),
-], ids=["gopro-mp4", "gopro-quicktime", "others-mp4", "others-quicktime"])
-def test_a_job_keeps_the_data_streams_the_muxer_writes(probe, fmt, expected):
-    assert find_data_streams(probe, fmt) == expected
+@pytest.mark.parametrize("probe, expected", [
+    (_GOPRO, [3]),                 # its tmcd the MP4 muxer writes itself
+    (_OTHERS, []),
+], ids=["gopro", "others"])
+def test_a_job_keeps_the_data_streams_the_muxer_writes(probe, expected):
+    assert find_data_streams(probe) == expected
 
 
 def test_data_streams_are_mapped_after_every_track(settings):
@@ -278,20 +273,21 @@ def test_a_gopro_job_keeps_the_telemetry_and_the_revert_gives_it_back(rig):
 
 
 @needs_ffmpeg
-@pytest.mark.usefixtures("before_recordings_were_left_alone")
-def test_a_quicktime_job_keeps_its_data_where_it_was(rig):
+def test_a_quicktime_revert_gives_back_its_data_where_it_was(rig):
     """
-    The QuickTime muxer copies the timecode track and the telemetry, which
-    the job maps after the tracks it keeps; the revert maps every stream in
-    the original's order, so it gives back exactly the file the job was
-    handed, the timecode before the audio again.
+    A processed QuickTime movie holding the timecode track and the
+    telemetry after the tracks it kept: the QuickTime muxer copies both. No
+    job starts on one now, so the revert point is made as one would have
+    left it (_left_by_a_job). The revert maps every stream in the
+    original's order, so it gives back exactly the file the job was handed,
+    the timecode before the audio again.
     """
     movie = _camera(rig.library / "Camera.mov", brand="qt  ")
     before = _streams(movie)
     assert before == [VIDEO, TMCD, ENG, GER, GPMD], "fixture changed"
     telemetry, timecode = _packets(movie, "gpmd"), _packets(movie, "tmcd")
 
-    assert "drop_track" in _run_job(rig, movie)
+    _qt._left_by_a_job(rig, movie, keep=[0, 2, 1, 4], drop=[3])
 
     assert _streams(movie) == [VIDEO, ENG, TMCD, GPMD]
     assert (_packets(movie, "gpmd"), _packets(movie, "tmcd")) == (telemetry, timecode)

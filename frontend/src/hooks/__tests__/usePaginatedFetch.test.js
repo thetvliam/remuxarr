@@ -27,6 +27,22 @@
  *
  * Callers pass pageSize 100 (LanguageReviewSection) and a { language } filter,
  * so the tests below use that shape rather than the defaults.
+ *
+ * REFRESH IN PLACE
+ * ----------------
+ * A refreshKey change reloads the same list without clearing it, asking for
+ * as many rows as were loaded; a change of endpoint, base URL, search or
+ * extraParams is still a new list. "clears the previous list before the new
+ * one arrives" used a refreshKey change and pinned the old truncation, so it
+ * now uses a search.
+ *
+ * Mutation, 9 applied, 9 killed, against the suite with that one test moved.
+ * Three were killed by it already: every change treated as a refresh, and
+ * search or extraParams left out of what makes a new list. Six survived it
+ * and are killed by the tests under "refresh in place": a refresh treated as
+ * a new list, reloading one page, blanking the rows, resetting the offset
+ * before the reply, and the endpoint or base URL left out of what makes a
+ * new list.
  */
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -308,22 +324,26 @@ describe("usePaginatedFetch — pagination", () => {
 
 describe("usePaginatedFetch — reset on dependency change", () => {
   it("clears the previous list before the new one arrives", async () => {
+    /* A new search is a new list. A refreshKey change is not, and is
+     * reloaded in place (see "refresh in place"), so this uses the search. */
     mockServer({ total: 250 });
     const { result, rerender } = renderHook(
-      ({ k }) => usePaginatedFetch("", EP, k, "", 100),
-      { initialProps: { k: K1 } },
+      ({ s }) => usePaginatedFetch("", EP, K1, s, 100),
+      { initialProps: { s: "" } },
     );
     await waitFor(() => expect(result.current.items.length).toBe(100));
 
-    // Load a second page so offset is non-zero, then invalidate.
+    // Load a second page so offset is non-zero, then search.
     await act(async () => { result.current.loadMore(); });
     await waitFor(() => expect(result.current.items.length).toBe(200));
 
-    rerender({ k: K2 });
+    rerender({ s: "show" });
     await waitFor(() => expect(calls.length).toBe(3));
 
-    // The refetch must start from offset 0, not continue from 200.
+    // The new list starts from the first page, not from offset 200 and not
+    // from as many rows as the old one had loaded.
     expect(calls[2].offset).toBe(0);
+    expect(calls[2].limit).toBe(100);
     await waitFor(() => expect(result.current.items.length).toBe(100));
   });
 
@@ -482,5 +502,113 @@ describe("usePaginatedFetch — superseded requests", () => {
 
     expect(result.current.items).toEqual([]);
     expect(result.current.total).toBe(0);
+  });
+});
+
+/* ── Refresh in place ───────────────────────────────────────────────────── */
+
+/* A refreshKey change is the same list again. Its callers bump it on every
+ * finished job, queued file, finished scan and Forge add, and treating each
+ * one as a new list blanked the rows mid-flight, sent the scroll position
+ * back to the top and dropped every page loaded past the first. The first
+ * three tests fail on the code that did; the fourth pins the other half,
+ * that a change of endpoint or base URL is still a new list. */
+describe("usePaginatedFetch — refresh in place", () => {
+  it("a refresh keeps the rows on screen until the reply lands", async () => {
+    const pending = deferredServer();
+    const { result, rerender } = renderHook(
+      ({ k }) => usePaginatedFetch("", EP, k, "", 100),
+      { initialProps: { k: K1 } },
+    );
+    await waitFor(() => expect(pending.length).toBe(1));
+    await act(async () => {
+      pending[0].release([{ id: 1 }, { id: 2 }], 2);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.items.length).toBe(2));
+
+    rerender({ k: K2 });
+    await waitFor(() => expect(pending.length).toBe(2));
+
+    // In flight: the old rows and total are still what is shown.
+    expect(result.current.items.map(i => i.id)).toEqual([1, 2]);
+    expect(result.current.total).toBe(2);
+
+    await act(async () => {
+      pending[1].release([{ id: 2 }], 1);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.items.map(i => i.id)).toEqual([2]));
+    expect(result.current.total).toBe(1);
+  });
+
+  it("a refresh asks for as many rows as were loaded, and pages on after them", async () => {
+    mockServer({ total: 250 });
+    const { result, rerender } = renderHook(
+      ({ k }) => usePaginatedFetch("", EP, k, "", 100),
+      { initialProps: { k: K1 } },
+    );
+    await waitFor(() => expect(result.current.items.length).toBe(100));
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(result.current.items.length).toBe(200));
+
+    rerender({ k: K2 });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2]).toMatchObject({ offset: 0, limit: 200 });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.items.length).toBe(200);
+    expect(result.current.hasMore).toBe(true);
+
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(calls.length).toBe(4));
+    expect(calls[3]).toMatchObject({ offset: 200, limit: 100 });
+  });
+
+  it("a refresh that fails keeps the rows and pages on from them", async () => {
+    /* Paging from 0 again would append the first page under the rows
+     * still shown. */
+    mockServer({ total: 250 });
+    const { result, rerender } = renderHook(
+      ({ k }) => usePaginatedFetch("", EP, k, "", 100),
+      { initialProps: { k: K1 } },
+    );
+    await waitFor(() => expect(result.current.items.length).toBe(100));
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(result.current.items.length).toBe(200));
+
+    const working = globalThis.fetch;
+    const failing = vi.fn(async () => ({ ok: false, json: async () => ({}) }));
+    vi.stubGlobal("fetch", failing);
+    rerender({ k: K2 });
+    await waitFor(() => expect(failing).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.items.length).toBe(200);
+
+    vi.stubGlobal("fetch", working);
+    await act(async () => { result.current.loadMore(); });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].offset).toBe(200);
+  });
+
+  it("a different endpoint or base URL is a new list, cleared up front", async () => {
+    const pending = deferredServer();
+    const { result, rerender } = renderHook(
+      ({ base, ep }) => usePaginatedFetch(base, ep, K1, "", 100),
+      { initialProps: { base: "", ep: EP } },
+    );
+    await waitFor(() => expect(pending.length).toBe(1));
+    await act(async () => { pending[0].release([{ id: 1 }], 1); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.items.length).toBe(1));
+
+    rerender({ base: "", ep: "/api/other/" });
+    await waitFor(() => expect(pending.length).toBe(2));
+    expect(result.current.items).toEqual([]);
+
+    await act(async () => { pending[1].release([{ id: 2 }], 1); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.items.length).toBe(1));
+
+    rerender({ base: "http://elsewhere", ep: "/api/other/" });
+    await waitFor(() => expect(pending.length).toBe(3));
+    expect(result.current.items).toEqual([]);
   });
 });

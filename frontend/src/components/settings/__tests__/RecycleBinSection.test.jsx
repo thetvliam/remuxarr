@@ -23,7 +23,7 @@
  * are pinned: an unmounted volume must not read as an empty bin, and a
  * revert point whose stored tracks are gone must not offer to match.
  *
- * Verified by mutation, 19 applied, 19 killed:
+ * Verified by mutation, 23 applied, 23 killed:
  *
  *   • Revert acting on the first click                  → killed
  *   • ConfirmBtn firing without confirming              → killed
@@ -59,6 +59,13 @@
  * tests waited it out with findByRole — which passes whether or not the
  * row was ever marked, because the reload corrects it either way. They
  * assert synchronously now, against a deliberately delayed /status.
+ *
+ * Four more came with the Match panel opening under its own row, each
+ * surviving all 783 frontend tests first:
+ *   • The panel opening under the last row again        → killed
+ *   • The panel never scrolled into view                → killed
+ *   • Scrolled only before its candidates fill it       → killed
+ *   • Scrolled to the top however little it had to move → killed
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -283,6 +290,46 @@ describe("matching", () => {
     await user.click(await screen.findByRole("button", { name: "MATCH" }));
 
     expect(await screen.findByText(/No candidates found/i)).toBeTruthy();
+  });
+
+  it("opens under the row whose MATCH was clicked", async () => {
+    /* It opened below the whole list, which on a long one was off screen:
+     * the click seemed to do nothing. */
+    setup({ listing: { detached: ["A", "B", "C"].map((name, i) => ({
+      ...DETACHED, id: 20 + i,
+      original_path: `/media/tv/Show/${name}.mkv`, original_filename: `${name}.mkv`,
+    })) } });
+    const user = userEvent.setup();
+
+    await user.click((await screen.findAllByRole("button", { name: "MATCH" }))[0]);
+
+    const panel = await screen.findByText("MATCH A.mkv");
+    const follows = (a, b) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(screen.getByText("A.mkv"), panel)).toBe(true);
+    expect(follows(panel, screen.getByText("B.mkv"))).toBe(true);
+  });
+
+  it("brings the panel into view once its candidates are in", async () => {
+    /* Under the clicked row is not enough when that row is the last one on
+     * screen. jsdom has no scrollIntoView, so this records each call. */
+    const scrolled = [];
+    Element.prototype.scrollIntoView = function (options) {
+      scrolled.push({ text: this.textContent, options });
+    };
+    try {
+      setup();
+      const user = userEvent.setup();
+
+      await user.click(await screen.findByRole("button", { name: "MATCH" }));
+      await screen.findByRole("button", { name: "USE THIS FILE" });
+
+      await waitFor(() => expect(scrolled.some(s =>
+        s.text.startsWith("MATCH Old Name.mkv") && s.text.includes("USE THIS FILE")
+        && s.options?.block === "nearest")).toBe(true));
+    } finally {
+      delete Element.prototype.scrollIntoView;
+    }
   });
 });
 

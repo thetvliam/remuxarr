@@ -8,10 +8,10 @@ name: Sync README to Docker Hub
 # from changes, and a change to the README alone is exactly the kind that
 # should not publish an image, so the sync has its own trigger: a push to
 # main that changes the README, or Run workflow from the Actions tab (use
-# that after editing the repository's description, which is where the short
-# description comes from). Runs only on main, since the testing branch
-# shouldn't rewrite the public description, and only when Docker Hub is
-# configured at all.
+# that after changing the DOCKERHUB_SHORT_DESCRIPTION variable, which is
+# where the short description comes from). Runs only on main, since the
+# testing branch shouldn't rewrite the public description, and only when
+# Docker Hub is configured at all.
 on:
   push:
     branches:
@@ -41,9 +41,15 @@ jobs:
       # relatively, and those resolve to nothing on Docker Hub unless
       # they're rewritten to absolute GitHub URLs.
       #
-      # short-description comes from the GitHub repo's own description
-      # field (Docker Hub caps it at 100 bytes; the README body is capped
-      # at 25,000 — the action truncates and warns rather than failing).
+      # short-description comes from the DOCKERHUB_SHORT_DESCRIPTION
+      # repository variable (Settings → Secrets and variables → Actions →
+      # Variables, like DOCKERHUB_USERNAME). Docker Hub caps it at 100 bytes
+      # and GitHub allows 350 characters for the repo's own description, so
+      # the two can differ, and a longer GitHub description isn't sent to
+      # Docker Hub cut off mid-sentence. Leave the variable unset and the
+      # GitHub description is sent instead. The README body is capped at
+      # 25,000; over either cap the action truncates and warns rather than
+      # failing.
       #
       # NOTE: this step needs a Docker Hub token with read/write/DELETE
       # scope — wider than the read/write an image push needs. If it fails
@@ -56,6 +62,6 @@ jobs:
           username: ${{ env.DOCKERHUB_NAMESPACE }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_NAMESPACE }}/remuxarr
-          short-description: ${{ github.event.repository.description }}
+          short-description: ${{ vars.DOCKERHUB_SHORT_DESCRIPTION || github.event.repository.description }}
           readme-filepath: ./README.md
           enable-url-completion: true

@@ -29,10 +29,15 @@ const PAGE_SIZE = 50;
  *  whether that tab had anything to do with the job that just finished — a
  *  failed job would still blank and reload the Success and Skipped tabs,
  *  producing a visible flash on tabs nothing actually changed on. This hook
- *  now only proceeds with a reset+refetch when refreshKey.status matches
- *  (or could affect) this hook's own `status`. A genuine tab switch or
- *  search change still always refetches — only an irrelevant refreshKey
- *  bump is now a no-op, leaving the currently displayed items untouched.
+ *  now only refetches when refreshKey.status matches (or could affect) this
+ *  hook's own `status`. A genuine tab switch or search change still always
+ *  refetches — only an irrelevant refreshKey bump is now a no-op, leaving
+ *  the currently displayed items untouched.
+ *
+ *  A relevant refreshKey bump reloads the same tab in place: the rows stay
+ *  until the reply replaces them, and as many are asked for as were loaded.
+ *  A tab switch or search change is a new list, cleared up front and paged
+ *  from the top. See the effect.
  *
  *  Distinguishing "refreshKey changed" from "status/search changed" (which
  *  must NOT be gated — switching tabs should always show fresh data) is
@@ -156,12 +161,27 @@ export function useHistoryData(api, status, refreshKey, search) {
     // generation will see the mismatch and discard their results.
     const myGeneration = ++generationRef.current;
 
-    offsetRef.current = 0;
-    setItems([]);
-    setTotal(0);
-    setHasMore(false);
+    /* A relevant refreshKey bump is the same tab again, so it keeps the rows
+     * on screen until the reply replaces them and asks for as many as were
+     * loaded. On the Success tab that is every successful job, and clearing
+     * the rows each time collapsed the list, sent it back to the top and
+     * dropped every page loaded past the first.
+     *
+     * offsetRef stays where it was until the reply lands, so a refresh that
+     * fails leaves the list paging on from the rows still shown, rather than
+     * from 0, which would append the first page again under them. */
+    const firstLimit = onlyRefreshKeyChanged
+      ? Math.max(PAGE_SIZE, offsetRef.current)
+      : PAGE_SIZE;
 
-    const doFetch = async (fetchOffset, append) => {
+    if (!onlyRefreshKeyChanged) {
+      offsetRef.current = 0;
+      setItems([]);
+      setTotal(0);
+      setHasMore(false);
+    }
+
+    const doFetch = async (fetchOffset, append, limit = PAGE_SIZE) => {
       if (loadingRef.current) return;
       if (generationRef.current !== myGeneration) return; // already superseded
 
@@ -171,7 +191,7 @@ export function useHistoryData(api, status, refreshKey, search) {
       setLoading(true);
 
       try {
-        const params = new URLSearchParams({ limit: PAGE_SIZE, offset: fetchOffset });
+        const params = new URLSearchParams({ limit, offset: fetchOffset });
         if (status && status !== "all") params.set("status", status);
         if (search.trim())              params.set("search", search.trim());
 
@@ -223,7 +243,7 @@ export function useHistoryData(api, status, refreshKey, search) {
     };
 
     doFetchRef.current = doFetch;
-    doFetch(0, false);
+    doFetch(0, false, firstLimit);
   }, [api, status, refreshKey, search]);
 
   // Stable callback — reads from refs so it never goes stale

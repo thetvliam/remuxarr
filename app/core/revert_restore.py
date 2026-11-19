@@ -352,14 +352,14 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     # from.
     #
     # -1/-1.0 is the established spelling for "re-evaluate this" —
-    # cancel_item, clear_pending, clear_dry_run, abort_job,
-    # clear_history and delete_history_item all write it, for this exact
-    # reason. Real files never carry a negative size or mtime, so the
-    # value cannot be mistaken for a measurement.
+    # cancel_item, clear_pending, clear_dry_run, abort_job and
+    # delete_history_item all write it, for this exact reason. Real files
+    # never carry a negative size or mtime, so the value cannot be mistaken
+    # for a measurement.
     media.size = -1
     media.mtime = -1.0
 
-    # "unprocessed", matching the history dismissal paths rather than the
+    # "unprocessed", matching history's dismissal path rather than the
     # queue cancellation ones. Both resurface a file; they differ in what
     # they claim happened to it, and a revert has put the file back to
     # never-having-been-processed, which is what last_processed=None below

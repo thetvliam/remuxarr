@@ -30,6 +30,16 @@
  * was written. Without it the cleared files stay on screen and the action
  * looks like it did nothing — which is the failure this whole section
  * exists to fix, reappearing one level up.
+ *
+ * Later, when a reload stopped unticking everything and blanking the rows,
+ * 5 more, each surviving all 791 frontend tests first, 5 killed by the
+ * tests under "across reloads":
+ *
+ *   • A reload dropping the whole selection again                      → killed
+ *   • A reload keeping the ticks of files no longer listed             → killed
+ *   • The pruning inverted, keeping only the files that left           → killed
+ *   • "Loading…" replacing the rows on every reload again              → killed
+ *   • "Loading…" never shown, even before the first list arrives       → killed
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -215,5 +225,98 @@ describe("AcknowledgedSection", () => {
 
     await screen.findByText("A.mkv");
     expect(screen.queryByText(/Showing \d+ of/i)).toBeNull();
+  });
+});
+
+
+describe("across reloads", () => {
+  /* refreshKey is the Review page's reviewRefreshKey, so this list reloads
+   * after every finished job, queued file and finished scan. Each reload
+   * used to untick everything and blank the rows to "Loading…".
+   *
+   * A second mock rather than a change to mockApi: these need the list to
+   * change between fetches, or one fetch held open, and every existing test
+   * wants the same list each time. */
+  let release;
+  const mockLists = (lists, { holdFetch = 0 } = {}) => {
+    let gets = 0;
+    release = null;
+    global.fetch = vi.fn(async () => {
+      const files = lists[Math.min(gets, lists.length - 1)];
+      gets += 1;
+      const reply = { ok: true, json: async () => ({ total: files.length, files }) };
+      if (gets === holdFetch) return new Promise(resolve => { release = () => resolve(reply); });
+      return reply;
+    });
+  };
+  const renderAt = () => {
+    const view = key => <AcknowledgedSection api={API} toast={vi.fn()} refreshKey={key} />;
+    const { rerender } = render(view(0));
+    return { reload: key => rerender(view(key)) };
+  };
+  const listFetches = () => global.fetch.mock.calls.length;
+  const ticked = () => screen.getAllByRole("checkbox").map(box => box.checked);
+  const button = () => screen.getByRole("button", { name: /CLEAR CONFIRMATION/i });
+
+  it("keeps the ticked files when a finished job reloads the list", async () => {
+    mockLists([FILES]);
+    const { reload } = renderAt();
+    const user = userEvent.setup();
+    await screen.findByText("A.mkv");
+    await user.click(screen.getAllByRole("checkbox")[0]);
+
+    reload(1);
+    await waitFor(() => expect(listFetches()).toBe(2));
+
+    await waitFor(() => expect(ticked()).toEqual([true, false]));
+    expect(button().textContent).toContain("CLEAR CONFIRMATION (1 file)");
+  });
+
+  it("unticks a file that leaves the list, so it does not come back ticked", async () => {
+    /* File ids recur. B cleared in another tab and confirmed again later is
+     * the same id; kept ticked while it was gone, it would come back ticked
+     * and be one click from being cleared again unseen. */
+    mockLists([FILES, [FILES[0]], FILES]);
+    const { reload } = renderAt();
+    const user = userEvent.setup();
+    await screen.findByText("B.mkv");
+    await user.click(screen.getAllByRole("checkbox")[1]);
+
+    reload(1);
+    await waitFor(() => expect(screen.queryByText("B.mkv")).toBeNull());
+    expect(button().textContent).toContain("(0 files)");
+    expect(button().disabled).toBe(true);
+
+    reload(2);
+    await screen.findByText("B.mkv");
+    expect(ticked()).toEqual([false, false]);
+  });
+
+  it("says Loading… before the first list arrives", async () => {
+    /* The other half of the rule the reload test pins: with nothing to
+     * show yet, an empty section with a disabled button would look like a
+     * list with nothing in it. */
+    mockLists([FILES], { holdFetch: 1 });
+    renderAt();
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    release();
+    await screen.findByText("A.mkv");
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("keeps the rows on screen while it reloads", async () => {
+    mockLists([FILES], { holdFetch: 2 });
+    const { reload } = renderAt();
+    await screen.findByText("A.mkv");
+
+    reload(1);
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+
+    expect(screen.getByText("A.mkv")).toBeTruthy();
+    expect(screen.queryByText("Loading…")).toBeNull();
+    release();
+    await waitFor(() => expect(listFetches()).toBe(2));
   });
 });

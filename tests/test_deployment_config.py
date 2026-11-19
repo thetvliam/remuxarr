@@ -996,3 +996,25 @@ def test_a_readme_change_on_main_still_reaches_docker_hub():
     text = _read(workflow)
     assert "peter-evans/dockerhub-description" in text
     assert "readme-filepath: ./README.md" in text
+
+
+def test_docker_hub_gets_a_short_description_of_its_own():
+    """
+    Docker Hub caps a repository's short description at 100 bytes, while
+    GitHub allows 350 characters for its own, so the sync sends Docker Hub
+    the DOCKERHUB_SHORT_DESCRIPTION repository variable. Sent the GitHub
+    description instead, Docker Hub would show a long one cut off
+    mid-sentence. The GitHub description is only the fallback, for a
+    repository where the variable is unset.
+
+    Verified by mutation, 4 applied, 4 killed, each surviving the whole
+    2802-test suite first: the GitHub description sent alone, as before;
+    the variable sent with no fallback; the two swapped, so the variable is
+    never read while the GitHub description is set; and no short
+    description sent at all.
+    """
+    text = _read(".github/workflows/dockerhub-readme.yml")
+    sent = [line.strip() for line in text.splitlines()
+            if line.strip().startswith("short-description:")]
+    assert sent == ["short-description: ${{ vars.DOCKERHUB_SHORT_DESCRIPTION"
+                    " || github.event.repository.description }}"], sent

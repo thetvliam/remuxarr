@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTheme, alpha, ALPHA } from "../../theme";
 import { fmtSize, fmtRel, basename } from "../../utils";
 import { useArmedConfirm } from "../../hooks/useArmedConfirm";
@@ -126,6 +126,33 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
   const totalBytes = [...attached, ...detached]
   .reduce((sum, p) => sum + (p.sidecar_size || 0), 0);
 
+  const matchPanel = matching && (
+    <MatchPanel
+    api={api}
+    point={matching}
+    onClose={() => setMatching(null)}
+    onAttach={async (fileId, confirmMismatch) => {
+      // The refusal goes back to the panel rather than to a toast. The
+      // user is picking from a list here, so "no" on its own just sends
+      // them to try the next candidate at random — which is the outcome
+      // the backend builds these reasons to prevent.
+      let refusal = null;
+      const ok = await act(
+        `/api/revert/${matching.id}/attach/`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_id: fileId, confirm_mismatch: confirmMismatch }),
+        },
+        "Matched — this file can now be reverted",
+        detail => { refusal = detail; },
+      );
+      if (ok) setMatching(null);
+      return { ok, refusal };
+    }}
+    />
+  );
+
   return (
     <Panel title="RECYCLE BIN">
     {/* An empty bin means two different things and the difference matters:
@@ -196,43 +223,21 @@ export const RecycleBinSection = ({ api, toast, reloadKey }) => {
         moved. Match one to a file to make it restorable again.
         </Note>
         {detached.map(point => (
+          <Fragment key={point.id}>
           <DetachedRow
-          key={point.id}
           point={point}
           busy={busy}
           onMatch={() => setMatching(point)}
           onDiscard={() => act(`/api/revert/${point.id}/`, { method: "DELETE" },
                                "Discarded")}
                                />
+          {/* Under the row whose MATCH was clicked. Below the whole list, as
+            * it used to be, it opened off screen on a long one, and the
+            * click seemed to do nothing. */}
+          {matching?.id === point.id && matchPanel}
+          </Fragment>
         ))}
         </>
-      )}
-
-      {matching && (
-        <MatchPanel
-        api={api}
-        point={matching}
-        onClose={() => setMatching(null)}
-        onAttach={async (fileId, confirmMismatch) => {
-          // The refusal goes back to the panel rather than to a toast. The
-          // user is picking from a list here, so "no" on its own just sends
-          // them to try the next candidate at random — which is the outcome
-          // the backend builds these reasons to prevent.
-          let refusal = null;
-          const ok = await act(
-            `/api/revert/${matching.id}/attach/`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ file_id: fileId, confirm_mismatch: confirmMismatch }),
-            },
-            "Matched — this file can now be reverted",
-            detail => { refusal = detail; },
-          );
-          if (ok) setMatching(null);
-          return { ok, refusal };
-        }}
-        />
       )}
 
       {(attached.length > 0 || detached.length > 0) && (
@@ -360,6 +365,16 @@ const MatchPanel = ({ api, point, onClose, onAttach }) => {
   const [candidates, setCandidates] = useState(null);
   const [failed, setFailed] = useState(false);
   const [refusal, setRefusal] = useState(null);
+  const panelRef = useRef(null);
+
+  /* The row whose MATCH was clicked can be the last one on screen, with the
+   * panel below the fold. Brought into view as it opens and again once the
+   * candidates fill it; "nearest" moves the page no further than that
+   * takes, and shows the panel's top when it is taller than the screen.
+   * Called optionally because jsdom has no scrollIntoView. */
+  useEffect(() => {
+    panelRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [candidates, failed]);
 
   /* Attach, and keep any refusal here rather than letting it become a
    * toast. assess() reports which streams are missing with their codecs
@@ -392,7 +407,7 @@ const MatchPanel = ({ api, point, onClose, onAttach }) => {
     const nearby = candidates?.nearby || [];
 
     return (
-      <div style={{
+      <div ref={panelRef} style={{
         border: `1px solid ${palette.cyan}`,
         borderRadius: radius.md,
         padding: space.lg,

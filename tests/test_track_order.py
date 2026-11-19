@@ -1,21 +1,26 @@
 """
-The two places a file is decided from its stored tracks read them in stream
+The places a file is decided from its stored tracks read them in stream
 order.
 
 analyze_file reads position: the forge copy is recognised as the last audio
 track, and the FFmpeg command maps streams in the order of the list. The
 scanner decides from the probe, which is in stream order. The worker at
-pickup (_load_job_data) and an answered review (queue._build_analysis_inputs)
-decide from the Track rows, which they read with no ORDER BY, so they relied
-on SQLite handing rows back in the order they were inserted. Rows are only
-ever inserted in probe order, so that has held; it was never guaranteed.
+pickup (_load_job_data) and an answered review decide from the Track rows,
+both now through scanner._build_analysis_inputs. Each once read them with
+no ORDER BY, in its own copy of that code, and so relied on SQLite handing
+rows back in the order they were inserted. Rows are only ever inserted in
+probe order, so that held; it was never guaranteed.
 
 These insert a file's rows in reverse stream order, the one way to tell an
 ordered read from one that happens to come out right, and check the tracks
-the decision is given.
+the decision is given: once through the worker, once through the name the
+queue routes call.
 
 Verified by mutation, 2 applied 2 killed, each surviving the whole
-2334-test suite first: either read without its ORDER BY.
+2334-test suite first: either read without its ORDER BY. When the two
+copies became one, both mutants were run again, re-aimed at each caller
+(its tracks read again without the ORDER BY), and each is still killed by
+its own test here and by nothing else.
 """
 import json
 import os

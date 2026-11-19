@@ -13,15 +13,11 @@ from sqlalchemy.orm import Session
 from app.core.decision import SRT_CONVERTIBLE_SUBS, analyze_file
 from app.core.plex import refresh_in_background
 from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
-                              ScanStats, _clear_stale_status_records,
-                              _file_info_for, _process_file,
-                              _load_subtitle_overrides, _load_audio_language_overrides,
-                              _load_subtitle_language_overrides, _load_track_answers,
-                              _get_forged_ac3_audio_index, _track_to_dict,
+                              ScanStats, _build_analysis_inputs,
+                              _clear_stale_status_records, _process_file,
+                              _load_track_answers, _track_to_dict,
                               _upsert_language_flags, descriptors_by_stream,
-                              packed_divx_for,
                               forget_answers)
-from app.core.probe import is_faststart_mp4
 from app.database.models import (
     AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
     SubtitleLanguageFlag, Track,
@@ -175,47 +171,6 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
         "message": "File re-evaluated — no further action needed.",
         "media_status": media_after.status if media_after else None,
     }
-
-
-def _build_analysis_inputs(db: Session, media: MediaFile):
-    """
-    Build (file_info, tracks, analyze_file-kwargs) for re-running the
-    decision engine on a stored MediaFile — the exact inputs
-    scanner._process_file and worker._load_job_data construct for the
-    same file, in one place.
-
-    Extracted from three near-identical inline copies in endpoints since
-    replaced by /review/apply (resolve_subtitles, resolve_subtitles_bulk
-    and approve_manual_review); _answer_subtitle_review is the caller now.
-    Independent review confirmed the triplication had already produced
-    real divergence: all three copies were missing has_faststart (which
-    scanner and worker both pass), so an MP4 in manual review whose only
-    remaining work was add_faststart resolved to "no changes needed" →
-    skipped — and the miss was STICKY, because the file's size/mtime
-    never change on disk, so no delta scan ever re-evaluates it; the
-    file stayed un-optimised until a forced full rescan. A scan of the
-    identical file would have queued it.
-    """
-    # In stream order, as the scanner's probe gives them: analyze_file reads
-    # position (the last audio track is the forge copy).
-    tracks_raw = (db.query(Track).filter(Track.file_id == media.id)
-                    .order_by(Track.stream_index).all())
-    tracks = [_track_to_dict(t) for t in tracks_raw]
-    file_info = _file_info_for(media)
-    faststart = (
-        is_faststart_mp4(media.path)
-        if (media.container or "").lower() == "mp4"
-        else None
-    )
-    kwargs = dict(
-        subtitle_overrides=_load_subtitle_overrides(media, tracks),
-        audio_language_overrides=_load_audio_language_overrides(media, tracks),
-        subtitle_language_overrides=_load_subtitle_language_overrides(media, tracks),
-        has_faststart=faststart,
-        has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
-        forged_ac3_audio_index=_get_forged_ac3_audio_index(db, media.id),
-    )
-    return file_info, tracks, kwargs
 
 
 def _force_rescan(media: MediaFile) -> None:

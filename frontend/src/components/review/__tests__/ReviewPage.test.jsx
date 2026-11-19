@@ -34,6 +34,18 @@
  * endpoint returns an outcome for every skip as well, with the same fields
  * as an answer — which is the whole of the bug — so a mock without them
  * could not show it. Both mocks below now answer skips the way it does.
+ *
+ * And, when a refresh stopped dropping the cards past the first page, four
+ * more, each surviving all 799 frontend tests first, all killed by the
+ * tests under "a refresh with more than one page loaded":
+ *
+ *   • a refresh asking for the first page alone again
+ *   • the reload not capped at the endpoint's 200
+ *   • the number of cards loaded never recorded, so a reload asks for one page
+ *   • no floor of one page, so the first load asks for none
+ *
+ * The last lived because every other mock here serves the same cards
+ * whatever limit is asked for.
  */
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1629,5 +1641,96 @@ describe("the reload after Apply", () => {
     await user.click(screen.getByRole("button", { name: /^Apply/ }));
 
     await waitFor(() => expect(screen.queryByText(GROUP.heading)).toBeNull());
+  });
+});
+
+/**
+ * A refresh with more than one page of cards loaded.
+ *
+ * reviewRefreshKey is bumped by every finished job and queued file, and the
+ * refresh asked for the first page of 25 again, so every card loaded past
+ * it left the page — the one being answered included. Its staged answers
+ * were kept, but the card was gone until scrolled back to. The first test
+ * fails on the code that did; the other two pin the floor and the cap a
+ * reload stays between.
+ */
+describe("a refresh with more than one page loaded", () => {
+  class ManualObserver {
+    static last = null;
+    constructor(callback) { this.callback = callback; ManualObserver.last = this; }
+    observe() {}
+    disconnect() {}
+  }
+  const card = i => ({ ...SECOND, key: `c${i}`, heading: `Folder ${i} / Season 1`,
+    files: [{ file_id: 1000 + i, filename: `f${i}.mkv`, path: `/f${i}.mkv`, streams: [2, 3] }] });
+
+  /* A server holding `total` cards, serving whatever slice is asked for. */
+  function mockCards(total) {
+    const all = Array.from({ length: total }, (_, i) => card(i));
+    const asked = [];
+    global.fetch = vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes("/review/groups")) {
+        const params = new URL(u).searchParams;
+        const limit = Number(params.get("limit"));
+        const offset = Number(params.get("offset"));
+        asked.push({ limit, offset });
+        const groups = all.slice(offset, offset + limit);
+        return { ok: true, json: async () => ({
+          groups: structuredClone(groups), total_groups: total, total_files: total }) };
+      }
+      return { ok: true, json: async () => ({ items: [], total: 0, files: [] }) };
+    });
+    return asked;
+  }
+  const page = key => <ReviewPage api={API} reviewRefreshKey={key} />;
+  const scrollToEnd = () => act(async () => { ManualObserver.last.callback([{ isIntersecting: true }]); });
+
+  it("keeps the cards loaded past the first page", async () => {
+    vi.stubGlobal("IntersectionObserver", ManualObserver);
+    const asked = mockCards(30);
+    const { rerender } = render(page(0));
+    await screen.findByText("Folder 0 / Season 1");
+    await scrollToEnd();
+    await screen.findByText("Folder 29 / Season 1");
+
+    rerender(page(1));
+    await waitFor(() => expect(asked).toHaveLength(3));
+
+    expect(asked[2]).toEqual({ limit: 30, offset: 0 });
+    await act(() => new Promise(resolve => setTimeout(resolve, 50)));
+    expect(screen.getByText("Folder 29 / Season 1")).toBeInTheDocument();
+  });
+
+  it("asks for a full page on the first load, and on a refresh of a short list", async () => {
+    /* The endpoint refuses a limit of 0, which is what a reload would ask
+     * for before anything had loaded, and a refresh of two cards should
+     * still bring in any that have arrived since. The mocks above serve the
+     * same cards whatever limit is asked for, so they cannot see this. */
+    const asked = mockCards(2);
+    const { rerender } = render(page(0));
+    await screen.findByText("Folder 1 / Season 1");
+    expect(asked[0]).toEqual({ limit: 25, offset: 0 });
+
+    rerender(page(1));
+    await waitFor(() => expect(asked).toHaveLength(2));
+    expect(asked[1]).toEqual({ limit: 25, offset: 0 });
+  });
+
+  it("asks for no more cards than the endpoint allows in one request", async () => {
+    /* list_review_groups caps limit at 200; past it the reload would be
+     * refused rather than shortened. */
+    vi.stubGlobal("IntersectionObserver", ManualObserver);
+    const asked = mockCards(240);
+    const { rerender } = render(page(0));
+    await screen.findByText("Folder 0 / Season 1");
+    for (let n = 1; n <= 8; n++) {
+      await scrollToEnd();
+      await screen.findByText(`Folder ${n * 25 + 24} / Season 1`);
+    }
+
+    rerender(page(1));
+    await waitFor(() => expect(asked).toHaveLength(10));
+    expect(asked[9]).toEqual({ limit: 200, offset: 0 });
   });
 });

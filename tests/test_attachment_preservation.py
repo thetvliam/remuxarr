@@ -753,11 +753,12 @@ def test_a_probe_failure_runs_the_job_as_before(tmp_path, settings, monkeypatch)
 #
 # Verified by mutation against the files that reach app/core/ffmpeg.py,
 # the two executor mutants against the whole suite. All 10 survived the
-# suite before these tests and are killed by them:
+# suite before these tests and were killed by them. One, a QuickTime
+# file's covers handed over too, has since gone with the job's QuickTime
+# handling, as no job starts on a QuickTime movie. The other 9:
 #
 #   • the cover maps removed from the command
 #   • every attached_pic stream mapped, whatever its image type
-#   • a QuickTime file's covers handed over too
 #   • -c:v copy only when the file has a real video track
 #   • every MJPEG, PNG or BMP stream taken for a cover, flag or no flag
 #   • execute_ffmpeg not passing the covers to the command
@@ -1030,39 +1031,6 @@ def test_a_cover_mp4_cannot_hold_is_left_out(tmp_path, settings, name, mimetype)
 
     assert result.success is True, result.error
     assert _cover_streams(out) == []
-
-
-@ffmpeg_required
-def test_a_quicktime_files_cover_is_not_mapped(tmp_path, settings):
-    """
-    FFmpeg's QuickTime muxer writes no iTunes metadata. It accepts a mapped
-    cover and writes nothing, but the cover still takes a track ID and
-    moves the next track's, so a QuickTime file kept as one gets no cover
-    map at all. The file is the MP4 fixture with its major brand made qt,
-    which FFmpeg reads as a QuickTime movie with a cover.
-    """
-    from app.core.ffmpeg import _prepare_extra_streams
-    from app.core.probe import is_quicktime, probe_file
-
-    jpeg = _image(tmp_path, "cover.jpg", "red")
-    source = _mp4_with_covers(tmp_path, [jpeg])
-    decision, _tracks = _mp4_job(source, settings)
-    with open(source, "r+b") as f:
-        f.seek(8)
-        f.write(b"qt  ")
-    probe = probe_file(str(source))
-    assert is_quicktime(probe)
-    cover = [s["index"] for s in probe["streams"]
-             if (s.get("disposition") or {}).get("attached_pic")]
-    assert len(cover) == 1
-
-    def prepare(quicktime):
-        extra = asyncio.run(_prepare_extra_streams(str(source), decision, str(tmp_path),
-                                                   9137, quicktime))
-        return extra.covers, extra.mp4_covers, extra.error
-
-    assert prepare(quicktime=True) == ([], [], None)
-    assert prepare(quicktime=False) == ([], cover, None)
 
 
 @ffmpeg_required

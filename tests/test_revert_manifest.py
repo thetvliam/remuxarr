@@ -6,7 +6,7 @@ What is actually at risk here, in order:
   1. Under-capture. A stream reported as surviving when it did not is a
      revert point that is silently wrong — nothing discovers it until
      someone reverts and the track is gone for good. Over-capture only
-     costs disk. find_lost_streams is built around that asymmetry and the
+     costs disk. match_streams is built around that asymmetry and the
      tests below assert the asymmetry directly, not just the happy path.
 
   2. Faithfulness of the manifest. extract_tracks' normalisations are all
@@ -108,6 +108,16 @@ conversion keyed on the input number a subtitle is read through rather
 than the file it comes from
 (test_mov_text_from_the_file_is_still_converted_in_a_two_file_sidecar).
 
+find_lost_streams, which the lost-stream tests called, was removed later:
+nothing in the app had called it since capture moved to match_streams for
+the whole mapping. The tests call match_streams through _lost instead.
+Every matching mutant above was run again on the full suite before and
+after, and each was killed by the same tests both times. Two are killed by
+one test each, both here: title folded into the fallback key
+(test_retagged_subtitle_title_is_not_reported_as_lost), and language
+folded into the video payload key
+(test_retagged_video_is_not_reported_as_lost).
+
 No equivalent mutants recorded for this file.
 
 The FFmpeg-backed tests skip rather than fail when no ffmpeg binary is
@@ -161,6 +171,14 @@ def _manifest(*streams, chapters=0):
 
     return build_manifest(_probe(*streams, chapters=chapters),
                           original_path="/m/Show.mkv", original_container="mkv")
+
+
+def _lost(manifest, processed_probe):
+    """The manifest streams match_streams pairs with nothing."""
+    from app.core.revert import match_streams
+
+    return [s for s, index in match_streams(manifest, processed_probe)
+            if index is None]
 
 
 # ── Manifest faithfulness ────────────────────────────────────────────────────
@@ -247,8 +265,6 @@ def test_manifest_records_version_container_and_chapter_count():
 # ── Lost-stream detection ────────────────────────────────────────────────────
 
 def test_dropped_audio_track_is_detected():
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(0, "video", "h264", width=1920, height=1080),
         _stream(1, "audio", "aac", channels=6, language="eng"),
@@ -259,7 +275,7 @@ def test_dropped_audio_track_is_detected():
         _stream(1, "audio", "aac", channels=6, language="eng"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["language"] for s in lost] == ["fre"]
     assert lost[0]["index"] == 2, "index must refer to the ORIGINAL file"
 
@@ -270,8 +286,6 @@ def test_retagged_track_is_not_reported_as_lost():
     touching payload — the track is still there, and capturing it would
     put a redundant copy of every re-tagged stream in the sidecar.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "ac3", channels=6, language=None),
     )
@@ -279,7 +293,7 @@ def test_retagged_track_is_not_reported_as_lost():
         _stream(1, "audio", "ac3", channels=6, language="eng"),
     )
 
-    assert find_lost_streams(original, processed) == []
+    assert _lost(original, processed) == []
 
 
 def test_retag_and_drop_of_lookalikes_captures_both():
@@ -299,8 +313,6 @@ def test_retag_and_drop_of_lookalikes_captures_both():
     both is the only answer that is right in both orders, and it costs one
     redundant track on the recycle volume.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "ac3", channels=6, language=None),
         _stream(2, "audio", "ac3", channels=6, language="fre"),
@@ -309,7 +321,7 @@ def test_retag_and_drop_of_lookalikes_captures_both():
         _stream(1, "audio", "ac3", channels=6, language="eng"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["index"] for s in lost] == [1, 2]
 
 
@@ -320,8 +332,6 @@ def test_retag_and_drop_is_safe_in_either_order():
     order hands the survivor to the French original, so the sidecar would
     hold English twice and French not at all.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "ac3", channels=6, language="fre"),
         _stream(2, "audio", "ac3", channels=6, language=None),
@@ -330,7 +340,7 @@ def test_retag_and_drop_is_safe_in_either_order():
         _stream(1, "audio", "ac3", channels=6, language="eng"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert 1 in [s["index"] for s in lost], (
         "the destroyed French track was paired with the surviving English "
         "one and would never be stored"
@@ -355,8 +365,6 @@ def test_identical_twins_where_one_survived_are_both_captured():
     be paired with both originals, leaving the loss unreported) with the
     wrong conclusion. Reporting both still guarantees the loss is seen.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "subtitle", "subrip", language="eng"),
         _stream(2, "subtitle", "subrip", language="eng"),
@@ -365,7 +373,7 @@ def test_identical_twins_where_one_survived_are_both_captured():
         _stream(1, "subtitle", "subrip", language="eng"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["index"] for s in lost] == [1, 2]
 
 
@@ -380,8 +388,6 @@ def test_an_unresolved_survivor_is_not_handed_to_a_looser_pass():
     original instead, and the destroyed French track would be recorded as
     still present.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "aac", channels=2, language="eng", title="Main"),
         _stream(2, "audio", "aac", channels=2, language="eng",
@@ -392,7 +398,7 @@ def test_an_unresolved_survivor_is_not_handed_to_a_looser_pass():
         _stream(1, "audio", "aac", channels=2, language="eng"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["index"] for s in lost] == [1, 2, 3]
 
 
@@ -466,8 +472,6 @@ def test_the_right_one_of_two_similar_tracks_is_reported():
     A version of this test that drops the LAST track passes either way,
     by accident of iteration order. It has to be the first.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "aac", channels=2, language="eng"),
         _stream(2, "audio", "aac", channels=2, language="fre"),
@@ -476,7 +480,7 @@ def test_the_right_one_of_two_similar_tracks_is_reported():
         _stream(2, "audio", "aac", channels=2, language="fre"),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["language"] for s in lost] == ["eng"]
     assert [s["index"] for s in lost] == [1]
 
@@ -499,8 +503,6 @@ def test_dropping_the_default_audio_track_does_not_confuse_the_survivor():
     the sidecar had a plausible size and the right number of streams, and
     the only way to notice was to read the languages.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(0, "video", "h264", width=1920, height=1080),
         _stream(1, "audio", "aac", channels=2, sample_rate="48000",
@@ -515,7 +517,7 @@ def test_dropping_the_default_audio_track_does_not_confuse_the_survivor():
                 language="eng", disposition={"default": 1, "dub": 1}),
     )
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
 
     assert [s["language"] for s in lost] == ["jpn"], (
         "the sidecar would store the track that survived and lose the one "
@@ -529,8 +531,6 @@ def test_a_disposition_change_alone_never_means_lost():
     what it removed, so they cannot be part of any key that decides
     whether a stream survived.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(1, "audio", "eac3", channels=6, language="eng",
                 disposition={"dub": 1}),
@@ -540,7 +540,7 @@ def test_a_disposition_change_alone_never_means_lost():
                 disposition={"default": 1, "dub": 1}),
     )
 
-    assert find_lost_streams(original, processed) == []
+    assert _lost(original, processed) == []
 
 
 def test_language_is_preferred_over_position_when_pairing():
@@ -576,8 +576,6 @@ def test_retagged_subtitle_title_is_not_reported_as_lost():
     re-titled subtitle as destroyed — and re-titling is a normal outcome
     of subtitle language handling, not an edge case.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(2, "subtitle", "subrip", language="eng", title="English (SDH)"),
     )
@@ -585,7 +583,7 @@ def test_retagged_subtitle_title_is_not_reported_as_lost():
         _stream(2, "subtitle", "subrip", language="eng", title="English"),
     )
 
-    assert find_lost_streams(original, processed) == []
+    assert _lost(original, processed) == []
 
 
 def test_retagged_video_is_not_reported_as_lost():
@@ -595,8 +593,6 @@ def test_retagged_video_is_not_reported_as_lost():
     in the sidecar, which is the one thing the size estimates for this
     feature assume never happens.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(0, "video", "h264", width=1920, height=1080, language=None),
     )
@@ -604,20 +600,18 @@ def test_retagged_video_is_not_reported_as_lost():
         _stream(0, "video", "h264", width=1920, height=1080, language="eng"),
     )
 
-    assert find_lost_streams(original, processed) == []
+    assert _lost(original, processed) == []
 
 
 def test_lost_attachment_is_detected():
     """The bug's fingerprint: nothing in the job's plan mentions this."""
-    from app.core.revert import find_lost_streams
-
     original = _manifest(
         _stream(0, "video", "h264", width=1920, height=1080),
         _stream(1, "attachment", "ttf", filename="Roboto.ttf"),
     )
     processed = _probe(_stream(0, "video", "h264", width=1920, height=1080))
 
-    lost = find_lost_streams(original, processed)
+    lost = _lost(original, processed)
     assert [s["type"] for s in lost] == ["attachment"]
 
 
@@ -627,17 +621,13 @@ def test_codec_change_is_treated_as_loss():
     the subrip original — which is both the safe direction and the better
     thing to restore from.
     """
-    from app.core.revert import find_lost_streams
-
     original = _manifest(_stream(2, "subtitle", "subrip", language="eng"))
     processed = _probe(_stream(2, "subtitle", "mov_text", language="eng"))
 
-    assert len(find_lost_streams(original, processed)) == 1
+    assert len(_lost(original, processed)) == 1
 
 
 def test_untouched_file_loses_nothing():
-    from app.core.revert import find_lost_streams
-
     streams = (
         _stream(0, "video", "h264", width=1920, height=1080),
         _stream(1, "audio", "eac3", channels=6, language="eng",
@@ -646,7 +636,7 @@ def test_untouched_file_loses_nothing():
         _stream(3, "attachment", "ttf", filename="Roboto.ttf"),
     )
 
-    assert find_lost_streams(_manifest(*streams), _probe(*streams)) == []
+    assert _lost(_manifest(*streams), _probe(*streams)) == []
 
 
 # ── Sidecar command ──────────────────────────────────────────────────────────

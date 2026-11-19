@@ -626,3 +626,77 @@ def test_a_restored_file_whose_only_audio_is_an_ac3_51_is_not_settled(forge_db):
     forge_db.commit()
 
     assert _statuses(forge_db)[done] == ("success", False)
+
+
+# ── The index reaches every decision ─────────────────────────────────────────
+#
+# _get_forged_ac3_audio_index's answer matters only if analyze_file is given
+# it, and two places hand it over: the scan's own call (_process_file), and
+# scanner._build_analysis_inputs, which the worker at pickup and the review
+# routes decide from. The worker's side is tested in test_job_preflight.
+# Left out anywhere, the forged copy counts as a second untagged source, and
+# an untagged AAC 5.1 and its copy are left untagged with Always Fix on.
+#
+# Mutants, each run against the whole 2810-test suite first and all
+# surviving it: scanner._build_analysis_inputs leaving the index out (killed
+# by the review-route test here and by test_job_preflight's), the name the
+# queue routes call handing it on without it (the review-route test), and
+# the scan's own call leaving it out (the scan test).
+
+_FORGED_PROBE = {
+    "format": {"format_name": "matroska,webm", "duration": "1.0"},
+    "streams": [
+        {"index": 0, "codec_type": "video", "codec_name": "h264"},
+        {"index": 1, "codec_type": "audio", "codec_name": "aac", "channels": 6,
+         "channel_layout": "5.1"},
+        {"index": 2, "codec_type": "audio", "codec_name": "ac3", "channels": 6,
+         "channel_layout": "5.1"},
+    ],
+}
+
+
+def test_the_review_routes_are_given_the_forge_index():
+    """What an answered review, its preview and Ask again decide from."""
+    from app.api.routes.queue import _build_analysis_inputs
+    from app.database.models import MediaFile
+
+    db = _make_forge_db()
+    _forge_job(db, status="success", is_undo=False)
+
+    _, _, kwargs = _build_analysis_inputs(db, db.get(MediaFile, 1))
+
+    assert kwargs["forged_ac3_audio_index"] == 1
+
+
+def test_a_scan_is_given_the_forge_index(monkeypatch, tmp_path):
+    """A scan after the add, and one before it, which is given none."""
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.conftest import memory_engine
+
+    from app.core import scanner
+    from app.database.models import Ac3ForgeJob, Base, MediaFile
+
+    engine = memory_engine()
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    path = tmp_path / "Film.mkv"
+    path.write_bytes(b"\0" * 64)
+    monkeypatch.setattr(scanner, "probe_file", lambda *_a, **_kw: _FORGED_PROBE)
+    given = []
+    real = scanner.analyze_file
+
+    def recording(*args, **kwargs):
+        given.append(kwargs["forged_ac3_audio_index"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(scanner, "analyze_file", recording)
+
+    scanner.queue_single_file(db, str(path))
+    media = db.query(MediaFile).filter(MediaFile.path == str(path)).one()
+    db.add(Ac3ForgeJob(file_id=media.id, status="success", is_undo=False,
+                       aac_stream_index=1, audio_track_count=1))
+    db.commit()
+    scanner.queue_single_file(db, str(path))
+
+    assert given == [None, 1]

@@ -24,7 +24,7 @@ from app.core.decision import ProcessingDecision, analyze_file
 from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
-from app.core.probe import count_font_attachments, is_faststart_mp4, is_quicktime, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.probe import lost_file_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
@@ -32,7 +32,7 @@ from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
 from app.core.plex import notify_plex_new_file, plex_connection, refresh_in_background
 from app.core.radarr import notify_radarr, restore_movie_quality
-from app.core.scanner import ANSWER_COLUMNS, ScanStats, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _file_info_for, _load_subtitle_overrides, _load_audio_language_overrides, _load_subtitle_language_overrides, _get_forged_ac3_audio_index, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, packed_divx_for, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
+from app.core.scanner import ANSWER_COLUMNS, ScanStats, _build_analysis_inputs, _clear_stale_status_records, _delete_media_file_and_related, _process_file, clear_media_answers, job_stream_mapping, newest_arr_ids, _track_shapes, _track_to_dict, _upsert_language_flags, next_free_srt_name, rekey_language_flags, rekey_media_answers, queue_single_file, replace_track_rows
 from app.core.sonarr import notify_sonarr, restore_episode_quality
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, NotificationState, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
 from app.database.session import SessionLocal, get_app_settings
@@ -151,7 +151,7 @@ def abort_job(job_id: int) -> bool:
             if job.media_file:
                 # Reset the delta-scan sentinels alongside the status, the
                 # same as cancel_item / clear_pending / clear_dry_run and
-                # the history clear/delete paths. An aborted file's bytes
+                # the history delete path. An aborted file's bytes
                 # are unchanged on disk (staging never completed), so the
                 # scanner's size/mtime delta check would read it as
                 # "nothing to do" and never re-evaluate it — leaving it
@@ -1602,7 +1602,6 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
                 before_staging    = on_before_staging,
                 before_swap       = on_before_swap,
                 on_swap_ready     = on_swap_ready,
-                quicktime         = file_dict.get("quicktime", False),
             )
 
     except asyncio.CancelledError:
@@ -2002,33 +2001,8 @@ def _load_job_data(job_id: int):
         if probe_data is not None:
             media.recording_signs = extract_format_info(probe_data)["recording_signs"]
 
-        # In stream order: analyze_file reads position (the last audio
-        # track is the forge copy), and the FFmpeg map follows the list.
-        tracks_raw: list[Track] = (
-            db.query(Track).filter(Track.file_id == media.id)
-              .order_by(Track.stream_index).all()
-        )
-        tracks = [_track_to_dict(t) for t in tracks_raw]
-
-        file_info  = _file_info_for(media)
-        overrides  = _load_subtitle_overrides(media, tracks)
-        audio_lang_overrides = _load_audio_language_overrides(media, tracks)
-        subtitle_lang_overrides = _load_subtitle_language_overrides(media, tracks)
-        faststart  = (
-            is_faststart_mp4(media.path)
-            if (media.container or "").lower() == "mp4"
-            else None
-        )
-        forged_ac3_audio_index = _get_forged_ac3_audio_index(db, media.id)
-        decision   = analyze_file(
-            file_info, tracks, app_cfg,
-            subtitle_overrides=overrides,
-            audio_language_overrides=audio_lang_overrides,
-            subtitle_language_overrides=subtitle_lang_overrides,
-            has_faststart=faststart,
-            has_packed_bframes=packed_divx_for(media.path, media.container, tracks),
-            forged_ac3_audio_index=forged_ac3_audio_index,
-        )
+        file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
+        decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
 
         if decision.is_manual_review:
             _clear_leftover_rows(db, media.id)
@@ -2101,11 +2075,8 @@ def _load_job_data(job_id: int):
 
         return (
             {"id": job.id, "is_dry_run": job.is_dry_run},
-            # quicktime from the probe above, as the stored record does not
-            # hold the brand. With no probe, False: the MP4 muxer, as before
-            # QuickTime files were told apart (ffmpeg.output_muxer).
             {"id": media.id, "path": media.path, "filename": media.filename,
-             "size": media.size, "quicktime": is_quicktime(probe_data)},
+             "size": media.size},
             tracks,
             app_cfg,
             decision,
@@ -3548,7 +3519,6 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             add_faststart     = job_data["add_faststart"],
             titles            = job_data.get("titles"),
             covers            = covers,
-            quicktime         = job_data.get("quicktime", False),
             rebuilt_tracks    = job_data.get("rebuilt_tracks", ()),
             creation_time     = job_data.get("creation_time"),
         )

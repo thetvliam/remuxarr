@@ -2,11 +2,8 @@
 Revert manifests — describing a file's original layout, and working out
 what a job actually destroyed.
 
-Three functions — build_manifest, match_streams and find_lost_streams — and
-the interesting decisions are about faithfulness rather than cleverness.
-match_streams is public rather than a helper of find_lost_streams because
-revert_capture and revert_match both need the pairing without the
-"what is missing" view layered on top.
+build_manifest and match_streams do the work, and the interesting
+decisions are about faithfulness rather than cleverness.
 
 build_manifest reads raw ffprobe output rather than probe.extract_tracks().
 That is not a shortcut around an existing helper, it is the opposite:
@@ -29,11 +26,12 @@ normalisations is wrong to persist here.
 So the manifest stores what ffprobe reported: set disposition flags, raw
 tags, nothing derived.
 
-find_lost_streams compares the original against the file the job produced
-and returns what is no longer there. It deliberately does NOT read the
-job's planned actions, because the plan is a statement of intent and the
-sidecar has to be built from what happened — the attachment loss above is
-exactly a case where the two disagree and nothing in the plan mentions it.
+match_streams compares the original against the file the job produced,
+and an original stream it pairs with nothing is no longer there. It
+deliberately does NOT read the job's planned actions, because the plan
+is a statement of intent and the sidecar has to be built from what
+happened — the attachment loss above is exactly a case where the two
+disagree and nothing in the plan mentions it.
 
 match_streams can be told one thing by the job: where each of its kept
 tracks went (positional_pairs, as `pinned`). That is not the plan standing
@@ -315,8 +313,7 @@ def match_streams(
 
     Restore needs the whole mapping, not just the gaps: for each original
     stream it has to know whether to pull that stream out of the processed
-    file or out of the sidecar, and at which index. find_lost_streams is
-    the capture-side view of the same answer.
+    file or out of the sidecar, and at which index.
 
     Matching runs in three passes, each looser than the last, and the
     order is the whole design — a looser pass must never get to claim a
@@ -413,12 +410,3 @@ def match_streams(
         matched[id(original)] = None
 
     return [(s, matched[id(s)]) for s in manifest.get("streams", [])]
-
-
-def find_lost_streams(manifest: dict, processed_probe: dict) -> list[dict]:
-    """
-    Return the manifest entries with no counterpart in the processed file.
-    A thin view over match_streams — see there for how matching works.
-    """
-    return [s for s, index in match_streams(manifest, processed_probe)
-            if index is None]
