@@ -48,13 +48,20 @@ export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
             const r = await fetch(`${api}/api/queue/acknowledged`);
             if (!r.ok) throw new Error(String(r.status));
             const data = await r.json();
-            setFiles(data.files || []);
+            const listed = data.files || [];
+            setFiles(listed);
             setTotal(data.total || 0);
-            /* Selection is dropped on every reload rather than reconciled
-             * against the new list. A stale id would silently do nothing on
-             * clear, and a checkbox that looks ticked but clears nothing is
-             * worse than making the user pick again. */
-            setSelected(new Set());
+            /* The selection survives a reload, less any file no longer
+             * listed. Dropping it whole unticked whatever the user was
+             * choosing on every reload, and refreshKey is the Review page's
+             * reviewRefreshKey: every finished job, queued file and finished
+             * scan reloads this list. A file that has left is unticked
+             * rather than kept, so the button never counts or sends it, and
+             * because file ids recur: a file confirmed again later must not
+             * come back already ticked. A cleared file leaves the list, so
+             * clearing unticks it this way too. */
+            const ids = new Set(listed.map(f => f.id));
+            setSelected(prev => new Set([...prev].filter(id => ids.has(id))));
         } catch {
             setFiles([]);
             setTotal(0);
@@ -152,7 +159,10 @@ export const AcknowledgedSection = ({ api, toast, refreshKey }) => {
         />
         </div>
 
-        {loading ? (
+        {/* Only before there is anything to show. On a reload the rows stay
+          * until the new list replaces them, rather than the section
+          * blanking to "Loading…" each time the queue moves on. */}
+        {loading && files.length === 0 ? (
             <EmptyState msg="Loading…" />
         ) : (
             <>
