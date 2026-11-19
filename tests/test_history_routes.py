@@ -54,6 +54,13 @@ orphaned row. Eight on the code that stays were run on the full suite
 before and after, and each was killed by the same tests both times apart
 from the removed ones: each status dropped from TERMINAL_STATUSES, and
 delete_history_item skipping its size, mtime or status reset.
+
+delete_history_item's commit and its guard for a row whose file record is
+gone had no tests of their own; clear_history's two tests of the same
+things went with it. Two mutations, each against the whole 2800-test suite
+first, both survived: no commit, and no guard. Each is killed by its own
+test, test_deleting_commits_its_removal and
+test_an_item_whose_file_record_is_gone_can_still_be_deleted.
 """
 import pytest
 from fastapi import HTTPException
@@ -196,6 +203,52 @@ def test_every_terminal_status_can_be_deleted(db, status):
 
     _file(db)
     _item(db, status=status)
+
+    assert delete_history_item(1, db) == {"success": True}
+    assert db.query(QueueItem).count() == 0
+
+
+def test_deleting_commits_its_removal(tmp_path):
+    """
+    Checked from a second session. A single session cannot see this: a
+    deleted row is already invisible to the session that deleted it, so a
+    missing db.commit() looks identical to a successful one until the
+    session closes and the row comes back, with the file's reset undone.
+    Dismiss would then have done nothing.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api.routes.history import delete_history_item
+    from app.database.models import Base, QueueItem
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'h.db'}")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as seed:
+        _file(seed)
+        _item(seed, status="success")
+
+    with Session() as work:
+        assert delete_history_item(1, work) == {"success": True}
+
+    with Session() as check:
+        assert check.query(QueueItem).count() == 0, (
+            "delete_history_item did not commit — the removal was rolled back"
+        )
+        assert _sentinels(check) == (-1, -1.0, "unprocessed")
+
+
+def test_an_item_whose_file_record_is_gone_can_still_be_deleted(db):
+    """A history row left without its file record must not make Dismiss fail."""
+    from app.api.routes.history import delete_history_item
+    from app.database.models import QueueItem
+
+    _file(db, file_id=1)
+    _item(db, item_id=1, file_id=1, status="success")
+    db.query(QueueItem).filter(QueueItem.id == 1).update({"file_id": 4242})
+    db.commit()
 
     assert delete_history_item(1, db) == {"success": True}
     assert db.query(QueueItem).count() == 0
