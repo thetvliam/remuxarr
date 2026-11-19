@@ -162,14 +162,26 @@ export const LanguageReviewSection = ({
         ? [...facets, { language, count: 0 }]
         : facets;
 
-        // Clear selection whenever the underlying list changes shape (new
-        // search, new language filter, or a refresh after an action) — stale
-        // selected IDs pointing at items no longer shown would be confusing to
-        // act on, and the bulk actions would apply to files that are no longer
-        // on screen.
+        /* The ticks go when the user changes what the list is of: a new
+         * search or language filter, or this section's own Set Language or
+         * Confirm Correct (the local refreshKey), whose tracks have just been
+         * answered.
+         *
+         * Not on reviewRefreshKey. It is bumped whenever a job finishes, a
+         * file is queued or a scan ends, so on a busy queue every finished
+         * job unticked whatever the user was in the middle of choosing. The
+         * review cards above dropped their staged answers the same way until
+         * ReviewPage kept them; these lists keep their ticks for the same
+         * reason.
+         *
+         * A tick whose track has left the list is kept but does nothing: the
+         * buttons count, and send, only ticked tracks still listed (listedIds
+         * below), so nothing is sent for a track no longer on screen. One
+         * whose track is merely not loaded again yet comes back ticked when
+         * it is. */
         useEffect(() => {
             setSelected(new Set());
-        }, [debouncedSearch, language, combinedKey]);
+        }, [debouncedSearch, language, refreshKey]);
 
         useEffect(() => {
             const sentinel = sentinelRef.current;
@@ -250,17 +262,27 @@ export const LanguageReviewSection = ({
          * said "Ignoring 1 file". Both numbers were right about their own
          * unit and the pair was unreadable.
          *
-         * SET LANGUAGE deliberately keeps selected.size. Applying really is
-         * per-track and that button sends the flag ids untouched, so the two
-         * buttons count different things on purpose. */
+         * SET LANGUAGE counts tracks instead, listedIds below. Applying really
+         * is per-track and that button sends the flag ids themselves, so the
+         * two buttons count different things on purpose. */
         const selectedFileIds = useMemo(
             () => Array.from(new Set(
                 items.filter(i => selected.has(i.id)).map(i => i.file_id))),
             [items, selected],
         );
 
+        /* The ticked tracks still listed: what SET LANGUAGE counts and sends.
+         * The selection outlives a refresh from outside (see the effect that
+         * clears it), so it can hold a track answered elsewhere or resolved
+         * by a finished job since it was ticked. selectedFileIds above reads
+         * the list the same way. */
+        const listedIds = useMemo(
+            () => items.filter(i => selected.has(i.id)).map(i => i.id),
+            [items, selected],
+        );
+
         const applyLanguage = async () => {
-            if (selected.size === 0) return;
+            if (listedIds.length === 0) return;
             const lang = targetLang.trim().toLowerCase();
             if (!lang) return;
             setBusy(true);
@@ -272,24 +294,24 @@ export const LanguageReviewSection = ({
                 const r = await fetch(`${api}${endpoint}apply`, {
                     method:  "POST",
                     headers: { "Content-Type": "application/json" },
-                    body:    JSON.stringify({ flag_ids: Array.from(selected), target_language: lang }),
+                    body:    JSON.stringify({ flag_ids: listedIds, target_language: lang }),
                 });
                 if (!r.ok) {
-                    toast?.(`Failed to set ${trackNoun} on ${selected.size} file${selected.size === 1 ? "" : "s"}`, "error");
+                    toast?.(`Failed to set ${trackNoun} on ${listedIds.length} file${listedIds.length === 1 ? "" : "s"}`, "error");
                     return;
                 }
                 // Confirmed, not just refreshed. Failure was reported and success
                 // was not, so the only signal either way was the list emptying —
                 // which is also what a no-op looks like.
                 //
-                // The count comes from the RESPONSE, not from selected.size.
+                // The count comes from the RESPONSE, not from listedIds.length.
                 // The endpoint applies per file and returns {applied, errors[]}
                 // — a file can be missing from disk, have no flag row, or be
                 // mid-job. Reporting the number SENT meant selecting 50
                 // episodes with 12 rejected still said all 50 were re-tagged,
                 // and the rejections surfaced nowhere at all.
                 const data     = await r.json().catch(() => ({}));
-                const applied  = typeof data.applied === "number" ? data.applied : selected.size;
+                const applied  = typeof data.applied === "number" ? data.applied : listedIds.length;
                 const problems = Array.isArray(data.errors) ? data.errors : [];
                 // Files whose job was running. The choice is saved and applied
                 // once the job finishes, so these are neither applied now nor
@@ -376,7 +398,7 @@ export const LanguageReviewSection = ({
         };
 
         const ignoreSelected = async () => {
-            if (selected.size === 0) return;
+            if (selectedFileIds.length === 0) return;
             setBusy(true);
             try {
                 /* The same list the IGNORE button counts, so the label and the
@@ -570,11 +592,11 @@ export const LanguageReviewSection = ({
                   * subtitles on one release read as "3" next to "1" with no
                   * explanation on screen. */}
                 <Btn
-                label={busy ? "WORKING…" : `SET LANGUAGE (${selected.size} ${selected.size === 1 ? "track" : "tracks"})`}
+                label={busy ? "WORKING…" : `SET LANGUAGE (${listedIds.length} ${listedIds.length === 1 ? "track" : "tracks"})`}
                 color={palette.green}
                 bg={alpha(palette.green, ALPHA.low)}
                 onClick={applyLanguage}
-                disabled={busy || selected.size === 0 || !langValid}
+                disabled={busy || listedIds.length === 0 || !langValid}
                 />
                 {/* Was IGNORE, which reads as "dismiss" or "not now". It is
                   * neither. It asserts the existing tag is right, deletes
@@ -593,7 +615,7 @@ export const LanguageReviewSection = ({
                 color={palette.dim}
                 bg="transparent"
                 onClick={ignoreSelected}
-                disabled={busy || selected.size === 0}
+                disabled={busy || selectedFileIds.length === 0}
                 />
                 </div>
 

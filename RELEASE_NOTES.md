@@ -63,6 +63,7 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - In Settings → Recycle Bin, Match now opens under the entry you clicked it for. With a long list of unmatched entries it opened below the whole list, off the screen, so clicking Match seemed to do nothing.
+- On the Review page, the tracks you have ticked in Audio Language Review and Subtitle Language Review stay ticked when a job finishes, a file is queued or a scan ends. Every one of those cleared them, so on a busy queue a selection could vanish while you were making it.
 
 ## Removed
 

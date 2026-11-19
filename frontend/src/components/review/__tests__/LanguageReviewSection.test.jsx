@@ -730,6 +730,157 @@ describe("refresh signals", () => {
 });
 
 
+describe("the ticks across refreshes", () => {
+  /* The ticks went on every change of the combined key, and half of that key
+   * is reviewRefreshKey: bumped by every finished job, queued file and
+   * finished scan. On a busy queue every finished job unticked whatever the
+   * user was in the middle of choosing. They now go only when the user
+   * changes what the list is of — the search, the language filter — or
+   * after this section's own Set Language or Confirm Correct. A tick whose
+   * track has left the list stays in the selection and is neither counted
+   * nor sent.
+   *
+   * The first two tests fail on the old code: the refresh unticks
+   * everything, so the ticks are gone and the apply button reads 0 tracks.
+   * The other four pass on it, and pin the rest of the rule against the
+   * mutants below.
+   *
+   * Mutation, 8 applied 8 killed, each surviving all 785 frontend tests
+   * first: the ticks cleared on reviewRefreshKey again (killed by the first
+   * two), kept after this section's own Set Language (the last), kept on a
+   * new search or language filter (one test each), Set Language sending
+   * every tick rather than the listed ones (the second) or counting them
+   * (the second and third), and either button enabled by a tick whose track
+   * has gone (the third). Two more are equivalent: the early returns in
+   * applyLanguage and ignoreSelected counting every tick. Each handler is
+   * reached only from its button, and the button is disabled in exactly the
+   * case the early return is for.
+   *
+   * A second mock rather than a change to setup(): setup() serves the same
+   * list to every request, and these need the list to change between two
+   * fetches, the way it does when a job resolves a track the user ticked. */
+  const setupLists = (lists, postJson = { applied: 1, ignored: 1 }) => {
+    calls = [];
+    toasts = [];
+    let gets = 0;
+    global.fetch = vi.fn(async (url, options = {}) => {
+      calls.push({ url: String(url), method: options.method || "GET",
+        body: options.body });
+      if ((options.method || "GET") !== "GET") {
+        return { ok: true, json: async () => postJson };
+      }
+      const items = lists[Math.min(gets, lists.length - 1)];
+      gets += 1;
+      return {
+        ok: true,
+        json: async () => ({ total: items.length, items,
+          languages: [{ language: "und", count: items.length }] }),
+      };
+    });
+    const view = key => (
+      <ThemeProvider>
+      <SubtitleLanguageReviewSection api={API}
+                                     toast={(msg, tone) => toasts.push([msg, tone])}
+                                     reviewRefreshKey={key} />
+      </ThemeProvider>
+    );
+    const { rerender } = render(view(0));
+    return { refreshFromOutside: key => rerender(view(key)) };
+  };
+
+  /** The track checkboxes, without SELECT ALL LOADED ahead of them. */
+  const trackBoxes = () => screen.getAllByRole("checkbox").slice(1);
+  const ticked = () => trackBoxes().map(box => box.checked);
+
+  it("keeps the ticked tracks when a finished job refreshes the list", async () => {
+    const { refreshFromOutside } = setupLists([ITEMS]);
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[0]);   // flag 11
+    await user.click(trackBoxes()[2]);   // flag 13
+
+    refreshFromOutside(1);
+    await waitFor(() => expect(listFetches()).toBe(2));
+
+    await waitFor(() => expect(ticked()).toEqual([true, false, true]));
+    expect(screen.getByRole("button", { name: /SET LANGUAGE \(2 tracks\)/ })).toBeTruthy();
+  });
+
+  it("sends only the ticked tracks still listed after a refresh", async () => {
+    /* The tick outlives the refresh but its track need not: answered in
+     * another tab, or resolved by the job that just finished. Sending it
+     * would answer a question that is no longer on screen. */
+    const { refreshFromOutside } = setupLists([ITEMS, [ITEMS[0], ITEMS[1]]]);
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[0]);   // flag 11
+    await user.click(trackBoxes()[2]);   // flag 13, about to go
+
+    refreshFromOutside(1);
+    await waitFor(() => expect(trackBoxes()).toHaveLength(2));
+
+    const apply = screen.getByRole("button", { name: /SET LANGUAGE/ });
+    expect(apply.textContent).toMatch(/\(1 track\)/);
+    await user.click(apply);
+    await waitFor(() => expect(calls.some(c => c.url.includes("/apply"))).toBe(true));
+    expect(bodyOf("/apply").flag_ids).toEqual([11]);
+  });
+
+  it("offers neither button for ticks whose tracks have gone", async () => {
+    const { refreshFromOutside } = setupLists([ITEMS, [ITEMS[0], ITEMS[1]]]);
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[2]);   // flag 13 only
+
+    refreshFromOutside(1);
+    await waitFor(() => expect(trackBoxes()).toHaveLength(2));
+
+    expect(screen.getByRole("button", { name: /SET LANGUAGE \(0 tracks\)/ }).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: /CONFIRM CORRECT \(0 files\)/ }).disabled).toBe(true);
+  });
+
+  it("clears the ticks when the search changes", async () => {
+    setupLists([ITEMS]);
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[0]);
+
+    await user.type(screen.getByPlaceholderText(/Search by filename/), "Show");
+    // After the 300 ms debounce.
+    await waitFor(() => expect(listFetches()).toBe(2), { timeout: 2000 });
+
+    await waitFor(() => expect(ticked()).toEqual([false, false, false]));
+  });
+
+  it("clears the ticks when the language filter changes", async () => {
+    setupLists([ITEMS]);
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[0]);
+
+    await user.selectOptions(screen.getByRole("combobox"), "und");
+    await waitFor(() => expect(listFetches()).toBe(2));
+
+    await waitFor(() => expect(ticked()).toEqual([false, false, false]));
+  });
+
+  it("clears the ticks after its own Set Language, even where the tracks stay listed", async () => {
+    /* In dry run the endpoint keeps the flag rows, so the answered track is
+     * still on screen once the list has refreshed. Its tick has done its
+     * job, and leaving it would invite sending the same answer twice. */
+    setupLists([ITEMS], { applied: 1, errors: [], dry_run: true });
+    const user = userEvent.setup();
+    await screen.findAllByRole("checkbox");
+    await user.click(trackBoxes()[1]);   // flag 12
+
+    await user.click(screen.getByRole("button", { name: /SET LANGUAGE/ }));
+    await waitFor(() => expect(listFetches()).toBe(2));
+
+    await waitFor(() => expect(ticked()).toEqual([false, false, false]));
+  });
+});
+
+
 describe("the language code box", () => {
   /* A free-text box with placeholder "eng" and no pattern. Whatever was typed
    * was sent, saved as the override, written into the extracted subtitle's
