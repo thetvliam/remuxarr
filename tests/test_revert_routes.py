@@ -91,6 +91,7 @@ def client(tmp_path, monkeypatch):
     from app.config import settings as app_settings
     from app.database.models import Base
     import app.database.session as session_mod
+    from tests.engine_disposal import dispose_after_test
 
     recycle = tmp_path / "recycle"
     recycle.mkdir()
@@ -100,11 +101,11 @@ def client(tmp_path, monkeypatch):
     # "sqlite://" gets its OWN empty database, and the TestClient opens a
     # session per request. Without it create_all runs against one
     # throwaway connection and every request then reports "no such table".
-    engine = create_engine(
+    engine = dispose_after_test(create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
-    )
+    ))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)

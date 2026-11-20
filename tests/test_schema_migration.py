@@ -108,6 +108,18 @@ survived. Against this file alone all four are killed by that test:
   • handed over after the reload, not before         → killed
   • only the engine handed over                      → killed
   • the temporary engine left open                   → killed
+
+One for the same helper handing each engine it builds to be disposed when
+the test ends (tests/engine_disposal.py). _restore_the_engine closes only
+the engine session holds when it is called, so a test that points the
+engine again inside a fixture that already had left the fixture's engine
+open, and Python 3.13 warns as it is collected. Run against this file,
+test_setting_values, test_planned_action_cleanup and test_recording_signs,
+the four that use the helper:
+
+  • the engine not handed over      → killed on 3.13, through pytest.ini's
+                                      unclosed-database line; 3.12 has no
+                                      warning to see, and it survives there
 """
 import importlib
 import json
@@ -115,6 +127,8 @@ import sqlite3
 
 import pytest
 from sqlalchemy import create_engine, inspect
+
+from tests.engine_disposal import dispose_after_test
 
 
 # The revert_points table exactly as it first shipped: file_id NOT NULL,
@@ -204,13 +218,20 @@ def _point_the_engine_at(path, monkeypatch):
             monkeypatch.setattr(session_mod, name, value)
     monkeypatch.setattr(app.config.settings, "DATABASE_PATH", str(path))
     importlib.reload(session_mod)
+    # Disposed again when the test ends, because _restore_the_engine closes
+    # only the engine session holds when it is called. A test that points
+    # the engine a second time, inside a fixture that already had, left the
+    # fixture's engine where nothing disposed it.
+    dispose_after_test(session_mod.engine)
     return session_mod
 
 
 def _restore_the_engine(session_mod):
     """
-    Close the engine built against this test's database. The run's own
-    engine comes back with monkeypatch's teardown (_point_the_engine_at).
+    Close the engine session currently holds, built against this test's
+    database. The run's own engine comes back with monkeypatch's teardown
+    (_point_the_engine_at), and every engine _point_the_engine_at built is
+    disposed when the test ends.
     """
     session_mod.engine.dispose()
 
@@ -658,7 +679,7 @@ def test_the_live_schema_matches_the_models(upgraded):
     path, session_mod = upgraded
     from app.database.models import Base
 
-    engine = create_engine(f"sqlite:///{path}")
+    engine = dispose_after_test(create_engine(f"sqlite:///{path}"))
     inspector = inspect(engine)
     live_tables = set(inspector.get_table_names())
 

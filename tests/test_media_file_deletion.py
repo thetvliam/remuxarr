@@ -56,8 +56,9 @@ def db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -75,8 +76,9 @@ def db_factory(tmp_path):
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    engine = dispose_after_test(create_engine(f"sqlite:///{tmp_path / 'test.db'}"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
 

@@ -656,8 +656,9 @@ def test_forge_does_not_offer_a_recording():
 
     from app.core.forge import get_candidates
     from app.database.models import Base, MediaFile, Track
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    engine = dispose_after_test(create_engine("sqlite://", connect_args={"check_same_thread": False}))
     Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as db:
         for n, (name, signs) in enumerate([("Download.mp4", ""), ("Old row.mp4", None),

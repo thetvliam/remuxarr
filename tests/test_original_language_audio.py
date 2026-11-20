@@ -349,8 +349,9 @@ def scanning(tmp_path, monkeypatch):
 
     from app.core import scanner
     from app.database.models import AppSetting, Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     library = tmp_path / "tv"

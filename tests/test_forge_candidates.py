@@ -29,7 +29,8 @@ def _db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    from tests.engine_disposal import dispose_after_test
+    engine = dispose_after_test(create_engine("sqlite://", connect_args={"check_same_thread": False}))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 

@@ -44,8 +44,9 @@ from app.database.session import (
 def db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 

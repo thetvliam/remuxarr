@@ -1,13 +1,20 @@
 # Remuxarr test suite
 
-2803 tests across 129 test files, plus 805 frontend tests under
+2808 tests across 130 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
 The file count is the modules `pytest` collects, not the `.py` files under
-`tests/`: `conftest.py` and `sample_library/parse_ffprobe_dump.py` are fixtures
-and a helper script, contain no tests, and are not counted. Both readings were
-in use at once until this was written down.
+`tests/`: `conftest.py`, `engine_disposal.py` and
+`sample_library/parse_ffprobe_dump.py` are fixtures and helpers, contain no
+tests, and are not counted. Both readings were in use at once until this was
+written down.
+
+An engine a test builds for itself is disposed when the test ends: use
+`memory_engine()` from `conftest.py`, or wrap your own in
+`dispose_after_test()` from `tests/engine_disposal.py`, whose docstring says
+why. Under Python 3.13 a connection left for the garbage collector fails the
+run (`pytest.ini`).
 
 Two runs can go side by side, a mutation run beside the suite, say:
 `conftest.py` gives each run a directory of its own for the database and for

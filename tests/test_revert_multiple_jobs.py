@@ -1496,6 +1496,7 @@ def forge_lib(tmp_path, monkeypatch):
     import app.core.forge as forge_mod
     import app.core.worker as worker_mod
     import app.database.session as session_mod
+    from tests.engine_disposal import dispose_after_test
 
     media_dir = tmp_path / "media"
     media_dir.mkdir()
@@ -1524,9 +1525,9 @@ def forge_lib(tmp_path, monkeypatch):
     # committed by the other thread, so its cleanup deleted the sidecar the
     # point now named. A file gives each thread its own connection, as the
     # app's own engine does.
-    engine = create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
-                           connect_args={"check_same_thread": False,
-                                         "timeout": 30})
+    engine = dispose_after_test(create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
+                                              connect_args={"check_same_thread": False,
+                                                            "timeout": 30}))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     for module in (session_mod, worker_mod, forge_mod):
@@ -1547,8 +1548,12 @@ def forge_lib(tmp_path, monkeypatch):
                       mtime=stat.st_mtime, container="mkv", status="processed")
     db.add(media)
     db.commit()
-    return {"db": db, "media": media, "path": path, "recycle": recycle,
-            "tmp": tmp_path}
+    yield {"db": db, "media": media, "path": path, "recycle": recycle,
+           "tmp": tmp_path}
+    # Closed so its connection goes back to the pool, where disposing the
+    # engine at the end of the test (dispose_after_test) closes it. A
+    # session still open holds its connection out of the pool's reach.
+    db.close()
 
 
 def _forge(lib, *, undo=False):

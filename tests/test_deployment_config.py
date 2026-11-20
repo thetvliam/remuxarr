@@ -503,8 +503,8 @@ def test_the_documented_test_counts_are_current():
     assert claimed_files == actual_files, (
         f"{name} claims {claimed_files} test files; pytest collects "
         f"{actual_files}. Count collected modules, not .py files under "
-        f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
-        f"hold no tests and are not counted."
+        f"tests/ — conftest.py and the helpers beside it hold no tests and "
+        f"are not counted."
     )
 
 
