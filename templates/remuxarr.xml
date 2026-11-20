@@ -73,8 +73,8 @@
   Etc/UTC would look configured while changing nothing. Required="false"
   because an empty TZ is a working container, just one on UTC.
 
-  No Dockerfile change is needed to support this: python:3.12-slim installs
-  tzdata as a base runtime dependency, so /usr/share/zoneinfo is present.
+  No Dockerfile change is needed to support this: the python slim base image
+  installs tzdata as a base runtime dependency, so /usr/share/zoneinfo is present.
   Without it glibc would fall back to UTC and this field would silently do
   nothing. -->
   <Config Name="TZ" Target="TZ" Default="" Mode="" Description="Your IANA time zone, e.g. Europe/London or America/New_York. Leave empty and the container runs on UTC, which means scheduled scans and the Plex analyze window fire on UTC rather than your local time. Timestamps shown in the web UI are converted by your browser and are correct either way." Type="Variable" Display="always" Required="false" Mask="false"/>

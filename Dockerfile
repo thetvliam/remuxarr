@@ -87,7 +87,7 @@ RUN set -eu; \
 
 
 # ── Stage 3: Python runtime ───────────────────────────────────────────────────
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Links the published GHCR package back to this repository — shows up on
 # the repo's own Packages sidebar, uses this README as its description.
@@ -101,7 +101,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 # Upgrade pip first so the pip that ends up in the final image is current.
-# The base python:3.12-slim ships an older pip that vulnerability scanners
+# The base Python image ships an older pip that vulnerability scanners
 # flag (it sits in site-packages even though it only runs at build time);
 # upgrading here clears those findings. Left unpinned deliberately, so any
 # build picks up the current pip without editing the Dockerfile. Builds are
