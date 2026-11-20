@@ -498,7 +498,8 @@ def notify_plex_new_file(
             params={"path": folder},
         )
     except urllib.error.HTTPError as exc:
-        logger.error("Plex: refresh HTTP %d for %s: %s", exc.code, folder, exc.reason)
+        with exc:  # closed on the way out: it holds the server's response
+            logger.error("Plex: refresh HTTP %d for %s: %s", exc.code, folder, exc.reason)
     except Exception:
         logger.exception("Plex: refresh failed for %s", folder)
 
@@ -581,10 +582,11 @@ def notify_plex_reprocessed_file(
             method="PUT",
         )
     except urllib.error.HTTPError as exc:
-        logger.error(
-            "Plex: analyze HTTP %d for ratingKey %d: %s",
-            exc.code, rating_key, exc.reason,
-        )
+        with exc:  # closed on the way out: it holds the server's response
+            logger.error(
+                "Plex: analyze HTTP %d for ratingKey %d: %s",
+                exc.code, rating_key, exc.reason,
+            )
     except Exception:
         logger.exception("Plex: analyze failed for ratingKey %d", rating_key)
 
@@ -611,7 +613,8 @@ def test_plex_connection(base_url: str, token: str) -> dict:
         version = data.get("MediaContainer", {}).get("version", "?")
         return {"success": True, "version": version, "app": "Plex"}
     except urllib.error.HTTPError as e:
-        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
+        with e:  # closed on the way out: it holds the server's response
+            return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
     except urllib.error.URLError as e:
         return {"success": False, "error": f"Connection failed: {e.reason}"}
     except Exception as e:
