@@ -30,12 +30,18 @@ upgrade step missing, by test_schema_migration:
   • the mark never cleared                   → the successful job, both
                                                endings
 
-The test at the end is about an answer given after the job rather than
-during it: the question had to follow its track through the job first. Its
-mutation record is in test_job_finalisation.py, beside the tests that pin
-the re-key itself; three of those ten mutants are killed here as well (the
-re-key not called, the old track list read only with answers, and audio
-questions left out).
+test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about is about
+an answer given after the job rather than during it: the question had to
+follow its track through the job first. Its mutation record is in
+test_job_finalisation.py, beside the tests that pin the re-key itself; three
+of those ten mutants are killed here as well (the re-key not called, the old
+track list read only with answers, and audio questions left out).
+
+test_a_claim_during_an_answer_takes_the_job_the_answer_queues is about the
+worker claiming the file's job while an answer replaces it. Its mutation
+record is in test_queue_routes.py, beside the claim tests that kill the same
+mutants with no file to probe; two of those three are killed here as well (a
+miss giving up, and the row count ignored).
 """
 import asyncio
 import json
@@ -235,6 +241,101 @@ def test_a_scan_while_the_job_runs_leaves_the_mark(lib):
     assert stats.unchanged == 1
     assert _state(lib).marked is True
     lib.worker._finish_job(job_id, False, None, None, "stopped for the test")
+
+
+# ── The worker claiming the file's job while an answer replaces it ───────────
+#
+# apply_language deletes the file's waiting job, then probes the file and
+# queues a replacement, and commits only after the probe. A test of that
+# race needs two things a real queue has and the fixture does not: the
+# database in WAL mode, as the app's engine runs it, and a row newer than
+# the file's job. SQLite hands a deleted row's id to the next insert when
+# the deleted row was the newest, so without that row the replacement takes
+# the deleted job's id, the racing UPDATE lands on it, and nothing fails.
+
+def _like_a_real_queue(lib):
+    """Switch the fixture's database to WAL and add another file's finished
+    job after Movie.mkv's. Returns Movie.mkv's waiting job's id."""
+    from app.database.models import MediaFile, QueueItem
+
+    with lib.Session.kw["bind"].connect() as conn:
+        assert conn.exec_driver_sql("PRAGMA journal_mode=WAL").scalar() == "wal"
+    with lib.Session() as db:
+        waiting = db.query(QueueItem).filter(QueueItem.status == "pending").one().id
+        other = MediaFile(path=str(lib.library / "Other.mkv"), filename="Other.mkv",
+                          directory=str(lib.library), size=1, mtime=1.0, status="success")
+        db.add(other)
+        db.flush()
+        db.add(QueueItem(file_id=other.id, status="success"))
+        db.commit()
+    return waiting
+
+
+def test_a_claim_during_an_answer_takes_the_job_the_answer_queues(lib, monkeypatch, caplog):
+    """
+    The worker selected Movie.mkv's job while the answer was probing the
+    file, after the answer had deleted the job and before it committed. The
+    claim's UPDATE waited for that commit and then matched no row: "Failed
+    to claim next job" with a StaleDataError, as in a user's log after
+    answering Review questions, and a claim that returned None, which the
+    worker loop reads as an empty queue. The claim now takes the job the
+    answer queued in its place.
+    """
+    import logging
+    import threading
+
+    from sqlalchemy import event
+
+    import app.api.routes._language_review as review
+    from app.database.models import MediaFile, QueueItem
+
+    waiting = _like_a_real_queue(lib)
+
+    # The answer stops before its probe, its delete flushed but not
+    # committed, until the claim has selected the job and reached its UPDATE.
+    real_process_file = review._process_file
+    probing, go_on = threading.Event(), threading.Event()
+
+    def process_file_after_the_claim(*args, **kwargs):
+        probing.set()
+        go_on.wait(10)
+        return real_process_file(*args, **kwargs)
+    monkeypatch.setattr(review, "_process_file", process_file_after_the_claim)
+
+    replies = []
+    answering = threading.Thread(target=lambda: replies.append(_answer(lib)))
+    answering.start()
+    assert probing.wait(10), "the answer never reached its probe"
+
+    claiming = threading.get_ident()
+    reached = []
+
+    def release_the_answer(conn, cursor, statement, *rest):
+        if (threading.get_ident() == claiming
+                and statement.lstrip().upper().startswith("UPDATE QUEUE_ITEMS")):
+            reached.append(statement)
+            go_on.set()
+    engine = lib.Session.kw["bind"]
+    event.listen(engine, "before_cursor_execute", release_the_answer)
+    caplog.set_level(logging.INFO)
+    try:
+        claimed = lib.worker._claim_next()
+    finally:
+        go_on.set()
+        answering.join(30)
+        event.remove(engine, "before_cursor_execute", release_the_answer)
+
+    assert reached, "the claim never reached its UPDATE"
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert db.get(QueueItem, waiting) is None, "the answer did not replace the job"
+        assert claimed is not None, "the claim gave up with a job waiting"
+        job = db.get(QueueItem, claimed)
+        assert job is not None, f"claimed job {claimed}, which the answer had deleted"
+        assert (job.file_id, job.status) == (movie.id, "processing")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+        "a job that stopped waiting was logged as a failed claim")
 
 
 def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):

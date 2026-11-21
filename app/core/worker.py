@@ -1752,21 +1752,49 @@ def _claim_next_locked() -> int | None:
                      .filter(Ac3ForgeJob.status == "processing"))
         query = query.filter(QueueItem.file_id.notin_(forging))
 
-        job = (
-            query
-            .order_by(QueueItem.priority.asc(), QueueItem.created_at.asc())
-            .first()
-        )
-        if job is None:
-            return None
+        query = query.order_by(QueueItem.priority.asc(), QueueItem.created_at.asc())
 
-        job.status     = "processing"
-        job.started_at = utcnow()
-        # An earlier attempt's record describes outputs this run has not
-        # made; recovery reading it would act on the wrong files.
-        job.swap_record = None
-        db.commit()
-        return job.id
+        # The SELECT and the UPDATE are two moments. The driver starts a
+        # transaction only at the first write, so the SELECT reads whatever
+        # is committed, and the job can stop waiting before the UPDATE runs.
+        # A language answer deletes the file's waiting job and probes the
+        # file before it commits, so the worker selected a job that was
+        # already gone; Cancel can mark the job cancelled in between. The
+        # UPDATE was by id alone. On a deleted job it matched nothing and
+        # raised StaleDataError, logged as a failed claim that returned
+        # None, which the loop reads as an empty queue: with auto-start off
+        # and nothing running, it paused. On a cancelled job it put the job
+        # back to processing, and the job ran.
+        #
+        # So the job is claimed only while it is still pending, and a miss
+        # looks again. The first UPDATE, even one that matched nothing, has
+        # begun the transaction holding SQLite's write lock (checked with
+        # the driver in both journal modes), so the second look sees the
+        # queue as it now is and nothing can change it before its UPDATE:
+        # the loop runs at most twice. Remembering which ids missed would
+        # add nothing for the same reason.
+        while True:
+            job = query.first()
+            if job is None:
+                return None
+            job_id = job.id
+            claimed = (
+                db.query(QueueItem)
+                .filter(QueueItem.id == job_id, QueueItem.status == "pending")
+                .update({
+                    QueueItem.status:     "processing",
+                    QueueItem.started_at: utcnow(),
+                    # An earlier attempt's record describes outputs this run
+                    # has not made; recovery reading it would act on the
+                    # wrong files.
+                    QueueItem.swap_record: None,
+                }, synchronize_session=False)
+            )
+            if claimed:
+                db.commit()
+                return job_id
+            logger.info("Job %d stopped waiting while it was being claimed; "
+                        "claiming the next", job_id)
     except Exception:
         db.rollback()
         logger.exception("Failed to claim next job")
