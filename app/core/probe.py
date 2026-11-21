@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from app.config import settings as app_settings
@@ -283,12 +284,40 @@ def lost_file_tags(source: dict | None, output: dict | None) -> list[str]:
     rating ("iTunEXTC"), cast ("iTunMOVI"), purchase date, rating and sort
     name, measured with a real job. No revert could give them back, as a
     revert writes an MP4 the same way.
+
+    creation_time counts as kept when the output has the same date and time
+    to the second (_same_second). An MP4 holds the date in whole seconds,
+    and FFmpeg's MP4 muxer drops the fraction rather than rounding it:
+    measured, .460353, .5 and .999999 all came back as .000000 in the same
+    second. A Matroska or WebM date carries microseconds, as mkvmerge
+    writes it, so every conversion of such a file to MP4 was refused as
+    losing its date (issue #61). A Matroska output keeps the fraction and
+    matches as written.
     """
     def tags(probe_data):
         return ((probe_data or {}).get("format") or {}).get("tags") or {}
     kept = {key.lower(): value for key, value in tags(output).items()}
-    return [key for key, value in tags(source).items()
-            if key.lower() not in REWRITTEN_TAGS and kept.get(key.lower()) != value]
+
+    def lost(key, value):
+        name = key.lower()
+        if name in REWRITTEN_TAGS or kept.get(name) == value:
+            return False
+        return not (name == "creation_time" and _same_second(value, kept.get(name)))
+    return [key for key, value in tags(source).items() if lost(key, value)]
+
+
+def _same_second(made: str, kept: str | None) -> bool:
+    """
+    Whether two creation dates, as ffprobe shows them
+    (2026-11-20T08:00:15.460353Z), are the same date and time to the second.
+    False when either is not such a date: one FFmpeg could not read is then
+    compared as written, as any other tag is.
+    """
+    try:
+        a, b = datetime.fromisoformat(made), datetime.fromisoformat(kept)
+    except (TypeError, ValueError):
+        return False
+    return a.replace(microsecond=0) == b.replace(microsecond=0)
 
 
 def creation_time(probe_data: dict | None) -> str | None:
