@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2829 tests across 131 test files, plus 805 frontend tests under
+2833 tests across 132 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -131,8 +131,8 @@ and the endpoint that lists excluded files, which a scan only counts.
 `test_manual_review_refresh.py`, `test_startup_recovery.py`,
 `test_crash_after_swap.py`,
 `test_clean_shutdown.py`, `test_background_tasks.py`,
-`test_retry_unreadable_file.py`, `test_ask_again.py`, `test_scan_during_job.py`,
-`test_encoding_review_rescan.py`.
+`test_retry_unreadable_file.py`, `test_retry_probes_first.py`, `test_ask_again.py`,
+`test_scan_during_job.py`, `test_encoding_review_rescan.py`.
 `test_crash_after_swap.py` stops a real job with a crash after its swap,
 part-way through it and before it, then runs startup recovery: a job whose
 output was in place used to be failed, and the next scan forgot its answers.
@@ -145,7 +145,10 @@ an answer landed on another track, and a skip left a waiting job in the queue.
 `test_retry_unreadable_file.py`
 retries failed items whose file
 ffprobe cannot read, through Retry All and the item's own Retry: both deleted
-the failed row and reported nothing wrong. `test_ask_again.py` covers Ask
+the failed row and reported nothing wrong. `test_retry_probes_first.py` holds
+a retry's probe of the file: both retries probed with the failed row's
+delete uncommitted, so every other write in the app waited for ffprobe.
+`test_ask_again.py` covers Ask
 again, which forgets the answers and confirmations stored for one file and
 decides it again, keeps them when the file cannot be read, and decides when
 the details window offers it: only when forgetting would change the outcome. Four more follow one job through `worker.py` in

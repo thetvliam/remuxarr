@@ -81,8 +81,9 @@ def probe_ahead(path: str) -> Probed | None:
     Stat and probe a file for a _process_file call to come, so that call
     need not run ffprobe while its caller holds a write transaction open.
     SQLite lets one writer in at a time, so every other write in the app
-    waits for as long as ffprobe takes. apply_language is the caller this
-    was written for; see the comment there.
+    waits for as long as ffprobe takes. Its callers delete a row and flush
+    before calling _process_file: apply_language, whose comment has what
+    was measured, and both retries in routes/queue.
 
     A probe that fails is kept as its error, and _process_file reports it as
     it would its own, without probing again. None when the file cannot be
