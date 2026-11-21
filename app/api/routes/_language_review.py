@@ -779,6 +779,19 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                 # errored or genuinely landed on queued, manual_review or
                 # skipped.
                 if stats.errors:
+                    # The file could not be stat'ed or probed, and
+                    # _process_file returned before writing anything: undo
+                    # the delete above, so the file keeps its waiting job.
+                    # Left in place, the next commit made the delete stick:
+                    # the job was gone, and only a full scan queued the file
+                    # again, since a delta scan sees it unchanged. Retry keeps
+                    # a row whose file cannot be read for the same reason
+                    # (queue._retry_with_reprobe). The answer was committed
+                    # above and stands. The kept job is decided afresh from
+                    # the stored answers when the worker picks it up, so it
+                    # applies the answer if the file can be read by then, and
+                    # fails if not.
+                    db.rollback()
                     # Deliberately generic. _process_file puts the real reason
                     # in the log and returns nothing, so the alternative is
                     # changing a contract the whole scan path shares.

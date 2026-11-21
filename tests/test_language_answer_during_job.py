@@ -77,6 +77,15 @@ at the probe fail for the reason they exist. The replaced-file test fails
 there only because its first probe is then _process_file's own, made before
 the file is replaced, and the unreadable-file test passes. Those two pin what
 probe_ahead must get right, and their mutants are their evidence.
+
+test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job is about what an
+answer leaves when it cannot re-read the file: the delete of the waiting job
+is now rolled back. Verified by mutation, 2 applied, 2 killed, each
+surviving first the 55 test files that reach the answer or Retry's handling
+of an unreadable file, as they stood:
+
+  • no rollback                               → both ways
+  • a rollback only when the probe failed     → cannot be stat'ed
 """
 import asyncio
 import json
@@ -688,10 +697,8 @@ def test_an_answer_for_a_file_ffprobe_cannot_read_probes_it_once(lib, monkeypatc
     rather than probing again: the reply is the one it was, and ffprobe runs
     once.
 
-    What becomes of the file's waiting job is not pinned here. It is
-    deleted, as it was before probe_ahead existed, and that is a question of
-    its own: Retry keeps a row whose file cannot be read
-    (test_retry_unreadable_file), and the answer does not.
+    The file keeps its waiting job: see
+    test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job.
     """
     from app.core.probe import ProbeError
     from app.database.models import MediaFile
@@ -707,6 +714,63 @@ def test_an_answer_for_a_file_ffprobe_cannot_read_probes_it_once(lib, monkeypatc
     assert reply == {"applied": 0, "deferred": [], "dry_run": False, "errors": [
         {"file_id": movie.id, "error": "Could not re-read the file — see the log for details"}]}
     assert calls.count(movie.path) == 1
+
+
+@pytest.mark.parametrize("unreadable", ["cannot be probed", "cannot be stat'ed"])
+def test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job(lib, monkeypatch, unreadable):
+    """
+    The answer deleted the file's waiting job before finding it could not
+    re-read the file, and the next commit made the delete stick: the reply
+    said "Could not re-read the file", the job was gone, and a delta scan,
+    seeing the file unchanged, queued nothing. Only a full scan did.
+    Reproduced both ways before this test existed. Retry keeps a row whose
+    file cannot be read for the same reason (test_retry_unreadable_file).
+
+    The job is now kept, and once the file can be read it runs and applies
+    the answer: the worker decides a waiting job afresh, from the stored
+    answers, when it picks it up.
+    """
+    import os
+
+    import app.core.scanner as scanner
+    from app.core.probe import ProbeError
+    from app.database.models import MediaFile, QueueItem
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).one().path
+        waiting = db.query(QueueItem).one().id
+    real_probe, real_stat = scanner.probe_file, os.stat
+
+    def probe_file(path, *args, **kwargs):
+        if path == movie:
+            raise ProbeError("the test's file cannot be read")
+        return real_probe(path, *args, **kwargs)
+
+    class _OsWithoutMovie:
+        """scanner's os, whose stat fails for Movie.mkv and nothing else."""
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        @staticmethod
+        def stat(path, *args, **kwargs):
+            if str(path) == movie:
+                raise OSError("the test's file cannot be stat'ed")
+            return real_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as for_the_answer:
+        if unreadable == "cannot be probed":
+            for_the_answer.setattr(scanner, "probe_file", probe_file)
+        else:
+            for_the_answer.setattr(scanner, "os", _OsWithoutMovie())
+        reply = _answer(lib)
+
+    assert reply["applied"] == 0 and reply["errors"], reply
+    with lib.Session() as db:
+        assert [(j.id, j.status) for j in db.query(QueueItem)] == [(waiting, "pending")], (
+            "the answer removed the file's job")
+
+    assert _run_next(lib) == waiting
+    assert _audio_languages(_state(lib).path) == ["jpn", "jpn"], "the kept job ignored the answer"
 
 
 def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):
