@@ -2,11 +2,12 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 31 files
+- `make_test_library.sh` builds a small library of unusual media: 33 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
-  corrupt AAC packets, an audio-only file and a zero-byte one. A folder
+  corrupt AAC packets, creation dates (a Matroska's to the microsecond, as
+  mkvmerge writes it, and an MP4's), an audio-only file and a zero-byte one. A folder
   layout of copies covers the extras rules, an existing sidecar and an
   output name that is already taken. The comment above each `fNN` function
   says what that file is built to exercise.
@@ -89,6 +90,11 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
 
 1. Every job ends as success, review or skipped, and nothing logs an
    exception. A scan error is expected only on a file ffprobe cannot read.
+   A job refused because its output would lose some of the file's own tags
+   is an accepted loss (below), unless one of them is `creation_time`, the
+   date the file says it was made: a job writes it back, so losing it is a
+   finding. A Matroska dated to the microsecond was refused that way by
+   every conversion to MP4 (issue #61).
 2. Every output probes, and its video and audio decode without an error.
 3. Every input stream is in the output, dropped by a planned action or
    extracted to a sidecar, and the chapters survive. Every stream the job
@@ -137,7 +143,9 @@ answers, and again after each queue run until none is left. Then:
 Then every file AC3 Forge lists as a candidate is queued through its own
 route function, and the worker runs the Forge jobs:
 
-20. Every add succeeds, and nothing logs an exception.
+20. Every add succeeds, and nothing logs an exception. An add refused over
+    the file's own tags is an accepted loss, as in check 1, unless one of
+    them is `creation_time`, which Forge writes back too.
 21. The file gains exactly one AC3 5.1 track carrying Forge's marker, placed
     after the last audio track, and every other stream is as it was (the
     same comparison as check 11, with every packet checksum equal: an add
@@ -166,7 +174,10 @@ restored through the app's own `restore_revert_point`, and:
 11. The restored file matches the original stream for stream (type, codec
     and codec tag, language and title tags, disposition flags, attachment
     filename and mimetype, order), and an MP4's fast-start layout and an
-    MP4 or QuickTime file's brand match too. The codec tag (an MP4 sample
+    MP4 or QuickTime file's brand match too, as does the file's
+    `creation_time`, exactly: a revert writes back the original's, so a
+    Matroska's fraction comes back even where the MP4 between held whole
+    seconds. The codec tag (an MP4 sample
     entry, an AVI fourcc) and the brand are what tell a QuickTime movie
     from an MP4 of the same streams. Each
     stream also holds what it held: a checksum of its packets, or of an
@@ -224,9 +235,12 @@ holds is refused, a revert gives Matroska cover art back as a video track,
 an existing subtitle file a job replaced or moved stays that way after a
 revert, a job goes ahead without a revert point when capture reports one
 unavailable and Require Revert Point is off, an answer for a track a
-revert brings back from the sidecar is asked again, and a job whose audio
+revert brings back from the sidecar is asked again, a job whose audio
 cannot be copied fails and leaves the file as it was, since nothing is
-re-encoded to get past it. These are listed under "Accepted losses" with
-where each decision is recorded, and do not count as findings. Add to
+re-encoded to get past it, and a job or a Forge run whose output would
+lose some of the file's own tags is refused and leaves the file as it was,
+except over its creation date, which both write back. These are listed
+under "Accepted losses" with where each decision is recorded, and do not
+count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down
 somewhere a reader can check.

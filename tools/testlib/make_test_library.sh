@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  31 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (47 files, about 27 MB, at the
+#  33 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (49 files, about 28 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -485,8 +485,22 @@ f31() {  # QuickTime .mov, fast start already, all English: nothing to do where 
     -metadata:s:a:0 language=eng -metadata:s:a:0 title=Surround -metadata:s:a:1 language=eng \
     -disposition:a:0 default -disposition:a:1 0 -movflags +faststart -f mov "$OUT/31 - quicktime forge.mov"
 }
+f32() {  # Matroska dated to the microsecond, as mkvmerge writes its date (issue #61): the date survives a job (to the second in MP4, which holds whole seconds), a Forge run and a revert. AAC 5.1 for AC3 Forge, German to drop.
+  local a=(); add a video_in "32 dated mkv"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac -ac:a:0 6 -ac:a:1 2 \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 \
+    -metadata creation_time=2026-11-20T08:00:15.460353Z "${MKV[@]}" "$OUT/32 - dated mkv.mkv"
+}
+f33() {  # MP4 with the date a download carries, in whole seconds as MP4 holds it: kept by a job and a revert. German to drop.
+  local a=(); add a video_in "33 dated mp4"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 \
+    -metadata creation_time=2014-03-02T10:20:30.000000Z -movflags +faststart "$OUT/33 - dated mp4.mp4"
+}
 
-for n in $(seq -w 1 31); do
+for n in $(seq -w 1 33); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

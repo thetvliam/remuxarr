@@ -12,6 +12,9 @@ Each profile is checked against invariants instead:
 
   1. Every job ends as success, review or skipped, and nothing logs an
      exception. A scan error is expected only on a file ffprobe cannot read.
+     A job refused because its output would lose some of the file's own
+     tags is an accepted loss, unless one of them is the date the file says
+     it was made, which a job writes back.
   2. Every output probes, and its video and audio decode without an error.
   3. Every input stream is in the output, dropped by a planned action or
      extracted to a sidecar, and the chapters survive. Every stream kept
@@ -50,7 +53,9 @@ until none is left. Then:
 Then every AC3 Forge candidate is queued through the app's own route
 function and the worker runs the Forge jobs:
 
- 20. Every add succeeds, and nothing logs an exception.
+ 20. Every add succeeds, and nothing logs an exception. An add refused over
+     the file's own tags is an accepted loss, as in check 1, unless one of
+     them is the file's creation date.
  21. The file gains exactly one AC3 5.1 carrying Forge's marker, after the
      last audio track, and every other stream is as it was, packet for
      packet.
@@ -73,7 +78,8 @@ revert route refuses one), and:
      converted output goes away.
  11. The restored file matches the original stream for stream, in what
      each stream says it is and in what it holds (its packets, or the same
-     decoded frames), and an MP4's fast-start layout matches too.
+     decoded frames), and an MP4's fast-start layout matches too, as does
+     the date the file says it was made, exactly.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
  14. A revert leaves no answer or confirmation stored for the file, and a
@@ -176,9 +182,24 @@ _UNCOPYABLE_AUDIO = ("audio that cannot be copied is not re-encoded: README.md, 
                      '"Nothing is ever re-encoded"; app/core/worker.py, _explain_failure')
 
 # A job or a Forge run whose output would lose some of the file's own tags
-# fails and leaves the file alone, rather than drop them.
+# fails and leaves the file alone, rather than drop them. Not the date the
+# file says it was made, which is written back on purpose (_loses_its_date).
 _LOST_TAGS = ("a file's own tags are not dropped: app/core/worker.py, "
               "_lost_tags_error; app/core/probe.py, lost_file_tags")
+
+
+def _loses_its_date(error: str) -> bool:
+    """
+    Whether a refusal over lost tags (worker.LOST_TAGS) names the file's
+    creation date. A job and a Forge run write the date back on purpose
+    (ffmpeg.build_ffmpeg_command, forge._creation_time_args), so losing it
+    is not the decision _LOST_TAGS records but a finding: a Matroska dated
+    to the microsecond was refused that way by every conversion to MP4
+    (issue #61).
+    """
+    lost = error.split("It would lose: ")[-1].rstrip(".")
+    return "creation_time" in {name.strip().lower() for name in lost.split(",")}
+
 
 KNOWN_LOSSES = {
     "attachment": "MP4 cannot hold attachments; app/core/ffmpeg.py, the "
@@ -631,7 +652,8 @@ def run_child(spec_path: str) -> None:
                     entry["refused"] = True
                     entry["uncopyable_audio"] = True
                     continue
-                if j.status == "failed" and error.startswith(worker.LOST_TAGS):
+                if (j.status == "failed" and error.startswith(worker.LOST_TAGS)
+                        and not _loses_its_date(error)):
                     known.append({"file": rel(source), "lost": "job refused",
                                   "why": f"{_LOST_TAGS} ({error.split('It would lose: ')[-1]})"})
                     entry["refused"] = True
@@ -776,7 +798,8 @@ def _forge_round_trips(find, known, lib, scratch, files, rel, collect, undo: boo
         for file_id, j in added.items():
             job = db.get(Ac3ForgeJob, j["job"])
             # 20. Every add succeeds.
-            if job.status == "failed" and (job.error_message or "").startswith(worker.LOST_TAGS):
+            if (job.status == "failed" and (job.error_message or "").startswith(worker.LOST_TAGS)
+                    and not _loses_its_date(job.error_message)):
                 known.append({"file": rel(j["path"]), "lost": "Forge add refused",
                               "why": f"{_LOST_TAGS} "
                                      f"({job.error_message.split('It would lose: ')[-1]})"})
@@ -1199,6 +1222,11 @@ def _brand(info: dict) -> tuple | None:
             tags.get("compatible_brands"))
 
 
+def _made(info: dict) -> str | None:
+    """The date the file says it was made: its own creation_time tag."""
+    return ((info.get("format") or {}).get("tags") or {}).get("creation_time")
+
+
 def _is_matroska_cover(sig: tuple) -> bool:
     return sig[0] == "video" and sig[4] is not None and "attached_pic" in sig[6]
 
@@ -1365,6 +1393,13 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             if was != now_fs:
                 find(11, source, f"fast-start {'on' if was else 'off'} in the original, "
                                  f"{'on' if now_fs else 'off'} after the revert")
+        # And the date the file says it was made, exactly: a revert writes
+        # back the original's from its point (ffmpeg._format_tag_args), so a
+        # Matroska's fraction comes back too, though an MP4 between held
+        # only whole seconds.
+        made, made_now = _made(original), _made(info)
+        if made is not None and made_now != made:
+            find(11, source, f"creation date {made} in the original, {made_now} after the revert")
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
