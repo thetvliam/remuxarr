@@ -58,6 +58,25 @@ taking the job the answer was about to replace:
 With the lock around the check only, the claim started after the check
 waits for the lock and then races the answer's read, so that case may pass
 or fail under the mutant; it is not counted.
+
+The four tests after those are about the answer's probe of the file, which
+it now makes before its delete opens a write transaction
+(scanner.probe_ahead). Verified by mutation, 4 applied, 4 killed, each
+surviving the whole suite as it stood (2823 tests) first:
+
+  • the probe not handed to _process_file    → no write open at the probe,
+                                               and the unreadable file (a
+                                               second probe)
+  • the probe used though the file changed   → the replaced file
+  • a failed probe made again                → the unreadable file
+  • the probe made after the delete instead  → other writes going ahead,
+                                               and no write open at the probe
+
+On the code before probe_ahead, other writes going ahead and no write open
+at the probe fail for the reason they exist. The replaced-file test fails
+there only because its first probe is then _process_file's own, made before
+the file is replaced, and the unreadable-file test passes. Those two pin what
+probe_ahead must get right, and their mutants are their evidence.
 """
 import asyncio
 import json
@@ -491,6 +510,203 @@ def test_a_claim_while_an_answer_replaces_the_job_waits_for_it(lib, monkeypatch,
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert lock.waited == [claimers[0].ident], (
         "the claim did not wait for the answer's check and delete")
+
+
+# ── The answer probing the file ──────────────────────────────────────────────
+#
+# apply_language probes the file before deciding it again. It did so with
+# the delete of the waiting job flushed, so it held SQLite's write lock for as
+# long as ffprobe took. It now probes before the delete (scanner.probe_ahead)
+# and hands the probe to _process_file.
+
+def _probe_watched(lib, monkeypatch, on_movie):
+    """
+    Send every ffprobe of Movie.mkv through on_movie(path, probe), where
+    probe() runs the real one. Returns the list of paths probed.
+    scanner.probe_file is the name probe_ahead and _process_file both call.
+    """
+    import app.core.scanner as scanner
+
+    real, calls = scanner.probe_file, []
+
+    def probe_file(path, *args, **kwargs):
+        calls.append(path)
+        if path.endswith("Movie.mkv"):
+            return on_movie(path, lambda: real(path, *args, **kwargs))
+        return real(path, *args, **kwargs)
+    monkeypatch.setattr(scanner, "probe_file", probe_file)
+    return calls
+
+
+def test_other_writes_go_ahead_while_an_answer_probes_the_file(lib, monkeypatch, caplog):
+    """
+    While the answer probed, nothing else could write. Past the engine's 30 s
+    busy timeout the worker's claim, holding CLAIM_LOCK throughout, logged
+    "Failed to claim next job" and returned None, and a job finishing
+    meanwhile had its result replaced by "Finalisation failed: ... database
+    is locked". Measured with the probe held 33 s before this test existed.
+
+    Here the answer's probe of Movie.mkv is held while a claim and another
+    job's finish are given five seconds: both land while it is still probing.
+    """
+    import logging
+    import threading
+
+    from app.database.models import MediaFile, QueueItem
+
+    _like_a_real_queue(lib)
+    ids = {}
+    with lib.Session() as db:
+        for name, status, priority in (("Next.mkv", "pending", 1),
+                                       ("Running.mkv", "processing", 5)):
+            media = MediaFile(path=str(lib.library / name), filename=name,
+                              directory=str(lib.library), size=1, mtime=1.0, status="queued")
+            db.add(media)
+            db.flush()
+            job = QueueItem(file_id=media.id, status=status, priority=priority)
+            db.add(job)
+            db.flush()
+            ids[name] = job.id
+        db.commit()
+
+    probing, go_on = threading.Event(), threading.Event()
+
+    def held(path, probe):
+        if not go_on.is_set():
+            probing.set()
+            go_on.wait(60)
+        return probe()
+    _probe_watched(lib, monkeypatch, held)
+    caplog.set_level(logging.INFO)
+
+    replies, claims = [], []
+    answering = threading.Thread(target=lambda: replies.append(_answer(lib)))
+    claiming = threading.Thread(target=lambda: claims.append(lib.worker._claim_next()))
+    finishing = threading.Thread(target=lambda: lib.worker._finish_job(
+        ids["Running.mkv"], False, None, None, "stopped for the test"))
+    try:
+        answering.start()
+        assert probing.wait(10), "the answer never probed Movie.mkv"
+        claiming.start()
+        finishing.start()
+        claiming.join(5)
+        finishing.join(5)
+        waited = [what for what, thread in (("the claim", claiming), ("the finish", finishing))
+                  if thread.is_alive()]
+    finally:
+        go_on.set()
+        for thread in (answering, claiming, finishing):
+            if thread.ident:
+                thread.join(60)
+
+    assert waited == [], f"waited for the answer's probe: {waited}"
+    assert claims == [ids["Next.mkv"]]
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        finished = db.get(QueueItem, ids["Running.mkv"])
+        assert (finished.status, finished.error_message) == ("failed", "stopped for the test")
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert [j.status for j in db.query(QueueItem).filter(QueueItem.file_id == movie.id)] \
+            == ["pending"], "the answer did not queue the file again"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_the_answer_probes_the_file_with_no_write_of_its_own_open(lib, monkeypatch):
+    """
+    At every probe the answer makes of Movie.mkv, another connection can
+    take SQLite's write lock without waiting.
+    """
+    import sqlite3
+
+    database_path = lib.Session.kw["bind"].url.database
+    seen = []
+
+    def check_then_probe(path, probe):
+        other = sqlite3.connect(database_path, timeout=0, isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            seen.append("free")
+        except sqlite3.OperationalError as exc:
+            seen.append(f"held ({exc})")
+        finally:
+            other.close()
+        return probe()
+    _probe_watched(lib, monkeypatch, check_then_probe)
+
+    reply = _answer(lib)
+
+    assert reply["applied"] == 1, reply
+    assert seen and set(seen) == {"free"}, f"the write lock at each probe: {seen}"
+
+
+def test_a_file_replaced_after_the_answer_probed_it_is_probed_again(lib, monkeypatch):
+    """
+    probe_ahead runs before the running-job check, so a job can finish and
+    replace the file between the probe and the decision, and deciding from
+    that probe would record the tracks of the file that was replaced. The
+    probe is used only while the file's size and mtime are what they were.
+
+    Movie.mkv, with two audio tracks, is replaced by a file with three just
+    after the answer's first probe: the record ends with three.
+    """
+    import os
+
+    from app.database.models import MediaFile, Track
+
+    replacement = lib.library.parent / "Replacement.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=300:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=500:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=700:duration=1",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-f", "matroska", str(replacement)], check=True)
+
+    def replaced_after(path, probe):
+        data = probe()
+        if replacement.exists():
+            os.replace(replacement, path)
+        return data
+    calls = _probe_watched(lib, monkeypatch, replaced_after)
+
+    _answer(lib)
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        audio = db.query(Track).filter(Track.file_id == movie.id,
+                                       Track.track_type == "audio").count()
+    assert audio == 3, f"the record kept the replaced file's {audio} audio tracks"
+    assert calls.count(movie.path) == 2
+
+
+def test_an_answer_for_a_file_ffprobe_cannot_read_probes_it_once(lib, monkeypatch):
+    """
+    The probe made ahead fails, and _process_file reports that failure
+    rather than probing again: the reply is the one it was, and ffprobe runs
+    once.
+
+    What becomes of the file's waiting job is not pinned here. It is
+    deleted, as it was before probe_ahead existed, and that is a question of
+    its own: Retry keeps a row whose file cannot be read
+    (test_retry_unreadable_file), and the answer does not.
+    """
+    from app.core.probe import ProbeError
+    from app.database.models import MediaFile
+
+    def unreadable(path, probe):
+        raise ProbeError("the test's file cannot be read")
+    calls = _probe_watched(lib, monkeypatch, unreadable)
+
+    reply = _answer(lib)
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+    assert reply == {"applied": 0, "deferred": [], "dry_run": False, "errors": [
+        {"file_id": movie.id, "error": "Could not re-read the file — see the log for details"}]}
+    assert calls.count(movie.path) == 1
 
 
 def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):

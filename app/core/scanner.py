@@ -22,6 +22,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from typing import NamedTuple
 from app.core.arr_lookup import original_languages
 from app.core.timeutil import utcnow
 
@@ -64,6 +65,38 @@ class ScanStats:
     excluded:      int = 0   # files the exclude settings passed over this scan
     held:          int = 0   # not queued again: audio cannot be copied, or tags would be lost (_held_back)
     cancelled:     bool = False   # True if the scan was stopped early by the user
+
+
+# ── A probe made ahead of _process_file ───────────────────────────────────────
+
+class Probed(NamedTuple):
+    """A file's probe, with the size and mtime it had just before (probe_ahead)."""
+    size:   int
+    mtime:  float
+    result: dict | ProbeError
+
+
+def probe_ahead(path: str) -> Probed | None:
+    """
+    Stat and probe a file for a _process_file call to come, so that call
+    need not run ffprobe while its caller holds a write transaction open.
+    SQLite lets one writer in at a time, so every other write in the app
+    waits for as long as ffprobe takes. apply_language is the caller this
+    was written for; see the comment there.
+
+    A probe that fails is kept as its error, and _process_file reports it as
+    it would its own, without probing again. None when the file cannot be
+    stat'ed: _process_file then stats it itself and reports that.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    try:
+        result = probe_file(path, app_settings.FFPROBE_PATH)
+    except ProbeError as exc:
+        result = exc
+    return Probed(st.st_size, st.st_mtime, result)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -1237,6 +1270,7 @@ def _process_file(
     recheck:     bool = False,
     original_language: str | None = None,
     from_scan:   bool = False,
+    probed:      Probed | None = None,
 ) -> None:
     """
     Probe (when needed), decide and queue one file.
@@ -1255,6 +1289,9 @@ def _process_file(
     back a file whose audio cannot be copied (_held_back); a Retry, an Ask
     Again, an applied answer, a webhook or a re-decision after a cancelled
     job queues it as it would any other.
+
+    probed, from probe_ahead, stands in for the probe this call would make,
+    while the file's size and mtime are what they were when it was made.
     """
     # ── Stat the file ──────────────────────────────────────────────────────
     try:
@@ -1365,12 +1402,24 @@ def _process_file(
         fmt_container = existing.container or ""
     else:
         # ── Run ffprobe ────────────────────────────────────────────────────
-        try:
-            probe_data = probe_file(path, app_settings.FFPROBE_PATH)
-        except ProbeError as exc:
-            logger.error("ffprobe failed for %s: %s", path, exc)
+        # Or take the caller's (probe_ahead), unless the file has changed
+        # since: a job finishing in between replaces it, and deciding from
+        # the probe of the file it replaced would record tracks that are no
+        # longer there. Size and mtime together are the identity revert
+        # relies on as well (worker._fingerprint). A probe that failed is
+        # reported here as this one failing would be, not repeated.
+        if probed is not None and (probed.size, probed.mtime) == (current_size, current_mtime):
+            probe_result = probed.result
+        else:
+            try:
+                probe_result = probe_file(path, app_settings.FFPROBE_PATH)
+            except ProbeError as exc:
+                probe_result = exc
+        if isinstance(probe_result, ProbeError):
+            logger.error("ffprobe failed for %s: %s", path, probe_result)
             stats.errors += 1
             return
+        probe_data = probe_result
 
         fmt_info  = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)

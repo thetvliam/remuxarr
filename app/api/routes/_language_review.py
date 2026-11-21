@@ -41,7 +41,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
+from app.core.scanner import (ScanStats, _load_track_answers, _process_file, probe_ahead,
                               next_free_srt_name,
                               _track_to_dict, descriptors_by_stream)
 from app.core.langcodes import canonical, two_letter
@@ -625,6 +625,25 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                         ),
                     })
 
+            # Read the file now, while nothing is uncommitted, and hand the
+            # probe to _process_file. It probed after the delete below was
+            # flushed, so this transaction held SQLite's write lock for as
+            # long as ffprobe took: up to its 120 s timeout, on a disk
+            # spinning up or a share that has gone to sleep. Every other write
+            # in the app waited for it, up to the engine's 30 s busy timeout,
+            # and then failed. The worker's claim, holding CLAIM_LOCK all the
+            # while, logged "Failed to claim next job" and returned None; a
+            # job finishing meanwhile had its result replaced by
+            # "Finalisation failed: ... database is locked".
+            #
+            # _process_file uses the probe only while the file is as it was,
+            # so a job that changes it in the meantime cannot leave this
+            # answer deciding from a stale probe, and reports one that failed
+            # as before, without a second probe. A file whose job turns out
+            # below to be running is probed for nothing: the job is reading
+            # it anyway.
+            probed = probe_ahead(media.path)
+
             # The running-job check, the read of the waiting job and its
             # delete are one check-and-claim, as the worker's claim is, and
             # they take turns with it under CLAIM_LOCK (revert_lock, THREE
@@ -739,6 +758,7 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                     stats=stats,
                     sonarr_series_id=sonarr_series_id,
                     radarr_movie_id=radarr_movie_id,
+                    probed=probed,
                 )
                 # _process_file handles its own failures rather than raising:
                 # a file it cannot stat or cannot probe is logged, recorded in
