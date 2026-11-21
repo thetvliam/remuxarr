@@ -1033,6 +1033,36 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
     was_review = item.status == "manual_review"
 
+    # The check above and the write are two moments. The driver starts a
+    # transaction only at the first write, so the check reads whatever is
+    # committed, and the worker could claim the job in between. The write
+    # was by id alone and marked the running job cancelled: Cancel replied
+    # success, the job ran anyway and its finish overwrote the row, and
+    # while it ran History offered Retry and Dismiss on it, both of which
+    # deleted the running job's row (Retry queuing a second job for the
+    # file as well).
+    #
+    # So the status changes only while the job is still waiting, and a job
+    # the worker has taken is refused as one already running at the check
+    # is. This UPDATE holds SQLite's write lock until the commit, so nothing
+    # changes the row before the rest of the transition lands with it. The
+    # claim makes the same check from its side (worker._claim_next_locked).
+    # A refusal needs no rollback: get_db closes the session, which rolls
+    # back.
+    #
+    # The batch review endpoint's skips go through _cancel_item_row without
+    # this: they take only files waiting in review, which the worker never
+    # claims.
+    still_waiting = (
+        db.query(QueueItem)
+        .filter(QueueItem.id == item.id,
+                QueueItem.status.in_(("pending", "manual_review")))
+        .update({QueueItem.status: "cancelled"}, synchronize_session=False)
+    )
+    if not still_waiting:
+        db.refresh(item)
+        raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
+
     _cancel_item_row(item)
     db.commit()
     # Only a review: cancelling a pending job leaves the file for the next

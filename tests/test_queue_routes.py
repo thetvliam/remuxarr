@@ -64,11 +64,25 @@ reach the claim, as they stood:
                                               in test_language_answer_during_job
   • the row count ignored                    → the same three
 
+Both of the last two are also killed by both cases of
+test_a_claim_while_an_answer_replaces_the_job_waits_for_it, which depends on
+the claim looking again.
+
 Two more were already killed and are not these tests' to claim: swap_record
 kept (test_a_claim_clears_a_record_an_earlier_attempt_left, in
 test_crash_after_swap) and started_at not stamped
 (test_claiming_marks_the_item_processing_and_stamps_started_at, and now the
 deleted-job test as well).
+
+Cancel can also land just after the claim, the other order: it checked a
+waiting job, the worker claimed it, and Cancel's write marked the running
+job cancelled. Verified by mutation, 3 applied, 3 killed, each surviving
+first the 5 test files that reach the cancel route, as they stood, and each
+killed by test_a_cancel_landing_just_after_the_claim_is_refused:
+
+  • Cancel's UPDATE not conditional on the job still waiting
+  • the row count ignored
+  • the refusal naming the status Cancel read rather than the current one
 """
 import json
 
@@ -956,6 +970,54 @@ def test_a_job_cancelled_while_it_is_claimed_stays_cancelled(claim_on_file):
         assert cancelled.status == "cancelled", "the cancelled job was claimed"
         assert cancelled.completed_at is not None
         assert db.get(QueueItem, 2).status == "processing"
+
+
+def test_a_cancel_landing_just_after_the_claim_is_refused(claim_on_file):
+    """
+    The other order. Cancel read the job as waiting, the worker claimed it,
+    and Cancel's write, by id alone, then marked the running job cancelled:
+    Cancel replied success, the job ran anyway, and while it ran History
+    offered Retry and Dismiss on its row. Cancel is now refused, as it is
+    for a job already running when it checks.
+
+    The claim runs from a hook just after Cancel reads the job, on Cancel's
+    own thread. Cancel takes no lock, so nothing here waits on anything.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import event
+
+    from app.api.routes.queue import cancel_item
+    from app.database.models import MediaFile, QueueItem
+
+    rig = claim_on_file
+    started, claimed = [], []
+
+    def claim_after_cancels_read(conn, cursor, statement, parameters, context, executemany):
+        # The claim's own SELECT comes through here as well.
+        if (not started and statement.lstrip().upper().startswith("SELECT")
+                and "FROM queue_items" in statement):
+            started.append(statement)
+            claimed.append(rig.worker._claim_next())
+    event.listen(rig.engine, "after_cursor_execute", claim_after_cancels_read)
+    try:
+        with rig.Session() as db:
+            try:
+                reply = cancel_item(1, db)
+            except HTTPException as refused:
+                reply = refused
+    finally:
+        event.remove(rig.engine, "after_cursor_execute", claim_after_cancels_read)
+
+    assert claimed == [1], f"the claim took {claimed}, not the job Cancel read"
+    with rig.Session() as db:
+        job, media = db.get(QueueItem, 1), db.get(MediaFile, 1)
+        assert job.status == "processing", "the running job was marked cancelled"
+        assert job.completed_at is None
+        assert (media.status, media.size, media.mtime) == ("queued", REAL_SIZE, REAL_MTIME), (
+            "the running job's file was reset as if it had been cancelled")
+    assert isinstance(reply, HTTPException), f"Cancel replied {reply!r}"
+    assert reply.status_code == 400
+    assert "processing" in reply.detail, reply.detail
 
 
 # ── A review item with an explicit track list ────────────────────────────────
