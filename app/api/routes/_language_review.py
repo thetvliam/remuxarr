@@ -46,6 +46,7 @@ from app.core.scanner import (ScanStats, _load_track_answers, _process_file,
                               _track_to_dict, descriptors_by_stream)
 from app.core.langcodes import canonical, two_letter
 from app.core.plex import refresh_in_background
+from app.core import revert_lock
 from app.core.revert_capture import repoint_created_file
 from app.database.models import MediaFile, QueueItem, Track
 from app.database.session import get_app_settings, get_db
@@ -624,83 +625,110 @@ def build_language_review_router(kind: LanguageReviewKind) -> APIRouter:
                         ),
                     })
 
-            # A file whose job is CURRENTLY RUNNING must be skipped, not
-            # cleared: deleting a "processing" row does nothing to the
-            # worker's already-running FFmpeg process (worker.abort_job
-            # exists for that, and isn't called here) — the running job
-            # would finish invisibly (its progress/finish updates find no
-            # row), while _process_file below immediately creates a fresh
-            # pending item the worker can claim WHILE the old FFmpeg is
-            # still writing. Both stage to distinct temp names but move
-            # onto the SAME final path, so the stale pre-override job can
-            # finish last and overwrite the corrected output. An earlier
-            # version of this code deleted "processing" rows here and
-            # presented that as deliberate and safe — it was neither.
+            # The running-job check, the read of the waiting job and its
+            # delete are one check-and-claim, as the worker's claim is, and
+            # they take turns with it under CLAIM_LOCK (revert_lock, THREE
+            # WRITERS). Without it the worker could claim the job between
+            # the check and the delete: the delete then removed the running
+            # job's row, the job's result was never recorded, and
+            # _process_file queued a replacement the worker could start
+            # beside it, two jobs writing one file once max_concurrent_jobs
+            # is above 1, the hazard the comment below describes. A claim
+            # between the check and the read left nothing to delete, and
+            # _process_file then found the job running and marked the file:
+            # the answer still landed, but only after a job decided without
+            # it, and the reply counted it applied rather than deferred.
             #
-            # Skipping alone loses the answer, though. The override is
-            # committed above, but the running job decided before it existed,
-            # and when the job ends it records the file's new size and mtime:
-            # a delta scan then sees the file as unchanged, and only a Full
-            # Scan used to pick the override up. So the file is marked, and
-            # looked at again once nothing is running for it: straight after
-            # a successful job by the worker, otherwise by the next scan. See
-            # MediaFile.reevaluate_after_job.
-            processing = (
-                db.query(QueueItem)
-                .filter(QueueItem.file_id == file_id,
-                        QueueItem.status == "processing")
-                .first()
-            )
-            if processing:
-                media.reevaluate_after_job = True
-                db.commit()
-                results["deferred"].append(file_id)
-                continue
-
-            # Clear any existing WAITING QueueItem(s) so _process_file starts
-            # fresh. Filtered to "pending"/"manual_review" only — a file can
-            # have several historical QueueItem rows (completed/failed/etc.
-            # from past scans) alongside a current active one; an unfiltered,
-            # unordered .first() could return a stale terminal row instead of
-            # the live one, leaving the actual active item in place.
-            # _process_file's own "in_progress" check (scanner.py) would then
-            # find that surviving active item and silently skip creating a
-            # new one — the language override gets saved to the DB, but the
-            # reprocess that's supposed to actually apply it never runs, with
-            # no error shown anywhere.
+            # Held to the flush, not across the probe. Once the delete is
+            # flushed this transaction holds SQLite's write lock, and a claim
+            # that selects the deleted job meanwhile finds it gone at its
+            # UPDATE and looks again (worker._claim_next_locked). The flush
+            # can wait for that write lock while holding CLAIM_LOCK, as the
+            # claim's own commit can.
             #
-            # Bulk-deletes every matching row rather than just one,
-            # defensively. Deliberately does NOT touch completed/failed/
-            # cancelled/skipped/dry_run rows (real historical records), and
-            # NOT "processing" (live job — handled above).
-            # Same reasoning as retry_all_failed for capturing arr IDs before
-            # deleting: without this, an active item carrying Sonarr/Radarr
-            # linkage (e.g. a webhook-originated pending item) loses that
-            # linkage here, and the reprocessed job never fires
-            # RescanSeries/RescanMovie on success. There's genuinely at most
-            # one matching row in practice (existing "don't double-queue"
-            # guards elsewhere), but ordered defensively in case that's ever
-            # not true.
-            active_items = (
-                db.query(QueueItem)
-                .filter(
-                    QueueItem.file_id == file_id,
-                    QueueItem.status.in_(["pending", "manual_review"]),
+            # Taken with nothing uncommitted: the override and the answered
+            # questions were committed above. Waiting for CLAIM_LOCK while
+            # holding SQLite's write lock would deadlock against a claim
+            # holding CLAIM_LOCK and waiting for that write lock, until the
+            # busy timeout failed one of them.
+            with revert_lock.CLAIM_LOCK:
+                # A file whose job is CURRENTLY RUNNING must be skipped, not
+                # cleared: deleting a "processing" row does nothing to the
+                # worker's already-running FFmpeg process (worker.abort_job
+                # exists for that, and isn't called here) — the running job
+                # would finish invisibly (its progress/finish updates find no
+                # row), while _process_file below immediately creates a fresh
+                # pending item the worker can claim WHILE the old FFmpeg is
+                # still writing. Both stage to distinct temp names but move
+                # onto the SAME final path, so the stale pre-override job can
+                # finish last and overwrite the corrected output. An earlier
+                # version of this code deleted "processing" rows here and
+                # presented that as deliberate and safe — it was neither.
+                #
+                # Skipping alone loses the answer, though. The override is
+                # committed above, but the running job decided before it existed,
+                # and when the job ends it records the file's new size and mtime:
+                # a delta scan then sees the file as unchanged, and only a Full
+                # Scan used to pick the override up. So the file is marked, and
+                # looked at again once nothing is running for it: straight after
+                # a successful job by the worker, otherwise by the next scan. See
+                # MediaFile.reevaluate_after_job.
+                processing = (
+                    db.query(QueueItem)
+                    .filter(QueueItem.file_id == file_id,
+                            QueueItem.status == "processing")
+                    .first()
                 )
-                .order_by(QueueItem.created_at.desc())
-                .all()
-            )
-            sonarr_series_id = active_items[0].sonarr_series_id if active_items else None
-            radarr_movie_id  = active_items[0].radarr_movie_id  if active_items else None
-            # Read before the delete. The item _process_file makes in its
-            # place cannot say this: the file is no longer new to it. A
-            # pending item counts as well as a review: its job was what would
-            # have told Plex, and an answer that leaves nothing to do means
-            # that job never runs.
-            first_seen = any(i.is_new_file for i in active_items)
-            for active_item in active_items:
-                db.delete(active_item)
-            db.flush()
+                if processing:
+                    media.reevaluate_after_job = True
+                    db.commit()
+                    results["deferred"].append(file_id)
+                    continue
+
+                # Clear any existing WAITING QueueItem(s) so _process_file starts
+                # fresh. Filtered to "pending"/"manual_review" only — a file can
+                # have several historical QueueItem rows (completed/failed/etc.
+                # from past scans) alongside a current active one; an unfiltered,
+                # unordered .first() could return a stale terminal row instead of
+                # the live one, leaving the actual active item in place.
+                # _process_file's own "in_progress" check (scanner.py) would then
+                # find that surviving active item and silently skip creating a
+                # new one — the language override gets saved to the DB, but the
+                # reprocess that's supposed to actually apply it never runs, with
+                # no error shown anywhere.
+                #
+                # Bulk-deletes every matching row rather than just one,
+                # defensively. Deliberately does NOT touch completed/failed/
+                # cancelled/skipped/dry_run rows (real historical records), and
+                # NOT "processing" (live job — handled above).
+                # Same reasoning as retry_all_failed for capturing arr IDs before
+                # deleting: without this, an active item carrying Sonarr/Radarr
+                # linkage (e.g. a webhook-originated pending item) loses that
+                # linkage here, and the reprocessed job never fires
+                # RescanSeries/RescanMovie on success. There's genuinely at most
+                # one matching row in practice (existing "don't double-queue"
+                # guards elsewhere), but ordered defensively in case that's ever
+                # not true.
+                active_items = (
+                    db.query(QueueItem)
+                    .filter(
+                        QueueItem.file_id == file_id,
+                        QueueItem.status.in_(["pending", "manual_review"]),
+                    )
+                    .order_by(QueueItem.created_at.desc())
+                    .all()
+                )
+                sonarr_series_id = active_items[0].sonarr_series_id if active_items else None
+                radarr_movie_id  = active_items[0].radarr_movie_id  if active_items else None
+                # Read before the delete. The item _process_file makes in its
+                # place cannot say this: the file is no longer new to it. A
+                # pending item counts as well as a review: its job was what would
+                # have told Plex, and an answer that leaves nothing to do means
+                # that job never runs.
+                first_seen = any(i.is_new_file for i in active_items)
+                for active_item in active_items:
+                    db.delete(active_item)
+                db.flush()
 
             try:
                 stats = ScanStats()

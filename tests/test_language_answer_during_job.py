@@ -42,6 +42,22 @@ worker claiming the file's job while an answer replaces it. Its mutation
 record is in test_queue_routes.py, beside the claim tests that kill the same
 mutants with no file to probe; two of those three are killed here as well (a
 miss giving up, and the row count ignored).
+
+test_a_claim_while_an_answer_replaces_the_job_waits_for_it is about the
+answer itself: its running-job check, its read of the waiting job and its
+delete, which it now does under revert_lock.CLAIM_LOCK. Verified by
+mutation, 4 applied, 4 killed, each surviving first the 55 test files that
+reach the answer or the lock, as they stood, and each killed by the claim
+taking the job the answer was about to replace:
+
+  • no lock                                  → both moments
+  • the lock around the check only           → before the delete
+  • the lock released before the delete      → before the delete
+  • the lock taken after the check           → after the check
+
+With the lock around the check only, the claim started after the check
+waits for the lock and then races the answer's read, so that case may pass
+or fail under the mutant; it is not counted.
 """
 import asyncio
 import json
@@ -336,6 +352,145 @@ def test_a_claim_during_an_answer_takes_the_job_the_answer_queues(lib, monkeypat
         assert (job.file_id, job.status) == (movie.id, "processing")
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
         "a job that stopped waiting was logged as a failed claim")
+
+
+class _WatchedLock:
+    """
+    A stand-in for revert_lock.CLAIM_LOCK that records which threads found
+    it held and had to wait, and sets an event when one does: how a test
+    knows a claim is blocked on the lock without sleeping to find out.
+    """
+
+    def __init__(self, on_wait):
+        import threading
+
+        self._lock = threading.Lock()
+        self._on_wait = on_wait
+        self.waited = []
+
+    def acquire(self, blocking=True, timeout=-1):
+        import threading
+
+        if self._lock.acquire(blocking=False):
+            return True
+        if not blocking:
+            return False
+        self.waited.append(threading.get_ident())
+        self._on_wait.set()
+        return self._lock.acquire(True, timeout)
+
+    def release(self):
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+def _the_running_job_check(statement, parameters):
+    return (statement.lstrip().upper().startswith("SELECT")
+            and "FROM queue_items" in statement and "processing" in tuple(parameters))
+
+
+@pytest.mark.parametrize("moment", ["after the running-job check", "before the delete"])
+def test_a_claim_while_an_answer_replaces_the_job_waits_for_it(lib, monkeypatch, caplog, moment):
+    """
+    The answer checked that no job was running for the file, then read the
+    waiting job and deleted it. A claim between the check and the delete
+    took the job, and the answer deleted it while it ran: its result was
+    never recorded, and the job the answer queued in its place could start
+    beside it on the same file. A claim between the check and the read took
+    it as well: nothing was then deleted and the file was marked, so the
+    answer still landed, but only after a job decided without it, and the
+    reply counted the answer applied rather than deferred.
+
+    The claim is started at each moment, on its own thread, and must wait
+    for the answer: the job the answer deletes is still waiting, and the one
+    claimed is the replacement.
+    """
+    import logging
+    import threading
+
+    from sqlalchemy import event
+
+    from app.core import revert_lock
+    from app.database.models import MediaFile, QueueItem
+
+    waiting = _like_a_real_queue(lib)
+    settled = threading.Event()
+    lock = _WatchedLock(on_wait=settled)
+    monkeypatch.setattr(revert_lock, "CLAIM_LOCK", lock)
+
+    answering, checked, claims, claimers = [], [], [], []
+
+    def claim():
+        try:
+            claims.append(lib.worker._claim_next())
+        finally:
+            settled.set()
+
+    def start_a_claim():
+        claimer = threading.Thread(target=claim)
+        claimers.append(claimer)
+        claimer.start()
+        # Until the claim is blocked on the lock, or has finished because
+        # nothing was holding it.
+        assert settled.wait(10), "the claim neither waited nor finished"
+
+    def after_a_statement(conn, cursor, statement, parameters, context, executemany):
+        if (threading.get_ident() in answering and not checked
+                and _the_running_job_check(statement, parameters)):
+            checked.append(statement)
+            if moment == "after the running-job check":
+                start_a_claim()
+
+    # The answer's first write after its check. That deletes the waiting
+    # job's planned actions, not the job itself, and from that statement on
+    # the answer holds SQLite's write lock: a claim started any later would
+    # wait for SQLite rather than for CLAIM_LOCK.
+    def before_a_statement(conn, cursor, statement, parameters, context, executemany):
+        if (moment == "before the delete" and threading.get_ident() in answering
+                and checked and not claimers
+                and statement.lstrip().upper().startswith("DELETE")):
+            start_a_claim()
+
+    engine = lib.Session.kw["bind"]
+    event.listen(engine, "after_cursor_execute", after_a_statement)
+    event.listen(engine, "before_cursor_execute", before_a_statement)
+    replies = []
+
+    def answer():
+        answering.append(threading.get_ident())
+        replies.append(_answer(lib))
+    caplog.set_level(logging.INFO)
+    try:
+        answerer = threading.Thread(target=answer)
+        answerer.start()
+        answerer.join(30)
+        for claimer in claimers:
+            claimer.join(30)
+    finally:
+        event.remove(engine, "after_cursor_execute", after_a_statement)
+        event.remove(engine, "before_cursor_execute", before_a_statement)
+
+    assert claimers, "the answer never reached the moment"
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert claims != [waiting], "the claim took the job the answer was about to replace"
+        assert db.get(QueueItem, waiting) is None, "the answer did not replace the job"
+        running = db.query(QueueItem).filter(QueueItem.file_id == movie.id,
+                                             QueueItem.status == "processing").all()
+        assert [j.id for j in running] == claims, (
+            f"claimed {claims}, running for the file {[j.id for j in running]}")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert lock.waited == [claimers[0].ident], (
+        "the claim did not wait for the answer's check and delete")
 
 
 def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):
