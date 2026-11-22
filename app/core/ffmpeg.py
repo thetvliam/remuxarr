@@ -203,6 +203,53 @@ KEEP_STREAM_FLAGS = ["-disposition:0", "+0"]
 MP4_HEVC_TAGS = frozenset({"hev1", "hvc1", "dvh1"})
 
 
+def dolby_vision_args(out_fmt: str | None,
+                      video: Sequence[DolbyVision | None]) -> list[str]:
+    """
+    What a command copying Dolby Vision video into the muxer out_fmt names
+    needs to keep it. `video` is the output's video streams in order, each
+    with its Dolby Vision (probe.dolby_vision) or None. A job and AC3
+    Forge's add and undo use it (build_ffmpeg_command,
+    forge.build_add_ac3_command, forge.build_undo_command).
+
+    FFmpeg's MP4 muxer writes a Dolby Vision stream's configuration record
+    (dvcC, dvvC or dvwC) only under -strict unofficial, and otherwise drops
+    it with a warning that -v error hides (mov_write_video_tag,
+    libavformat/movenc.c, n8.1.3). The RPUs ride in the packets and were
+    copied all the same, so every job and Forge run writing such a stream
+    to an MP4 kept the metadata and lost what tells a player it is there
+    (issue #62). Matroska writes the record unasked, and the QuickTime
+    muxer never writes it.
+
+    Only for such a file: -strict unofficial also lets the MP4 muxer take
+    MP3 below 16 kHz, which it refuses otherwise, and write stereo 3D and
+    spherical video boxes, both measured. No file of the generated test
+    library at the time (tools/testlib, 49 files) came out differently with
+    it, or failed or succeeded differently.
+
+    Profile 5 has no HDR10 or SDR layer under it, and a player that takes
+    it for plain HEVC shows it in the wrong colours. Its sample entry is
+    what decides: played from USB on an HDR television, a Profile 5 MP4
+    tagged hev1 came out green and purple with the record and without it,
+    and tagged dvh1 played in Dolby Vision (checked by hand for issue #62).
+    Apple's file format document asks for dvh1 too. A tag the MP4 muxer
+    keeps (MP4_HEVC_TAGS) is kept, so a revert or an undo gives it back.
+    Any other gets dvh1: a Matroska has none, and dvhe is not on that list,
+    so FFmpeg would write hev1 in its place. Other profiles keep FFmpeg's
+    choice, hev1, which has not been tried on a player here.
+
+    One video stream at a time: a cover is a video stream too, and a dvh1
+    given to one fails the mux.
+    """
+    if out_fmt != "mp4" or not any(d is not None and d.profile is not None for d in video):
+        return []
+    args = ["-strict", "unofficial"]
+    for n, d in enumerate(video):
+        if d is not None and d.profile == 5 and d.codec_tag not in MP4_HEVC_TAGS:
+            args += [f"-tag:v:{n}", "dvh1"]
+    return args
+
+
 def build_ffmpeg_command(
     input_path: str,
     output_path: str,
@@ -307,42 +354,10 @@ def build_ffmpeg_command(
         cmd += ["-c:v", "copy"]
 
     # ── Dolby Vision, MP4 ──────────────────────────────────────────────────
-    # FFmpeg's MP4 muxer writes a Dolby Vision stream's configuration
-    # record (dvcC, dvvC or dvwC) only under -strict unofficial, and
-    # otherwise drops it with a warning that -v error hides
-    # (mov_write_video_tag, libavformat/movenc.c, n8.1.3). The RPUs ride in
-    # the packets and were copied all the same, so every job writing such
-    # a stream to an MP4 kept the metadata and lost what tells a player it
-    # is there (issue #62). Matroska writes the record unasked.
-    #
-    # Only for such a file: -strict unofficial also lets the MP4 muxer
-    # take MP3 below 16 kHz, which it refuses otherwise, and write stereo
-    # 3D and spherical video boxes, both measured. No file of the generated
-    # test library at the time (tools/testlib, 49 files) came out
-    # differently with it, or failed or succeeded differently.
-    #
-    # Profile 5 has no HDR10 or SDR layer under it, and a player that
-    # takes it for plain HEVC shows it in the wrong colours. Its sample
-    # entry is what decides: played from USB on an HDR television, a
-    # Profile 5 MP4 tagged hev1 came out green and purple with the record
-    # and without it, and tagged dvh1 played in Dolby Vision (checked by
-    # hand for issue #62). Apple's file format document asks for dvh1 too.
-    # A source tag the MP4 muxer keeps (hvc1, hev1 or dvh1, its list for
-    # HEVC in codec_mp4_tags) is kept, so a revert gives it back. Any other
-    # gets dvh1: a Matroska has none, and dvhe is not on that list, so
-    # FFmpeg would write hev1 in its place. Other profiles keep FFmpeg's
-    # choice, hev1, which has not been tried on a player here.
-    #
-    # One video stream at a time: a cover is a video stream too, and a
-    # dvh1 given to one fails the mux.
-    dv = [(out_idx, (dolby_vision or {}).get(t["stream_index"]))
-          for out_idx, t in enumerate(video_tracks)]
-    if (_CONTAINER_FORMAT.get(decision.target_container) == "mp4"
-            and any(d is not None and d.profile is not None for _, d in dv)):
-        cmd += ["-strict", "unofficial"]
-        for out_idx, d in dv:
-            if d is not None and d.profile == 5 and d.codec_tag not in MP4_HEVC_TAGS:
-                cmd += [f"-tag:v:{out_idx}", "dvh1"]
+    # dolby_vision_args says what and why. The output's video streams are
+    # the kept video tracks, mapped first and in order.
+    cmd += dolby_vision_args(_CONTAINER_FORMAT.get(decision.target_container),
+                             [(dolby_vision or {}).get(t["stream_index"]) for t in video_tracks])
 
     # ── Audio ──────────────────────────────────────────────────────────────
     kept_audio = [t for t in audio_tracks if t["stream_index"] not in dropped]
@@ -935,10 +950,9 @@ def build_restore_command(
     # such a file to its original Matroska failed. "-tag 0" does not clear
     # a copied tag; hvc1 passes the check, and Matroska stores no tag for
     # HEVC, so the stream comes back as the original had it, the same
-    # packets and record. Whether or not it has its record: an AC3 Forge
-    # run on the MP4 drops it, for now, and leaves the tag
-    # (probe.dolby_vision). By output index: a cover coming back as a
-    # video stream fails the mux given hvc1 too.
+    # packets and record. Whether or not it has its record, as a copy can
+    # lose that and leave the tag (probe.dolby_vision). By output index: a
+    # cover coming back as a video stream fails the mux given hvc1 too.
     #
     # Back into an MP4 the record needs -strict unofficial, as it did on
     # the way in. A QuickTime original is left alone: that muxer never

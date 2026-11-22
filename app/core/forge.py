@@ -38,10 +38,10 @@ from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
 from app.core.ffmpeg import (
-    KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, find_matroska_covers,
+    KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, dolby_vision_args, find_matroska_covers,
 )
-from app.core.probe import (ProbeError, extract_tracks, is_quicktime, rebuilt_track_indices,
-                            probe_file, recording_signs)
+from app.core.probe import (DolbyVision, ProbeError, dolby_vision, extract_tracks, is_quicktime,
+                            rebuilt_track_indices, probe_file, recording_signs)
 from app.core.probe import creation_time as source_creation_time
 from app.database.session import SessionLocal, get_app_settings
 from app.core.subprocess_runner import (
@@ -218,6 +218,7 @@ def build_add_ac3_command(
     covers:            Sequence[CoverArt] = (),
     rebuilt_tracks:    Sequence[int] = (),
     creation_time:     str | None = None,
+    dolby_vision:      Sequence[DolbyVision | None] = (),
 ) -> list[str]:
     """
     Copy all existing streams unchanged, then append a new AC3 5.1 track
@@ -225,6 +226,10 @@ def build_add_ac3_command(
 
     creation_time is the date the file says it was made, written back
     (_creation_time_args).
+
+    dolby_vision is the file's video streams in order, each with its Dolby
+    Vision or None (load_forge_job_data), which the copy keeps
+    (ffmpeg.dolby_vision_args).
 
     rebuilt_tracks are the file's chapter and timecode tracks, left out of
     the copy: the muxer writes them itself (probe.rebuilt_track_indices).
@@ -292,6 +297,7 @@ def build_add_ac3_command(
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
         *_creation_time_args(creation_time),
+        *dolby_vision_args(fmt, dolby_vision),
         # ── Output ────────────────────────────────────────────────────────
         "-f", fmt,
     ]
@@ -326,10 +332,12 @@ def build_undo_command(
     quicktime:             bool = False,
     rebuilt_tracks:        Sequence[int] = (),
     creation_time:         str | None = None,
+    dolby_vision:          Sequence[DolbyVision | None] = (),
 ) -> list[str]:
     """
     Copy all streams EXCEPT the AC3 track added by the forge.
-    rebuilt_tracks and creation_time as for build_add_ac3_command.
+    rebuilt_tracks, creation_time and dolby_vision as for
+    build_add_ac3_command.
     Uses FFmpeg's negative map syntax: -map -0:a:N removes output audio
     stream N from the selection. covers are left out and attached again,
     as for build_add_ac3_command; a copy alone does not trip the muxer over
@@ -368,6 +376,7 @@ def build_undo_command(
         *cover_attach_args(covers),
         *_title_args(fmt, titles),
         *_creation_time_args(creation_time),
+        *dolby_vision_args(fmt, dolby_vision),
         "-f", fmt,
     ]
 
@@ -935,6 +944,14 @@ def settle_forge_jobs(db, file_id: int, tracks: list[dict], *, after: str) -> No
         )
 
 
+def _video_dolby_vision(probe_data: dict) -> list[DolbyVision | None]:
+    """Each video stream's Dolby Vision (probe.dolby_vision) or None, in
+    the file's order."""
+    found = dolby_vision(probe_data)
+    return [found.get(s["index"]) for s in probe_data.get("streams") or []
+            if s.get("codec_type") == "video"]
+
+
 def load_forge_job_data(job_id: int) -> dict | None:
     """
     Return everything the worker needs to execute a forge job.
@@ -1114,6 +1131,12 @@ def load_forge_job_data(job_id: int) -> dict | None:
             "quicktime":          is_quicktime(probe_data),
             # And the date the file says it was made (_creation_time_args).
             "creation_time":      source_creation_time(probe_data),
+            # And its video streams' Dolby Vision, in order, which the
+            # commands keep (ffmpeg.dolby_vision_args). For an MP4, which is
+            # where it matters, "-map 0" keeps every video stream, so a
+            # stream's place here is its place in the output; only a
+            # Matroska's covers are taken out.
+            "dolby_vision":       _video_dolby_vision(probe_data),
             "aac_stream_index":   job.aac_stream_index,
             "audio_track_count":  job.audio_track_count,
             "undo_audio_output_index": undo_audio_output_index,

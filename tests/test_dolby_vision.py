@@ -14,9 +14,10 @@ the same way.
 
 The job now asks for the record wherever a kept video stream has one, and
 writes Profile 5 as dvh1 where its source's tag cannot be kept
-(ffmpeg.build_ffmpeg_command). A revert writes dvh1 back into Matroska as
-hvc1, which FFmpeg accepts there, and asks for the record going back into
-an MP4 (ffmpeg.build_restore_command). AC3 Forge does not keep it yet.
+(ffmpeg.dolby_vision_args). AC3 Forge's add and undo, which lost the
+record on an MP4 the same way, use that rule too. A revert writes dvh1
+back into Matroska as hvc1, which FFmpeg accepts there, and asks for the
+record going back into an MP4 (ffmpeg.build_restore_command).
 
 The files here carry a record and no RPUs: FFmpeg's dovi_rpu filter writes
 one from the colour properties, and nothing in the pinned build writes
@@ -62,6 +63,31 @@ The last two are killed by the command and the helper alone: a real file
 gets a dvh1 stream without its record from an AC3 Forge run, which the
 explorer runs (tools/testlib; its check 10 reported the revert failing
 before this case was handled).
+
+AC3 Forge, and the rule moving into dolby_vision_args, which the job and
+both Forge commands now share: 17 more applied, 17 killed. The nine rule
+mutants above that are about the job's command (from -strict never given to
+the bare dvh1) were re-aimed at dolby_vision_args, and the tests as they
+stood killed each with exactly the tests listed above: the move lost
+nothing. The Forge ones were first run against the whole suite as it stood
+(2873 tests) with the change in place, and all 7 survived it.
+
+  - the job not using the rule      -> every job command and real job
+  - the add not using it            -> the add commands, the real adds, the
+                                       revert after a job and an add
+  - the undo not using it           -> the undo commands, the real undos
+  - the job data not carrying it    -> every real add, the revert after one
+  - the worker not passing it to
+    the add                         -> the same
+  - the worker not passing it to
+    the undo                        -> every real undo
+  - -strict for a QuickTime undo    -> the QuickTime undo command
+  - places counted over every
+    stream, not the video ones      -> the real dvhe add with the audio first
+
+The Forge tests kill the re-aimed rule mutants as well, all but the one
+giving every profile dvh1: the Profile 8 file there carries hev1, a tag
+the muxer keeps, which that mutant leaves alone.
 """
 import asyncio
 import json
@@ -71,13 +97,18 @@ import pytest
 
 from app.core.decision import ProcessingDecision
 from app.core.ffmpeg import build_ffmpeg_command, build_restore_command
+from app.core.forge import build_add_ac3_command, build_undo_command
 from app.core.probe import DOVI_RECORD, DolbyVision, dolby_vision
 from tests import test_creation_date as dated
+from tests import test_quicktime_files as _qt
 from tests.test_creation_date import _audio_languages, _run_job, needs_ffmpeg
 
 # The real scan, worker and revert on a file-backed database, English audio
-# kept, revert points on: test_creation_date.py's.
+# kept, revert points on: test_creation_date.py's. forge_rig is the same
+# with the Forge module too, test_quicktime_files.py's. Bound by
+# assignment: pyflakes reads an imported fixture as unused.
 rig = dated.rig
+forge_rig = _qt.rig
 
 MATROSKA = "[0][0][0][0]"   # how ffprobe shows a Matroska stream's codec tag
 
@@ -221,8 +252,8 @@ def _restore(dv, container="mkv", format_tags=None):
 
 @pytest.mark.parametrize("profile", [5, None], ids=["with its record", "record lost"])
 def test_dvh1_going_back_into_matroska_is_written_as_hvc1(profile):
-    """FFmpeg refuses dvh1 in a Matroska. Without its record too, as an AC3
-    Forge run on the MP4 leaves it for now. By the stream's place in the
+    """FFmpeg refuses dvh1 in a Matroska. Without its record too, which a
+    copy that did not ask for it leaves. By the stream's place in the
     output, which here is not its index in the processed file."""
     cmd = _restore({0: DolbyVision(profile, "dvh1")})
 
@@ -271,13 +302,16 @@ _COLOURS = {5: "color_primaries=unknown:color_trc=unknown:colorspace=unknown",
             8: "color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"}
 
 
-def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtitle=False):
+def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtitle=False,
+             surround=False, audio_first=False):
     """
     A Dolby Vision file with English and German audio, so a job has a track
     to drop and a revert point is made. Profile 5 has no colour description,
     which dovi_rpu's guess makes Profile 5; 8 is BT.2020 with PQ, which it
-    makes 8.1. `tag` is an MP4's sample entry, dvh1 or dvhe. `cover` gives
-    a Matroska cover art, `subtitle` an English text subtitle.
+    makes 8.1. `tag` is an MP4's sample entry, dvh1 or dvhe, or FFmpeg's
+    hev1 if None. `cover` gives a Matroska cover art, `subtitle` an English
+    text subtitle. `surround` makes the English AAC 5.1, for AC3 Forge, and
+    `audio_first` puts the video after the audio.
     """
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "lavfi", "-i", "testsrc=size=128x72:rate=10:duration=1",
@@ -287,11 +321,14 @@ def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtit
         srt = path.parent / "in.srt"
         srt.write_text("1\n00:00:00,100 --> 00:00:00,900\nHello\n", encoding="utf-8")
         cmd += ["-i", str(srt)]
-    cmd += ["-map", "0:v", "-map", "1:a", "-map", "2:a",
-            "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
+    cmd += (["-map", "1:a", "-map", "2:a", "-map", "0:v"] if audio_first
+            else ["-map", "0:v", "-map", "1:a", "-map", "2:a"])
+    cmd += ["-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
             "-x265-params", "log-level=error", "-vf", f"setparams={_COLOURS[profile]}",
             "-bsf:v", "dovi_rpu=compression=none",
             "-c:a", "aac", "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=ger"]
+    if surround:
+        cmd += ["-ac:a:0", "6"]
     if subtitle:
         cmd += ["-map", "3:s", "-c:s", "mov_text" if muxer == "mp4" else "subrip",
                 "-metadata:s:s:0", "language=eng"]
@@ -301,8 +338,8 @@ def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtit
                         "color=c=red:s=64x64:d=1", "-frames:v", "1", str(jpg)], check=True)
         cmd += ["-attach", str(jpg), "-metadata:s:t:0", "mimetype=image/jpeg",
                 "-metadata:s:t:0", "filename=cover.jpg"]
-    if tag:
-        cmd += ["-tag:v", "dvh1", "-strict", "unofficial"]
+    if muxer == "mp4":
+        cmd += ["-strict", "unofficial"] + (["-tag:v", "dvh1"] if tag else [])
     cmd += ["-f", muxer, str(path)]
     subprocess.run(cmd, check=True)
     if tag == "dvhe":
@@ -460,3 +497,170 @@ def test_a_revert_gives_back_the_dolby_vision_mp4(rig, tag):
 
     assert _audio_languages(source) == ["eng", "ger"]
     assert _video(source) == ("dvh1", record)
+
+
+# ── AC3 Forge's commands ─────────────────────────────────────────────────────
+
+def _add(dv, container="mp4"):
+    return build_add_ac3_command("in", "out.tmp", 1, 1, container=container, dolby_vision=dv)
+
+
+def _undo(dv, container="mp4", quicktime=False):
+    return build_undo_command("in", "out.tmp", 1, container=container, quicktime=quicktime,
+                              dolby_vision=dv)
+
+
+@pytest.mark.parametrize("build", [_add, _undo], ids=["add", "undo"])
+def test_a_forge_run_on_an_mp4_asks_for_the_record(build):
+    """And leaves a tag the MP4 muxer keeps alone, so an undo gives it back."""
+    cmd = build([DolbyVision(5, "dvh1")])
+
+    assert _strict(cmd)
+    assert _tags(cmd) == []
+
+
+@pytest.mark.parametrize("build", [_add, _undo], ids=["add", "undo"])
+def test_a_forge_run_writes_dvhe_as_dvh1_in_its_place(build):
+    """Counted among the file's video streams, as "-map 0" keeps them all
+    in an MP4."""
+    cmd = build([None, DolbyVision(5, "dvhe")])
+
+    assert _strict(cmd)
+    assert _tags(cmd) == [("-tag:v:1", "dvh1")]
+
+
+@pytest.mark.parametrize("build", [_add, _undo], ids=["add", "undo"])
+@pytest.mark.parametrize("dv", [(), [None], [DolbyVision(None, "dvh1")]],
+                         ids=["no video given", "no Dolby Vision", "a bare dvh1"])
+def test_a_forge_run_without_a_record_gets_neither(build, dv):
+    cmd = build(dv)
+
+    assert not _strict(cmd)
+    assert _tags(cmd) == []
+
+
+@pytest.mark.parametrize("build", [_add, _undo], ids=["add", "undo"])
+def test_a_forge_run_on_a_matroska_gets_neither(build):
+    cmd = build([DolbyVision(5, MATROSKA)], container="mkv")
+
+    assert not _strict(cmd)
+    assert _tags(cmd) == []
+
+
+def test_the_undo_of_a_quicktime_file_gets_neither():
+    """Written back with the QuickTime muxer, which never writes the record
+    and picks some codec tags differently under -strict."""
+    cmd = _undo([DolbyVision(5, "dvh1")], quicktime=True)
+
+    assert cmd[cmd.index("-f") + 1] == "mov"
+    assert not _strict(cmd)
+    assert _tags(cmd) == []
+
+
+# ── AC3 Forge on real files ──────────────────────────────────────────────────
+
+def _forge_add(rig):
+    """Queue the library's one file for a Forge add and run it. Returns the
+    Forge job's id."""
+    from app.core import scanner
+    from app.database.models import Ac3ForgeJob, MediaFile
+
+    with rig.Session() as db:
+        scanner.scan_library(db, [str(rig.library)], force_probe=True)
+        job_id = rig.forge.queue_forge_job(db, db.query(MediaFile).one().id).id
+    assert asyncio.run(rig.worker._process_next_forge(_qt._WS())) is True
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        assert job.status == "success", job.error_message
+    return job_id
+
+
+def _forge_undo(rig, job_id):
+    from app.database.models import Ac3ForgeJob
+
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        job.status, job.is_undo, job.progress = "undo_pending", True, 0.0
+        db.commit()
+    assert asyncio.run(rig.worker._process_next_forge(_qt._WS())) is True
+    with rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        assert job.status == "undone", job.error_message
+
+
+def _audio(path):
+    """The file's audio codecs, in order."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-select_streams", "a",
+         "-show_entries", "stream=codec_name", str(path)],
+        capture_output=True, text=True, check=True).stdout
+    return [s["codec_name"] for s in json.loads(out)["streams"]]
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("name, profile, muxer, tag, kept_as", [
+    ("Film.mp4", 5, "mp4", "dvh1", "dvh1"),
+    ("Film.mp4", 8, "mp4", None, "hev1"),
+    ("Film.mkv", 5, "matroska", None, MATROSKA),
+], ids=["Profile 5 MP4", "Profile 8 MP4", "Profile 5 Matroska"])
+def test_an_add_and_its_undo_keep_dolby_vision(forge_rig, name, profile, muxer, tag, kept_as):
+    """The record, the tag and every packet, through both. A Matroska kept
+    its record before; this pins it."""
+    source = _dv_file(forge_rig.library / name, profile=profile, muxer=muxer, tag=tag,
+                      surround=True)
+    before = _video(source)
+    assert before[0] == kept_as and before[1] is not None, "fixture is not what it says"
+    packets = _packets(source)
+
+    job_id = _forge_add(forge_rig)
+    assert _audio(source) == ["aac", "aac", "ac3"], "the add did not run"
+    assert _video(source) == before
+    assert _packets(source) == packets
+
+    _forge_undo(forge_rig, job_id)
+    assert _audio(source) == ["aac", "aac"]
+    assert _video(source) == before
+    assert _packets(source) == packets
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("audio_first", [False, True], ids=["video first", "audio first"])
+def test_a_forge_run_on_a_dvhe_mp4_writes_dvh1(forge_rig, audio_first):
+    """FFmpeg would write hev1 in its place. With the audio first, the
+    video's place among the video streams is not its place in the file."""
+    source = _dv_file(forge_rig.library / "Film.mp4", muxer="mp4", tag="dvhe",
+                      surround=True, audio_first=audio_first)
+    found, record = _video(source)
+    assert found == "dvhe" and record is not None
+
+    job_id = _forge_add(forge_rig)
+    assert _video(source) == ("dvh1", record)
+
+    _forge_undo(forge_rig, job_id)
+    assert _video(source) == ("dvh1", record)
+
+
+@needs_ffmpeg
+def test_a_revert_after_a_job_and_a_forge_run_gives_back_dolby_vision(forge_rig):
+    """The job converts the Matroska and drops the German track, Forge adds
+    an AC3 to the MP4, and the revert gives back the Matroska as it was:
+    the explorer's path (tools/testlib, check 27)."""
+    from app.database.models import AppSetting
+
+    with forge_rig.Session() as db:
+        db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(True)))
+        db.commit()
+    source = _dv_file(forge_rig.library / "Film.mkv", surround=True)
+    before = _video(source)
+    packets = _packets(source)
+    _, after = _run_job(forge_rig, source)
+    assert after.endswith(".mp4")
+
+    _forge_add(forge_rig)
+    assert _video(after) == ("dvh1", before[1])
+
+    _revert(forge_rig)
+    assert source.exists()
+    assert _audio(source) == ["aac", "aac"]
+    assert _video(source) == before
+    assert _packets(source) == packets

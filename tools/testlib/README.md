@@ -133,10 +133,8 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     container's word that a stream is Dolby Vision, beside an MP4's sample
     entry (`dvh1`, `dvhe`). A copy without it keeps every RPU, as the packets
     are the same, and passes checks 3 and 11, while a player can show
-    Profile 5 as plain HEVC in the wrong colours (issue #62). At the time of
-    writing, an MP4 that a job or a Forge run writes from these files loses
-    it, and a revert from that MP4 cannot bring it back. The library's three
-    Dolby Vision files carry a record and no RPUs (FFmpeg's `dovi_rpu`
+    Profile 5 as plain HEVC in the wrong colours (issue #62). The library's
+    three Dolby Vision files carry a record and no RPUs (FFmpeg's `dovi_rpu`
     filter writes one from the colour properties), so they test the record
     and nothing about playback.
 

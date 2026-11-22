@@ -359,10 +359,10 @@ def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
     """
     Each video stream the file says is Dolby Vision, by its stream index:
     with a configuration record, or a sample entry that says so without
-    one. The second is not only a broken download's: an AC3 Forge run does
-    not keep the record yet, and leaves an MP4 a job wrote as dvh1 with the
-    tag alone, which FFmpeg will not copy back into Matroska
-    (ffmpeg.build_restore_command).
+    one. The tag can outlast the record: a copy into an MP4 that does not
+    ask for the record keeps one and drops the other, as AC3 Forge did
+    before it asked, and FFmpeg will not copy such a stream back into
+    Matroska as it is (ffmpeg.build_restore_command).
     """
     found = {}
     for stream in (probe_data or {}).get("streams") or []:

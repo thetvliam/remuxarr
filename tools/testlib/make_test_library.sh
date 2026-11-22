@@ -514,19 +514,19 @@ f33() {  # MP4 with the date a download carries, in whole seconds as MP4 holds i
     -disposition:a:0 default -disposition:a:1 0 \
     -metadata creation_time=2014-03-02T10:20:30.000000Z -movflags +faststart "$OUT/33 - dated mp4.mp4"
 }
-f34() {  # Dolby Vision Profile 5 in Matroska (issue #62): no HDR10 or SDR layer under it, so a player not told it is Dolby Vision shows it in the wrong colours. Check 27 asks that its record survive a conversion to MP4, a Forge run on that MP4 and a revert; not yet (#62). AAC 5.1 for AC3 Forge, German to drop.
+f34() {  # Dolby Vision Profile 5 in Matroska (issue #62): no HDR10 or SDR layer under it, so a player not told it is Dolby Vision shows it in the wrong colours. Its record survives a conversion to MP4, a Forge run on that MP4 and a revert (check 27). AAC 5.1 for AC3 Forge, German to drop.
   local a=(); add a video_in "34 dolby vision p5 mkv"; add a tone_in 440; add a tone_in 550
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV5[@]}" -c:a aac -ac:a:0 6 -ac:a:1 2 \
     -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
     -disposition:a:0 default -disposition:a:1 0 "${MKV[@]}" "$OUT/34 - dolby vision p5 mkv.mkv"
 }
-f35() {  # Dolby Vision Profile 8.1 in Matroska: an HDR10-compatible layer under it (compatibility 1). Check 27 asks that its record survive a conversion to MP4 and a revert; not yet (#62). German to drop.
+f35() {  # Dolby Vision Profile 8.1 in Matroska: an HDR10-compatible layer under it (compatibility 1). Its record survives a conversion to MP4 and a revert (check 27). German to drop.
   local a=(); add a video_in "35 dolby vision p8.1 mkv"; add a tone_in 440; add a tone_in 550
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV81[@]}" -c:a aac \
     -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
     -disposition:a:0 default -disposition:a:1 0 "${MKV[@]}" "$OUT/35 - dolby vision p8.1 mkv.mkv"
 }
-f36() {  # Dolby Vision Profile 5 in MP4: sample entry dvh1 and a dvcC box, which FFmpeg's MP4 muxer writes only with -strict unofficial. Check 27 asks that its record survive a job that drops a track, a Forge run and a revert; not yet (#62). AAC 5.1 for AC3 Forge, German to drop.
+f36() {  # Dolby Vision Profile 5 in MP4: sample entry dvh1 and a dvcC box, which FFmpeg's MP4 muxer writes only with -strict unofficial. Its record survives a job that drops a track, a Forge run and a revert (check 27). AAC 5.1 for AC3 Forge, German to drop.
   local a=(); add a video_in "36 dolby vision p5 mp4"; add a tone_in 440; add a tone_in 550
   "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV5[@]}" -c:a aac -ac:a:0 6 -ac:a:1 2 \
     -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \

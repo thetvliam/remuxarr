@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2873 tests across 133 test files, plus 805 frontend tests under
+2892 tests across 133 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -232,12 +232,13 @@ and undo on an MP4 and a Matroska, as Forge builds its own commands.
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its
 plan is the same.
-`test_dolby_vision.py` covers a Dolby Vision stream through a job and a revert
-(issue #62). A job writing one to an MP4 asks FFmpeg for its configuration
-record, which the MP4 muxer otherwise drops while copying every RPU, and
-writes Profile 5 as `dvh1` where the source's tag cannot be kept; a revert
-writes `dvh1` back into Matroska as `hvc1`, as FFmpeg refuses `dvh1` there.
-Its files carry a record and no RPUs, from FFmpeg's `dovi_rpu` filter.
+`test_dolby_vision.py` covers a Dolby Vision stream through a job, a revert and
+an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
+MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise
+drops while copying every RPU, and writes Profile 5 as `dvh1` where the
+source's tag cannot be kept; a revert writes `dvh1` back into Matroska as
+`hvc1`, as FFmpeg refuses `dvh1` there. Its files carry a record and no RPUs,
+from FFmpeg's `dovi_rpu` filter.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless

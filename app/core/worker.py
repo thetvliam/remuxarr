@@ -3535,6 +3535,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             quicktime               = job_data.get("quicktime", False),
             rebuilt_tracks          = job_data.get("rebuilt_tracks", ()),
             creation_time           = job_data.get("creation_time"),
+            dolby_vision            = job_data.get("dolby_vision", ()),
         )
     else:
         action_label = "Adding AC3 5.1 track"
@@ -3549,6 +3550,7 @@ async def _forge_run(job_data, input_path, temp_path, covers,
             covers            = covers,
             rebuilt_tracks    = job_data.get("rebuilt_tracks", ()),
             creation_time     = job_data.get("creation_time"),
+            dolby_vision      = job_data.get("dolby_vision", ()),
         )
 
     result = await run_forge_command(
