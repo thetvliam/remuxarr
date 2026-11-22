@@ -17,7 +17,10 @@ writes Profile 5 as dvh1 where its source's tag cannot be kept
 (ffmpeg.dolby_vision_args). AC3 Forge's add and undo, which lost the
 record on an MP4 the same way, use that rule too. A revert writes dvh1
 back into Matroska as hvc1, which FFmpeg accepts there, and asks for the
-record going back into an MP4 (ffmpeg.build_restore_command).
+record going back into an MP4 (ffmpeg.build_restore_command). A job or a
+Forge run whose output would lose a record anyway, as a job does when its
+first probe of the file fails, is refused with the file untouched
+(worker._lost_tags_error, probe.lost_dolby_vision).
 
 The files here carry a record and no RPUs: FFmpeg's dovi_rpu filter writes
 one from the colour properties, and nothing in the pinned build writes
@@ -88,6 +91,19 @@ nothing. The Forge ones were first run against the whole suite as it stood
 The Forge tests kill the re-aimed rule mutants as well, all but the one
 giving every profile dvh1: the Profile 8 file there carries hev1, a tag
 the muxer keeps, which that mutant leaves alone.
+
+The refusal, 6 more applied, 6 killed, each first run against the whole
+suite as it stood (2892 tests) with the change in place, and all 6
+survived it:
+
+  - the comparison always passing   -> the comparison, the staging check,
+                                       the refused job and Forge add
+  - only the profile compared       -> the changed record
+  - the output compared with itself -> as the first
+  - tags checked first              -> the check naming Dolby Vision first
+  - the check not run               -> the staging check, the refused job
+                                       and Forge add
+  - the refusal held back by a scan -> the refused job tried again
 """
 import asyncio
 import json
@@ -98,10 +114,11 @@ import pytest
 from app.core.decision import ProcessingDecision
 from app.core.ffmpeg import build_ffmpeg_command, build_restore_command
 from app.core.forge import build_add_ac3_command, build_undo_command
-from app.core.probe import DOVI_RECORD, DolbyVision, dolby_vision
+from app.core.probe import DOVI_RECORD, DolbyVision, ProbeError, dolby_vision, lost_dolby_vision
 from tests import test_creation_date as dated
 from tests import test_quicktime_files as _qt
 from tests.test_creation_date import _audio_languages, _run_job, needs_ffmpeg
+from tests.test_kept_file_tags import _scan_and_run
 
 # The real scan, worker and revert on a file-backed database, English audio
 # kept, revert points on: test_creation_date.py's. forge_rig is the same
@@ -303,7 +320,7 @@ _COLOURS = {5: "color_primaries=unknown:color_trc=unknown:colorspace=unknown",
 
 
 def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtitle=False,
-             surround=False, audio_first=False):
+             surround=False, audio_first=False, file_tags=()):
     """
     A Dolby Vision file with English and German audio, so a job has a track
     to drop and a revert point is made. Profile 5 has no colour description,
@@ -311,7 +328,8 @@ def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtit
     makes 8.1. `tag` is an MP4's sample entry, dvh1 or dvhe, or FFmpeg's
     hev1 if None. `cover` gives a Matroska cover art, `subtitle` an English
     text subtitle. `surround` makes the English AAC 5.1, for AC3 Forge, and
-    `audio_first` puts the video after the audio.
+    `audio_first` puts the video after the audio. `file_tags` are the
+    file's own, as (name, value).
     """
     cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "lavfi", "-i", "testsrc=size=128x72:rate=10:duration=1",
@@ -329,6 +347,8 @@ def _dv_file(path, *, profile=5, muxer="matroska", tag=None, cover=False, subtit
             "-c:a", "aac", "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=ger"]
     if surround:
         cmd += ["-ac:a:0", "6"]
+    for name, value in file_tags:
+        cmd += ["-metadata", f"{name}={value}"]
     if subtitle:
         cmd += ["-map", "3:s", "-c:s", "mov_text" if muxer == "mp4" else "subrip",
                 "-metadata:s:s:0", "language=eng"]
@@ -664,3 +684,146 @@ def test_a_revert_after_a_job_and_a_forge_run_gives_back_dolby_vision(forge_rig)
     assert _audio(source) == ["aac", "aac"]
     assert _video(source) == before
     assert _packets(source) == packets
+
+
+# ── Refusing a run that would lose it ────────────────────────────────────────
+
+def _probe(*records):
+    """A probe whose video streams carry these records, None for none."""
+    return {"streams": [{"index": n, "codec_type": "video",
+                         "side_data_list": [r] if r is not None else []}
+                        for n, r in enumerate(records)]}
+
+
+def test_a_record_the_output_lacks_is_lost():
+    lost = ["the record of video stream 0 (Profile 5)"]
+    assert lost_dolby_vision(_probe(_record(5)), _probe(None)) == lost
+    assert lost_dolby_vision(_probe(_record(5)), _probe()) == lost
+
+
+def test_a_record_the_output_changes_is_lost():
+    """Field for field: FFmpeg copies it as it is, so a change is a loss."""
+    changed = dict(_record(5), dv_bl_signal_compatibility_id=1)
+
+    assert lost_dolby_vision(_probe(_record(5)), _probe(changed)) == [
+        "the record of video stream 0 (Profile 5)"]
+
+
+def test_a_record_kept_or_only_in_the_output_is_no_loss():
+    assert lost_dolby_vision(_probe(_record(5)), _probe(_record(5))) == []
+    assert lost_dolby_vision(_probe(None), _probe(_record(8))) == []
+    assert lost_dolby_vision(_probe(None), _probe(None)) == []
+    assert lost_dolby_vision(None, None) == []
+
+
+def test_each_video_streams_record_is_checked_in_its_place():
+    assert lost_dolby_vision(_probe(None, _record(8)), _probe(None, None)) == [
+        "the record of video stream 1 (Profile 8)"]
+
+
+def _copy_to_mp4(source, dest, *, record):
+    """The file copied into an MP4 as FFmpeg does it, asking for the record
+    or not."""
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-map", "0", "-c", "copy",
+                    *(["-strict", "unofficial"] if record else []), "-f", "mp4", str(dest)],
+                   check=True)
+    return dest
+
+
+@needs_ffmpeg
+def test_the_staging_check_refuses_an_output_without_the_record(tmp_path):
+    import app.core.worker as worker
+
+    source = _dv_file(tmp_path / "Film.mkv")
+    without = _copy_to_mp4(source, tmp_path / "without.mp4", record=False)
+    kept = _copy_to_mp4(source, tmp_path / "kept.mp4", record=True)
+
+    assert asyncio.run(worker._lost_tags_error(str(source), str(without))) == (
+        f"{worker.LOST_DOLBY_VISION} It would lose: the record of video stream 0 (Profile 5).")
+    assert asyncio.run(worker._lost_tags_error(str(source), str(kept))) is None
+
+
+@needs_ffmpeg
+def test_the_staging_check_names_dolby_vision_before_tags(tmp_path):
+    """A refusal over tags is an accepted loss to the testlib explorer, so
+    one that names both would hide this there."""
+    import app.core.worker as worker
+
+    from app.core.probe import lost_file_tags, probe_file
+
+    source = _dv_file(tmp_path / "Film.mkv", file_tags=[("release_group", "NTb")])
+    without = _copy_to_mp4(source, tmp_path / "without.mp4", record=False)
+    assert lost_file_tags(probe_file(str(source)), probe_file(str(without))), \
+        "fixture loses no tag: the test shows nothing"
+
+    error = asyncio.run(worker._lost_tags_error(str(source), str(without)))
+
+    assert error.startswith(worker.LOST_DOLBY_VISION)
+
+
+@needs_ffmpeg
+def test_a_job_that_did_not_ask_for_the_record_is_refused_and_tried_again(forge_rig, monkeypatch):
+    """
+    The job's first probe of the file fails, so it goes ahead without
+    knowing of the record (ffmpeg._prepare_extra_streams): the output lacks
+    it, and the file is left as it was, the Matroska where it was and no
+    MP4 beside it. The next full scan queues it again, unlike a refusal
+    over tags, and with the probe working the job keeps the record.
+    """
+    import app.core.ffmpeg as ffmpeg_module
+    from app.database.models import AppSetting
+
+    with forge_rig.Session() as db:
+        db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(True)))
+        db.commit()
+    real_probe = ffmpeg_module.probe_file
+    failing = [True]
+
+    def probe(path, *args):
+        if failing[0]:
+            raise ProbeError("unreadable for a moment")
+        return real_probe(path, *args)
+    monkeypatch.setattr(ffmpeg_module, "probe_file", probe)
+    source = _dv_file(forge_rig.library / "Film.mkv")
+    before = source.read_bytes()
+
+    jobs, _ = _scan_and_run(forge_rig)
+
+    assert [status for status, _ in jobs] == ["failed"]
+    assert jobs[0][1] == (f"{forge_rig.worker.LOST_DOLBY_VISION} "
+                          "It would lose: the record of video stream 0 (Profile 5).")
+    assert source.read_bytes() == before
+    assert not list(forge_rig.library.glob("*.mp4"))
+
+    failing[0] = False
+    jobs, stats = _scan_and_run(forge_rig)
+
+    assert stats.queued == 1 and stats.held == 0
+    assert [status for status, _ in jobs] == ["failed", "success"]
+    _, record = _video(forge_rig.library / "Film.mp4")
+    assert record is not None and record["dv_profile"] == 5
+
+
+@needs_ffmpeg
+def test_a_forge_add_that_would_drop_the_record_is_refused(forge_rig, monkeypatch):
+    """As an add did before it asked for the record: the file is left as it
+    was."""
+    import app.core.forge as forge
+    from app.database.models import Ac3ForgeJob, MediaFile
+    from app.core import scanner
+
+    monkeypatch.setattr(forge, "dolby_vision_args", lambda out_fmt, video: [])
+    source = _dv_file(forge_rig.library / "Film.mp4", muxer="mp4", tag="dvh1", surround=True)
+    before = source.read_bytes()
+
+    with forge_rig.Session() as db:
+        scanner.scan_library(db, [str(forge_rig.library)], force_probe=True)
+        job_id = forge_rig.forge.queue_forge_job(db, db.query(MediaFile).one().id).id
+    assert asyncio.run(forge_rig.worker._process_next_forge(_qt._WS())) is True
+
+    with forge_rig.Session() as db:
+        job = db.get(Ac3ForgeJob, job_id)
+        assert job.status == "failed"
+        assert job.error_message == (f"{forge_rig.worker.LOST_DOLBY_VISION} "
+                                     "It would lose: the record of video stream 0 (Profile 5).")
+    assert source.read_bytes() == before

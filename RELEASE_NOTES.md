@@ -62,4 +62,4 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- A Dolby Vision file converted to MP4 lost the part that tells a player it is Dolby Vision, so a Profile 5 file, which has no HDR10 picture to fall back on, could play in green and purple; a revert gave the MKV back without it, and an AC3 Forge add or undo on an MP4 lost it too. Jobs, reverts and AC3 Forge now keep it, and write Profile 5 as `dvh1` as Apple asks (issue #62). Files converted or forged before this are not repaired: only a fresh download gets their Dolby Vision back.
+- A Dolby Vision file converted to MP4 lost the part that tells a player it is Dolby Vision, so a Profile 5 file, which has no HDR10 picture to fall back on, could play in green and purple; a revert gave the MKV back without it, and an AC3 Forge add or undo on an MP4 lost it too. Jobs, reverts and AC3 Forge now keep it, and write Profile 5 as `dvh1` as Apple asks (issue #62); a job or Forge run that would still lose it fails and leaves the file as it was. Files converted or forged before this are not repaired: only a fresh download gets their Dolby Vision back.

@@ -25,7 +25,7 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
-from app.core.probe import lost_file_tags
+from app.core.probe import lost_dolby_vision, lost_file_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
@@ -856,13 +856,28 @@ LOST_TAGS = (
     "a file's own tags. The file has been left as it was."
 )
 
+# What the same run is recorded as failing with when its output would lose
+# a video stream's Dolby Vision record (probe.lost_dolby_vision). Unlike
+# LOST_TAGS, a scan queues the file again: the likely cause, a job whose
+# first probe of the file failed and so did not ask FFmpeg for the record,
+# goes away on a retry. The explorer counts it as a finding, since a job
+# and a Forge run keep the record on purpose.
+LOST_DOLBY_VISION = (
+    "Writing this file would lose what marks its video as Dolby Vision, and "
+    "Remuxarr does not drop it. The file has been left as it was."
+)
+
 
 async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
     """
     None when the finished output keeps every one of the source's own tags,
-    or else the error that stops the run before the source is touched
-    (probe.lost_file_tags). Run in the staging hook, where both files exist
-    and nothing has been written over.
+    and every video stream's Dolby Vision record, or else the error that
+    stops the run before the source is touched (probe.lost_file_tags,
+    probe.lost_dolby_vision). Run in the staging hook, where both files
+    exist and nothing has been written over.
+
+    Dolby Vision first: a refusal over tags is an accepted loss to the
+    testlib explorer, and one naming both would hide this one there.
 
     A file that cannot be probed stops the run too, with that said: a tag
     cannot be shown kept on a file nothing could read.
@@ -873,6 +888,9 @@ async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
         output = await loop.run_in_executor(None, probe_file, produced_path)
     except ProbeError as exc:
         return f"Could not check that the file keeps its own tags, so it has been left as it was: {exc}"
+    lost = lost_dolby_vision(source, output)
+    if lost:
+        return f"{LOST_DOLBY_VISION} It would lose: {', '.join(lost)}."
     lost = lost_file_tags(source, output)
     if lost:
         return f"{LOST_TAGS} It would lose: {', '.join(lost)}."

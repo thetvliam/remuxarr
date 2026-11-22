@@ -355,6 +355,12 @@ class DolbyVision(NamedTuple):
     codec_tag: str | None
 
 
+def _dovi_record(stream: dict) -> dict | None:
+    """The stream's Dolby Vision configuration record, as ffprobe shows it."""
+    return next((d for d in stream.get("side_data_list") or []
+                 if d.get("side_data_type") == DOVI_RECORD), None)
+
+
 def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
     """
     Each video stream the file says is Dolby Vision, by its stream index:
@@ -368,13 +374,39 @@ def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
     for stream in (probe_data or {}).get("streams") or []:
         if stream.get("codec_type") != "video":
             continue
-        record = next((d for d in stream.get("side_data_list") or []
-                       if d.get("side_data_type") == DOVI_RECORD), None)
+        record = _dovi_record(stream)
         tag = stream.get("codec_tag_string")
         if record is not None or tag in DOVI_SAMPLE_ENTRIES:
             found[stream["index"]] = DolbyVision(
                 record.get("dv_profile") if record is not None else None, tag)
     return found
+
+
+def lost_dolby_vision(source: dict | None, output: dict | None) -> list[str]:
+    """
+    Each video stream's Dolby Vision record in the source that the output's
+    video stream in the same place does not have, field for field, said as
+    what is lost. A record the output has and the source does not is no
+    concern, as for lost_file_tags.
+
+    A job and an AC3 Forge run refuse to replace a file that would lose one
+    (worker._lost_tags_error). Both keep it on purpose
+    (ffmpeg.dolby_vision_args), so this catches what that cannot: a run
+    that went ahead without knowing the stream had one, as a job does when
+    its first probe of the file fails (ffmpeg._prepare_extra_streams).
+
+    Streams are paired by their place among the file's video streams. A
+    cover is a video stream too, but FFmpeg lists one after the tracks,
+    from an MP4 or a Matroska alike, so it does not move the streams
+    before it.
+    """
+    def records(probe_data):
+        return [_dovi_record(s) for s in (probe_data or {}).get("streams") or []
+                if s.get("codec_type") == "video"]
+    kept = records(output)
+    return [f"the record of video stream {n} (Profile {record.get('dv_profile')})"
+            for n, record in enumerate(records(source))
+            if record is not None and (n >= len(kept) or kept[n] != record)]
 
 
 # The sample entries an MP4 or QuickTime chapter track carries: QuickTime

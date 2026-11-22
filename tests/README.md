@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2892 tests across 133 test files, plus 805 frontend tests under
+2900 tests across 133 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -237,8 +237,9 @@ an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
 MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise
 drops while copying every RPU, and writes Profile 5 as `dvh1` where the
 source's tag cannot be kept; a revert writes `dvh1` back into Matroska as
-`hvc1`, as FFmpeg refuses `dvh1` there. Its files carry a record and no RPUs,
-from FFmpeg's `dovi_rpu` filter.
+`hvc1`, as FFmpeg refuses `dvh1` there. A run whose output would lose a record
+anyway is refused with the file untouched, and a scan queues it again. Its
+files carry a record and no RPUs, from FFmpeg's `dovi_rpu` filter.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless
