@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  33 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (49 files, about 28 MB, at the
+#  36 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (52 files, about 29 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -29,8 +29,9 @@
 #  Environment: FFMPEG, FFPROBE, PYTHON override the binaries used.
 #
 #  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame,
-#  libxvid (the BtbN 8.1 build the Dockerfile pins has all of them), and Python 3
-#  (stdlib only) for the two helpers next to this script.
+#  libxvid, and the dovi_rpu bitstream filter (the BtbN 8.1 build the
+#  Dockerfile pins has all of them), and Python 3 (stdlib only) for the two
+#  helpers next to this script.
 #
 #  The comment on each file below says what it is built to exercise. What
 #  Remuxarr does with it depends on the settings, which is why explore.py
@@ -79,6 +80,8 @@ for e in libx264 libx265 libvpx-vp9 libopus libmp3lame aac ac3 eac3 dca flac pcm
 done
 FILTERS="$("$FFMPEG" -hide_banner -filters 2>/dev/null)"
 grep -q ' drawtext ' <<<"$FILTERS" || die "this FFmpeg has no drawtext filter"
+"$FFMPEG" -hide_banner -bsfs 2>/dev/null | grep -qx dovi_rpu \
+  || die "this FFmpeg has no dovi_rpu bitstream filter (files 34 to 36 need it)"
 
 if [[ -z "$FONT" ]]; then
   if command -v fc-match >/dev/null; then FONT="$(fc-match -f '%{file}' 'sans' 2>/dev/null || true)"; fi
@@ -198,6 +201,18 @@ fi
 
 # Common encoder settings
 H264=(-c:v libx264 -preset ultrafast -crf 32 -pix_fmt yuv420p -g 48)
+HEVC10=(-c:v libx265 -preset ultrafast -crf 32 -pix_fmt yuv420p10le -g 48 -x265-params log-level=error)
+# A Dolby Vision configuration record without RPUs. FFmpeg's dovi_rpu filter
+# writes one from the stream's colour properties when the input has none
+# (ff_dovi_configure_from_codedpar, libavcodec/dovi_rpuenc.c, n8.1.3): none
+# at all is Profile 5's IPTPQc2 guess, BT.2020 with PQ is Profile 8.1. The
+# packets stay plain HEVC, so these files say nothing about how a player
+# shows them, only whether the record survives (explore.py, check 27).
+# compression=none: the default, limited, is refused for Profile 5.
+DV5=(-vf setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown
+     -bsf:v dovi_rpu=compression=none)
+DV81=(-vf setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc
+      -bsf:v dovi_rpu=compression=none)
 MKV=(-default_mode passthrough)     # only the default flags set below; none inferred
 
 # ── The files ────────────────────────────────────────────────────────────────
@@ -499,8 +514,27 @@ f33() {  # MP4 with the date a download carries, in whole seconds as MP4 holds i
     -disposition:a:0 default -disposition:a:1 0 \
     -metadata creation_time=2014-03-02T10:20:30.000000Z -movflags +faststart "$OUT/33 - dated mp4.mp4"
 }
+f34() {  # Dolby Vision Profile 5 in Matroska (issue #62): no HDR10 or SDR layer under it, so a player not told it is Dolby Vision shows it in the wrong colours. Check 27 asks that its record survive a conversion to MP4, a Forge run on that MP4 and a revert; not yet (#62). AAC 5.1 for AC3 Forge, German to drop.
+  local a=(); add a video_in "34 dolby vision p5 mkv"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV5[@]}" -c:a aac -ac:a:0 6 -ac:a:1 2 \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 "${MKV[@]}" "$OUT/34 - dolby vision p5 mkv.mkv"
+}
+f35() {  # Dolby Vision Profile 8.1 in Matroska: an HDR10-compatible layer under it (compatibility 1). Check 27 asks that its record survive a conversion to MP4 and a revert; not yet (#62). German to drop.
+  local a=(); add a video_in "35 dolby vision p8.1 mkv"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV81[@]}" -c:a aac \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 "${MKV[@]}" "$OUT/35 - dolby vision p8.1 mkv.mkv"
+}
+f36() {  # Dolby Vision Profile 5 in MP4: sample entry dvh1 and a dvcC box, which FFmpeg's MP4 muxer writes only with -strict unofficial. Check 27 asks that its record survive a job that drops a track, a Forge run and a revert; not yet (#62). AAC 5.1 for AC3 Forge, German to drop.
+  local a=(); add a video_in "36 dolby vision p5 mp4"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${HEVC10[@]}" "${DV5[@]}" -c:a aac -ac:a:0 6 -ac:a:1 2 \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 \
+    -tag:v dvh1 -strict unofficial -movflags +faststart -f mp4 "$OUT/36 - dolby vision p5 mp4.mp4"
+}
 
-for n in $(seq -w 1 33); do
+for n in $(seq -w 1 36); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

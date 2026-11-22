@@ -2,12 +2,13 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 33 files
+- `make_test_library.sh` builds a small library of unusual media: 36 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
   corrupt AAC packets, creation dates (a Matroska's to the microsecond, as
-  mkvmerge writes it, and an MP4's), an audio-only file and a zero-byte one. A folder
+  mkvmerge writes it, and an MP4's), Dolby Vision (Profile 5 and 8.1 in
+  Matroska, Profile 5 in MP4), an audio-only file and a zero-byte one. A folder
   layout of copies covers the extras rules, an existing sidecar and an
   output name that is already taken. The comment above each `fNN` function
   says what that file is built to exercise.
@@ -39,7 +40,7 @@ otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
 16 seconds and all 21 profiles, review answers, Forge and reverts included, ran in
-about three minutes at `-j 2`. It has
+about five and a half minutes at `-j 2`. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -125,6 +126,19 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     place for them, is listed as an accepted loss, not a finding: Remuxarr
     does not refuse a conversion over one. Only this tool checks track tags;
     the worker checks the file's own (see the main README).
+27. Every kept video stream keeps its Dolby Vision configuration record,
+    field for field, and so does the file after an AC3 Forge add, its undo
+    and a revert, each reported under this number. The record (an MP4's
+    `dvcC`, `dvvC` or `dvwC` box, a Matroska's BlockAdditionMapping) is the
+    container's word that a stream is Dolby Vision, beside an MP4's sample
+    entry (`dvh1`, `dvhe`). A copy without it keeps every RPU, as the packets
+    are the same, and passes checks 3 and 11, while a player can show
+    Profile 5 as plain HEVC in the wrong colours (issue #62). At the time of
+    writing, an MP4 that a job or a Forge run writes from these files loses
+    it, and a revert from that MP4 cannot bring it back. The library's three
+    Dolby Vision files carry a record and no RPUs (FFmpeg's `dovi_rpu`
+    filter writes one from the colour properties), so they test the record
+    and nothing about playback.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its
