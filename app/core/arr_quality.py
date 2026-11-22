@@ -271,15 +271,17 @@ def restore_quality_best_effort(
         # controller line that threw it, while code and reason say only
         # "Internal Server Error". Truncated because a stack trace is the
         # usual payload and the first line is the part that identifies it.
-        try:
-            detail = exc.read().decode("utf-8", "replace")[:500]
-        except Exception:
-            detail = "<no body>"
-        log.error(
-            "%s: quality restore HTTP %d for %s %d (%s): %s — %s",
-            service.name, exc.code, service.entity_label, entity_id, path,
-            exc.reason, detail,
-        )
+        # Closed on the way out: the error holds the server's response.
+        with exc:
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                detail = "<no body>"
+            log.error(
+                "%s: quality restore HTTP %d for %s %d (%s): %s — %s",
+                service.name, exc.code, service.entity_label, entity_id, path,
+                exc.reason, detail,
+            )
     except Exception:
         log.exception(
             "%s: quality restore failed for %s %d (%s)",

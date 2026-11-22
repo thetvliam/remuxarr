@@ -19,8 +19,19 @@ Each steers around the other two:
 Each of those is a check followed by a claim, and the two claims run in
 executor threads while restore runs on the event loop, so two of them can
 otherwise both see a file as free and both take it. CLAIM_LOCK is held
-across every check-and-claim, which makes them take turns. It is held for
-a query and a commit, never across the work itself.
+across every check-and-claim, which makes them take turns.
+
+Two more take it without writing media files, so that no claim lands
+between a check and what they do on the strength of it: Clear Database
+(routes/settings.clear_database), and a language answer replacing a file's
+waiting job (routes/_language_review.apply_language), which would
+otherwise delete a job the worker had just started.
+
+It is held for queries and a commit or a flush, never across the work
+itself: not a job, a forge run, a revert or an answer's probe. A commit or
+flush under it can still wait for SQLite's write lock, up to the engine's
+30 s busy timeout, and everything else that takes CLAIM_LOCK waits with
+it, a revert's start on the event loop included.
 
 WHY THIS IS A MODULE AND NOT A COLUMN
 -------------------------------------

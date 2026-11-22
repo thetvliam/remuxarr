@@ -373,8 +373,9 @@ def _make_forge_db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base, MediaFile
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     db.add(MediaFile(id=1, path="/media/x.mkv", filename="x.mkv",

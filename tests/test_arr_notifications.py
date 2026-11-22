@@ -29,14 +29,19 @@ FIXED IN THIS COMMIT:
   normalised this way; the clients now agree. See
   test_trailing_slashes_do_not_double_up.
 
-Verified by mutation: 28 mutations across the three modules, of which 25 are
-killed by at least one test here. All three survivors are equivalent:
-narrowing either notifier's `except urllib.error.HTTPError` changes only which
-log line fires, because a bare `except Exception` sits directly below it in
-both files (plex.py has the identical shape); and strip("/") for rstrip("/")
-in arr_post cannot be distinguished, because separating them needs a base_url
-with a leading slash and urllib rejects a schemeless URL outright.
+Verified by mutation: 30 mutations across the three modules, of which 29 are
+killed by at least one test here. The survivor is equivalent: strip("/") for
+rstrip("/") in arr_post cannot be distinguished, because separating them
+needs a base_url with a leading slash and urllib rejects a schemeless URL
+outright. Two more were survivors until each notifier began closing the
+HTTPError it catches: narrowing either notifier's
+`except urllib.error.HTTPError` then changed only which log line fired,
+because a bare `except Exception` sits directly below it. Narrowed now, the
+error reaches that bare clause and is left open, and
+test_a_failed_notification_closes_its_http_error kills both, as it kills
+each notifier's close removed.
 """
+import io
 import json
 import urllib.error
 
@@ -172,8 +177,11 @@ def test_errors_propagate_out_of_the_client(http):
     """
     http._state["raise"] = _http_error(401, "Unauthorized")
 
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(urllib.error.HTTPError) as caught:
         http.arr_post("http://sonarr:8989", "key", {"name": "X"})
+    # Nothing in the app caught it, so closing it falls to the test
+    # (test_a_failed_notification_closes_its_http_error says why).
+    caught.value.close()
 
 
 @pytest.mark.parametrize("base_url", [
@@ -341,6 +349,28 @@ def test_radarr_does_not_poll_for_completion(arr):
     arr.radarr.notify_radarr("http://radarr:7878", "key", 88)
 
     assert len(arr.calls) == 1
+
+
+@pytest.mark.parametrize("notify, args", [
+    ("sonarr.notify_sonarr", ("http://sonarr:8989", "key", 31)),
+    ("radarr.notify_radarr", ("http://radarr:7878", "key", 88)),
+])
+def test_a_failed_notification_closes_its_http_error(arr, notify, args):
+    """
+    The error a failed request raises holds the server's response, and the
+    connection with it, until something closes it. Left to the garbage
+    collector, Python 3.14 reports it (ResourceWarning: Implicitly cleaning
+    up <HTTPError ...>), and earlier versions clean up without a word. The
+    test keeps its own reference to the error, so nothing but the notifier
+    can have closed it.
+    """
+    error = urllib.error.HTTPError("u", 500, "Server Error", {}, io.BytesIO(b""))
+    arr.state["raise"] = error
+    module, function = notify.split(".")
+
+    getattr(getattr(arr, module), function)(*args)
+
+    assert error.fp.closed, "the notifier left the error, and its response, open"
 
 
 # ── The copy-paste guard ─────────────────────────────────────────────────────

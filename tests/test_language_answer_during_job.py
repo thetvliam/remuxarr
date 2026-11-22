@@ -30,12 +30,62 @@ upgrade step missing, by test_schema_migration:
   • the mark never cleared                   → the successful job, both
                                                endings
 
-The test at the end is about an answer given after the job rather than
-during it: the question had to follow its track through the job first. Its
-mutation record is in test_job_finalisation.py, beside the tests that pin
-the re-key itself; three of those ten mutants are killed here as well (the
-re-key not called, the old track list read only with answers, and audio
-questions left out).
+test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about is about
+an answer given after the job rather than during it: the question had to
+follow its track through the job first. Its mutation record is in
+test_job_finalisation.py, beside the tests that pin the re-key itself; three
+of those ten mutants are killed here as well (the re-key not called, the old
+track list read only with answers, and audio questions left out).
+
+test_a_claim_during_an_answer_takes_the_job_the_answer_queues is about the
+worker claiming the file's job while an answer replaces it. Its mutation
+record is in test_queue_routes.py, beside the claim tests that kill the same
+mutants with no file to probe; two of those three are killed here as well (a
+miss giving up, and the row count ignored).
+
+test_a_claim_while_an_answer_replaces_the_job_waits_for_it is about the
+answer itself: its running-job check, its read of the waiting job and its
+delete, which it now does under revert_lock.CLAIM_LOCK. Verified by
+mutation, 4 applied, 4 killed, each surviving first the 55 test files that
+reach the answer or the lock, as they stood, and each killed by the claim
+taking the job the answer was about to replace:
+
+  • no lock                                  → both moments
+  • the lock around the check only           → before the delete
+  • the lock released before the delete      → before the delete
+  • the lock taken after the check           → after the check
+
+With the lock around the check only, the claim started after the check
+waits for the lock and then races the answer's read, so that case may pass
+or fail under the mutant; it is not counted.
+
+The four tests after those are about the answer's probe of the file, which
+it now makes before its delete opens a write transaction
+(scanner.probe_ahead). Verified by mutation, 4 applied, 4 killed, each
+surviving the whole suite as it stood (2823 tests) first:
+
+  • the probe not handed to _process_file    → no write open at the probe,
+                                               and the unreadable file (a
+                                               second probe)
+  • the probe used though the file changed   → the replaced file
+  • a failed probe made again                → the unreadable file
+  • the probe made after the delete instead  → other writes going ahead,
+                                               and no write open at the probe
+
+On the code before probe_ahead, other writes going ahead and no write open
+at the probe fail for the reason they exist. The replaced-file test fails
+there only because its first probe is then _process_file's own, made before
+the file is replaced, and the unreadable-file test passes. Those two pin what
+probe_ahead must get right, and their mutants are their evidence.
+
+test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job is about what an
+answer leaves when it cannot re-read the file: the delete of the waiting job
+is now rolled back. Verified by mutation, 2 applied, 2 killed, each
+surviving first the 55 test files that reach the answer or Retry's handling
+of an unreadable file, as they stood:
+
+  • no rollback                               → both ways
+  • a rollback only when the probe failed     → cannot be stat'ed
 """
 import asyncio
 import json
@@ -235,6 +285,492 @@ def test_a_scan_while_the_job_runs_leaves_the_mark(lib):
     assert stats.unchanged == 1
     assert _state(lib).marked is True
     lib.worker._finish_job(job_id, False, None, None, "stopped for the test")
+
+
+# ── The worker claiming the file's job while an answer replaces it ───────────
+#
+# apply_language deletes the file's waiting job, then probes the file and
+# queues a replacement, and commits only after the probe. A test of that
+# race needs two things a real queue has and the fixture does not: the
+# database in WAL mode, as the app's engine runs it, and a row newer than
+# the file's job. SQLite hands a deleted row's id to the next insert when
+# the deleted row was the newest, so without that row the replacement takes
+# the deleted job's id, the racing UPDATE lands on it, and nothing fails.
+
+def _like_a_real_queue(lib):
+    """Switch the fixture's database to WAL and add another file's finished
+    job after Movie.mkv's. Returns Movie.mkv's waiting job's id."""
+    from app.database.models import MediaFile, QueueItem
+
+    with lib.Session.kw["bind"].connect() as conn:
+        assert conn.exec_driver_sql("PRAGMA journal_mode=WAL").scalar() == "wal"
+    with lib.Session() as db:
+        waiting = db.query(QueueItem).filter(QueueItem.status == "pending").one().id
+        other = MediaFile(path=str(lib.library / "Other.mkv"), filename="Other.mkv",
+                          directory=str(lib.library), size=1, mtime=1.0, status="success")
+        db.add(other)
+        db.flush()
+        db.add(QueueItem(file_id=other.id, status="success"))
+        db.commit()
+    return waiting
+
+
+def test_a_claim_during_an_answer_takes_the_job_the_answer_queues(lib, monkeypatch, caplog):
+    """
+    The worker selected Movie.mkv's job while the answer was probing the
+    file, after the answer had deleted the job and before it committed. The
+    claim's UPDATE waited for that commit and then matched no row: "Failed
+    to claim next job" with a StaleDataError, as in a user's log after
+    answering Review questions, and a claim that returned None, which the
+    worker loop reads as an empty queue. The claim now takes the job the
+    answer queued in its place.
+    """
+    import logging
+    import threading
+
+    from sqlalchemy import event
+
+    import app.api.routes._language_review as review
+    from app.database.models import MediaFile, QueueItem
+
+    waiting = _like_a_real_queue(lib)
+
+    # The answer stops before its probe, its delete flushed but not
+    # committed, until the claim has selected the job and reached its UPDATE.
+    real_process_file = review._process_file
+    probing, go_on = threading.Event(), threading.Event()
+
+    def process_file_after_the_claim(*args, **kwargs):
+        probing.set()
+        go_on.wait(10)
+        return real_process_file(*args, **kwargs)
+    monkeypatch.setattr(review, "_process_file", process_file_after_the_claim)
+
+    replies = []
+    answering = threading.Thread(target=lambda: replies.append(_answer(lib)))
+    answering.start()
+    assert probing.wait(10), "the answer never reached its probe"
+
+    claiming = threading.get_ident()
+    reached = []
+
+    def release_the_answer(conn, cursor, statement, *rest):
+        if (threading.get_ident() == claiming
+                and statement.lstrip().upper().startswith("UPDATE QUEUE_ITEMS")):
+            reached.append(statement)
+            go_on.set()
+    engine = lib.Session.kw["bind"]
+    event.listen(engine, "before_cursor_execute", release_the_answer)
+    caplog.set_level(logging.INFO)
+    try:
+        claimed = lib.worker._claim_next()
+    finally:
+        go_on.set()
+        answering.join(30)
+        event.remove(engine, "before_cursor_execute", release_the_answer)
+
+    assert reached, "the claim never reached its UPDATE"
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert db.get(QueueItem, waiting) is None, "the answer did not replace the job"
+        assert claimed is not None, "the claim gave up with a job waiting"
+        job = db.get(QueueItem, claimed)
+        assert job is not None, f"claimed job {claimed}, which the answer had deleted"
+        assert (job.file_id, job.status) == (movie.id, "processing")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+        "a job that stopped waiting was logged as a failed claim")
+
+
+class _WatchedLock:
+    """
+    A stand-in for revert_lock.CLAIM_LOCK that records which threads found
+    it held and had to wait, and sets an event when one does: how a test
+    knows a claim is blocked on the lock without sleeping to find out.
+    """
+
+    def __init__(self, on_wait):
+        import threading
+
+        self._lock = threading.Lock()
+        self._on_wait = on_wait
+        self.waited = []
+
+    def acquire(self, blocking=True, timeout=-1):
+        import threading
+
+        if self._lock.acquire(blocking=False):
+            return True
+        if not blocking:
+            return False
+        self.waited.append(threading.get_ident())
+        self._on_wait.set()
+        return self._lock.acquire(True, timeout)
+
+    def release(self):
+        self._lock.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+def _the_running_job_check(statement, parameters):
+    return (statement.lstrip().upper().startswith("SELECT")
+            and "FROM queue_items" in statement and "processing" in tuple(parameters))
+
+
+@pytest.mark.parametrize("moment", ["after the running-job check", "before the delete"])
+def test_a_claim_while_an_answer_replaces_the_job_waits_for_it(lib, monkeypatch, caplog, moment):
+    """
+    The answer checked that no job was running for the file, then read the
+    waiting job and deleted it. A claim between the check and the delete
+    took the job, and the answer deleted it while it ran: its result was
+    never recorded, and the job the answer queued in its place could start
+    beside it on the same file. A claim between the check and the read took
+    it as well: nothing was then deleted and the file was marked, so the
+    answer still landed, but only after a job decided without it, and the
+    reply counted the answer applied rather than deferred.
+
+    The claim is started at each moment, on its own thread, and must wait
+    for the answer: the job the answer deletes is still waiting, and the one
+    claimed is the replacement.
+    """
+    import logging
+    import threading
+
+    from sqlalchemy import event
+
+    from app.core import revert_lock
+    from app.database.models import MediaFile, QueueItem
+
+    waiting = _like_a_real_queue(lib)
+    settled = threading.Event()
+    lock = _WatchedLock(on_wait=settled)
+    monkeypatch.setattr(revert_lock, "CLAIM_LOCK", lock)
+
+    answering, checked, claims, claimers = [], [], [], []
+
+    def claim():
+        try:
+            claims.append(lib.worker._claim_next())
+        finally:
+            settled.set()
+
+    def start_a_claim():
+        claimer = threading.Thread(target=claim)
+        claimers.append(claimer)
+        claimer.start()
+        # Until the claim is blocked on the lock, or has finished because
+        # nothing was holding it.
+        assert settled.wait(10), "the claim neither waited nor finished"
+
+    def after_a_statement(conn, cursor, statement, parameters, context, executemany):
+        if (threading.get_ident() in answering and not checked
+                and _the_running_job_check(statement, parameters)):
+            checked.append(statement)
+            if moment == "after the running-job check":
+                start_a_claim()
+
+    # The answer's first write after its check. That deletes the waiting
+    # job's planned actions, not the job itself, and from that statement on
+    # the answer holds SQLite's write lock: a claim started any later would
+    # wait for SQLite rather than for CLAIM_LOCK.
+    def before_a_statement(conn, cursor, statement, parameters, context, executemany):
+        if (moment == "before the delete" and threading.get_ident() in answering
+                and checked and not claimers
+                and statement.lstrip().upper().startswith("DELETE")):
+            start_a_claim()
+
+    engine = lib.Session.kw["bind"]
+    event.listen(engine, "after_cursor_execute", after_a_statement)
+    event.listen(engine, "before_cursor_execute", before_a_statement)
+    replies = []
+
+    def answer():
+        answering.append(threading.get_ident())
+        replies.append(_answer(lib))
+    caplog.set_level(logging.INFO)
+    try:
+        answerer = threading.Thread(target=answer)
+        answerer.start()
+        answerer.join(30)
+        for claimer in claimers:
+            claimer.join(30)
+    finally:
+        event.remove(engine, "after_cursor_execute", after_a_statement)
+        event.remove(engine, "before_cursor_execute", before_a_statement)
+
+    assert claimers, "the answer never reached the moment"
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert claims != [waiting], "the claim took the job the answer was about to replace"
+        assert db.get(QueueItem, waiting) is None, "the answer did not replace the job"
+        running = db.query(QueueItem).filter(QueueItem.file_id == movie.id,
+                                             QueueItem.status == "processing").all()
+        assert [j.id for j in running] == claims, (
+            f"claimed {claims}, running for the file {[j.id for j in running]}")
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert lock.waited == [claimers[0].ident], (
+        "the claim did not wait for the answer's check and delete")
+
+
+# ── The answer probing the file ──────────────────────────────────────────────
+#
+# apply_language probes the file before deciding it again. It did so with
+# the delete of the waiting job flushed, so it held SQLite's write lock for as
+# long as ffprobe took. It now probes before the delete (scanner.probe_ahead)
+# and hands the probe to _process_file.
+
+def _probe_watched(lib, monkeypatch, on_movie):
+    """
+    Send every ffprobe of Movie.mkv through on_movie(path, probe), where
+    probe() runs the real one. Returns the list of paths probed.
+    scanner.probe_file is the name probe_ahead and _process_file both call.
+    """
+    import app.core.scanner as scanner
+
+    real, calls = scanner.probe_file, []
+
+    def probe_file(path, *args, **kwargs):
+        calls.append(path)
+        if path.endswith("Movie.mkv"):
+            return on_movie(path, lambda: real(path, *args, **kwargs))
+        return real(path, *args, **kwargs)
+    monkeypatch.setattr(scanner, "probe_file", probe_file)
+    return calls
+
+
+def test_other_writes_go_ahead_while_an_answer_probes_the_file(lib, monkeypatch, caplog):
+    """
+    While the answer probed, nothing else could write. Past the engine's 30 s
+    busy timeout the worker's claim, holding CLAIM_LOCK throughout, logged
+    "Failed to claim next job" and returned None, and a job finishing
+    meanwhile had its result replaced by "Finalisation failed: ... database
+    is locked". Measured with the probe held 33 s before this test existed.
+
+    Here the answer's probe of Movie.mkv is held while a claim and another
+    job's finish are given five seconds: both land while it is still probing.
+    """
+    import logging
+    import threading
+
+    from app.database.models import MediaFile, QueueItem
+
+    _like_a_real_queue(lib)
+    ids = {}
+    with lib.Session() as db:
+        for name, status, priority in (("Next.mkv", "pending", 1),
+                                       ("Running.mkv", "processing", 5)):
+            media = MediaFile(path=str(lib.library / name), filename=name,
+                              directory=str(lib.library), size=1, mtime=1.0, status="queued")
+            db.add(media)
+            db.flush()
+            job = QueueItem(file_id=media.id, status=status, priority=priority)
+            db.add(job)
+            db.flush()
+            ids[name] = job.id
+        db.commit()
+
+    probing, go_on = threading.Event(), threading.Event()
+
+    def held(path, probe):
+        if not go_on.is_set():
+            probing.set()
+            go_on.wait(60)
+        return probe()
+    _probe_watched(lib, monkeypatch, held)
+    caplog.set_level(logging.INFO)
+
+    replies, claims = [], []
+    answering = threading.Thread(target=lambda: replies.append(_answer(lib)))
+    claiming = threading.Thread(target=lambda: claims.append(lib.worker._claim_next()))
+    finishing = threading.Thread(target=lambda: lib.worker._finish_job(
+        ids["Running.mkv"], False, None, None, "stopped for the test"))
+    try:
+        answering.start()
+        assert probing.wait(10), "the answer never probed Movie.mkv"
+        claiming.start()
+        finishing.start()
+        claiming.join(5)
+        finishing.join(5)
+        waited = [what for what, thread in (("the claim", claiming), ("the finish", finishing))
+                  if thread.is_alive()]
+    finally:
+        go_on.set()
+        for thread in (answering, claiming, finishing):
+            if thread.ident:
+                thread.join(60)
+
+    assert waited == [], f"waited for the answer's probe: {waited}"
+    assert claims == [ids["Next.mkv"]]
+    assert replies == [{"applied": 1, "errors": [], "deferred": [], "dry_run": False}]
+    with lib.Session() as db:
+        finished = db.get(QueueItem, ids["Running.mkv"])
+        assert (finished.status, finished.error_message) == ("failed", "stopped for the test")
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        assert [j.status for j in db.query(QueueItem).filter(QueueItem.file_id == movie.id)] \
+            == ["pending"], "the answer did not queue the file again"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_the_answer_probes_the_file_with_no_write_of_its_own_open(lib, monkeypatch):
+    """
+    At every probe the answer makes of Movie.mkv, another connection can
+    take SQLite's write lock without waiting.
+    """
+    import sqlite3
+
+    database_path = lib.Session.kw["bind"].url.database
+    seen = []
+
+    def check_then_probe(path, probe):
+        other = sqlite3.connect(database_path, timeout=0, isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            seen.append("free")
+        except sqlite3.OperationalError as exc:
+            seen.append(f"held ({exc})")
+        finally:
+            other.close()
+        return probe()
+    _probe_watched(lib, monkeypatch, check_then_probe)
+
+    reply = _answer(lib)
+
+    assert reply["applied"] == 1, reply
+    assert seen and set(seen) == {"free"}, f"the write lock at each probe: {seen}"
+
+
+def test_a_file_replaced_after_the_answer_probed_it_is_probed_again(lib, monkeypatch):
+    """
+    probe_ahead runs before the running-job check, so a job can finish and
+    replace the file between the probe and the decision, and deciding from
+    that probe would record the tracks of the file that was replaced. The
+    probe is used only while the file's size and mtime are what they were.
+
+    Movie.mkv, with two audio tracks, is replaced by a file with three just
+    after the answer's first probe: the record ends with three.
+    """
+    import os
+
+    from app.database.models import MediaFile, Track
+
+    replacement = lib.library.parent / "Replacement.mkv"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y",
+        "-f", "lavfi", "-i", "testsrc=size=64x36:rate=5:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=300:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=500:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=700:duration=1",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-f", "matroska", str(replacement)], check=True)
+
+    def replaced_after(path, probe):
+        data = probe()
+        if replacement.exists():
+            os.replace(replacement, path)
+        return data
+    calls = _probe_watched(lib, monkeypatch, replaced_after)
+
+    _answer(lib)
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+        audio = db.query(Track).filter(Track.file_id == movie.id,
+                                       Track.track_type == "audio").count()
+    assert audio == 3, f"the record kept the replaced file's {audio} audio tracks"
+    assert calls.count(movie.path) == 2
+
+
+def test_an_answer_for_a_file_ffprobe_cannot_read_probes_it_once(lib, monkeypatch):
+    """
+    The probe made ahead fails, and _process_file reports that failure
+    rather than probing again: the reply is the one it was, and ffprobe runs
+    once.
+
+    The file keeps its waiting job: see
+    test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job.
+    """
+    from app.core.probe import ProbeError
+    from app.database.models import MediaFile
+
+    def unreadable(path, probe):
+        raise ProbeError("the test's file cannot be read")
+    calls = _probe_watched(lib, monkeypatch, unreadable)
+
+    reply = _answer(lib)
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).filter(MediaFile.filename == "Movie.mkv").one()
+    assert reply == {"applied": 0, "deferred": [], "dry_run": False, "errors": [
+        {"file_id": movie.id, "error": "Could not re-read the file — see the log for details"}]}
+    assert calls.count(movie.path) == 1
+
+
+@pytest.mark.parametrize("unreadable", ["cannot be probed", "cannot be stat'ed"])
+def test_an_answer_for_a_file_that_cannot_be_read_keeps_its_job(lib, monkeypatch, unreadable):
+    """
+    The answer deleted the file's waiting job before finding it could not
+    re-read the file, and the next commit made the delete stick: the reply
+    said "Could not re-read the file", the job was gone, and a delta scan,
+    seeing the file unchanged, queued nothing. Only a full scan did.
+    Reproduced both ways before this test existed. Retry keeps a row whose
+    file cannot be read for the same reason (test_retry_unreadable_file).
+
+    The job is now kept, and once the file can be read it runs and applies
+    the answer: the worker decides a waiting job afresh, from the stored
+    answers, when it picks it up.
+    """
+    import os
+
+    import app.core.scanner as scanner
+    from app.core.probe import ProbeError
+    from app.database.models import MediaFile, QueueItem
+
+    with lib.Session() as db:
+        movie = db.query(MediaFile).one().path
+        waiting = db.query(QueueItem).one().id
+    real_probe, real_stat = scanner.probe_file, os.stat
+
+    def probe_file(path, *args, **kwargs):
+        if path == movie:
+            raise ProbeError("the test's file cannot be read")
+        return real_probe(path, *args, **kwargs)
+
+    class _OsWithoutMovie:
+        """scanner's os, whose stat fails for Movie.mkv and nothing else."""
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        @staticmethod
+        def stat(path, *args, **kwargs):
+            if str(path) == movie:
+                raise OSError("the test's file cannot be stat'ed")
+            return real_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as for_the_answer:
+        if unreadable == "cannot be probed":
+            for_the_answer.setattr(scanner, "probe_file", probe_file)
+        else:
+            for_the_answer.setattr(scanner, "os", _OsWithoutMovie())
+        reply = _answer(lib)
+
+    assert reply["applied"] == 0 and reply["errors"], reply
+    with lib.Session() as db:
+        assert [(j.id, j.status) for j in db.query(QueueItem)] == [(waiting, "pending")], (
+            "the answer removed the file's job")
+
+    assert _run_next(lib) == waiting
+    assert _audio_languages(_state(lib).path) == ["jpn", "jpn"], "the kept job ignored the answer"
 
 
 def test_an_answer_after_a_job_lands_on_the_track_it_was_asked_about(database):

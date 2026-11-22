@@ -51,6 +51,19 @@ for holding a file back whatever its plan, by the uncopyable audio rescan:
   • an output nothing can read let through  → the unreadable output
   • a refused file queued again             → the rescan
   • held back whatever its plan             → the rescan
+
+The creation date is compared to the second (_same_second). An MP4 holds it
+in whole seconds, and a Matroska's date with microseconds came back from a
+conversion as .000000 in the same second, refused as lost (issue #61).
+Verified by mutation, 4 applied, 4 killed, each surviving the whole suite as
+it stood (2833 tests) first:
+
+  • the date compared as written            → kept to the second, and the
+                                              fractional conversions in
+                                              test_creation_date
+  • compared to the minute                  → another second
+  • rounded to the nearest second           → .5 and .999999
+  • every tag compared to the second        → only the creation date
 """
 import asyncio
 import hashlib
@@ -125,6 +138,46 @@ def test_a_tag_that_only_resembles_one_is_not_passed_over(key):
 ])
 def test_a_file_with_no_tags_loses_none(source, output):
     assert lost_file_tags(source, output) == []
+
+
+# ── The creation date, kept to the second ────────────────────────────────────
+
+@pytest.mark.parametrize("fraction", ["460353", "500000", "999999"])
+def test_a_creation_date_kept_to_the_second_is_kept(fraction):
+    """
+    An MP4 holds the date in whole seconds, and FFmpeg's MP4 muxer drops the
+    fraction rather than rounding it. A Matroska's date carries microseconds,
+    as mkvmerge writes it, and came back from a conversion to MP4 as .000000
+    in the same second: every such conversion was refused as losing the date
+    (issue #61). .5 and .999999 fail a rule that rounds to the nearest
+    second.
+    """
+    source = _tags(creation_time=f"2026-11-20T08:00:15.{fraction}Z")
+    assert lost_file_tags(source, _tags(creation_time="2026-11-20T08:00:15.000000Z")) == []
+
+
+@pytest.mark.parametrize("output", [
+    _tags(creation_time="2026-11-20T08:00:16.000000Z"),
+    _tags(creation_time="2026-11-20T08:01:15.000000Z"),
+    _tags(),
+], ids=["another second", "another minute", "no date"])
+def test_a_creation_date_not_kept_to_the_second_is_lost(output):
+    source = _tags(creation_time="2026-11-20T08:00:15.460353Z")
+    assert lost_file_tags(source, output) == ["creation_time"]
+
+
+def test_a_creation_date_that_is_not_a_date_is_compared_as_written():
+    """FFmpeg passes over a date it cannot read; there is no second to match."""
+    assert lost_file_tags(_tags(creation_time="last spring"),
+                          _tags(creation_time="last spring")) == []
+    assert lost_file_tags(_tags(creation_time="last spring"),
+                          _tags(creation_time="2026-11-20T08:00:15.000000Z")) == ["creation_time"]
+
+
+def test_only_the_creation_date_is_compared_to_the_second():
+    """Another tag that holds a date is compared as written."""
+    source = _tags(date="2026-11-20T08:00:15.460353Z")
+    assert lost_file_tags(source, _tags(date="2026-11-20T08:00:15.000000Z")) == ["date"]
 
 
 # ── The check ────────────────────────────────────────────────────────────────

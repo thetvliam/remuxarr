@@ -51,10 +51,11 @@ def notify_sonarr(base_url: str, api_key: str, series_id: int) -> None:
             resp.get("id", "?") if isinstance(resp, dict) else "?",
         )
     except urllib.error.HTTPError as exc:
-        logger.error(
-            "Sonarr: RescanSeries HTTP %d for series %d: %s",
-            exc.code, series_id, exc.reason,
-        )
+        with exc:  # closed on the way out: it holds the server's response
+            logger.error(
+                "Sonarr: RescanSeries HTTP %d for series %d: %s",
+                exc.code, series_id, exc.reason,
+            )
     except Exception:
         logger.exception("Sonarr: RescanSeries failed for series %d", series_id)
 

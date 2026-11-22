@@ -503,8 +503,8 @@ def test_the_documented_test_counts_are_current():
     assert claimed_files == actual_files, (
         f"{name} claims {claimed_files} test files; pytest collects "
         f"{actual_files}. Count collected modules, not .py files under "
-        f"tests/ — conftest.py and sample_library/parse_ffprobe_dump.py "
-        f"hold no tests and are not counted."
+        f"tests/ — conftest.py and the helpers beside it hold no tests and "
+        f"are not counted."
     )
 
 
@@ -575,6 +575,39 @@ def test_ci_and_the_image_build_the_frontend_on_the_same_node_major():
         f"the image builds the frontend on Node {image_major} and CI tests "
         f"it on Node {ci_major}. Bring them together, or the suite is not "
         f"testing what ships."
+    )
+
+
+def test_ci_the_image_and_sonar_name_the_same_python():
+    """
+    Three files name the Python the backend runs on: the image's base
+    (python:X.Y-slim), CI's setup-python, and Sonar's analysis version.
+    They moved from 3.12 to 3.14 together, and nothing compared them
+    before, which is how the frontend's Node versions came apart (the test
+    above). A suite passing on one minor version says little about another:
+    3.13 and 3.14 each added warnings this suite now treats as errors.
+
+    Compares major.minor, the part all three files name. The Dockerfile's
+    tag and setup-python both take a minor and resolve the patch release at
+    build time.
+    """
+    import re
+
+    image = re.search(r"^FROM python:(\d+\.\d+)-", _read("Dockerfile"), re.MULTILINE)
+    assert image, "Dockerfile no longer builds on a python:X.Y- base image"
+
+    ci = re.search(r"python-version:\s*[\"']?(\d+\.\d+)[\"']?\s*$",
+                   _read(".github/workflows/ci.yml"), re.MULTILINE)
+    assert ci, "ci.yml no longer pins a python-version"
+
+    sonar = re.search(r"^sonar\.python\.version=(\d+\.\d+)\s*$",
+                      _read("sonar-project.properties"), re.MULTILINE)
+    assert sonar, "sonar-project.properties no longer declares sonar.python.version"
+
+    versions = {"the image": image.group(1), "CI": ci.group(1), "Sonar": sonar.group(1)}
+    assert len(set(versions.values())) == 1, (
+        f"the backend's Python is named three ways: {versions}. The image is "
+        f"what ships, so CI has to test that version and Sonar analyse it."
     )
 
 

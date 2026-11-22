@@ -37,16 +37,13 @@ so the tests exercise the real response-shape handling — the nested
 Metadata/Media/Part/Stream walking is where the actual bugs recorded in this
 module's docstrings live.
 
-Verified by mutation: 48 mutations of plex.py, of which 46 are killed by at
-least one test here. Both survivors are equivalent, checked rather than
+Verified by mutation: 51 mutations of plex.py, of which 50 are killed by at
+least one test here. The survivors are equivalent, checked rather than
 assumed:
 
   • dropping `if "=" not in entry: continue` from translate_path_to_plex —
     the later `if local and plex` guard rejects the same entries, and the
     outputs are identical across every malformed mapping shape.
-  • narrowing notify_plex_new_file's `except urllib.error.HTTPError` — the
-    bare `except Exception` immediately below it catches the same error, so
-    only the log message changes, not the behaviour.
   • `if translated is not None` becoming `if translated` in
     translate_path_to_plex, after the prefix rule moved to
     pathmap.swap_prefix. The two differ only when swap_prefix returns an
@@ -66,6 +63,15 @@ matching an untagged one (here), a subtitle language fix recorded as an
 audio one (test_post_job_notify), an entry from before the list still
 checked with its single language (test_scheduler), and the column's upgrade
 step missing (test_schema_migration).
+
+Closing the HTTPError plex.py catches by name came later again (the
+refresh, the analyze and the connection check), because each holds the
+server's response. Three mutants, one close removed from each, all killed
+by test_an_http_error_plex_returns_is_closed_where_it_is_caught. It also
+kills narrowing notify_plex_new_file's `except urllib.error.HTTPError`,
+which used to survive here as equivalent: the bare `except Exception`
+below it caught the same error and only the log line changed, but that
+clause does not close it.
 """
 import urllib.error
 
@@ -690,6 +696,44 @@ def test_an_http_error_is_reported_with_its_status(plex):
 
     assert result["success"] is False
     assert "401" in result["error"]
+
+
+def _refresh_fails(plex, error):
+    plex._routes["/library/sections"] = _sections((3, "/data/tv"))
+    plex._routes["/library/sections/3/refresh"] = error
+    plex.notify_plex_new_file(URL, TOKEN, ["/media=/data"], "/media/tv/ep.mkv")
+
+
+def _analyze_fails(plex, error):
+    _wire_reprocess(plex)
+    plex._routes["/library/metadata/99/analyze"] = error
+    plex.notify_plex_reprocessed_file(URL, TOKEN, ["/media=/data"], "/media/tv/ep.mkv")
+
+
+def _connection_check_fails(plex, error):
+    plex._routes["/identity"] = error
+    plex.test_plex_connection(URL, TOKEN)
+
+
+@pytest.mark.parametrize("fail", [_refresh_fails, _analyze_fails, _connection_check_fails],
+                         ids=["refresh", "analyze", "connection check"])
+def test_an_http_error_plex_returns_is_closed_where_it_is_caught(plex, fail):
+    """
+    The error a failed request raises holds the server's response, and the
+    connection with it, until something closes it. Left to the garbage
+    collector, Python 3.14 reports it (ResourceWarning: Implicitly cleaning
+    up <HTTPError ...>), and earlier versions clean up without a word. One
+    case for each place plex.py catches an HTTPError by name. The test keeps
+    its own reference to the error, so nothing but that handler can have
+    closed it.
+    """
+    import io
+
+    error = urllib.error.HTTPError("u", 503, "Unavailable", {}, io.BytesIO(b""))
+
+    fail(plex, error)
+
+    assert error.fp.closed, "the handler left the error, and its response, open"
 
 
 def test_a_connection_failure_is_reported_as_such(plex):

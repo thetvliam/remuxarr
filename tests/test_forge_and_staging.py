@@ -53,8 +53,9 @@ def db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
 
@@ -678,11 +679,12 @@ def test_load_forge_job_data_reads_the_faststart_setting(
     import app.core.forge as forge_mod
     from app.database.models import Ac3ForgeJob, Base, MediaFile
     from app.database.session import update_app_setting
+    from tests.engine_disposal import dispose_after_test
 
     media_file = tmp_path / "Movie.mp4"
     media_file.write_bytes(b"not really an mp4, but it exists")
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'forge.db'}")
+    engine = dispose_after_test(create_engine(f"sqlite:///{tmp_path / 'forge.db'}"))
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
 

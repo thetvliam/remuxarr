@@ -78,8 +78,9 @@ def db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -221,8 +222,9 @@ def test_deleting_commits_its_removal(tmp_path):
 
     from app.api.routes.history import delete_history_item
     from app.database.models import Base, QueueItem
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'h.db'}")
+    engine = dispose_after_test(create_engine(f"sqlite:///{tmp_path / 'h.db'}"))
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
 

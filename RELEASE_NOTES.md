@@ -62,13 +62,8 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
-- In Settings → Recycle Bin, Match now opens under the entry you clicked it for. With a long list of unmatched entries it opened below the whole list, off the screen, so clicking Match seemed to do nothing.
-- On the Review page, the tracks you have ticked in Audio Language Review and Subtitle Language Review stay ticked when a job finishes, a file is queued or a scan ends. Every one of those cleared them, so on a busy queue a selection could vanish while you were making it.
-- On the Review page, Confirmed Undefined-Audio Tracks keeps the files you have ticked, and keeps its list on screen, when a job finishes, a file is queued or a scan ends. Each of those unticked everything and blanked the list to "Loading…".
-- Audio Language Review, Subtitle Language Review and the AC3 Forge candidates list keep their rows on screen when they refresh, instead of emptying and jumping back to the top. A finished job, a queued file or a finished scan refreshed the review lists, and every ADD refreshed the candidates, each time keeping only the first page of rows.
-- On the Review page, cards you have scrolled down to stay on the page when a job finishes or a file is queued. Each of those reloaded only the first 25 cards, so the card you were answering could disappear from under you.
-- The History panel on the dashboard keeps its rows on screen when a job finishes, instead of emptying and jumping back to the top. On the Success tab every successful job did that, each time keeping only the first 50 entries.
-
-## Removed
-
-- The `DELETE /api/history/clear` API endpoint, which deleted finished History entries in bulk and which nothing in Remuxarr used, has been removed: a script calling it now gets an error and nothing is deleted. Dismiss in a job's window still removes one entry.
+- Cancelling a job just as the worker picked it up could let it run anyway: it was either put back in progress, or Cancel said it had worked while the job carried on under a cancelled entry in History, where Retry or Dismiss would act on the running job. A job is now either cancelled before it starts, or the cancel fails because it has already started.
+- Answering a question in Audio or Subtitle Language Review just as the worker picked up or started that file's job could log "Failed to claim next job" and, with auto-start off, pause the queue as if it had finished, or take the running job out of the queue, losing its result and, with more than one job at a time, starting a second job on the same file. The answer and the worker now take turns, and an answer given while a job runs is applied after it.
+- For a file on a slow or sleeping disk, a Language Review answer, Retry and Retry All held up the queue while the file was read again. Past 30 seconds the worker could stop as if the queue were empty (with auto-start off), and a job finishing then could be recorded as failed with "database is locked". The file is now read before its job is replaced.
+- A Language Review answer for a file Remuxarr could not read removed the file's job from the queue, and only a full scan queued it again. The job now stays and applies the answer when it runs; if the file still cannot be read then, it fails and can be retried.
+- A Matroska file whose creation date has fractional seconds, as mkvmerge writes it, could not be converted to MP4: the job failed saying the file would lose creation_time, and the file was left as it was. MP4 keeps the date to the second, which now counts as keeping it (issue #61).

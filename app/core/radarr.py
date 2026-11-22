@@ -46,10 +46,11 @@ def notify_radarr(base_url: str, api_key: str, movie_id: int) -> None:
             resp.get("id", "?") if isinstance(resp, dict) else "?",
         )
     except urllib.error.HTTPError as exc:
-        logger.error(
-            "Radarr: RescanMovie HTTP %d for movie %d: %s",
-            exc.code, movie_id, exc.reason,
-        )
+        with exc:  # closed on the way out: it holds the server's response
+            logger.error(
+                "Radarr: RescanMovie HTTP %d for movie %d: %s",
+                exc.code, movie_id, exc.reason,
+            )
     except Exception:
         logger.exception("Radarr: RescanMovie failed for movie %d", movie_id)
 

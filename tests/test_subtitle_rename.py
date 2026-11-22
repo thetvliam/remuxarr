@@ -745,13 +745,14 @@ def _flagged_with_sidecar(tmp_path):
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
     mkv = tmp_path / "Show.mkv"
     mkv.write_bytes(b"video")
     srt = tmp_path / "Show.und.forced.srt"
     srt.write_text("extracted")
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     media = MediaFile(path=str(mkv), filename="Show.mkv",
@@ -826,11 +827,12 @@ def _flagged_in_file(tmp_path):
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
     mkv = tmp_path / "Kept.mkv"
     mkv.write_bytes(b"video")
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     media = MediaFile(path=str(mkv), filename="Kept.mkv",

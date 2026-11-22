@@ -578,6 +578,25 @@ def test_an_unreadable_error_body_is_logged_as_missing(monkeypatch, caplog):
     assert record.getMessage().endswith("Internal Server Error — <no body>")
 
 
+@pytest.mark.parametrize("unreadable", [False, True], ids=["read", "unreadable"])
+def test_the_http_error_is_closed_once_it_is_logged(monkeypatch, caplog, unreadable):
+    """
+    Closes: the error left open for the garbage collector.
+
+    The error a failed request raises holds the server's response, and the
+    connection with it, until something closes it. Left to the collector,
+    Python 3.14 reports it (ResourceWarning: Implicitly cleaning up
+    <HTTPError ...>), and earlier versions clean up without a word. Closed
+    whether or not its body could be read. The test keeps its own reference
+    to the error, so nothing but the handler can have closed it.
+    """
+    error = _http_error(unreadable=unreadable)
+
+    _best_effort(monkeypatch, caplog, error)
+
+    assert error.fp.closed, "the handler left the error, and its response, open"
+
+
 def test_any_other_failure_is_logged_with_the_path_and_goes_no_further(
         monkeypatch, caplog):
     """

@@ -46,6 +46,11 @@ starts on a QuickTime movie. The other 10:
   • execute_ffmpeg not passing it on        → the MP4 and Matroska jobs,
                                               the conversion, the revert
   • execute_ffmpeg_combined not passing it  → the combined pass
+
+The Matroska tests with a fractional date (issue #61) are about the tag
+check, probe.lost_file_tags, which compares the date to the second. Its
+mutation record is in test_kept_file_tags.py; of its four mutants, the
+conversions here kill the first, the date compared as written.
 """
 import asyncio
 import json
@@ -267,6 +272,48 @@ def test_a_matroska_converted_to_mp4_keeps_its_date(rig):
     assert "change_container" in planned
     assert after.endswith(".mp4")
     assert _dates(after) == (MADE, [MADE, MADE])
+
+
+# A Matroska's date carries microseconds, as mkvmerge writes it. An MP4 holds
+# whole seconds, and a conversion keeps the date to the second (issue #61).
+FRACTIONAL    = "2026-11-20T08:00:15.460353Z"
+TO_THE_SECOND = "2026-11-20T08:00:15.000000Z"
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("extract", [False, True],
+                         ids=["converted", "converted extracting a subtitle"])
+def test_a_matroska_whose_date_has_a_fraction_is_converted_to_mp4(rig, extract):
+    """
+    Refused before, the Matroska left as it was: "Writing this file would
+    lose tags it holds ... It would lose: creation_time." Reproduced with
+    real FFmpeg from the report, whose job also extracted a subtitle, which
+    runs the combined pass.
+    """
+    rig.set("prefer_mp4_container", True)
+    rig.set("extract_text_subtitles_to_srt", extract)
+    source = _file(rig.library / "Show.mkv", "matroska", made=FRACTIONAL, subtitle=extract)
+    assert _dates(source)[0] == FRACTIONAL, "fixture has no fraction"
+
+    planned, after = _run_job(rig, source)
+
+    assert "change_container" in planned
+    assert ("extract_subtitle" in planned) == extract
+    assert after.endswith(".mp4"), "the conversion was refused"
+    assert _dates(after)[0] == TO_THE_SECOND
+
+
+@needs_ffmpeg
+def test_a_matroska_left_a_matroska_keeps_the_fraction(rig):
+    """A Matroska holds the fraction, so a job that keeps the container
+    keeps it whole: the date is written back as the file gives it."""
+    source = _file(rig.library / "Show.mkv", "matroska", made=FRACTIONAL)
+
+    _, after = _run_job(rig, source)
+
+    assert after == str(source)
+    assert _audio_languages(source) == ["eng"], "the job did not run"
+    assert _dates(source)[0] == FRACTIONAL
 
 
 @needs_ffmpeg

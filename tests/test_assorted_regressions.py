@@ -136,8 +136,9 @@ def _email_db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -251,8 +252,9 @@ def _retry_db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    engine = dispose_after_test(create_engine("sqlite://", connect_args={"check_same_thread": False}))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 

@@ -130,8 +130,9 @@ def db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -656,9 +657,10 @@ def _two_sessions(tmp_path):
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
-                           connect_args={"check_same_thread": False})
+    engine = dispose_after_test(create_engine(f"sqlite:///{tmp_path / 'remuxarr.db'}",
+                                              connect_args={"check_same_thread": False}))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
     return factory
@@ -715,6 +717,10 @@ def test_a_file_a_job_renamed_during_the_scan_is_not_removed(tmp_path):
     check = factory()
     assert check.get(MediaFile, media.id).path == str(lib / "Show.mp4")
     assert check.query(QueueItem).count() == 1, "the file's history went with it"
+    # Closed, so disposing the engine at the end of the test closes their
+    # connections: a file engine's pool cannot reach one a session holds.
+    check.close()
+    scan.close()
 
 
 def test_a_job_that_finishes_during_the_cleanup_is_not_removed(tmp_path, monkeypatch):
@@ -747,4 +753,6 @@ def test_a_job_that_finishes_during_the_cleanup_is_not_removed(tmp_path, monkeyp
     monkeypatch.setattr(scanner_mod.os.path, "exists", exists)
 
     assert cleanup_deleted_files(scan, [str(lib)]) == 0
-    assert factory().get(MediaFile, media.id) is not None
+    with factory() as check:
+        assert check.get(MediaFile, media.id) is not None
+    scan.close()

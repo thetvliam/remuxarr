@@ -51,6 +51,38 @@ all (both reversing the claim order and inverting the pending filter survived).
 It is tested here rather than in a worker file because it is the consumption
 end of the prioritize feature above — the ordering was pinned at the route
 level and never verified where it is read.
+
+The claim's job can stop waiting between its SELECT and its UPDATE: a
+language answer deletes it, or Cancel marks it cancelled. Verified by
+mutation, 3 applied, 3 killed, each surviving first the 23 test files that
+reach the claim, as they stood:
+
+  • the UPDATE not conditional on pending   → the cancelled-job test
+  • a miss giving up instead of looking again → both tests here, and
+                                              test_a_claim_during_an_answer_
+                                              takes_the_job_the_answer_queues
+                                              in test_language_answer_during_job
+  • the row count ignored                    → the same three
+
+Both of the last two are also killed by both cases of
+test_a_claim_while_an_answer_replaces_the_job_waits_for_it, which depends on
+the claim looking again.
+
+Two more were already killed and are not these tests' to claim: swap_record
+kept (test_a_claim_clears_a_record_an_earlier_attempt_left, in
+test_crash_after_swap) and started_at not stamped
+(test_claiming_marks_the_item_processing_and_stamps_started_at, and now the
+deleted-job test as well).
+
+Cancel can also land just after the claim, the other order: it checked a
+waiting job, the worker claimed it, and Cancel's write marked the running
+job cancelled. Verified by mutation, 3 applied, 3 killed, each surviving
+first the 5 test files that reach the cancel route, as they stood, and each
+killed by test_a_cancel_landing_just_after_the_claim_is_refused:
+
+  • Cancel's UPDATE not conditional on the job still waiting
+  • the row count ignored
+  • the refusal naming the status Cancel read rather than the current one
 """
 import json
 
@@ -70,8 +102,9 @@ def db():
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
-    engine = create_engine("sqlite://")
+    engine = dispose_after_test(create_engine("sqlite://"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -815,6 +848,176 @@ def test_a_claimed_item_is_not_claimed_twice(claim, db):
 
     assert claim._claim_next() == 1
     assert claim._claim_next() is None, "the same job was claimed twice"
+
+
+# ── A job that stops waiting while it is being claimed ───────────────────────
+#
+# The claim selects a job and then updates it, and the two are separate
+# moments: the driver starts a transaction only at the UPDATE. Both tests
+# below change the selected job from a second session in that gap, from a
+# hook on the claim's own thread, so the interleaving is exact with no
+# threads of their own.
+
+@pytest.fixture
+def claim_on_file(tmp_path, monkeypatch):
+    """
+    The claim against a file-backed database in WAL mode, as the app's engine
+    runs it. The `db` engine above is in memory and its pool gives every
+    session on a thread the same connection, so a second session there
+    cannot commit between the claim's SELECT and its UPDATE.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.core.worker as worker
+    from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
+
+    engine = dispose_after_test(create_engine(
+        f"sqlite:///{tmp_path / 'claim.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30}))
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker, "SessionLocal", factory)
+
+    with factory() as db:
+        # Job 1 is ahead of job 2, so job 1 is the one the claim selects.
+        for n, priority in ((1, 1), (2, 5)):
+            _file(db, file_id=n)
+            _item(db, item_id=n, file_id=n, status="pending", priority=priority)
+    return SimpleNamespace(engine=engine, Session=factory, worker=worker)
+
+
+def _before_the_claims_update(engine, action):
+    """
+    Run action once, just before the claim's first UPDATE: after it has
+    selected its job and before it has claimed it. Returns a list that holds
+    the statement once the hook has fired.
+    """
+    from sqlalchemy import event
+
+    fired = []
+
+    def hook(conn, cursor, statement, parameters, context, executemany):
+        if not fired and statement.lstrip().upper().startswith("UPDATE QUEUE_ITEMS"):
+            fired.append(statement)
+            action()
+    event.listen(engine, "before_cursor_execute", hook)
+    return fired
+
+
+def test_a_job_deleted_while_it_is_claimed_gives_way_to_the_next(claim_on_file, caplog):
+    """
+    A language answer deletes the file's waiting job and probes the file
+    before it commits, so the claim could select a job that was gone by the
+    time its UPDATE ran. The UPDATE matched nothing, the claim logged
+    "Failed to claim next job" with a StaleDataError and returned None, and
+    the worker loop read None as an empty queue: with auto-start off it
+    paused with work still waiting.
+    """
+    import logging
+
+    from app.database.models import QueueItem
+
+    rig = claim_on_file
+
+    def delete_job_1():
+        with rig.Session() as other:
+            other.query(QueueItem).filter(QueueItem.id == 1).delete()
+            other.commit()
+    fired = _before_the_claims_update(rig.engine, delete_job_1)
+
+    caplog.set_level(logging.INFO)
+    claimed = rig.worker._claim_next()
+
+    assert fired, "the claim never reached its UPDATE"
+    assert claimed == 2, f"claimed {claimed!r} instead of the next job"
+    with rig.Session() as db:
+        assert db.get(QueueItem, 1) is None
+        job = db.get(QueueItem, 2)
+        assert job.status == "processing"
+        assert job.started_at is not None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], (
+        "a job that stopped waiting was logged as a failed claim")
+
+
+def test_a_job_cancelled_while_it_is_claimed_stays_cancelled(claim_on_file):
+    """
+    Cancel checks that the job is waiting and then marks it cancelled. A
+    claim that had already selected it set it back to processing over the
+    cancel, and the job ran though Cancel had reported success.
+    """
+    from app.api.routes.queue import cancel_item
+    from app.database.models import QueueItem
+
+    rig = claim_on_file
+
+    def cancel_job_1():
+        with rig.Session() as other:
+            assert cancel_item(1, other) == {"success": True}
+    fired = _before_the_claims_update(rig.engine, cancel_job_1)
+
+    claimed = rig.worker._claim_next()
+
+    assert fired, "the claim never reached its UPDATE"
+    assert claimed == 2, f"claimed {claimed!r} instead of the next job"
+    with rig.Session() as db:
+        cancelled = db.get(QueueItem, 1)
+        assert cancelled.status == "cancelled", "the cancelled job was claimed"
+        assert cancelled.completed_at is not None
+        assert db.get(QueueItem, 2).status == "processing"
+
+
+def test_a_cancel_landing_just_after_the_claim_is_refused(claim_on_file):
+    """
+    The other order. Cancel read the job as waiting, the worker claimed it,
+    and Cancel's write, by id alone, then marked the running job cancelled:
+    Cancel replied success, the job ran anyway, and while it ran History
+    offered Retry and Dismiss on its row. Cancel is now refused, as it is
+    for a job already running when it checks.
+
+    The claim runs from a hook just after Cancel reads the job, on Cancel's
+    own thread. Cancel takes no lock, so nothing here waits on anything.
+    """
+    from fastapi import HTTPException
+    from sqlalchemy import event
+
+    from app.api.routes.queue import cancel_item
+    from app.database.models import MediaFile, QueueItem
+
+    rig = claim_on_file
+    started, claimed = [], []
+
+    def claim_after_cancels_read(conn, cursor, statement, parameters, context, executemany):
+        # The claim's own SELECT comes through here as well.
+        if (not started and statement.lstrip().upper().startswith("SELECT")
+                and "FROM queue_items" in statement):
+            started.append(statement)
+            claimed.append(rig.worker._claim_next())
+    event.listen(rig.engine, "after_cursor_execute", claim_after_cancels_read)
+    try:
+        with rig.Session() as db:
+            try:
+                reply = cancel_item(1, db)
+            except HTTPException as refused:
+                reply = refused
+    finally:
+        event.remove(rig.engine, "after_cursor_execute", claim_after_cancels_read)
+
+    assert claimed == [1], f"the claim took {claimed}, not the job Cancel read"
+    with rig.Session() as db:
+        job, media = db.get(QueueItem, 1), db.get(MediaFile, 1)
+        assert job.status == "processing", "the running job was marked cancelled"
+        assert job.completed_at is None
+        assert (media.status, media.size, media.mtime) == ("queued", REAL_SIZE, REAL_MTIME), (
+            "the running job's file was reset as if it had been cancelled")
+    assert isinstance(reply, HTTPException), f"Cancel replied {reply!r}"
+    assert reply.status_code == 400
+    assert "processing" in reply.detail, reply.detail
 
 
 # ── A review item with an explicit track list ────────────────────────────────

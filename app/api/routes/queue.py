@@ -17,7 +17,7 @@ from app.core.scanner import (ANSWER_COLUMNS, CONFIRMATION_COLUMNS,
                               _clear_stale_status_records, _process_file,
                               _load_track_answers, _track_to_dict,
                               _upsert_language_flags, descriptors_by_stream,
-                              forget_answers)
+                              forget_answers, probe_ahead)
 from app.database.models import (
     AudioLanguageFlag, MediaFile, PlannedAction, QueueItem,
     SubtitleLanguageFlag, Track,
@@ -110,6 +110,14 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
     # kept success row survives a re-probe that queues new work (yielding
     # two legitimate history rows for two operations), and a kept skipped
     # row is updated in place by the skip path.
+    # Read the file before the stale attempt is deleted below. The delete
+    # opens a write transaction and _process_file probed inside it, so every
+    # other write in the app waited for ffprobe, and past the engine's 30 s
+    # busy timeout failed (scanner.probe_ahead; apply_language's comment has
+    # what was measured). The re-process path deletes nothing and is read
+    # here as well: one probe either way.
+    probed = probe_ahead(file_path)
+
     preserve_completed_record = item.status in ("success", "skipped")
     if not preserve_completed_record:
         # Removes the stale item and its PlannedActions via cascade.
@@ -126,6 +134,7 @@ def _retry_with_reprobe(db: Session, item: QueueItem) -> dict:
             stats            = stats,
             sonarr_series_id = sonarr_series_id,
             radarr_movie_id  = radarr_movie_id,
+            probed           = probed,
         )
     except Exception as exc:
         # Same failure class retry_all_failed guards against per-item
@@ -1033,6 +1042,36 @@ def cancel_item(item_id: int, db: Session = Depends(get_db)):
         raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
     was_review = item.status == "manual_review"
 
+    # The check above and the write are two moments. The driver starts a
+    # transaction only at the first write, so the check reads whatever is
+    # committed, and the worker could claim the job in between. The write
+    # was by id alone and marked the running job cancelled: Cancel replied
+    # success, the job ran anyway and its finish overwrote the row, and
+    # while it ran History offered Retry and Dismiss on it, both of which
+    # deleted the running job's row (Retry queuing a second job for the
+    # file as well).
+    #
+    # So the status changes only while the job is still waiting, and a job
+    # the worker has taken is refused as one already running at the check
+    # is. This UPDATE holds SQLite's write lock until the commit, so nothing
+    # changes the row before the rest of the transition lands with it. The
+    # claim makes the same check from its side (worker._claim_next_locked).
+    # A refusal needs no rollback: get_db closes the session, which rolls
+    # back.
+    #
+    # The batch review endpoint's skips go through _cancel_item_row without
+    # this: they take only files waiting in review, which the worker never
+    # claims.
+    still_waiting = (
+        db.query(QueueItem)
+        .filter(QueueItem.id == item.id,
+                QueueItem.status.in_(("pending", "manual_review")))
+        .update({QueueItem.status: "cancelled"}, synchronize_session=False)
+    )
+    if not still_waiting:
+        db.refresh(item)
+        raise HTTPException(400, f"Cannot cancel item with status '{item.status}'")
+
     _cancel_item_row(item)
     db.commit()
     # Only a review: cancelling a pending job leaves the file for the next
@@ -1109,6 +1148,8 @@ def retry_all_failed(db: Session = Depends(get_db)):
         # though single-item retry preserved this correctly.
         sonarr_series_id = item.sonarr_series_id
         radarr_movie_id  = item.radarr_movie_id
+        # Read before the delete, as single retry is (_retry_with_reprobe).
+        probed = probe_ahead(file_path)
         db.delete(item)
         db.flush()
 
@@ -1121,6 +1162,7 @@ def retry_all_failed(db: Session = Depends(get_db)):
                 stats            = stats,
                 sonarr_series_id = sonarr_series_id,
                 radarr_movie_id  = radarr_movie_id,
+                probed           = probed,
             )
         except Exception as exc:
             # Mirrors scan_library()'s own per-file protection — without

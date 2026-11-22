@@ -68,7 +68,8 @@ def _test_arr_connection(url: str, api_key: str, app_name_fallback: str) -> dict
             "app":     data.get("appName", app_name_fallback),
         }
     except urllib.error.HTTPError as e:
-        return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
+        with e:  # closed on the way out: it holds the server's response
+            return {"success": False, "error": f"HTTP {e.code}: {e.reason}"}
     except urllib.error.URLError as e:
         return {"success": False, "error": f"Connection failed: {e.reason}"}
     except Exception as e:

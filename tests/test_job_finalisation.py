@@ -104,10 +104,11 @@ def Session(tmp_path):
     from sqlalchemy.orm import sessionmaker
 
     from app.database.models import Base
+    from tests.engine_disposal import dispose_after_test
 
     db_dir = tmp_path / "db"
     db_dir.mkdir()
-    engine = create_engine(f"sqlite:///{db_dir / 'test.db'}")
+    engine = dispose_after_test(create_engine(f"sqlite:///{db_dir / 'test.db'}"))
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
 

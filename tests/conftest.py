@@ -58,6 +58,16 @@ if os.path.exists(_db_path):
 
 import pytest
 
+from tests import engine_disposal
+
+
+@pytest.fixture(autouse=True)
+def _dispose_the_engines_the_test_made():
+    """See tests/engine_disposal.py."""
+    engine_disposal.begin()
+    yield
+    engine_disposal.end()
+
 
 def memory_engine():
     """
@@ -79,15 +89,18 @@ def memory_engine():
 
     Any test touching code that awaits run_in_executor, or that goes
     through TestClient, needs this rather than the bare call.
+
+    The engine is disposed when the test ends (tests/engine_disposal.py),
+    so call this inside a test or a function-scoped fixture.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
 
-    return create_engine(
+    return engine_disposal.dispose_after_test(create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
-    )
+    ))
 
 # Every settings key analyze_file() actually reads, confirmed directly
 # against app/core/decision.py rather than assumed — see the grep this was
