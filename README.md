@@ -104,7 +104,7 @@ Most media coming out of Sonarr/Radarr carries far more than you actually need -
 
 Remuxarr only ever touches what's cheap and lossless to touch:
 
-- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video.
+- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video. Dolby Vision video keeps what marks it as Dolby Vision, and Profile 5, which has no HDR10 picture to fall back on, is written as `dvh1`, the form Apple asks for.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
@@ -351,12 +351,14 @@ same rule, except that a rename never replaces a file: under Replace it takes
 the next free number too, because the name can belong to another subtitle
 extracted from the same video.
 
-**Three limitations worth knowing.** A job whose only casualty is an attachment -
+**Limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
 tracks. Matroska cover art comes back as a still-image video track rather
 than an attachment, with its filename and mimetype intact; nothing is lost, but
-a player may list it as a second video stream. And in an MP4 with a timecode
-track, the track comes back as the last one. A phone's or camera's own
+a player may list it as a second video stream. In an MP4 with a timecode
+track, the track comes back as the last one. And an MP4 whose Dolby Vision
+video is labelled `dvhe` comes back labelled `dvh1`, the other name for the
+same kind of stream, as FFmpeg cannot write `dvhe`. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 

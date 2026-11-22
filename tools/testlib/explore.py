@@ -1427,8 +1427,8 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                                   for w in want), key=repr) == sorted(got, key=repr)
             if covers_only:
                 known.append({"file": rel(source), "lost": "cover comes back as video",
-                              "why": "README, Reverting a processed file: Two "
-                                     "limitations worth knowing"})
+                              "why": "README, Reverting a processed file: "
+                                     "Limitations worth knowing"})
             else:
                 find(11, source, _first_difference(want, got))
         # And what kind of file it is, which can change while every stream

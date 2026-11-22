@@ -12,6 +12,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from app.config import settings as app_settings
 
@@ -329,6 +330,51 @@ def creation_time(probe_data: dict | None) -> str | None:
     """
     tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
     return tags.get("creation_time") or None
+
+
+# How ffprobe names a Dolby Vision stream's configuration record among its
+# side data: an MP4's dvcC, dvvC or dvwC box, a Matroska's
+# BlockAdditionMapping. The RPUs that carry the Dolby Vision metadata ride
+# in the packets, which every job copies; the record is the container's
+# word that they are there, beside an MP4's sample entry, and FFmpeg's MP4
+# muxer drops it unless asked (ffmpeg.build_ffmpeg_command, issue #62).
+DOVI_RECORD = "DOVI configuration record"
+
+
+# The HEVC sample entries Dolby Vision defines for an MP4: dvh1, like hvc1,
+# with the parameter sets in the sample entry, and dvhe, like hev1, where
+# they may be in the stream instead.
+DOVI_SAMPLE_ENTRIES = frozenset({"dvh1", "dvhe"})
+
+
+class DolbyVision(NamedTuple):
+    """A video stream's Dolby Vision profile, from its record (None when it
+    has none), and the codec tag it has where it is now, as ffprobe shows
+    it ("dvh1", "hev1", "[0][0][0][0]" for a Matroska's)."""
+    profile: int | None
+    codec_tag: str | None
+
+
+def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
+    """
+    Each video stream the file says is Dolby Vision, by its stream index:
+    with a configuration record, or a sample entry that says so without
+    one. The second is not only a broken download's: an AC3 Forge run does
+    not keep the record yet, and leaves an MP4 a job wrote as dvh1 with the
+    tag alone, which FFmpeg will not copy back into Matroska
+    (ffmpeg.build_restore_command).
+    """
+    found = {}
+    for stream in (probe_data or {}).get("streams") or []:
+        if stream.get("codec_type") != "video":
+            continue
+        record = next((d for d in stream.get("side_data_list") or []
+                       if d.get("side_data_type") == DOVI_RECORD), None)
+        tag = stream.get("codec_tag_string")
+        if record is not None or tag in DOVI_SAMPLE_ENTRIES:
+            found[stream["index"]] = DolbyVision(
+                record.get("dv_profile") if record is not None else None, tag)
+    return found
 
 
 # The sample entries an MP4 or QuickTime chapter track carries: QuickTime
