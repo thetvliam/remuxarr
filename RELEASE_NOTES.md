@@ -60,10 +60,11 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Changed
+
+- Dolby Vision files are no longer converted to MP4 unless the new setting Convert Dolby Vision Files to MP4 (Settings, Library) is on, as whether a player shows Dolby Vision from an MP4 depends on the player. They keep their container, and anything else planned for them, such as removing a track, still happens; when nothing else is planned, History says why the file stayed as it was. Files already converted stay MP4.
+
 ## Fixed
 
-- Cancelling a job just as the worker picked it up could let it run anyway: it was either put back in progress, or Cancel said it had worked while the job carried on under a cancelled entry in History, where Retry or Dismiss would act on the running job. A job is now either cancelled before it starts, or the cancel fails because it has already started.
-- Answering a question in Audio or Subtitle Language Review just as the worker picked up or started that file's job could log "Failed to claim next job" and, with auto-start off, pause the queue as if it had finished, or take the running job out of the queue, losing its result and, with more than one job at a time, starting a second job on the same file. The answer and the worker now take turns, and an answer given while a job runs is applied after it.
-- For a file on a slow or sleeping disk, a Language Review answer, Retry and Retry All held up the queue while the file was read again. Past 30 seconds the worker could stop as if the queue were empty (with auto-start off), and a job finishing then could be recorded as failed with "database is locked". The file is now read before its job is replaced.
-- A Language Review answer for a file Remuxarr could not read removed the file's job from the queue, and only a full scan queued it again. The job now stays and applies the answer when it runs; if the file still cannot be read then, it fails and can be retried.
-- A Matroska file whose creation date has fractional seconds, as mkvmerge writes it, could not be converted to MP4: the job failed saying the file would lose creation_time, and the file was left as it was. MP4 keeps the date to the second, which now counts as keeping it (issue #61).
+- A Dolby Vision file converted to MP4 lost the part that tells a player it is Dolby Vision, so a Profile 5 file, which has no HDR10 picture to fall back on, could play in green and purple; a revert gave the MKV back without it, and an AC3 Forge add or undo on an MP4 lost it too. Jobs, reverts and AC3 Forge now keep it, and write Profile 5 as `dvh1` as Apple asks (issue #62); a job or Forge run that would still lose it fails and leaves the file as it was. Files converted or forged before this are not repaired: only a fresh download gets their Dolby Vision back.
+- A Dolby Vision TS kept as TS lost its Dolby Vision, which FFmpeg cannot write into a TS. Such a file is now left as it is, with the reason in History.

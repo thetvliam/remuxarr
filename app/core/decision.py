@@ -514,6 +514,7 @@ def analyze_file(
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
+    convert_dv          = settings.get("convert_dolby_vision_to_mp4", False)
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
 
@@ -1386,6 +1387,18 @@ def analyze_file(
     if has_packed_bframes:
         video_audio_ok = False
 
+    # Dolby Vision video keeps a file out of MP4 unless
+    # convert_dolby_vision_to_mp4 is on. A conversion keeps what marks it
+    # as Dolby Vision (ffmpeg.dolby_vision_args), but whether a player
+    # shows Dolby Vision from an MP4 depends on the player, and Profile 5,
+    # with no HDR10 picture under it, plays in green and purple on one that
+    # does not (issue #62); so the user decides. The profiles come from
+    # MediaFile.dolby_vision. A row from before that column holds null,
+    # read here as none: the worker fills it at pickup and decides again.
+    # A file already MP4 is not held, as nothing would convert it.
+    dolby_vision = file_info.get("dolby_vision") or ""
+    dv_held = bool(dolby_vision) and not convert_dv and current_container != "mp4"
+
     # Whether anything OTHER than the kept subtitles keeps this file out of
     # MP4. The Review page needs it to tell two sentences apart: "keeping
     # this track is what holds the file as MKV" and "this file stays MKV
@@ -1395,9 +1408,9 @@ def analyze_file(
     # nothing they were led to expect.
     #
     # Informational, like audio_language_mismatch: it changes no action and
-    # no outcome here. Computed from the same two conditions the container
+    # no outcome here. Computed from the same conditions the container
     # decision below uses, so the two cannot disagree.
-    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4
+    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4 or dv_held
 
     subs_block_mp4 = any(
         (t.get("codec") or "").lower() in MP4_INCOMPATIBLE_SUBS
@@ -1408,8 +1421,12 @@ def analyze_file(
 
     packed_holds_container = (packed_holds_container and prefer_mp4
                               and current_container != "mp4" and not subs_block_mp4)
+    # Whether Dolby Vision alone held a conversion that would otherwise
+    # have happened, for the reasons given below, as for packed B-frames.
+    dv_holds_container = dv_held and prefer_mp4 and video_audio_ok and not subs_block_mp4
 
-    if prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4:
+    if (prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4
+            and not dv_held):
         target_container = "mp4"
         actions.append(Action(
             action_type="change_container",
@@ -1428,7 +1445,7 @@ def analyze_file(
     # applied Language Review answer is not written, and no Language
     # Review question is raised, as its answer could not be used. Imported
     # here, as ffmpeg imports this module.
-    from app.core.ffmpeg import output_muxer, stores_language
+    from app.core.ffmpeg import keeps_dolby_vision, output_muxer, stores_language
     writes_language = stores_language(target_container)
     # Whether a tag was left unwritten for that reason, for the reason
     # given when nothing else is to be done.
@@ -1714,14 +1731,15 @@ def analyze_file(
     if override_fixed_indices:
         has_language_fix = True
 
-    # A container Remuxarr has no muxer for, or a phone's or camera's own
-    # recording: see where each is left alone, below. Their Language
-    # Review questions are not raised, here or there: an answer could only
-    # come back to that same decision. Nor are they for a container that
-    # keeps no tag (above).
+    # A container Remuxarr has no muxer for, one that would lose the file's
+    # Dolby Vision, or a phone's or camera's own recording: see where each
+    # is left alone, below. Their Language Review questions are not
+    # raised, here or there: an answer could only come back to that same
+    # decision. Nor are they for a container that keeps no tag (above).
     cannot_write = output_muxer(target_container) is None
+    loses_dv = bool(dolby_vision) and not cannot_write and not keeps_dolby_vision(target_container)
     recording = file_info.get("recording_signs")
-    if cannot_write or recording or not writes_language:
+    if cannot_write or loses_dv or recording or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1737,7 +1755,8 @@ def analyze_file(
         return ProcessingDecision(
             should_process=False,
             reason=_unchanged_reason(target_container, prefer_mp4,
-                                     packed_holds_container, tag_unwritten),
+                                     packed_holds_container, tag_unwritten,
+                                     dolby_vision if dv_holds_container else ""),
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             undefined_audio_flags=undefined_audio_flags,
@@ -1772,15 +1791,39 @@ def analyze_file(
     # and every full scan queued it again. A muxer would not help: FLV
     # stores no language tag, so the fix would rewrite the file without it
     # and be queued again all the same. Left as it is instead, with the
-    # reason in History.
+    # reason in History. Dolby Vision kept from MP4 (above) can leave a
+    # file here too, and the reason then names that setting as well.
+    off = ((["Prefer MP4 Container"] if not prefer_mp4 else [])
+           + (["Convert Dolby Vision Files to MP4"] if dolby_vision and not convert_dv else []))
+    turn_on = f"Turn on {' and '.join(off)} to convert it."
     if cannot_write:
         name = target_container.upper()
         return ProcessingDecision(
             should_process=False,
             reason=(f"Remuxarr cannot write {name} files, so this one is left as "
-                    "it is. Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
+                    f"it is. {turn_on}" if not prefer_mp4 or dv_holds_container else
                     f"Remuxarr cannot write {name} files, and this one's tracks "
                     "cannot go into MP4, so it is left as it is."),
+            actions=[],
+            mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
+            faststart_enabled=add_faststart,
+        )
+
+    # ── A container that would lose the file's Dolby Vision ───────────────
+    # FFmpeg reads a TS's Dolby Vision descriptor but writes none
+    # (ffmpeg.keeps_dolby_vision), so a job keeping a Dolby Vision TS as TS
+    # lost its record: the staging check refused it (worker._lost_tags_error)
+    # and every scan queued it again. Left as it is instead, as above, with
+    # the settings that would convert it named, or why they would not.
+    if loses_dv:
+        name = target_container.upper()
+        return ProcessingDecision(
+            should_process=False,
+            reason=(f"Remuxarr cannot keep Dolby Vision in a {name} file, so this "
+                    f"one is left as it is. {turn_on}"
+                    if video_audio_ok and not subs_block_mp4 else
+                    f"Remuxarr cannot keep Dolby Vision in a {name} file, and this "
+                    "one's tracks cannot go into MP4, so it is left as it is."),
             actions=[],
             mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
             faststart_enabled=add_faststart,
@@ -1919,12 +1962,14 @@ def _apply_language_override_pass(
 
 
 def _unchanged_reason(target_container: str, prefer_mp4: bool,
-                      packed: bool, tag_unwritten: bool) -> str:
+                      packed: bool, tag_unwritten: bool, dolby_vision: str = "") -> str:
     """
     The reason given when a file is left as it is: what kept it from MP4,
     and a language tag its container could not keep, when either is so.
+    dolby_vision is MediaFile.dolby_vision's profiles when Dolby Vision
+    alone kept it from MP4, "" otherwise.
     """
-    if not (packed or tag_unwritten):
+    if not (packed or tag_unwritten or dolby_vision):
         return "File already meets all configured criteria — no changes needed."
     name = target_container.upper()
     parts = []
@@ -1932,13 +1977,28 @@ def _unchanged_reason(target_container: str, prefer_mp4: bool,
         parts.append(f"Its video stores B-frames packed, the way some DivX and Xvid "
                      f"encoders did, which cannot be converted to MP4 correctly, so it "
                      f"stays {name}.")
+    if dolby_vision:
+        parts.append(f"Its video is {_dolby_vision_name(dolby_vision)}, so it stays "
+                     f"{name}. Turn on Convert Dolby Vision Files to MP4 to convert it.")
     if tag_unwritten:
         tags = f"{name} files cannot store language tags, so this one's are left as they are."
-        if not packed:
+        if not (packed or dolby_vision):
             tags += (" Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
                      " Its tracks cannot go into MP4.")
         parts.append(tags)
     return " ".join(parts)
+
+
+def _dolby_vision_name(profiles: str) -> str:
+    """
+    "Dolby Vision (Profile 5)" from MediaFile.dolby_vision's "5", naming
+    each profile once. It holds no "?" here: only an MP4 or QuickTime file
+    has a stream marked by its sample entry alone, and neither is held.
+    """
+    named = list(dict.fromkeys(profiles.split(",")))
+    if len(named) == 1:
+        return f"Dolby Vision (Profile {named[0]})"
+    return f"Dolby Vision (Profiles {', '.join(named[:-1])} and {named[-1]})"
 
 
 def _video_audio_mp4_compatible(

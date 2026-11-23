@@ -104,7 +104,7 @@ Most media coming out of Sonarr/Radarr carries far more than you actually need -
 
 Remuxarr only ever touches what's cheap and lossless to touch:
 
-- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video.
+- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video. A file with Dolby Vision video keeps its container unless Convert Dolby Vision Files to MP4 is on, as whether a player shows Dolby Vision from an MP4 depends on the player. Converted, it keeps what marks it as Dolby Vision, and Profile 5, which has no HDR10 picture to fall back on, is written as `dvh1`, the form Apple asks for. A Dolby Vision TS that would stay TS is left as it is, as FFmpeg cannot write Dolby Vision into a TS.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
@@ -117,11 +117,11 @@ This application was generated entirely using Claude. I acted as the architect, 
 
 - **Automatic library scanning** - full probe on first sight, fast delta (size/mtime) scans afterward.
 - **Leaves your own recordings alone** - a video from a phone or a camera is skipped whatever the settings, with the reason in History: Remuxarr is for downloaded films and series, and processing a recording would cost it what a download does not have, such as an iPhone video's metadata tracks or a phone's device tag. An MP4, M4V or MOV file counts as one when it has a data track of the kind cameras write, a GPS location, a device tag or a camera's file brand, which every QuickTime `.mov` has. A recording with none of these, such as one an editor or a messaging app has rewritten, looks like any download and is processed like one.
-- **Never drops a file's own tags** - before a processed file replaces the original, its tags are compared with the original's: if any would be lost, such as the content rating and cast an iTunes-tagged MP4 carries, which Remuxarr cannot write into an MP4, the original is kept and History names the tags. AC3 Forge is checked the same way.
+- **Never drops a file's own tags or its Dolby Vision** - before a processed file replaces the original, its tags are compared with the original's, and so is what marks its video as Dolby Vision: if any would be lost, such as the content rating and cast an iTunes-tagged MP4 carries, which Remuxarr cannot write into an MP4, the original is kept and History names what would have gone. AC3 Forge is checked the same way.
 - **Leaves extras alone** - trailers, featurettes and other extras named the way Plex or Jellyfin expect, and Plex's optimised versions, are skipped by default, and your own exclude patterns keep Remuxarr away from any other folder or file. Always Include brings back any file either of them catches that you do want processed.
 - **Sonarr / Radarr webhook integration** - reacts to imports and upgrades directly, with automatic path translation between how each *arr sees files and how Remuxarr does.
 - **Plex integration** - refreshes affected library sections after every job. A separate, opt-in backlog can additionally verify Plex's own metadata and force an explicit re-analyze on the rare files Plex's own maintenance misses - most installs won't need this turned on; see Settings → Integrations → Plex Analyze Backlog for why.
-- **AC3 Forge** - AAC 5.1 → AC3 for older receivers, on files you pick, with an undo. Separate from the main pipeline and never automatic; see Screenshots above.
+- **AC3 Forge** - AAC 5.1 → AC3 for older receivers, on files you pick, with an undo. Separate from the main pipeline and never automatic; see Screenshots above. Dolby Vision is kept, as in a job; video labelled `dvhe` comes out labelled `dvh1`, and stays so after an undo, as FFmpeg cannot write `dvhe`.
 - **Manual review, with bulk resolution** - ambiguous files are held for a human decision rather than guessed at, resolvable in bulk or by a standing policy (Settings → Library & Processing → Subtitles); see Screenshots above.
 - **Audio Language Review** - search-and-bulk-correct tool for tracks that have a *wrong* language tag rather than a missing one (common with some release groups) - confirm it's actually correct, or apply the right tag to every matching file at once.
 - **Dry run mode** - see every planned action across your whole library before anything real is touched. **On by default** for a fresh install - see First-time configuration below.
@@ -351,12 +351,14 @@ same rule, except that a rename never replaces a file: under Replace it takes
 the next free number too, because the name can belong to another subtitle
 extracted from the same video.
 
-**Three limitations worth knowing.** A job whose only casualty is an attachment -
+**Limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
 tracks. Matroska cover art comes back as a still-image video track rather
 than an attachment, with its filename and mimetype intact; nothing is lost, but
-a player may list it as a second video stream. And in an MP4 with a timecode
-track, the track comes back as the last one. A phone's or camera's own
+a player may list it as a second video stream. In an MP4 with a timecode
+track, the track comes back as the last one. And an MP4 whose Dolby Vision
+video is labelled `dvhe` comes back labelled `dvh1`, the other name for the
+same kind of stream, as FFmpeg cannot write `dvhe`. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 

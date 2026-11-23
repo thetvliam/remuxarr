@@ -12,6 +12,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from app.config import settings as app_settings
 
@@ -331,6 +332,94 @@ def creation_time(probe_data: dict | None) -> str | None:
     return tags.get("creation_time") or None
 
 
+# How ffprobe names a Dolby Vision stream's configuration record among its
+# side data: an MP4's dvcC, dvvC or dvwC box, a Matroska's
+# BlockAdditionMapping. The RPUs that carry the Dolby Vision metadata ride
+# in the packets, which every job copies; the record is the container's
+# word that they are there, beside an MP4's sample entry, and FFmpeg's MP4
+# muxer drops it unless asked (ffmpeg.build_ffmpeg_command, issue #62).
+DOVI_RECORD = "DOVI configuration record"
+
+
+# The HEVC sample entries Dolby Vision defines for an MP4: dvh1, like hvc1,
+# with the parameter sets in the sample entry, and dvhe, like hev1, where
+# they may be in the stream instead.
+DOVI_SAMPLE_ENTRIES = frozenset({"dvh1", "dvhe"})
+
+
+class DolbyVision(NamedTuple):
+    """A video stream's Dolby Vision profile, from its record (None when it
+    has none), and the codec tag it has where it is now, as ffprobe shows
+    it ("dvh1", "hev1", "[0][0][0][0]" for a Matroska's)."""
+    profile: int | None
+    codec_tag: str | None
+
+
+def _dovi_record(stream: dict) -> dict | None:
+    """The stream's Dolby Vision configuration record, as ffprobe shows it."""
+    return next((d for d in stream.get("side_data_list") or []
+                 if d.get("side_data_type") == DOVI_RECORD), None)
+
+
+def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
+    """
+    Each video stream the file says is Dolby Vision, by its stream index:
+    with a configuration record, or a sample entry that says so without
+    one. The tag can outlast the record: a copy into an MP4 that does not
+    ask for the record keeps one and drops the other, as AC3 Forge did
+    before it asked, and FFmpeg will not copy such a stream back into
+    Matroska as it is (ffmpeg.build_restore_command).
+    """
+    found = {}
+    for stream in (probe_data or {}).get("streams") or []:
+        if stream.get("codec_type") != "video":
+            continue
+        record = _dovi_record(stream)
+        tag = stream.get("codec_tag_string")
+        if record is not None or tag in DOVI_SAMPLE_ENTRIES:
+            found[stream["index"]] = DolbyVision(
+                record.get("dv_profile") if record is not None else None, tag)
+    return found
+
+
+def dolby_vision_profiles(probe_data: dict | None) -> str:
+    """
+    What MediaFile.dolby_vision holds: the profile of each video stream the
+    file says is Dolby Vision (dolby_vision), in stream order, joined by
+    commas, with "?" for one marked only by its sample entry, which only an
+    MP4 or QuickTime file has; "" for none.
+    """
+    return ",".join("?" if dv.profile is None else str(dv.profile)
+                    for dv in dolby_vision(probe_data).values())
+
+
+def lost_dolby_vision(source: dict | None, output: dict | None) -> list[str]:
+    """
+    Each video stream's Dolby Vision record in the source that the output's
+    video stream in the same place does not have, field for field, said as
+    what is lost. A record the output has and the source does not is no
+    concern, as for lost_file_tags.
+
+    A job and an AC3 Forge run refuse to replace a file that would lose one
+    (worker._lost_tags_error). Both keep it on purpose
+    (ffmpeg.dolby_vision_args), so this catches what that cannot: a run
+    that went ahead without knowing the stream had one, as a job does when
+    its first probe of the file fails (ffmpeg._prepare_extra_streams).
+
+    Streams are paired by their place among the file's video streams. A
+    cover is a video stream too, but FFmpeg lists one after the tracks,
+    from an MP4 or a Matroska alike, so it does not move the streams
+    before it.
+    """
+    def records(probe_data):
+        return [_dovi_record(s) for s in (probe_data or {}).get("streams") or []
+                if s.get("codec_type") == "video"]
+    kept = records(output)
+    return [f"the record of video stream {n} (Profile {record.get('dv_profile')})"
+            for n, record in enumerate(records(source))
+            if record is not None and (n >= len(kept) or kept[n] != record)]
+
+
 # The sample entries an MP4 or QuickTime chapter track carries: QuickTime
 # text, which FFmpeg's muxer writes, and 3GPP timed text.
 CHAPTER_TRACK_TAGS = frozenset({"text", "tx3g"})
@@ -514,7 +603,8 @@ def extract_format_info(probe_data: dict) -> dict:
     font_attachments is here rather than in extract_tracks because it is a
     property of the file, not of a track, and because extract_tracks
     cannot carry it — see count_font_attachments. recording_signs too,
-    joined by commas, "" for none (recording_signs).
+    joined by commas, "" for none (recording_signs), and the Dolby Vision
+    profiles (dolby_vision_profiles).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
@@ -523,6 +613,7 @@ def extract_format_info(probe_data: dict) -> dict:
         "duration":         _float_or_none(fmt.get("duration")),
         "font_attachments": count_font_attachments(probe_data),
         "recording_signs":  ",".join(recording_signs(probe_data)),
+        "dolby_vision":     dolby_vision_profiles(probe_data),
     }
 
 

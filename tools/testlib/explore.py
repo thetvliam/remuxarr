@@ -37,6 +37,11 @@ Each profile is checked against invariants instead:
      are the muxer's own. A Matroska track's other tags going in a
      conversion to MP4, which has no place for them, is an accepted loss:
      a conversion is not refused over one, the user's call.
+ 27. Every kept video stream keeps its Dolby Vision configuration record,
+     field for field. The same goes after each AC3 Forge add and undo and
+     each revert below, reported under this number too.
+ 28. With Convert Dolby Vision Files to MP4 off, a file whose video has a
+     Dolby Vision record is not converted to MP4.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -141,6 +146,7 @@ FORCED = {"dry_run_mode": False, "auto_start_jobs": True}
 # Each list starts with the app's default.
 VARIED = {
     "prefer_mp4_container":          [True, False],
+    "convert_dolby_vision_to_mp4":   [False, True],
     "add_faststart_to_mp4":          [True, False],
     "fix_undefined_language":        ["always_leave", "always_fix", "always_ask"],
     "fix_undefined_language_audio":  ["always_leave", "always_fix", "always_ask"],
@@ -471,6 +477,48 @@ def lost_track_tags(before: dict, after: dict) -> list[str]:
     value for, by lower-case name, in order."""
     now = _track_tags(after)
     return sorted(k for k, v in _track_tags(before).items() if now.get(k) != v)
+
+
+# Check 27. How ffprobe reports a Dolby Vision stream's configuration record,
+# from an MP4's dvcC, dvvC or dvwC box or a Matroska's BlockAdditionMapping.
+# It is the container's word that a stream is Dolby Vision, beside an MP4's
+# sample entry (dvh1, dvhe), which check 11 compares as the codec tag. The
+# RPUs ride in the packets, which checks 3, 11, 21 and 24 compare, so a copy
+# without the record passes all of them while a player can show Profile 5
+# as plain HEVC, in the wrong colours (issue #62).
+DOVI_RECORD = "DOVI configuration record"
+
+
+def dovi_records(info: dict) -> list[dict | None]:
+    """Each video stream's Dolby Vision configuration record, in order,
+    covers left out; None for a stream without one."""
+    return [next((d for d in s.get("side_data_list") or []
+                  if d.get("side_data_type") == DOVI_RECORD), None)
+            for s in info["streams"] if kind(s) == "video"]
+
+
+def dovi_difference(before: dict, after: dict, when: str) -> str | None:
+    """
+    Check 27: the first video stream whose Dolby Vision record `after` does
+    not have field for field, said as happening `when`, or None. Streams
+    are paired in order; a video count that differs is another check's
+    finding, not this one's.
+    """
+    was, now = dovi_records(before), dovi_records(after)
+    if len(was) != len(now):
+        return None
+    for i, (a, b) in enumerate(zip(was, now)):
+        if a == b:
+            continue
+        if b is None:
+            return (f"video {i}: its Dolby Vision record (profile {a.get('dv_profile')}, "
+                    f"compatibility {a.get('dv_bl_signal_compatibility_id')}) is gone {when}")
+        if a is None:
+            return f"video {i}: a Dolby Vision record appeared {when}"
+        changed = ", ".join(f"{k} {a.get(k)} -> {b.get(k)}"
+                            for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k))
+        return f"video {i}: its Dolby Vision record changed {when}: {changed}"
+    return None
 
 
 def is_mp4(info: dict) -> bool:
@@ -859,6 +907,10 @@ def _forge_round_trips(find, known, lib, scratch, files, rel, collect, undo: boo
                     find(21, j["path"], "beside the AC3: " + _content_finding(
                         j["pre"]["streams"], differing, rest == was,
                         "after the add", "before"))
+            # 27. And its Dolby Vision record, which the add copies with it.
+            dovi = dovi_difference(j["pre"], post, "after the add")
+            if dovi:
+                find(27, j["path"], dovi)
             j["post"] = post
 
     # 23. A rescan queues nothing for a forged file that had nothing left to
@@ -910,6 +962,9 @@ def _forge_round_trips(find, known, lib, scratch, files, rel, collect, undo: boo
                     if _brand(j["pre"]) != _brand(post):
                         find(24, j["path"], f"brand {_brand(j['pre'])} before the add, "
                                             f"{_brand(post)} after the undo")
+                    dovi = dovi_difference(j["pre"], post, "after the undo")
+                    if dovi:
+                        find(27, j["path"], dovi)
                     holds = stream_hashes(j["path"], post)
                     if j["pre_holds"] is None or holds is None:
                         if j["pre_holds"] is not None:   # check 21 said so otherwise
@@ -1375,8 +1430,8 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                                   for w in want), key=repr) == sorted(got, key=repr)
             if covers_only:
                 known.append({"file": rel(source), "lost": "cover comes back as video",
-                              "why": "README, Reverting a processed file: Two "
-                                     "limitations worth knowing"})
+                              "why": "README, Reverting a processed file: "
+                                     "Limitations worth knowing"})
             else:
                 find(11, source, _first_difference(want, got))
         # And what kind of file it is, which can change while every stream
@@ -1400,6 +1455,12 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         made, made_now = _made(original), _made(info)
         if made is not None and made_now != made:
             find(11, source, f"creation date {made} in the original, {made_now} after the revert")
+        # 27. And each video stream's Dolby Vision record: its own check
+        # rather than part of the signature, so that one number covers it
+        # wherever it is lost.
+        dovi = dovi_difference(original, info, "after the revert")
+        if dovi:
+            find(27, source, dovi)
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
@@ -1567,6 +1628,16 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     was = Counter(kind(s) for s in info_before["streams"])
     now = Counter(kind(s) for s in info_after["streams"])
     entry["lost_tracks"] = any(was[k] > now[k] for k in held)
+
+    # 28. Dolby Vision is converted to MP4 only when the user said so,
+    # after any number of jobs.
+    if (not cfg.get("convert_dolby_vision_to_mp4") and is_mp4(info_after)
+            and not is_mp4(info_before)):
+        profiles = [r.get("dv_profile") for r in dovi_records(info_before) if r is not None]
+        if profiles:
+            find(28, source, f"converted to MP4 with Convert Dolby Vision Files to MP4 "
+                             f"off, though its video is Dolby Vision (profile "
+                             f"{', '.join(map(str, profiles))})")
     if several:
         return
 
@@ -1636,6 +1707,11 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
                 known.append({"file": Path(source).relative_to(lib).as_posix(),
                               "lost": f"track tag(s) {', '.join(lost)}",
                               "why": _TRACK_TAGS_MP4})
+
+    # 27. Every kept video stream keeps its Dolby Vision record.
+    dovi = dovi_difference(info_before, info_after, "after the job")
+    if dovi:
+        find(27, source, dovi)
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

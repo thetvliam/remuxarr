@@ -12,14 +12,15 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
 from app.config import settings as app_settings
 from app.core.decision import ProcessingDecision
-from app.core.probe import MP4_DATA_ENTRIES, QUICKTIME_BRAND, ProbeError, probe_file
+from app.core.probe import (MP4_DATA_ENTRIES, QUICKTIME_BRAND, DolbyVision, ProbeError,
+                            dolby_vision, probe_file)
 from app.core.probe import creation_time as source_creation_time
 from app.core.subprocess_runner import (
     STAGING_ACTION,
@@ -164,6 +165,24 @@ def stores_language(container: str | None) -> bool:
     """
     return output_muxer(container) not in _NO_LANGUAGE_MUXERS
 
+# The muxers that write a Dolby Vision configuration record: Matroska's
+# always, and the MP4 muxer when asked (dolby_vision_args). FFmpeg's MPEG-TS
+# demuxer reads a Dolby Vision descriptor, but its muxer writes none, and
+# AVI and ASF have no place for one.
+_DOVI_MUXERS = frozenset({"matroska", "mp4"})
+
+
+def keeps_dolby_vision(container: str | None) -> bool:
+    """
+    Whether a file written as `container` keeps its Dolby Vision record
+    (decision.analyze_file leaves alone a file that would not). An MP4 that
+    is a QuickTime movie is written by the QuickTime muxer, which writes no
+    record either, but such a file is a recording and never processed
+    (probe.recording_signs).
+    """
+    return output_muxer(container) in _DOVI_MUXERS
+
+
 def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
     """
     The FFmpeg muxer that writes `container`, or None for one this does
@@ -196,6 +215,58 @@ def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
 # itself, so it needs none of this.
 KEEP_STREAM_FLAGS = ["-disposition:0", "+0"]
 
+# The HEVC sample entries FFmpeg's MP4 muxer keeps when a stream is copied
+# into it (codec_mp4_tags, libavformat/movenc.c, n8.1.3). Any other a
+# source carries, dvhe among them, is replaced by the first, hev1.
+MP4_HEVC_TAGS = frozenset({"hev1", "hvc1", "dvh1"})
+
+
+def dolby_vision_args(out_fmt: str | None,
+                      video: Sequence[DolbyVision | None]) -> list[str]:
+    """
+    What a command copying Dolby Vision video into the muxer out_fmt names
+    needs to keep it. `video` is the output's video streams in order, each
+    with its Dolby Vision (probe.dolby_vision) or None. A job and AC3
+    Forge's add and undo use it (build_ffmpeg_command,
+    forge.build_add_ac3_command, forge.build_undo_command).
+
+    FFmpeg's MP4 muxer writes a Dolby Vision stream's configuration record
+    (dvcC, dvvC or dvwC) only under -strict unofficial, and otherwise drops
+    it with a warning that -v error hides (mov_write_video_tag,
+    libavformat/movenc.c, n8.1.3). The RPUs ride in the packets and were
+    copied all the same, so every job and Forge run writing such a stream
+    to an MP4 kept the metadata and lost what tells a player it is there
+    (issue #62). Matroska writes the record unasked, and the QuickTime
+    muxer never writes it.
+
+    Only for such a file: -strict unofficial also lets the MP4 muxer take
+    MP3 below 16 kHz, which it refuses otherwise, and write stereo 3D and
+    spherical video boxes, both measured. No file of the generated test
+    library at the time (tools/testlib, 49 files) came out differently with
+    it, or failed or succeeded differently.
+
+    Profile 5 has no HDR10 or SDR layer under it, and a player that takes
+    it for plain HEVC shows it in the wrong colours. Its sample entry is
+    what decides: played from USB on an HDR television, a Profile 5 MP4
+    tagged hev1 came out green and purple with the record and without it,
+    and tagged dvh1 played in Dolby Vision (checked by hand for issue #62).
+    Apple's file format document asks for dvh1 too. A tag the MP4 muxer
+    keeps (MP4_HEVC_TAGS) is kept, so a revert or an undo gives it back.
+    Any other gets dvh1: a Matroska has none, and dvhe is not on that list,
+    so FFmpeg would write hev1 in its place. Other profiles keep FFmpeg's
+    choice, hev1, which has not been tried on a player here.
+
+    One video stream at a time: a cover is a video stream too, and a dvh1
+    given to one fails the mux.
+    """
+    if out_fmt != "mp4" or not any(d is not None and d.profile is not None for d in video):
+        return []
+    args = ["-strict", "unofficial"]
+    for n, d in enumerate(video):
+        if d is not None and d.profile == 5 and d.codec_tag not in MP4_HEVC_TAGS:
+            args += [f"-tag:v:{n}", "dvh1"]
+    return args
+
 
 def build_ffmpeg_command(
     input_path: str,
@@ -206,6 +277,7 @@ def build_ffmpeg_command(
     mp4_covers: Sequence[int] = (),
     data_streams: Sequence[int] = (),
     creation_time: str | None = None,
+    dolby_vision: Mapping[int, DolbyVision] | None = None,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
@@ -218,6 +290,8 @@ def build_ffmpeg_command(
     only for an MP4 output (find_data_streams).
     creation_time is the date the source says it was made
     (probe.creation_time), which it also hands over.
+    dolby_vision is the source's Dolby Vision streams (probe.dolby_vision),
+    which it hands over only for an MP4 output.
 
     Strategy
     --------
@@ -296,6 +370,12 @@ def build_ffmpeg_command(
     # the mux fails.
     if video_tracks or mp4_covers:
         cmd += ["-c:v", "copy"]
+
+    # ── Dolby Vision, MP4 ──────────────────────────────────────────────────
+    # dolby_vision_args says what and why. The output's video streams are
+    # the kept video tracks, mapped first and in order.
+    cmd += dolby_vision_args(_CONTAINER_FORMAT.get(decision.target_container),
+                             [(dolby_vision or {}).get(t["stream_index"]) for t in video_tracks])
 
     # ── Audio ──────────────────────────────────────────────────────────────
     kept_audio = [t for t in audio_tracks if t["stream_index"] not in dropped]
@@ -682,6 +762,7 @@ def build_restore_command(
     output_path: str,
     manifest: dict,
     rebuilt_tracks: Sequence[int] = (),
+    dolby_vision: Mapping[int, DolbyVision] | None = None,
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
@@ -691,6 +772,8 @@ def build_restore_command(
     (probe.rebuilt_track_indices), which are never copied: -map_chapters
     writes the chapters, and the muxer a chapter track for them, and the
     muxer writes the timecode track from the video's timecode.
+    dolby_vision is the processed file's Dolby Vision streams
+    (probe.dolby_vision), whose way back is written after the loop below.
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -793,6 +876,7 @@ def build_restore_command(
     maps: list[str] = []
     meta: list[str] = []
     codecs: list[str] = []
+    dovi_streams: list[tuple[int, DolbyVision]] = []
 
     # Output-side subtitle ordinal, which is what -c:s:N addresses. It
     # counts subtitles in the OUTPUT, so it is not the stream's index in
@@ -806,6 +890,9 @@ def build_restore_command(
         read_from = (openings.get(input_number, input_number)
                      if _is_sparse(stream) else input_number)
         maps += ["-map", f"{read_from}:{stream_index}"]
+        dv = (dolby_vision or {}).get(stream_index) if input_number == 0 else None
+        if dv is not None:
+            dovi_streams.append((out_index, dv))
 
         # Undo any conversion capture applied on the way into the sidecar.
         #
@@ -873,6 +960,29 @@ def build_restore_command(
     cmd += maps
     # Base codec first, per-stream overrides after — later options win.
     cmd += ["-c", "copy"] + codecs
+    # Dolby Vision on its way back. A job writes Profile 5 into an MP4 as
+    # dvh1 (build_ffmpeg_command), and FFmpeg will not copy a dvh1 stream
+    # into Matroska: its Matroska muxer checks codec tags against the AVI
+    # table (ff_codec_bmp_tags, libavformat/riff.c, n8.1.3), where dvh1 is
+    # DV video, and refuses the mux. Measured, without this a revert of
+    # such a file to its original Matroska failed. "-tag 0" does not clear
+    # a copied tag; hvc1 passes the check, and Matroska stores no tag for
+    # HEVC, so the stream comes back as the original had it, the same
+    # packets and record. Whether or not it has its record, as a copy can
+    # lose that and leave the tag (probe.dolby_vision). By output index: a
+    # cover coming back as a video stream fails the mux given hvc1 too.
+    #
+    # Back into an MP4 the record needs -strict unofficial, as it did on
+    # the way in. A QuickTime original is left alone: that muxer never
+    # writes the record, whatever it is told (mov_write_video_tag writes
+    # it for MP4 only), and -strict changes how it picks some codec tags
+    # (mov_get_codec_tag).
+    if out_fmt == "matroska":
+        for out_index, dv in dovi_streams:
+            if dv.codec_tag == "dvh1":
+                cmd += [f"-tag:{out_index}", "hvc1"]
+    elif out_fmt == "mp4" and any(dv.profile is not None for _, dv in dovi_streams):
+        cmd += ["-strict", "unofficial"]
     cmd += meta
     cmd += _format_tag_args(manifest)
     # Chapters survive a remux, so the processed file still has them. For
@@ -981,7 +1091,8 @@ async def execute_ffmpeg(
                                covers=covers,
                                mp4_covers=extra.mp4_covers,
                                data_streams=extra.data_streams,
-                               creation_time=extra.creation_time)
+                               creation_time=extra.creation_time,
+                               dolby_vision=extra.dolby_vision)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1307,7 +1418,8 @@ async def execute_ffmpeg_combined(
                                     covers=covers,
                                     mp4_covers=extra.mp4_covers,
                                     data_streams=extra.data_streams,
-                                    creation_time=extra.creation_time)
+                                    creation_time=extra.creation_time,
+                                    dolby_vision=extra.dolby_vision)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -1530,13 +1642,15 @@ class ExtraStreams(NamedTuple):
     What a job keeps that the track lists leave out (_prepare_extra_streams):
     Matroska covers copied out to attach again, cover streams to map into
     an MP4, data streams to map into an MP4, an error, which stops the
-    job, and the date the source says it was made.
+    job, the date the source says it was made, and its Dolby Vision
+    streams for an MP4 (build_ffmpeg_command).
     """
     covers: list[CoverArt]
     mp4_covers: list[int]
     data_streams: list[int]
     error: str | None
     creation_time: str | None = None
+    dolby_vision: dict[int, DolbyVision] | None = None
 
 
 async def copy_out_cover_art(
@@ -1591,8 +1705,9 @@ async def _prepare_extra_streams(
     The source's cover art and data streams, made ready for the output
     (ExtraStreams), with the date it says it was made (probe.creation_time;
     build_ffmpeg_command says why). Both outputs probed for, Matroska and
-    MP4, store that date. Data streams are find_data_streams'; the rest of
-    this is about covers.
+    MP4, store that date. For an MP4, its Dolby Vision streams too, whose
+    record that muxer needs asking for (build_ffmpeg_command). Data streams
+    are find_data_streams'; the rest of this is about covers.
 
     Matroska stores cover art as an image attachment, but FFmpeg's demuxer
     reports one as a video stream with the attached_pic disposition and its
@@ -1628,7 +1743,8 @@ async def _prepare_extra_streams(
 
     made = source_creation_time(probe)
     if fmt == "mp4":
-        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe), None, made)
+        return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe), None, made,
+                            dolby_vision(probe))
     found, attachments = find_matroska_covers(probe)
     covers, error = await copy_out_cover_art(
         input_path, found, attachments, tmp_dir,

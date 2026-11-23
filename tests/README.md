@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2844 tests across 132 test files, plus 805 frontend tests under
+2921 tests across 133 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -175,7 +175,7 @@ acts on it.
 `test_timecode_track.py`, `test_data_streams.py`,
 `test_recording_signs.py`, `test_creation_date.py`,
 `test_forge_creation_date.py`, `test_kept_file_tags.py`,
-`test_ffprobe_path_setting.py`. Some run a
+`test_dolby_vision.py`, `test_ffprobe_path_setting.py`. Some run a
 real subprocess against real temp files; a few need real ffmpeg/ffprobe and
 skip when the binaries are absent (CI installs them, so they always run
 there).
@@ -232,6 +232,18 @@ and undo on an MP4 and a Matroska, as Forge builds its own commands.
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its
 plan is the same.
+`test_dolby_vision.py` covers a Dolby Vision stream through a job, a revert and
+an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
+MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise
+drops while copying every RPU, and writes Profile 5 as `dvh1` where the
+source's tag cannot be kept; a revert writes `dvh1` back into Matroska as
+`hvc1`, as FFmpeg refuses `dvh1` there. A run whose output would lose a record
+anyway is refused with the file untouched, and a scan queues it again. A
+Dolby Vision file keeps its container unless Convert Dolby Vision Files to
+MP4 is on, the rest of its plan going ahead, and a Dolby Vision TS that would
+stay TS is left as it is, as FFmpeg writes no Dolby Vision into a TS. Its
+files carry a record and no RPUs, from FFmpeg's `dovi_rpu` filter; its TS
+has the Dolby Vision descriptor put into its PMT after the mux.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless

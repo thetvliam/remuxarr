@@ -62,8 +62,8 @@ from app.core.ffmpeg import (
     _pick_temp_dir,
     build_restore_command,
 )
-from app.core.probe import (ProbeError, extract_format_info, rebuilt_track_indices,
-                            extract_tracks, probe_file)
+from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
+                            rebuilt_track_indices, extract_tracks, probe_file)
 from app.core.recycle import delete_sidecar
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 
@@ -462,21 +462,22 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     )
 
     # The processed file's chapter and timecode tracks, which the restore
-    # leaves out (build_restore_command). Read from the file, not the
-    # manifest, so a point recorded before chapters were probed, or before
-    # timecode tracks were left out, is covered too. A file that cannot be
-    # probed here is left to FFmpeg to refuse.
+    # leaves out, and its Dolby Vision streams, which need telling FFmpeg
+    # how to write back (build_restore_command). Read from the file, not
+    # the manifest, so a point recorded before chapters were probed, or
+    # before timecode tracks were left out, is covered too. A file that
+    # cannot be probed here is left to FFmpeg to refuse.
     try:
-        rebuilt_tracks = rebuilt_track_indices(
-            await asyncio.get_running_loop().run_in_executor(
-                None, probe_file, plan.current_path, app_settings.FFPROBE_PATH))
+        processed = await asyncio.get_running_loop().run_in_executor(
+            None, probe_file, plan.current_path, app_settings.FFPROBE_PATH)
     except ProbeError:
-        rebuilt_tracks = []
+        processed = None
 
     try:
         cmd = build_restore_command(
             plan.current_path, plan.sidecar_path, temp_output, plan.manifest,
-            rebuilt_tracks=rebuilt_tracks,
+            rebuilt_tracks=rebuilt_track_indices(processed),
+            dolby_vision=dolby_vision(processed),
         )
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))

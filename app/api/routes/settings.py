@@ -397,6 +397,7 @@ KNOWN_KEYS = {
     "keep_forced_subtitles",
     "keep_default_audio",
     "prefer_mp4_container",
+    "convert_dolby_vision_to_mp4",
     "dry_run_mode",
     "scan_paths",
     "skip_extras",
@@ -581,6 +582,23 @@ SETTINGS_SCHEMA = [
         "type":        "boolean",
         "description": "Remux to .mp4 when all tracks are compatible. "
                        "Files with incompatible tracks (DTS, PGS subs, etc.) stay as-is.",
+    },
+    {
+        "key":         "convert_dolby_vision_to_mp4",
+        "group":       "Library",
+        "label":       "Convert Dolby Vision Files to MP4",
+        "type":        "boolean",
+        "description": "Also convert files with Dolby Vision video when Prefer "
+                       "MP4 Container would convert them. Off, they keep their "
+                       "container, and anything else planned for them, such as "
+                       "removing a track, still happens. A converted file keeps "
+                       "what marks it as Dolby Vision, and Profile 5 is written "
+                       "as dvh1, the form Apple asks for, but whether a player "
+                       "shows Dolby Vision from an MP4 depends on the player. "
+                       "Profile 5 has no HDR10 picture underneath, so a player "
+                       "that does not recognise it shows green and purple; other "
+                       "profiles fall back to their HDR10, HLG or SDR picture. "
+                       "Has no effect while Prefer MP4 Container is off.",
     },
     {
         "key":         "add_faststart_to_mp4",
@@ -1320,6 +1338,7 @@ _DEFAULT_KINDS = {
 
 APPLIES_ON_RESCAN = {
     "prefer_mp4_container",
+    "convert_dolby_vision_to_mp4",
     "add_faststart_to_mp4",
     "fix_undefined_language",
     "fix_undefined_language_audio",
