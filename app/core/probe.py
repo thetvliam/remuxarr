@@ -592,6 +592,22 @@ def rebuilt_track_indices(probe_data: dict | None) -> list[int]:
     return sorted(chapter_track_indices(probe_data) + timecode_track_indices(probe_data))
 
 
+def start_time(probe_data: dict) -> float:
+    """
+    The file's start time, as probe_file reports it: how far FFmpeg's
+    command line moves the file's timestamps back when it reads the file
+    as an input without -copyts. ffmpeg._input_args says why that matters,
+    and when FFmpeg moves an MPEG-TS by something else.
+
+    0 when the probe reports none. ffprobe leaves start_time out when it
+    has none, a sidecar holding only subtitles for instance, and FFmpeg
+    then moves nothing: such a sidecar's subtitles came back at their
+    stored times. probe_file passes no probing options, so it sees the
+    same start time an ffmpeg run with default options does.
+    """
+    return _float_or_none((probe_data.get("format") or {}).get("start_time")) or 0.0
+
+
 def extract_format_info(probe_data: dict) -> dict:
     """Extract file-level format metadata.
 

@@ -63,7 +63,8 @@ from app.core.ffmpeg import (
     build_restore_command,
 )
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
-                            rebuilt_track_indices, extract_tracks, probe_file)
+                            rebuilt_track_indices, extract_tracks, probe_file,
+                            start_time)
 from app.core.recycle import delete_sidecar
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 
@@ -462,8 +463,9 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     )
 
     # The processed file's chapter and timecode tracks, which the restore
-    # leaves out, and its Dolby Vision streams, which need telling FFmpeg
-    # how to write back (build_restore_command). Read from the file, not
+    # leaves out, its Dolby Vision streams, which need telling FFmpeg how
+    # to write back, and its start time, which keeps the sidecar's streams
+    # in time with its own (build_restore_command). Read from the file, not
     # the manifest, so a point recorded before chapters were probed, or
     # before timecode tracks were left out, is covered too. A file that
     # cannot be probed here is left to FFmpeg to refuse.
@@ -478,6 +480,7 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
             plan.current_path, plan.sidecar_path, temp_output, plan.manifest,
             rebuilt_tracks=rebuilt_track_indices(processed),
             dolby_vision=dolby_vision(processed),
+            processed_start=None if processed is None else start_time(processed),
         )
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))

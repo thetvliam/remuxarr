@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2921 tests across 133 test files, plus 805 frontend tests under
+2927 tests across 134 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -401,7 +401,8 @@ answer has its own switch, kept apart from the one for a wrong language.
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,
 `test_revert_multiple_jobs.py`, `test_revert_match.py`, `test_revert_routes.py`,
-`test_revert_created_files.py`, `test_revert_retagged_capture.py`, `test_recycle_bin.py`,
+`test_revert_created_files.py`, `test_revert_retagged_capture.py`,
+`test_revert_timing.py`, `test_recycle_bin.py`,
 `test_retention_sweep.py`, `test_staging_hook.py`, `test_schema_migration.py`,
 `test_deployment_config.py`. The failure this feature has to avoid is not a
 crash: it is a revert that succeeds and quietly rebuilds the file wrong.
@@ -420,6 +421,14 @@ with a dropped track's language was taken for the dropped one, the sidecar
 stored the wrong track, and a revert gave back the kept track's content twice.
 It compares every restored stream's packets, since the metadata is right
 either way.
+`test_revert_timing.py` compares every restored stream's packet times with
+the original's, relative to the video. A restore, and a later job's capture,
+read streams from two files of one timeline, and FFmpeg moved each file back
+by its own start time: a sidecar holding fonts beside its subtitles starts at
+its first subtitle line, so they came back early by that much. A data stream
+kept in a TS came back early by its own start, which FFmpeg took for the
+start of the second opening of the file that reads it. The packets were right
+either way, which is all the other revert tests compared.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored

@@ -60,11 +60,6 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
-## Changed
-
-- Dolby Vision files are no longer converted to MP4 unless the new setting Convert Dolby Vision Files to MP4 (Settings, Library) is on, as whether a player shows Dolby Vision from an MP4 depends on the player. They keep their container, and anything else planned for them, such as removing a track, still happens; when nothing else is planned, History says why the file stayed as it was. Files already converted stay MP4.
-
 ## Fixed
 
-- A Dolby Vision file converted to MP4 lost the part that tells a player it is Dolby Vision, so a Profile 5 file, which has no HDR10 picture to fall back on, could play in green and purple; a revert gave the MKV back without it, and an AC3 Forge add or undo on an MP4 lost it too. Jobs, reverts and AC3 Forge now keep it, and write Profile 5 as `dvh1` as Apple asks (issue #62); a job or Forge run that would still lose it fails and leaves the file as it was. Files converted or forged before this are not repaired: only a fresh download gets their Dolby Vision back.
-- A Dolby Vision TS kept as TS lost its Dolby Vision, which FFmpeg cannot write into a TS. Such a file is now left as it is, with the reason in History.
+- A revert could put subtitles back early: by as much as the time of their first line when the job had removed them together with fonts or other attachments, and, in a file that stayed TS, a subtitle or data track the job kept by the time it starts into the file. Reverts now keep them in time. Files already reverted are not repaired, and a revert point that a later job added to before this may still give such subtitles back early.
