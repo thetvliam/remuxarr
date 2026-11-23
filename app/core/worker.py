@@ -2043,9 +2043,13 @@ def _load_job_data(job_id: int):
         # passes a file replaced on disk since the scan by one with the same
         # tracks, and a recording can have a download's tracks: with the
         # stored answer trusted, the job ran on it. Left as stored when the
-        # probe failed.
+        # probe failed. The Dolby Vision profiles the same way, for a row
+        # from before their column was added and for a file replaced since
+        # (probe.dolby_vision_profiles).
         if probe_data is not None:
-            media.recording_signs = extract_format_info(probe_data)["recording_signs"]
+            fresh = extract_format_info(probe_data)
+            media.recording_signs = fresh["recording_signs"]
+            media.dolby_vision = fresh["dolby_vision"]
 
         file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
         decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)

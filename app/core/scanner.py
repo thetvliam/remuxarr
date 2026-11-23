@@ -1444,6 +1444,7 @@ def _process_file(
             existing.video_codec   = primary_video_codec
             existing.font_attachments = fmt_info.get("font_attachments")
             existing.recording_signs = fmt_info.get("recording_signs")
+            existing.dolby_vision  = fmt_info.get("dolby_vision")
             existing.last_scanned  = utcnow()
             if reevaluate:
                 existing.reevaluate_after_job = False
@@ -1460,6 +1461,7 @@ def _process_file(
                 video_codec = primary_video_codec,
                 font_attachments = fmt_info.get("font_attachments"),
                 recording_signs = fmt_info.get("recording_signs"),
+                dolby_vision = fmt_info.get("dolby_vision"),
                 last_scanned = utcnow(),
             )
             db.add(media_file)
@@ -2260,6 +2262,7 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "video_codec":      media_file.video_codec,
         "font_attachments": media_file.font_attachments,
         "recording_signs":  media_file.recording_signs,
+        "dolby_vision":     media_file.dolby_vision,
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
         "folder_entries":   _folder_entries(media_file.path),

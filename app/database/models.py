@@ -61,6 +61,14 @@ class MediaFile(Base):
     # still has that column; nothing is done to it.
     recording_signs = Column(String)
 
+    # The Dolby Vision profile of each video stream that has one, joined by
+    # commas ("5", "8"), from the same probe (probe.dolby_vision_profiles);
+    # "" for none. Such a file keeps its container unless
+    # convert_dolby_vision_to_mp4 is on. Null, as for recording_signs,
+    # means not probed since the column was added, and the worker fills it
+    # at job pickup.
+    dolby_vision = Column(String)
+
     # Lifecycle state
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)

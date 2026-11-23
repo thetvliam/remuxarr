@@ -35,6 +35,11 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "original_language_audio": "off",
     # Remux to MP4 when all tracks are container-compatible
     "prefer_mp4_container": True,
+    # Off: a file with Dolby Vision video keeps its container, whatever
+    # prefer_mp4_container says (decision.analyze_file). An upgrading
+    # install gets it off too, as _seed_defaults adds a missing key with
+    # its default.
+    "convert_dolby_vision_to_mp4": False,
     # Global dry-run toggle — no files are modified when True. Defaults to
     # True: a brand-new install's first scan should produce a complete,
     # safe preview of every planned action across the whole library
@@ -927,6 +932,10 @@ def _migrate_schema() -> None:
         # looks at pickup.
         ("media_files", "recording_signs",
          "ALTER TABLE media_files ADD COLUMN recording_signs TEXT"),
+        # No DEFAULT, as for recording_signs: null tells the worker the file
+        # was never looked at for Dolby Vision, so it looks at pickup.
+        ("media_files", "dolby_vision",
+         "ALTER TABLE media_files ADD COLUMN dolby_vision TEXT"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",

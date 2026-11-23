@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2900 tests across 133 test files, plus 805 frontend tests under
+2921 tests across 133 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -238,8 +238,12 @@ MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise
 drops while copying every RPU, and writes Profile 5 as `dvh1` where the
 source's tag cannot be kept; a revert writes `dvh1` back into Matroska as
 `hvc1`, as FFmpeg refuses `dvh1` there. A run whose output would lose a record
-anyway is refused with the file untouched, and a scan queues it again. Its
-files carry a record and no RPUs, from FFmpeg's `dovi_rpu` filter.
+anyway is refused with the file untouched, and a scan queues it again. A
+Dolby Vision file keeps its container unless Convert Dolby Vision Files to
+MP4 is on, the rest of its plan going ahead, and a Dolby Vision TS that would
+stay TS is left as it is, as FFmpeg writes no Dolby Vision into a TS. Its
+files carry a record and no RPUs, from FFmpeg's `dovi_rpu` filter; its TS
+has the Dolby Vision descriptor put into its PMT after the mux.
 `test_stream_flags.py` covers each stream's flags (default, forced,
 commentary and the rest) through a job, an AC3 Forge add and an undo. FFmpeg
 marks the first of two or more streams of a type default when none is, unless

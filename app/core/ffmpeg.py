@@ -165,6 +165,24 @@ def stores_language(container: str | None) -> bool:
     """
     return output_muxer(container) not in _NO_LANGUAGE_MUXERS
 
+# The muxers that write a Dolby Vision configuration record: Matroska's
+# always, and the MP4 muxer when asked (dolby_vision_args). FFmpeg's MPEG-TS
+# demuxer reads a Dolby Vision descriptor, but its muxer writes none, and
+# AVI and ASF have no place for one.
+_DOVI_MUXERS = frozenset({"matroska", "mp4"})
+
+
+def keeps_dolby_vision(container: str | None) -> bool:
+    """
+    Whether a file written as `container` keeps its Dolby Vision record
+    (decision.analyze_file leaves alone a file that would not). An MP4 that
+    is a QuickTime movie is written by the QuickTime muxer, which writes no
+    record either, but such a file is a recording and never processed
+    (probe.recording_signs).
+    """
+    return output_muxer(container) in _DOVI_MUXERS
+
+
 def output_muxer(container: str | None, quicktime: bool = False) -> str | None:
     """
     The FFmpeg muxer that writes `container`, or None for one this does

@@ -382,6 +382,17 @@ def dolby_vision(probe_data: dict | None) -> dict[int, DolbyVision]:
     return found
 
 
+def dolby_vision_profiles(probe_data: dict | None) -> str:
+    """
+    What MediaFile.dolby_vision holds: the profile of each video stream the
+    file says is Dolby Vision (dolby_vision), in stream order, joined by
+    commas, with "?" for one marked only by its sample entry, which only an
+    MP4 or QuickTime file has; "" for none.
+    """
+    return ",".join("?" if dv.profile is None else str(dv.profile)
+                    for dv in dolby_vision(probe_data).values())
+
+
 def lost_dolby_vision(source: dict | None, output: dict | None) -> list[str]:
     """
     Each video stream's Dolby Vision record in the source that the output's
@@ -592,7 +603,8 @@ def extract_format_info(probe_data: dict) -> dict:
     font_attachments is here rather than in extract_tracks because it is a
     property of the file, not of a track, and because extract_tracks
     cannot carry it — see count_font_attachments. recording_signs too,
-    joined by commas, "" for none (recording_signs).
+    joined by commas, "" for none (recording_signs), and the Dolby Vision
+    profiles (dolby_vision_profiles).
     """
     fmt = probe_data.get("format", {})
     format_names = fmt.get("format_name", "").split(",")
@@ -601,6 +613,7 @@ def extract_format_info(probe_data: dict) -> dict:
         "duration":         _float_or_none(fmt.get("duration")),
         "font_attachments": count_font_attachments(probe_data),
         "recording_signs":  ",".join(recording_signs(probe_data)),
+        "dolby_vision":     dolby_vision_profiles(probe_data),
     }
 
 

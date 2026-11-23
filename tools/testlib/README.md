@@ -39,8 +39,8 @@ copy rather than only those with findings. Results go to
 otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
-16 seconds and all 21 profiles, review answers, Forge and reverts included, ran in
-about five and a half minutes at `-j 2`. It has
+16 seconds and all 19 profiles, review answers, Forge and reverts included, ran in
+about four minutes at `-j 2`. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -58,14 +58,16 @@ files. The library you pass in is only read.
 
 ## Profiles
 
-`default` is the app's own defaults. The other 20 vary the settings below
+`default` is the app's own defaults. The other 18 vary the settings below
 and the runner's three choices, so that every pair of values
 of any two of them appears together in at least one profile. All
-combinations would be about 5 million; the pairwise set is checked for
-full coverage each time it is built.
+combinations would be about 10 million; the pairwise set is checked for
+full coverage each time it is built. Only pairs are covered, so the two
+Dolby Vision Matroska files are converted to MP4 in three profiles and
+reverted in one.
 
-`prefer_mp4_container`, `add_faststart_to_mp4`, `fix_undefined_language`,
-`fix_undefined_language_audio`, `keep_default_audio`,
+`prefer_mp4_container`, `convert_dolby_vision_to_mp4`, `add_faststart_to_mp4`,
+`fix_undefined_language`, `fix_undefined_language_audio`, `keep_default_audio`,
 `keep_forced_subtitles`, `extract_text_subtitles_to_srt`,
 `existing_srt_handling`, `image_subtitle_handling`,
 `font_attachment_handling`, `keep_audio_languages`,
@@ -137,6 +139,9 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     three Dolby Vision files carry a record and no RPUs (FFmpeg's `dovi_rpu`
     filter writes one from the colour properties), so they test the record
     and nothing about playback.
+28. With Convert Dolby Vision Files to MP4 off, which is the default, a file
+    whose video has a Dolby Vision record is not converted to MP4, after any
+    number of jobs.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its

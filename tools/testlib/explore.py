@@ -40,6 +40,8 @@ Each profile is checked against invariants instead:
  27. Every kept video stream keeps its Dolby Vision configuration record,
      field for field. The same goes after each AC3 Forge add and undo and
      each revert below, reported under this number too.
+ 28. With Convert Dolby Vision Files to MP4 off, a file whose video has a
+     Dolby Vision record is not converted to MP4.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -144,6 +146,7 @@ FORCED = {"dry_run_mode": False, "auto_start_jobs": True}
 # Each list starts with the app's default.
 VARIED = {
     "prefer_mp4_container":          [True, False],
+    "convert_dolby_vision_to_mp4":   [False, True],
     "add_faststart_to_mp4":          [True, False],
     "fix_undefined_language":        ["always_leave", "always_fix", "always_ask"],
     "fix_undefined_language_audio":  ["always_leave", "always_fix", "always_ask"],
@@ -1625,6 +1628,16 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     was = Counter(kind(s) for s in info_before["streams"])
     now = Counter(kind(s) for s in info_after["streams"])
     entry["lost_tracks"] = any(was[k] > now[k] for k in held)
+
+    # 28. Dolby Vision is converted to MP4 only when the user said so,
+    # after any number of jobs.
+    if (not cfg.get("convert_dolby_vision_to_mp4") and is_mp4(info_after)
+            and not is_mp4(info_before)):
+        profiles = [r.get("dv_profile") for r in dovi_records(info_before) if r is not None]
+        if profiles:
+            find(28, source, f"converted to MP4 with Convert Dolby Vision Files to MP4 "
+                             f"off, though its video is Dolby Vision (profile "
+                             f"{', '.join(map(str, profiles))})")
     if several:
         return
 

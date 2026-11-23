@@ -22,11 +22,20 @@ Forge run whose output would lose a record anyway, as a job does when its
 first probe of the file fails, is refused with the file untouched
 (worker._lost_tags_error, probe.lost_dolby_vision).
 
+Whether a player shows Dolby Vision from an MP4 depends on the player, so
+a Dolby Vision file keeps its container unless Convert Dolby Vision Files
+to MP4 is on, the rest of its plan going ahead (decision.analyze_file,
+from MediaFile.dolby_vision, which the worker reads afresh at pickup). A
+Dolby Vision TS that would stay TS is left as it is: FFmpeg reads a TS's
+Dolby Vision descriptor and writes none, so such a job was refused, and
+every scan queued it again (ffmpeg.keeps_dolby_vision).
+
 The files here carry a record and no RPUs: FFmpeg's dovi_rpu filter writes
 one from the colour properties, and nothing in the pinned build writes
 RPUs. They test the record and the sample entry, not playback. FFmpeg
 cannot write dvhe at all, so that file is a dvh1 one with its sample entry
-renamed in place.
+renamed in place, and the TS has the Dolby Vision descriptor put into its
+PMT after the mux.
 
 Verified by mutation, 18 applied, 18 killed. Each was first run against
 the whole suite as it stood (2844 tests) with the change in place, and all
@@ -104,6 +113,40 @@ survived it:
   - the check not run               -> the staging check, the refused job
                                        and Forge add
   - the refusal held back by a scan -> the refused job tried again
+
+The setting and the TS, 20 more applied, 20 killed, each first run against
+the whole suite as it stood (2900 tests, the conversion tests here turning
+the setting on) with the change in place. 18 survived it; the setting not
+read was killed by those conversion tests, and the column left out of the
+decision's input by test_job_preflight.py, whose dict gains the key here.
+
+  - the conversion not held          -> the held Matroska decided,
+                                        scanned, run and picked up, the
+                                        FLV and TS reasons
+  - the setting not read             -> every conversion test, the Review
+                                        flag, the TS converted
+  - the setting on by default        -> the held Matroska decided, the
+                                        Review flag, the FLV and TS
+                                        reasons
+  - an MP4 counted as held           -> the MP4 not held
+  - the Review flag not counting it  -> the Review flag
+  - the hold's reason not given      -> nothing else to do, decided and
+                                        scanned, and at pickup
+  - the FLV reason blaming tracks    -> the FLV reason
+  - the setting never named          -> the FLV and TS reasons
+  - a TS kept as TS not left alone   -> the TS decided and scanned
+  - Matroska counted as losing it    -> the held Matroska, decided and run
+  - a left-alone TS asking questions -> the TS's questions
+  - the TS reason blaming tracks     -> the TS reasons
+  - the setting named when it is on  -> each setting that is off
+  - a profile named twice            -> each profile named once
+  - the probe finding no profile     -> the stored profiles, and every
+                                        real held file
+  - a new row without the column     -> the scan storing it
+  - a rescanned row without it       -> the same
+  - the decision input without it    -> every real held file
+  - pickup not refreshing it         -> the row from before, at pickup
+  - the migration with a default     -> existing files not looked at
 """
 import asyncio
 import json
@@ -397,6 +440,17 @@ def _covers(path):
             if (s.get("disposition") or {}).get("attached_pic")]
 
 
+def _convert_dolby_vision(rig):
+    """Prefer MP4 Container on, and Convert Dolby Vision Files to MP4, without
+    which a Dolby Vision file keeps its container."""
+    from app.database.models import AppSetting
+
+    with rig.Session() as db:
+        for key in ("prefer_mp4_container", "convert_dolby_vision_to_mp4"):
+            db.merge(AppSetting(key=key, value=json.dumps(True)))
+        db.commit()
+
+
 def _revert(rig):
     from app.core.revert_restore import restore_revert_point
     from app.database.models import RevertPoint
@@ -409,7 +463,7 @@ def _revert(rig):
 
 @needs_ffmpeg
 def test_a_profile_5_matroska_converted_to_mp4_is_dvh1_with_its_record(rig):
-    rig.set("prefer_mp4_container", True)
+    _convert_dolby_vision(rig)
     source = _dv_file(rig.library / "Film.mkv")
     tag, record = _video(source)
     assert record is not None and record["dv_profile"] == 5, "fixture has no Profile 5 record"
@@ -427,7 +481,7 @@ def test_a_profile_5_matroska_converted_to_mp4_is_dvh1_with_its_record(rig):
 def test_a_profile_8_matroska_converted_to_mp4_keeps_its_record(rig):
     """With FFmpeg's own sample entry, which nothing here has had a player
     judge yet."""
-    rig.set("prefer_mp4_container", True)
+    _convert_dolby_vision(rig)
     source = _dv_file(rig.library / "Film.mkv", profile=8)
     _, record = _video(source)
     assert record is not None and record["dv_profile"] == 8
@@ -442,7 +496,7 @@ def test_a_profile_8_matroska_converted_to_mp4_keeps_its_record(rig):
 def test_a_profile_5_matroska_with_cover_art_is_converted(rig):
     """The cover goes into the MP4 as a video stream of its own, which the
     dvh1 must not reach: the mux fails if it does."""
-    rig.set("prefer_mp4_container", True)
+    _convert_dolby_vision(rig)
     source = _dv_file(rig.library / "Film.mkv", cover=True)
     _, record = _video(source)
 
@@ -471,7 +525,7 @@ def test_a_dolby_vision_mp4_keeps_its_record_as_dvh1(rig, tag):
 @needs_ffmpeg
 def test_a_conversion_that_also_extracts_a_subtitle_keeps_the_record(rig):
     """That job runs execute_ffmpeg_combined, which builds its own call."""
-    rig.set("prefer_mp4_container", True)
+    _convert_dolby_vision(rig)
     rig.set("extract_text_subtitles_to_srt", True)
     source = _dv_file(rig.library / "Show.mkv", subtitle=True)
     _, record = _video(source)
@@ -489,7 +543,7 @@ def test_a_revert_gives_back_the_converted_matroska(rig, cover):
     """The dvh1 goes back as Matroska takes it, the record and every packet
     as they were. A cover comes back as a video stream too (the README's
     limitation), which an hvc1 must not reach either."""
-    rig.set("prefer_mp4_container", True)
+    _convert_dolby_vision(rig)
     source = _dv_file(rig.library / "Film.mkv", cover=cover)
     before = _video(source)
     packets = _packets(source)
@@ -665,11 +719,7 @@ def test_a_revert_after_a_job_and_a_forge_run_gives_back_dolby_vision(forge_rig)
     """The job converts the Matroska and drops the German track, Forge adds
     an AC3 to the MP4, and the revert gives back the Matroska as it was:
     the explorer's path (tools/testlib, check 27)."""
-    from app.database.models import AppSetting
-
-    with forge_rig.Session() as db:
-        db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(True)))
-        db.commit()
+    _convert_dolby_vision(forge_rig)
     source = _dv_file(forge_rig.library / "Film.mkv", surround=True)
     before = _video(source)
     packets = _packets(source)
@@ -771,11 +821,8 @@ def test_a_job_that_did_not_ask_for_the_record_is_refused_and_tried_again(forge_
     over tags, and with the probe working the job keeps the record.
     """
     import app.core.ffmpeg as ffmpeg_module
-    from app.database.models import AppSetting
 
-    with forge_rig.Session() as db:
-        db.merge(AppSetting(key="prefer_mp4_container", value=json.dumps(True)))
-        db.commit()
+    _convert_dolby_vision(forge_rig)
     real_probe = ffmpeg_module.probe_file
     failing = [True]
 
@@ -827,3 +874,356 @@ def test_a_forge_add_that_would_drop_the_record_is_refused(forge_rig, monkeypatc
         assert job.error_message == (f"{forge_rig.worker.LOST_DOLBY_VISION} "
                                      "It would lose: the record of video stream 0 (Profile 5).")
     assert source.read_bytes() == before
+
+
+# ── Converting it to MP4, or not ─────────────────────────────────────────────
+
+HELD = ("Its video is Dolby Vision (Profile 5), so it stays MKV. Turn on Convert "
+        "Dolby Vision Files to MP4 to convert it.")
+UNCHANGED = "File already meets all configured criteria — no changes needed."
+
+
+def _decide(container="mkv", dolby_vision="5", audio=("eng", "ger"), codec="aac", **settings):
+    """The decision for a file with HEVC video and AAC (or `codec`) audio in
+    these languages, the first default, under the suite's base settings with
+    `settings` over them. `dolby_vision` is the stored column."""
+    from app.core.decision import analyze_file
+    from tests.conftest import BASE_SETTINGS, make_file_info, make_track
+
+    tracks = [make_track(stream_index=0, track_type="video", codec="hevc")]
+    tracks += [make_track(stream_index=i, track_type="audio", codec=codec, language=language,
+                          is_default=(i == 1))
+               for i, language in enumerate(audio, start=1)]
+    file_info = make_file_info(path=f"/media/Film/Film.{container}", container=container,
+                               video_codec="hevc")
+    file_info["dolby_vision"] = dolby_vision
+    return analyze_file(file_info, tracks, {**BASE_SETTINGS, **settings})
+
+
+def _types(decision):
+    return [a.action_type for a in decision.actions]
+
+
+def test_a_dolby_vision_matroska_keeps_its_container_by_default():
+    """The rest of the plan goes ahead. The engine's own default is the app's:
+    BASE_SETTINGS has no value for the setting."""
+    from app.database.session import DEFAULT_APP_SETTINGS
+
+    assert DEFAULT_APP_SETTINGS["convert_dolby_vision_to_mp4"] is False
+    for decision in (_decide(), _decide(convert_dolby_vision_to_mp4=False)):
+        assert decision.should_process
+        assert decision.target_container == "mkv"
+        assert "change_container" not in _types(decision)
+        assert decision.reason == "Remove 1 audio track"
+
+
+def test_with_the_setting_on_it_is_converted():
+    decision = _decide(convert_dolby_vision_to_mp4=True)
+
+    assert decision.target_container == "mp4"
+    assert "change_container" in _types(decision)
+
+
+def test_a_file_without_dolby_vision_is_converted_whatever_the_setting():
+    """Null is a row from before the column: read as none, and the worker
+    looks at pickup."""
+    for stored in ("", None):
+        assert _decide(dolby_vision=stored).target_container == "mp4"
+
+
+def test_with_nothing_else_to_do_history_says_why_it_stays():
+    decision = _decide(audio=("eng",))
+
+    assert not decision.should_process
+    assert decision.reason == HELD
+
+
+def test_each_profile_is_named_once():
+    assert _decide(audio=("eng",), dolby_vision="7,7").reason.startswith(
+        "Its video is Dolby Vision (Profile 7), so")
+    assert _decide(audio=("eng",), dolby_vision="8,5").reason.startswith(
+        "Its video is Dolby Vision (Profiles 8 and 5), so")
+
+
+def test_nothing_is_said_of_it_when_mp4_was_out_anyway():
+    """Prefer MP4 Container off, or audio MP4 cannot hold."""
+    assert _decide(audio=("eng",), prefer_mp4_container=False).reason == UNCHANGED
+    assert _decide(audio=("eng",), codec="dts").reason == UNCHANGED
+
+
+def test_a_dolby_vision_mp4_is_not_held():
+    decision = _decide(container="mp4", audio=("eng",))
+
+    assert decision.reason == UNCHANGED
+    assert decision.mp4_blocked_beyond_subtitles is False
+
+
+def test_the_review_page_is_told_the_file_stays_mkv_whatever_is_answered():
+    """Else a card offering to delete a subtitle reads as though that would
+    convert the file (decision.mp4_blocked_beyond_subtitles)."""
+    assert _decide().mp4_blocked_beyond_subtitles is True
+    assert _decide(convert_dolby_vision_to_mp4=True).mp4_blocked_beyond_subtitles is False
+
+
+def test_an_flv_held_from_mp4_names_the_setting_that_would_convert_it():
+    """A container Remuxarr cannot write, with tracks MP4 can take."""
+    held = _decide(container="flv")
+    off_too = _decide(container="flv", prefer_mp4_container=False)
+
+    assert not held.should_process and held.actions == []
+    assert held.reason == ("Remuxarr cannot write FLV files, so this one is left as it is. "
+                           "Turn on Convert Dolby Vision Files to MP4 to convert it.")
+    assert off_too.reason == ("Remuxarr cannot write FLV files, so this one is left as it "
+                              "is. Turn on Prefer MP4 Container and Convert Dolby Vision "
+                              "Files to MP4 to convert it.")
+
+
+# A TS's Dolby Vision is lost on the way back into TS: FFmpeg reads the
+# descriptor and writes none (ffmpeg.keeps_dolby_vision).
+TS_LEFT = "Remuxarr cannot keep Dolby Vision in a TS file, so this one is left as it is."
+
+
+def test_a_dolby_vision_ts_kept_as_ts_is_left_alone():
+    decision = _decide(container="ts")
+
+    assert not decision.should_process and decision.actions == []
+    assert decision.reason == f"{TS_LEFT} Turn on Convert Dolby Vision Files to MP4 to convert it."
+
+
+def test_its_reason_names_each_setting_that_is_off():
+    assert _decide(container="ts", prefer_mp4_container=False).reason == (
+        f"{TS_LEFT} Turn on Prefer MP4 Container and Convert Dolby Vision Files to MP4 "
+        "to convert it.")
+    assert _decide(container="ts", prefer_mp4_container=False,
+                   convert_dolby_vision_to_mp4=True).reason == (
+        f"{TS_LEFT} Turn on Prefer MP4 Container to convert it.")
+
+
+def test_or_that_its_tracks_cannot_go_into_mp4():
+    assert _decide(container="ts", codec="dts").reason == (
+        "Remuxarr cannot keep Dolby Vision in a TS file, and this one's tracks cannot "
+        "go into MP4, so it is left as it is.")
+
+
+def test_a_ts_without_dolby_vision_is_still_processed_as_ts():
+    decision = _decide(container="ts", dolby_vision="", prefer_mp4_container=False)
+
+    assert decision.should_process and decision.target_container == "ts"
+
+
+def test_a_ts_left_alone_raises_no_language_question():
+    """Its answer could only come back to the same decision."""
+    asked = dict(audio=("und", "und"), fix_undefined_language_audio="always_ask",
+                 prefer_mp4_container=False)
+    assert _decide(container="ts", dolby_vision="", **asked).undefined_audio_flags, \
+        "fixture raises no question"
+
+    assert _decide(container="ts", **asked).undefined_audio_flags == []
+
+
+def test_the_profiles_stored_for_a_file():
+    from app.core.probe import dolby_vision_profiles, extract_format_info
+
+    cover = {"index": 2, "codec_type": "video", "codec_tag_string": "[0][0][0][0]",
+             "disposition": {"attached_pic": 1}}
+    probe = {"streams": [{"index": 0, "codec_type": "video",
+                          "side_data_list": [_record(8)]},
+                         {"index": 1, "codec_type": "video",
+                          "side_data_list": [_record(5)]}, cover]}
+
+    assert dolby_vision_profiles(probe) == "8,5"
+    assert extract_format_info(probe)["dolby_vision"] == "8,5"
+    assert dolby_vision_profiles({"streams": [{"index": 0, "codec_type": "video",
+                                               "codec_tag_string": "dvh1"}]}) == "?"
+    assert dolby_vision_profiles({"streams": [cover]}) == ""
+    assert dolby_vision_profiles(None) == ""
+
+
+def _crc32_mpeg(data):
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7 if crc & 0x80000000 else crc << 1) & 0xFFFFFFFF
+    return crc
+
+
+def _dv_ts(path):
+    """
+    A Profile 5 TS with English and German audio. FFmpeg's TS muxer writes
+    no Dolby Vision descriptor, though its demuxer reads one, so it is put
+    into every PMT here after the mux: version 1.0, profile 5, level 1, RPU
+    and base layer present, compatibility 0.
+    """
+    _dv_file(path, muxer="mpegts")
+    descriptor = bytes([0xB0, 5, 1, 0, 0x0A, 0x0D, 0x00])
+    data = bytearray(path.read_bytes())
+    pmts = 0
+    for off in range(0, len(data), 188):
+        pid = (data[off + 1] & 0x1F) << 8 | data[off + 2]
+        if pid != 0x1000 or not data[off + 1] & 0x40:   # FFmpeg's PMT, a section start
+            continue
+        section = data[off + 5:off + 188]               # past a pointer field of 0
+        end = 3 + ((section[1] & 0x0F) << 8 | section[2]) - 4
+        i = 12 + ((section[10] & 0x0F) << 8 | section[11])
+        while section[i] != 0x24:                       # the HEVC stream
+            i += 5 + ((section[i + 3] & 0x0F) << 8 | section[i + 4])
+        es_info = (section[i + 3] & 0x0F) << 8 | section[i + 4]
+        body = bytearray(section[:i + 5 + es_info] + descriptor + section[i + 5 + es_info:end])
+        es_info += len(descriptor)
+        body[i + 3:i + 5] = bytes([0xF0 | es_info >> 8, es_info & 0xFF])
+        length = len(body) + 4 - 3
+        body[1:3] = bytes([(section[1] & 0xF0) | length >> 8, length & 0xFF])
+        body += _crc32_mpeg(body).to_bytes(4, "big")
+        data[off + 5:off + 188] = body + b"\xff" * (183 - len(body))
+        pmts += 1
+    assert pmts, "no PMT found"
+    path.write_bytes(data)
+    return path
+
+
+def _items(rig):
+    """Every job's status and reason, and the file's stored profiles."""
+    from app.database.models import MediaFile, QueueItem
+
+    with rig.Session() as db:
+        return ([(q.status, q.reason) for q in db.query(QueueItem).order_by(QueueItem.id)],
+                db.query(MediaFile).one().dolby_vision)
+
+
+def _pick_up(rig):
+    """Run the job waiting in the queue."""
+    async def go():
+        job_id = rig.worker._claim_next()
+        await rig.worker._run_and_broadcast(job_id, dated._WS(), asyncio.get_running_loop())
+    asyncio.run(go())
+
+
+@needs_ffmpeg
+def test_the_scan_stores_the_profiles_on_a_new_row_and_a_rescanned_one(rig):
+    from app.core import scanner
+    from app.database.models import MediaFile
+
+    _dv_file(rig.library / "Film.mkv")
+    for _ in range(2):
+        with rig.Session() as db:
+            scanner.scan_library(db, [str(rig.library)], force_probe=True)
+            row = db.query(MediaFile).one()
+            assert row.dolby_vision == "5"
+            row.dolby_vision = None
+            db.commit()
+
+
+@needs_ffmpeg
+def test_a_held_matroska_with_nothing_else_to_do_is_left_with_the_reason(rig):
+    rig.set("prefer_mp4_container", True)
+    rig.set("keep_audio_languages", ["eng", "ger"])
+    source = _dv_file(rig.library / "Film.mkv")
+    before = source.read_bytes()
+
+    _scan_and_run(rig)
+
+    assert _items(rig) == ([("skipped", HELD)], "5")
+    assert source.read_bytes() == before
+
+
+@needs_ffmpeg
+def test_a_held_matroska_still_loses_the_track_it_should_and_keeps_its_record(rig):
+    rig.set("prefer_mp4_container", True)
+    source = _dv_file(rig.library / "Film.mkv")
+    _, record = _video(source)
+
+    jobs, _ = _scan_and_run(rig)
+
+    assert [status for status, _ in jobs] == ["success"]
+    assert sorted(p.name for p in rig.library.iterdir()) == ["Film.mkv"]
+    assert _audio_languages(source) == ["eng"]
+    assert _video(source) == (MATROSKA, record)
+
+
+@needs_ffmpeg
+def test_a_row_from_before_the_column_is_looked_at_at_pickup(rig):
+    """Queued before the column existed, so planned as a conversion: the
+    worker reads the profiles from the file and leaves it as it is."""
+    from app.database.models import MediaFile, QueueItem
+
+    rig.set("prefer_mp4_container", True)
+    rig.set("keep_audio_languages", ["eng", "ger"])
+    source = _dv_file(rig.library / "Film.mkv")
+    before = source.read_bytes()
+    _scan_and_run(rig)
+    with rig.Session() as db:
+        media = db.query(MediaFile).one()
+        media.dolby_vision, media.status = None, "queued"
+        db.query(QueueItem).delete()
+        db.add(QueueItem(file_id=media.id, status="pending"))
+        db.commit()
+
+    _pick_up(rig)
+
+    assert _items(rig) == ([("skipped", HELD)], "5")
+    assert source.read_bytes() == before
+
+
+@needs_ffmpeg
+def test_a_dolby_vision_ts_is_left_alone_rather_than_failed_on_every_scan(rig):
+    """
+    Kept as TS, with a German track to drop, the job lost the record and
+    the staging check refused it, and every scan queued it again. Now it
+    is left as it is, and with both settings on it is converted, the
+    record kept.
+    """
+    source = _dv_ts(rig.library / "Film.ts")
+    _, record = _video(source)
+    assert record is not None and record["dv_profile"] == 5, "fixture has no record"
+    before = source.read_bytes()
+
+    _scan_and_run(rig)
+    _, stats = _scan_and_run(rig)
+
+    assert _items(rig) == ([("skipped", f"{TS_LEFT} Turn on Prefer MP4 Container and "
+                                         "Convert Dolby Vision Files to MP4 to convert it.")],
+                           "5")
+    assert stats.queued == 0
+    assert source.read_bytes() == before
+
+    _convert_dolby_vision(rig)
+    jobs, _ = _scan_and_run(rig)
+
+    assert jobs[-1] == ("success", None)
+    assert _video(rig.library / "Film.mp4") == ("dvh1", record)
+
+
+def test_existing_files_come_out_not_looked_at_for_it(tmp_path, monkeypatch):
+    """Null tells the worker to look at pickup. A default of "" would record
+    every file already there as having no Dolby Vision."""
+    import sqlite3
+
+    from sqlalchemy import create_engine
+
+    from app.database.models import Base
+    from tests.test_schema_migration import _point_the_engine_at, _restore_the_engine
+
+    path = tmp_path / "remuxarr.db"
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.tables["media_files"].create(engine)
+    engine.dispose()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE media_files DROP COLUMN dolby_vision")
+    conn.execute("INSERT INTO media_files (path, filename, directory, size, mtime, status) "
+                 "VALUES ('/m/Film.mkv', 'Film.mkv', '/m', 1, 1.0, 'processed')")
+    conn.commit()
+    conn.close()
+
+    session_mod = _point_the_engine_at(path, monkeypatch)
+    try:
+        session_mod.init_db()
+    finally:
+        _restore_the_engine(session_mod)
+
+    conn = sqlite3.connect(path)
+    try:
+        value = conn.execute("SELECT dolby_vision FROM media_files").fetchone()
+    finally:
+        conn.close()
+    assert value == (None,)
