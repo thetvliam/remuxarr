@@ -519,6 +519,10 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         timeout_seconds=timeout_seconds,
         timeout_label="Revert",
         before_swap=unchanged,
+        # The processed file's, which is the original's for any file a job
+        # has written since jobs kept it. Capture records no owner, so a
+        # file a job left root-owned before then is restored root-owned.
+        ownership_from=plan.current_path,
     )
 
     if not result.success:

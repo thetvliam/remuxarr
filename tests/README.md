@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2927 tests across 134 test files, plus 805 frontend tests under
+2935 tests across 135 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -228,6 +228,12 @@ then removes that one, so every job used to leave the file undated; for a
 phone's or a camera's recording it is the day it was shot.
 `test_forge_creation_date.py` covers the same date through an AC3 Forge add
 and undo on an MP4 and a Matroska, as Forge builds its own commands.
+`test_file_ownership.py` covers a file's owner, group and permissions through
+a job, a conversion, both ways of extracting a subtitle, a revert and an AC3
+Forge add and undo (issue #65): everything a run wrote belonged to root, with
+the mode its umask left. Giving a file to another owner needs root, so CI,
+which runs the tests as an ordinary user, checks the mode on real files and
+the owner through a recorded `os.chown`.
 `test_kept_file_tags.py` covers the check before a job's or a Forge run's
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its

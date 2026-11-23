@@ -1191,6 +1191,7 @@ async def execute_ffmpeg(
             on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            ownership_from=input_path,
         )
     finally:
         discard_cover_art(covers)
@@ -1284,6 +1285,9 @@ async def execute_subtitle_extraction(
             timeout_seconds=timeout_seconds,
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            # A subtitle written beside the media belongs to whoever the
+            # media file does.
+            ownership_from=input_path,
         )
 
         if not result.success:
@@ -1551,6 +1555,7 @@ async def execute_ffmpeg_combined(
             on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            ownership_from=input_path,
         )
     finally:
         discard_cover_art(covers)

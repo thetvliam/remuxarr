@@ -63,3 +63,4 @@ state for a cycle in which nothing user-visible has changed yet.
 ## Fixed
 
 - A revert could put subtitles back early: by as much as the time of their first line when the job had removed them together with fonts or other attachments, and, in a file that stayed TS, a subtitle or data track the job kept by the time it starts into the file. Reverts now keep them in time. Files already reverted are not repaired, and a revert point that a later job added to before this may still give such subtitles back early.
+- A job, a revert or AC3 Forge wrote every file as root, Remuxarr's user in the image, with permissions of 644, so a file owned by another user, such as Unraid's nobody:users, could no longer be changed by a program running as that user (issue #65). The files they write now keep the owner, group and permissions of the file they came from, and a subtitle extracted beside a file takes the file's. Files written before this keep the owner they were given.
