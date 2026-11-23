@@ -474,6 +474,7 @@ async def run_forge_command(
         before_staging=_before_staging if before_staging else None,
         on_staging_progress=on_staging if progress_callback else None,
         before_swap=before_swap,
+        ownership_from=input_path,
     )
 
     if not result.success:

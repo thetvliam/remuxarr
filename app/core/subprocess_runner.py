@@ -12,11 +12,15 @@ their own separate, near-identical copy of this logic.
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from app.config import settings as app_settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -211,6 +215,86 @@ def _copy_and_flush(src: str, dst: str, flushed: list[int] | None) -> None:
             flushed[0] += since
 
 
+class _Ownership(NamedTuple):
+    """The owner, group and permission bits outputs are given, and the
+    file they were read from."""
+    source: str
+    uid: int
+    gid: int
+    mode: int
+
+
+def _read_ownership(path: str | None) -> _Ownership | None:
+    """
+    The owner, group and permission bits of `path`, for _give_ownership.
+    None when there is no path, or it cannot be read, which leaves the
+    outputs as they are written.
+
+    Permission bits only: setuid, setgid and the sticky bit mean nothing
+    on a media file, and are not copied to one.
+    """
+    if path is None:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        logger.warning(
+            "Could not read the owner of %s (%s); what this run writes "
+            "keeps the owner Remuxarr runs as", path, exc)
+        return None
+    return _Ownership(path, st.st_uid, st.st_gid, st.st_mode & 0o777)
+
+
+def _give_ownership(part: str, final: str, ownership: _Ownership | None) -> None:
+    """
+    Give a staged .part the owner, group and permissions it is to have
+    under its final name, before it takes that name.
+
+    Without this every file a job, a revert or AC3 Forge wrote belonged to
+    whoever runs Remuxarr, root in the image, with the mode its umask
+    leaves (issue #65): a file owned by nobody:users with mode 664 came
+    back root-owned with 644, and a program running as that user, Plex or
+    Sonarr say, could no longer change it.
+
+    Changing the owner needs root. Run as anyone else, giving a file to
+    another user is refused; the run still succeeds, with the file
+    belonging to the user Remuxarr runs as, as it always did, and its mode
+    still copied. Losing a run over who owns its output would be worse
+    than the owner being wrong, so a refusal is logged and nothing more.
+    """
+    if ownership is None:
+        return
+    try:
+        os.chown(part, ownership.uid, ownership.gid)
+    except OSError as exc:
+        logger.warning(
+            "Could not give %s the owner %d:%d of %s (%s); it belongs to "
+            "the user Remuxarr runs as", final, ownership.uid, ownership.gid,
+            ownership.source, exc)
+    try:
+        os.chmod(part, ownership.mode)
+    except OSError as exc:
+        logger.warning(
+            "Could not give %s the permissions %s of %s (%s)", final,
+            oct(ownership.mode), ownership.source, exc)
+
+
+def _give_outputs_ownership(outputs: list[StagedOutput],
+                            ownership_from: str | None) -> None:
+    """
+    Give every staged .part the owner, group and permissions of
+    `ownership_from`. Synchronous, and run through run_in_executor, as
+    each change can wait on the server where the library is a network
+    share.
+
+    Read once the copy is done, just before the swap, so a file whose
+    owner changed while a large copy ran gives the owner it has now.
+    """
+    ownership = _read_ownership(ownership_from)
+    for o in outputs:
+        _give_ownership(staged_part_path(o), o.final_path, ownership)
+
+
 def _stage_parts(
     outputs: list[StagedOutput],
     part_paths: list[str],
@@ -260,9 +344,16 @@ async def run_staged_subprocess(
     timeout_label: str = "Job",
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
+    ownership_from: str | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
+
+    ownership_from: the file whose owner, group and permissions every
+    output takes, given to each staged .part before it is swapped in (see
+    _give_ownership): the file a job or a Forge run was handed, or the
+    processed file a revert rebuilds from. None leaves each output as
+    written, owned by the user Remuxarr runs as.
 
     timeout_seconds: if set and > 0, the entire subprocess (drain + wait) is
     wrapped in asyncio.wait_for() with this limit.  On timeout the process is
@@ -575,6 +666,11 @@ async def run_staged_subprocess(
             except Exception:
                 pass
             raise
+
+        # Who the outputs belong to, settled while they are still .part
+        # files, so no final name ever shows the wrong owner.
+        await asyncio.get_running_loop().run_in_executor(
+            None, _give_outputs_ownership, outputs, ownership_from)
 
         # ── Last look, after the copy ──────────────────────────────────────
         # Every .part is on the destination and flushed; nothing has been

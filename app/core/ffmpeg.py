@@ -672,10 +672,71 @@ def _opening_args(paths: list[str], openings: dict[int, int]) -> list[str]:
     return args
 
 
+def _input_args(paths: list[str], openings: dict[int, int],
+                first_start: float | None) -> list[str]:
+    """
+    The input arguments for a command that mixes streams from several
+    files of one timeline (a restore, or a sidecar a later job adds to):
+    the -i for each path, then for each second opening (_sparse_openings).
+
+    FFmpeg's command line moves each input's timestamps back by that
+    input's own start time unless -copyts is given, and a sidecar's start
+    time is often not where its timeline begins. Holding attachments
+    beside its subtitles, it gets the time of its first subtitle line
+    (holding subtitles alone, none). Measured on FFmpeg 8.1, the build the
+    image ships: a restore put the test library's "07 - fonts unused"
+    subtitles back 0.5 s early, and a command built as a restore's is put
+    a sidecar's one subtitle track, which began at 65 s, at 0. A later
+    job's sidecar was cut the same way from the one before it, so the
+    shift was stored for good.
+
+    -copyts alone is no better, because the first file's own start time
+    is not always where the timeline begins either: a job that leaves a
+    file in MPEG-TS writes it starting about 1.4 s in, and a restore with
+    -copyts alone moved that file's tracks 1.4 s away from the sidecar's.
+    So the first file, through each of its openings, is moved back by its
+    own start time exactly as before, and the other files keep the times
+    they were stored with.
+
+    A second opening of an MPEG-TS needed this as well. FFmpeg recomputes
+    an MPEG-TS input's start time from the streams that input reads (its
+    verbose log says "Correcting start time of Input #N"), and without
+    -copyts that is what it takes off. A second opening reads only the
+    sparse streams, so a subtitle or data stream a job kept in a TS was
+    moved back by its own start: one beginning 0.51 s into the file came
+    back 0.51 s early. With -copyts FFmpeg takes off no start time at all,
+    only the offset given here, so the correction no longer counts.
+
+    Not complete: a stream the job removed that started before every
+    stream it kept comes back late by the difference (0.4 s measured), as
+    it did before this. Correcting that needs the original's start times,
+    which capture does not record.
+
+    first_start is the first file's start time (probe.start_time). None,
+    when the caller could not probe it, gives the arguments used before,
+    every input moved by its own start time.
+    """
+    if first_start is None:
+        args: list[str] = []
+        for path in paths:
+            args += ["-i", path]
+        return args + _opening_args(paths, openings)
+
+    # A zero offset changes nothing, so it is left out of the command.
+    offset = ["-itsoffset", f"{-first_start:.6f}"] if first_start else []
+    args = ["-copyts"]
+    for number, path in enumerate(paths):
+        args += (offset if number == 0 else []) + ["-i", path]
+    for source, _number in sorted(openings.items(), key=lambda item: item[1]):
+        args += (offset if source == 0 else []) + ["-i", paths[source]]
+    return args
+
+
 def build_sidecar_command(
     inputs: list[str],
     sidecar_path: str,
     sources: list[tuple[dict, int, int]],
+    first_input_start: float | None = None,
 ) -> list[str]:
     """
     Return the FFmpeg argv to collect destroyed streams into a single
@@ -687,6 +748,11 @@ def build_sidecar_command(
     to produce a sidecar holding both what THIS job destroyed (still
     present in the file it was handed) and what an earlier job destroyed
     (only in the previous sidecar). Neither source alone has everything.
+
+    first_input_start is the start time of the file the job was handed
+    (probe.start_time), which keeps a previous sidecar's streams in time
+    with it (_input_args). Used only with two inputs: one input is cut
+    the way the job cuts the same file, so the two already agree.
 
     Matroska regardless of the source container: it is the only format
     that will hold an arbitrary mix of dropped audio, subtitles and
@@ -717,9 +783,8 @@ def build_sidecar_command(
                 if len(inputs) > 1 else {})
 
     cmd = [app_settings.FFMPEG_PATH]
-    for path in inputs:
-        cmd += ["-i", path]
-    cmd += _opening_args(inputs, openings)
+    cmd += _input_args(inputs, openings,
+                       first_input_start if len(inputs) > 1 else None)
     cmd += ["-y", "-v", "error"]
 
     # Output-side subtitle ordinal, which is what -c:s:N addresses. It
@@ -763,6 +828,7 @@ def build_restore_command(
     manifest: dict,
     rebuilt_tracks: Sequence[int] = (),
     dolby_vision: Mapping[int, DolbyVision] | None = None,
+    processed_start: float | None = None,
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
@@ -774,6 +840,9 @@ def build_restore_command(
     muxer writes the timecode track from the video's timecode.
     dolby_vision is the processed file's Dolby Vision streams
     (probe.dolby_vision), whose way back is written after the loop below.
+    processed_start is the processed file's start time (probe.start_time),
+    which keeps the sidecar's streams in time with its own (_input_args);
+    None when it could not be probed.
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -864,9 +933,7 @@ def build_restore_command(
 
     cmd = [
         app_settings.FFMPEG_PATH,
-        "-i", processed_path,
-        "-i", sidecar_path,
-        *_opening_args(paths, openings),
+        *_input_args(paths, openings, processed_start),
         "-y",
         "-v", "error",
         "-nostats",
@@ -1124,6 +1191,7 @@ async def execute_ffmpeg(
             on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            ownership_from=input_path,
         )
     finally:
         discard_cover_art(covers)
@@ -1217,6 +1285,9 @@ async def execute_subtitle_extraction(
             timeout_seconds=timeout_seconds,
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            # A subtitle written beside the media belongs to whoever the
+            # media file does.
+            ownership_from=input_path,
         )
 
         if not result.success:
@@ -1484,6 +1555,7 @@ async def execute_ffmpeg_combined(
             on_staging_progress=_staging_progress(progress_callback),
             before_swap=before_swap,
             on_swap_ready=on_swap_ready,
+            ownership_from=input_path,
         )
     finally:
         discard_cover_art(covers)

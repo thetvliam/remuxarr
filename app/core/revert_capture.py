@@ -62,6 +62,7 @@ from app.config import settings as app_settings
 from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
 from app.core.probe import (
     ProbeError, extract_format_info, extract_tracks, is_faststart_mp4, probe_file,
+    start_time,
 )
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams, positional_pairs
@@ -648,18 +649,23 @@ async def capture(
             manifest = existing.manifest
             container = manifest.get("container")
 
+        if extend:
+            # Only a first job has the file it was handed probed already.
+            # Probed for every later run, an AC3 Forge run's included: its
+            # start time keeps the previous sidecar's streams in time with
+            # it (build_sidecar_command), as well as giving _pins its
+            # streams.
+            try:
+                input_probe = await _off_loop(probe_file, input_path)
+            except ProbeError as exc:
+                raise _Unavailable(
+                    f"Could not probe for a revert point: {exc}"
+                ) from exc
+        else:
+            input_probe = original_probe
+
         pinned = None
         if removed is not None:
-            if extend:
-                # Only a first job has the file it was handed probed already.
-                try:
-                    input_probe = await _off_loop(probe_file, input_path)
-                except ProbeError as exc:
-                    raise _Unavailable(
-                        f"Could not probe for a revert point: {exc}"
-                    ) from exc
-            else:
-                input_probe = original_probe
             pinned = _pins(manifest, input_probe, produced_probe, removed, extend=extend)
         matches = _keep_reencoded_lost(
             match_streams(manifest, produced_probe, pinned))
@@ -698,7 +704,8 @@ async def capture(
         # named as one, and a complete sidecar appears atomically.
         staged = staged_sidecar_path(file_id, job_id, forge=forge)
         try:
-            cmd = build_sidecar_command(inputs, staged, sources)
+            cmd = build_sidecar_command(inputs, staged, sources,
+                                        first_input_start=start_time(input_probe))
         except SidecarUnsupported as exc:
             logger.info(
                 "%s: no revert point possible for %s — %s",

@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2921 tests across 133 test files, plus 805 frontend tests under
+2935 tests across 135 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -228,6 +228,12 @@ then removes that one, so every job used to leave the file undated; for a
 phone's or a camera's recording it is the day it was shot.
 `test_forge_creation_date.py` covers the same date through an AC3 Forge add
 and undo on an MP4 and a Matroska, as Forge builds its own commands.
+`test_file_ownership.py` covers a file's owner, group and permissions through
+a job, a conversion, both ways of extracting a subtitle, a revert and an AC3
+Forge add and undo (issue #65): everything a run wrote belonged to root, with
+the mode its umask left. Giving a file to another owner needs root, so CI,
+which runs the tests as an ordinary user, checks the mode on real files and
+the owner through a recorded `os.chown`.
 `test_kept_file_tags.py` covers the check before a job's or a Forge run's
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its
@@ -401,7 +407,8 @@ answer has its own switch, kept apart from the one for a wrong language.
 **Revert to original** — `test_revert_manifest.py`, `test_revert_capture.py`,
 `test_revert_restore.py`, `test_revert_execution.py`,
 `test_revert_multiple_jobs.py`, `test_revert_match.py`, `test_revert_routes.py`,
-`test_revert_created_files.py`, `test_revert_retagged_capture.py`, `test_recycle_bin.py`,
+`test_revert_created_files.py`, `test_revert_retagged_capture.py`,
+`test_revert_timing.py`, `test_recycle_bin.py`,
 `test_retention_sweep.py`, `test_staging_hook.py`, `test_schema_migration.py`,
 `test_deployment_config.py`. The failure this feature has to avoid is not a
 crash: it is a revert that succeeds and quietly rebuilds the file wrong.
@@ -420,6 +427,14 @@ with a dropped track's language was taken for the dropped one, the sidecar
 stored the wrong track, and a revert gave back the kept track's content twice.
 It compares every restored stream's packets, since the metadata is right
 either way.
+`test_revert_timing.py` compares every restored stream's packet times with
+the original's, relative to the video. A restore, and a later job's capture,
+read streams from two files of one timeline, and FFmpeg moved each file back
+by its own start time: a sidecar holding fonts beside its subtitles starts at
+its first subtitle line, so they came back early by that much. A data stream
+kept in a TS came back early by its own start, which FFmpeg took for the
+start of the second opening of the file that reads it. The packets were right
+either way, which is all the other revert tests compared.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored
