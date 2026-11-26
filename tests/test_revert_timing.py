@@ -44,6 +44,13 @@ so each of the tests above runs twice: once as a point that recorded the
 times, and once as an older point (_as_an_older_point), which must also
 never read them.
 
+A subtitle places a file too, but never one the sidecar stored
+converted: placed by its SRT, a sidecar holding nothing but an MP4's
+mov_text moved back by the gap before the first line, the MP4 beginning
+it with an empty sample at 0 and the SRT at the line. A sidecar holding
+nothing but a TS's DVB subtitle has to be placed by it, or it comes back
+a frame of audio early.
+
 Each test compares every stream with the original's, relative to the
 video, to within 2 ms (Matroska stores milliseconds): the first packet of
 video and audio, every packet of a subtitle or data stream. The test of a
@@ -64,8 +71,13 @@ they are there for the mutants below. The five added with the third case
 all fail against the code before it: the removed track that started first
 by +0.400 s (+0.399 s in the MP4), the later job's German track by
 +0.400 s, and the MP4's removed AAC by +0.021 s.
+Two came after, with the fix that stopped a converted subtitle placing a
+file. The MP4's removed subtitle fails against the code before it, losing
+a line with the rest moved back 0.5 s. The TS's removed DVB subtitle
+passed there, and failed by -0.021 s against the fix as first proposed,
+which let no subtitle place a file.
 
-Verified by mutation, 15 applied, 15 killed.
+Verified by mutation, 18 applied, 18 killed.
 
 The first seven came with the first two cases, each run first against the
 suite as it stood before this file, and all seven survived it. Their exact
@@ -145,6 +157,29 @@ three tests that keep a file in MPEG-TS, and is recorded as such:
                                                 started_first_in_time
                                                 (+0.400 s)
 
+Three more came with the fix that stopped a converted subtitle placing a
+file. Run first against the suite as it stood before its two tests, with
+the fix in place, the first two survived and the third was already
+killed:
+
+  • A converted subtitle placing a file       → killed, only by test_an_
+                                                mp4s_removed_subtitle_keeps_
+                                                its_time (a line lost, the
+                                                rest moved back 0.5 s)
+  • No subtitle placing a file                → killed, only by test_a_tss_
+                                                removed_dvb_subtitle_keeps_
+                                                its_time (-0.021 s)
+  • Audio no longer placing a file            → already killed, by the two
+                                                MP4 tests with a removed AAC
+                                                (+0.021 s)
+
+A fourth, a subtitle tried before any video or audio, survived against a
+first version of that fix that tried video and audio first: a subtitle
+left to place a file holds the original's packets either way, one a job
+converts being kept in the sidecar as it was (revert.match_streams), so
+it gives the same offset. The ordering it broke was removed rather than
+kept without a test that could defend it.
+
 One mutant proposed with it is not in that list: the fallback for an
 older point removed. With no times recorded there is nothing to place a
 file by, so alignment_offsets has no offsets to give whether or not it
@@ -153,12 +188,13 @@ only keeps a manifest whose times were hand-edited away from failing. The
 two mutants that read times for an older point stand in for it, since
 reading them is all the code would do differently.
 
-No equivalent mutants among the fifteen.
+No equivalent mutants among the eighteen.
 """
 import asyncio
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -588,5 +624,65 @@ def test_a_later_job_keeps_a_track_that_started_first_in_time(rig):
     rig.job("-map", "0:v", "-map", "0:a:0", "-map", "0:a:1", "-c", "copy",
             "-f", "matroska")
     rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "matroska")
+
+    assert rig.revert() == []
+
+
+def test_an_mp4s_removed_subtitle_keeps_its_time(rig):
+    """
+    FFmpeg's MP4 muxer fills the gaps between mov_text lines with empty
+    samples, so this subtitle begins with one at 0, while the sidecar
+    stores it as SRT, which begins at its first line. With nothing but the
+    subtitle in the sidecar, placing the sidecar by it moved it back by
+    the gap, 0.5 s, and the restored subtitle lost a line. Only video and
+    audio place a file now (ffmpeg.alignment_offsets).
+    """
+    rig.original("Film.mp4", *_VIDEO, *_tone(440),
+                 "-i", _subtitles(rig, (0.5, 1.5), (2.0, 3.0)),
+                 "-map", "0", "-map", "1", "-map", "2", *_ENCODE, "-c:a", "aac",
+                 "-c:s", "mov_text", "-metadata:s:s:0", "language=eng", "-f", "mp4")
+    # What makes this case: the subtitle's first packet is the empty one
+    # at 0, half a second before its first line.
+    assert _packet_times(rig.pristine)[2][:2] == pytest.approx([0.0, 0.5])
+    rig.job("-map", "0:v", "-map", "0:a", "-c", "copy", "-f", "mp4")
+
+    assert rig.revert() == []
+
+
+_MAKE_PGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "tools", "testlib", "make_pgs.py")
+
+
+def _dvb_subtitles(rig):
+    """
+    Two lines of DVB bitmap subtitle. FFmpeg can neither draw text as a
+    bitmap subtitle nor encode PGS, so they are decoded from the PGS the
+    explorer's own generator writes (tools/testlib/make_pgs.py), as the
+    explorer's library makes its DVB recording.
+    """
+    sup, mks = rig.tmp / "subs.sup", rig.tmp / "subs.mks"
+    subprocess.run([sys.executable, _MAKE_PGS, str(sup), "160", "120", "2"], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-fix_sub_duration", "-i", str(sup),
+                    "-c:s", "dvbsub", "-f", "matroska", str(mks)], check=True)
+    return str(mks)
+
+
+def test_a_tss_removed_dvb_subtitle_keeps_its_time(rig):
+    """
+    A sidecar holding nothing but a TS's DVB subtitle has no video or
+    audio to place it by. FFmpeg cut it with the input moved back by the
+    subtitle's own start, which in an MPEG-TS it corrects to the streams
+    read, not by the original's, which the AAC sets a frame earlier. Not
+    placed by its subtitle, the sidecar kept that difference and the
+    subtitle came back early by it (ffmpeg.alignment_offsets).
+    """
+    rig.original("Recording.ts", *_VIDEO, *_tone(440), "-i", _dvb_subtitles(rig),
+                 "-map", "0", "-map", "1", "-map", "2:s:0", *_ENCODE,
+                 "-c:a", "aac", "-c:s", "copy", "-metadata:s:s:0", "language=eng",
+                 "-f", "mpegts")
+    # What makes this case: the audio begins before the subtitle does.
+    times = _packet_times(rig.pristine)
+    assert times[1][0] < times[2][0]
+    rig.job("-map", "0:v", "-map", "0:a", "-c", "copy", "-f", "mpegts")
 
     assert rig.revert() == []

@@ -689,9 +689,27 @@ def alignment_offsets(
     input have a time for; the streams of one file keep their distances
     from each other, so one is enough.
 
-    Only video, audio and subtitle tracks place a file, the streams a job
-    decides about. An attachment has no packets, and a cover's one picture
-    says nothing about the timeline.
+    Video, audio and subtitle tracks place a file. An attachment has no
+    packets, and a cover's one picture says nothing about the timeline. A
+    subtitle is needed for a sidecar of nothing but subtitles: a TS's DVB
+    subtitle stored on its own came back 23 ms early unless placed by
+    itself. FFmpeg corrects an MPEG-TS input's start time to the streams it
+    reads, so a sidecar cut from the subtitle alone was moved back by the
+    subtitle's start, not by the original's, which its audio set 23 ms
+    earlier and which the manifest records.
+
+    Never by a subtitle the sidecar stored converted (_SUBTITLE_TRANSCODE),
+    whose first packet does not mean the same in both files: FFmpeg's MP4
+    muxer fills the gaps between mov_text lines with empty samples, so an
+    MP4's subtitle begins with one at 0, and its SRT in the sidecar, which
+    has no empty lines, begins at the first real one. Placed by it, a
+    sidecar holding only that subtitle moved back by the gap (0.5 s
+    measured) and lost a line. A subtitle a job converts (an SRT made
+    mov_text for an MP4, which gains the same empty sample) does not place
+    the processed file in its new form: its codec no longer matches, so
+    capture keeps the original in the sidecar (revert.match_streams), and
+    it is found there. A file nothing can place keeps its stored times, as every file did
+    before these times were recorded.
 
     None when the manifest recorded no times (a point made before they
     were) or no input could be placed: the caller then times the files as
@@ -707,6 +725,8 @@ def alignment_offsets(
         if stream.get("type") not in ("video", "audio", "subtitle"):
             continue
         if "attached_pic" in (stream.get("disposition") or []):
+            continue
+        if stream.get("codec") in _SUBTITLE_TRANSCODE:
             continue
         recorded = stream.get("first_pts")
         now = times.get((number, index))
