@@ -8,8 +8,10 @@ is_faststart_mp4()    → True/False/None (box-level MP4 atom check)
 """
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -319,6 +321,66 @@ def _same_second(made: str, kept: str | None) -> bool:
     except (TypeError, ValueError):
         return False
     return a.replace(microsecond=0) == b.replace(microsecond=0)
+
+
+def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
+                  ffprobe_bin: str | None = None) -> list[str] | None:
+    """
+    The file's own tags that a job writing it as an MP4 would lose, named
+    as lost_file_tags names them, or None when that could not be found
+    out. [] for a file with no tag beyond REWRITTEN_TAGS, without running
+    anything.
+
+    Found by writing the tags alone into a tiny MP4, through the muxer a
+    job writes an MP4 with (ffmpeg.output_muxer), and comparing what comes
+    back, rather than from a list of the tags that muxer writes. That list
+    lives in libavformat/movenc.c and can change with FFmpeg, and even the
+    two muxers of that file differ: the QuickTime muxer drops synopsis,
+    description, show and others the MP4 muxer keeps. Measured against
+    real jobs with 23 tag names, each on a Matroska converted to MP4 and on
+    an MP4 rewritten as one, it named every tag a job was refused over and
+    no other; tests/test_mp4_tag_loss.py holds part of that. It took about
+    33 ms a file, reading the result back included.
+
+    Stored on MediaFile.mp4_lost_tags at scan and at job pickup. Nothing
+    decides anything from it yet.
+    """
+    from app.core.ffmpeg import output_muxer
+
+    tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
+    own = {key: value for key, value in tags.items()
+           if key.lower() not in REWRITTEN_TAGS}
+    if not own:
+        return []
+    if ffmpeg_bin is None:
+        ffmpeg_bin = app_settings.FFMPEG_PATH
+    metadata = []
+    for key, value in own.items():
+        metadata += ["-metadata", f"{key}={value}"]
+
+    fd, written = tempfile.mkstemp(prefix="remuxarr-tags-", suffix=".mp4")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-v", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono", "-t", "0.01",
+             "-c:a", "aac", *metadata, "-f", output_muxer("mp4"), written],
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not find out which tags an MP4 would keep: %s",
+                           result.stderr.strip())
+            return None
+        output = probe_file(written, ffprobe_bin)
+    except (subprocess.TimeoutExpired, OSError, ProbeError) as exc:
+        logger.warning("Could not find out which tags an MP4 would keep: %s", exc)
+        return None
+    finally:
+        try:
+            os.unlink(written)
+        except OSError:
+            pass
+    return lost_file_tags(probe_data, output)
 
 
 def creation_time(probe_data: dict | None) -> str | None:

@@ -25,7 +25,7 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
-from app.core.probe import lost_dolby_vision, lost_file_tags
+from app.core.probe import lost_dolby_vision, lost_file_tags, mp4_lost_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
@@ -2011,6 +2011,9 @@ def _load_job_data(job_id: int):
                 "Job %d: could not probe %s (%s) — deciding from the stored "
                 "tracks", job_id, media.path, exc,
             )
+        # Beside the probe, as it runs FFmpeg: the tags an MP4 would lose,
+        # stored below (probe.mp4_lost_tags).
+        lost_in_mp4 = None if probe_data is None else mp4_lost_tags(probe_data)
         if probe_data is not None:
             stored = [_track_to_dict(t) for t in
                       db.query(Track).filter(Track.file_id == media.id)]
@@ -2050,6 +2053,10 @@ def _load_job_data(job_id: int):
             fresh = extract_format_info(probe_data)
             media.recording_signs = fresh["recording_signs"]
             media.dolby_vision = fresh["dolby_vision"]
+        # The tags an MP4 would lose, from the probe above every time for
+        # the same reason. Left as stored when they could not be found out.
+        if lost_in_mp4 is not None:
+            media.mp4_lost_tags = json.dumps(lost_in_mp4)
 
         file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
         decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)

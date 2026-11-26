@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2948 tests across 135 test files, plus 805 frontend tests under
+2978 tests across 136 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -238,6 +238,10 @@ the owner through a recorded `os.chown`.
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its
 plan is the same.
+`test_mp4_tag_loss.py` covers finding out, before any job runs, which of a
+file's own tags a job writing it as an MP4 would lose (issue #67), held against
+what real jobs are refused over, and that the check, which runs FFmpeg, never
+runs while a write is held.
 `test_dolby_vision.py` covers a Dolby Vision stream through a job, a revert and
 an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
 MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise

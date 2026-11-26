@@ -936,6 +936,11 @@ def _migrate_schema() -> None:
         # was never looked at for Dolby Vision, so it looks at pickup.
         ("media_files", "dolby_vision",
          "ALTER TABLE media_files ADD COLUMN dolby_vision TEXT"),
+        # No DEFAULT, as for recording_signs: null says the file was never
+        # looked at for the tags an MP4 would lose, which its next scan
+        # that probes it, or its next job, does.
+        ("media_files", "mp4_lost_tags",
+         "ALTER TABLE media_files ADD COLUMN mp4_lost_tags TEXT"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",
