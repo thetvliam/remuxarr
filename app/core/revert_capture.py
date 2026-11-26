@@ -59,10 +59,12 @@ import os
 from dataclasses import dataclass
 
 from app.config import settings as app_settings
-from app.core.ffmpeg import _CONTAINER_FORMAT, SidecarUnsupported, build_sidecar_command
+from app.core.ffmpeg import (
+    _CONTAINER_FORMAT, SidecarUnsupported, alignment_offsets, build_sidecar_command,
+)
 from app.core.probe import (
-    ProbeError, extract_format_info, extract_tracks, is_faststart_mp4, probe_file,
-    start_time,
+    ProbeError, extract_format_info, extract_tracks, first_packet_times,
+    is_faststart_mp4, probe_file, start_time,
 )
 from app.core.recycle import SIDECAR_SUFFIX, recycle_dir_status
 from app.core.revert import build_manifest, match_streams, positional_pairs
@@ -278,6 +280,23 @@ async def _run(cmd: list[str]) -> None:
             f"FFmpeg failed writing the sidecar (rc={proc.returncode}): "
             f"{(stderr or b'').decode(errors='replace').strip()[:300]}"
         )
+
+
+def _located_in_inputs(manifest: dict) -> list[tuple[dict, tuple[int, int]]]:
+    """
+    Where a later run's sidecar command finds each stream of the original
+    it can find: in the previous sidecar (input 1), or in the file the run
+    was handed (input 0), by the same rule as _plan_sources but for every
+    stream, kept ones included, since any of them can place its file
+    (ffmpeg.alignment_offsets).
+    """
+    located = []
+    for stream in manifest.get("streams") or []:
+        if stream.get("sidecar_index") is not None:
+            located.append((stream, (1, stream["sidecar_index"])))
+        elif stream.get("processed_index") is not None:
+            located.append((stream, (0, stream["processed_index"])))
+    return located
 
 
 def _plan_sources(
@@ -636,9 +655,13 @@ async def capture(
             # sees the original; later jobs carry this manifest forward.
             faststart = (is_faststart_mp4(input_path)
                          if _CONTAINER_FORMAT.get(container) == "mp4" else None)
+            # When each stream starts, so a restore can put it back there
+            # (ffmpeg.alignment_offsets).
+            first_packets = await _off_loop(first_packet_times, input_path)
             manifest = build_manifest(original_probe, original_path=input_path,
                                       original_container=container,
-                                      faststart=faststart)
+                                      faststart=faststart,
+                                      first_packets=first_packets)
         else:
             # A later job. The manifest is NOT rebuilt from input_path —
             # that file is already a processed version, and treating it as
@@ -703,9 +726,20 @@ async def capture(
         # Writing to .part and renaming means a partial sidecar is always
         # named as one, and a complete sidecar appears atomically.
         staged = staged_sidecar_path(file_id, job_id, forge=forge)
+        # A later run mixes the file it was handed with the previous
+        # sidecar, and puts both in the original's timeline, as a restore
+        # does, where the point recorded when each stream started.
+        offsets = None
+        if extend and manifest.get("start_time") is not None:
+            times = {}
+            for number, path in enumerate(inputs):
+                found = await _off_loop(first_packet_times, path)
+                times.update(((number, index), time) for index, time in found.items())
+            offsets = alignment_offsets(manifest, _located_in_inputs(manifest), times)
         try:
             cmd = build_sidecar_command(inputs, staged, sources,
-                                        first_input_start=start_time(input_probe))
+                                        first_input_start=start_time(input_probe),
+                                        offsets=offsets)
         except SidecarUnsupported as exc:
             logger.info(
                 "%s: no revert point possible for %s — %s",

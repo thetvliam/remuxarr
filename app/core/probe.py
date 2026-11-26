@@ -608,6 +608,60 @@ def start_time(probe_data: dict) -> float:
     return _float_or_none((probe_data.get("format") or {}).get("start_time")) or 0.0
 
 
+# How much of a file first_packet_times reads, in seconds from its start.
+# Reading every packet took 1.1 s for a ten-minute 87 MB file already in
+# the page cache, and would read a whole film from disk; the first 30 s
+# took 78 ms. A stream with nothing in that stretch gets no time.
+FIRST_PACKET_WINDOW = 30
+
+
+def first_packet_times(path: str, ffprobe_bin: str | None = None) -> dict[int, float]:
+    """
+    The earliest presentation time of each stream's packets in the first
+    FIRST_PACKET_WINDOW seconds of the file, by stream index. Empty when
+    ffprobe fails: the caller then does what it did before these times
+    were recorded (revert.build_manifest, ffmpeg.alignment_offsets).
+
+    Packet times rather than each stream's start_time, because the two
+    differ where a revert needs them to agree: an MP4's AAC reports a
+    start_time of 0 while its first packet sits 21 ms earlier at 48 kHz
+    (the priming its edit list skips), and a sidecar cut from it holds the packets.
+    Aligned on start_time, that track came back 21 ms late.
+    """
+    if ffprobe_bin is None:
+        ffprobe_bin = app_settings.FFPROBE_PATH
+    cmd = [
+        ffprobe_bin,
+        "-v", "quiet",
+        "-read_intervals", f"%+{FIRST_PACKET_WINDOW}",
+        "-show_entries", "packet=stream_index,pts_time",
+        "-print_format", "json",
+        path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            errors="replace", timeout=120,
+        )
+        packets = json.loads(result.stdout).get("packets") or []
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as exc:
+        logger.warning("Could not read packet times of %s: %s", path, exc)
+        return {}
+    if result.returncode != 0:
+        logger.warning("Could not read packet times of %s: %s",
+                       path, result.stderr.strip())
+        return {}
+
+    times: dict[int, float] = {}
+    for packet in packets:
+        pts = _float_or_none(packet.get("pts_time"))
+        index = packet.get("stream_index")
+        if pts is None or index is None:
+            continue
+        times[index] = min(times.get(index, pts), pts)
+    return times
+
+
 def extract_format_info(probe_data: dict) -> dict:
     """Extract file-level format metadata.
 

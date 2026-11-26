@@ -44,6 +44,8 @@ matching by metadata cannot tell look-alike tracks apart once the job has
 rewritten one's language (see match_streams).
 """
 
+from app.core.probe import start_time
+
 # 2: manifests describe the PRISTINE original and are extended in place by
 # later jobs, rather than each job writing a fresh manifest describing
 # whatever it was handed. processed_index/sidecar_index are re-resolved on
@@ -54,7 +56,8 @@ MANIFEST_VERSION = 2
 
 def build_manifest(probe_data: dict, *, original_path: str,
                    original_container: str | None,
-                   faststart: bool | None = None) -> dict:
+                   faststart: bool | None = None,
+                   first_packets: dict[int, float] | None = None) -> dict:
     """
     Describe a file's full stream layout, for restoring it later.
 
@@ -62,6 +65,11 @@ def build_manifest(probe_data: dict, *, original_path: str,
     cover art that extract_tracks skips — this is an inventory, not a
     processing plan, and something absent from the inventory can never be
     put back.
+
+    first_packets is probe.first_packet_times for the same file. Without
+    it (or with it empty, ffprobe having failed) the manifest records no
+    times, and a restore times the file as it did before they were
+    recorded.
     """
     streams = []
     for stream in probe_data.get("streams", []):
@@ -115,8 +123,14 @@ def build_manifest(probe_data: dict, *, original_path: str,
             # which the original never did.
             "tags": dict(tags),
         })
+        if first_packets:
+            # When this stream's first packet was, in the original's own
+            # timeline (probe.first_packet_times), so a restore can put
+            # every stream back where it was (ffmpeg.alignment_offsets).
+            # None for a stream with nothing in the stretch read.
+            streams[-1]["first_pts"] = first_packets.get(stream.get("index"))
 
-    return {
+    manifest = {
         "version":   MANIFEST_VERSION,
         "path":      original_path,
         "container": original_container,
@@ -150,6 +164,16 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # treats alike. Not a version bump, for the reason format_tags gives.
         "faststart": faststart,
     }
+    if first_packets:
+        # The original's start time, which a restore takes off every
+        # stream's first_pts, so it hands the muxer times counted from the
+        # original's start: a Matroska that began at 0 comes back beginning
+        # at 0, and an MPEG-TS at the 1.4 s FFmpeg's muxer starts one at,
+        # where an FFmpeg-written original began. Absent, like first_pts,
+        # from manifests written before them, which restore treats as it
+        # always did. Not a version bump, for the reason format_tags gives.
+        manifest["start_time"] = start_time(probe_data)
+    return manifest
 
 
 def _as_float(value) -> float | None:

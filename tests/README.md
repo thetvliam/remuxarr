@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2935 tests across 135 test files, plus 805 frontend tests under
+2946 tests across 135 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -434,7 +434,12 @@ by its own start time: a sidecar holding fonts beside its subtitles starts at
 its first subtitle line, so they came back early by that much. A data stream
 kept in a TS came back early by its own start, which FFmpeg took for the
 start of the second opening of the file that reads it. The packets were right
-either way, which is all the other revert tests compared.
+either way, which is all the other revert tests compared. A track the job
+removed that started before every track it kept still came back late by the
+difference, and an MP4's removed AAC 21 to 23 ms late, until capture recorded when
+each stream's first packet was and the restore placed each file by it. The
+tests from before that also run as a point recorded without those times,
+which is still restored the old way.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored

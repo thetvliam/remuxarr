@@ -29,56 +29,131 @@ MPEG-TS writes it starting about 1.4 s in, and -copyts alone moved that
 file's tracks 1.4 s away from the sidecar's. The tests in MPEG-TS are
 there for that.
 
+The third case
+--------------
+That still left a stream the job removed that started before every
+stream it kept late by the difference, 0.4 s in the tests here: the
+processed file starts at its first kept stream, so moving it back by its
+own start moved the kept streams too far, and a TS the job left as one
+lost the difference in the processed file itself. An MP4's removed AAC
+came back 21 ms late. So capture records when each stream's first packet
+was (probe.first_packet_times), and a restore, or a later job's capture,
+moves each file so its streams land at those times (ffmpeg.
+alignment_offsets). Points recorded before that are restored as they were,
+so each of the tests above runs twice: once as a point that recorded the
+times, and once as an older point (_as_an_older_point), which must also
+never read them.
+
 Each test compares every stream with the original's, relative to the
 video, to within 2 ms (Matroska stores milliseconds): the first packet of
-video and audio, every packet of a subtitle or data stream. No original
-here records an encoder delay for its audio: FLAC has none, and MP2 and
-AC-3 are only ever in MPEG-TS, which has nowhere to record one (AC-3 in
-Matroska carries 256 samples). So the shift a recorded delay causes on
-the way back from an MP4, every stream of the restored file moved by the
-delay (21 ms for AAC), stays out of these tests; it is a question of its
-own.
+video and audio, every packet of a subtitle or data stream. The test of a
+TS whose removed track started first also checks that the restored file
+begins where the original did, which a comparison relative to the video
+cannot see. The MP4 originals here keep their AAC's encoder delay in the
+edit list of the MP4 they are restored to. No test takes a Matroska
+original through an MP4 and back: there the delay recorded in the
+Matroska (CodecDelay) is lost, and every stream of the restored file
+moves by it (21 ms for AAC), a question of its own that recording start
+times does not touch.
 
-Not covered, because it is not fixed: a stream the job removed that
-started before every stream it kept comes back late by the difference
-(ffmpeg._input_args).
+Three of the tests from before the third case fail against the code
+before them, each with the stream off by the amount described: the
+subtitles beside fonts and the later job's subtitles by -2.000 s, the data
+stream kept in a TS by -0.510 s. The other three passed before them too;
+they are there for the mutants below. The five added with the third case
+all fail against the code before it: the removed track that started first
+by +0.400 s (+0.399 s in the MP4), the later job's German track by
++0.400 s, and the MP4's removed AAC by +0.021 s.
 
-Three of these fail against the code before the fix, each with the
-stream off by the amount described: the subtitles beside fonts and the
-later job's subtitles by -2.000 s, the data stream kept in a TS by
--0.510 s. The other three passed before it too; they are there for the
-mutants below.
+Verified by mutation, 15 applied, 15 killed.
 
-Verified by mutation, 7 applied, 7 killed. Run first against the suite as
-it stood before this file, all seven survived it. Killed now, every time
-by a stream reported off by the amount the mutant moves it:
+The first seven came with the first two cases, each run first against the
+suite as it stood before this file, and all seven survived it. Their exact
+form was not recorded; they were made again from these descriptions
+against the code with recorded times, so what follows for them is a
+record of the remade mutants, not baseline evidence. Five are now killed
+only by the older-point runs, because with recorded times the files are
+placed by those whatever the mutant does to the start time: that is what
+the older-point runs are for. Every kill is a stream reported off by the
+amount the mutant moves it:
 
-  • Restore without -copyts, as before        → killed, by
-                                                test_subtitles_restored_beside_
-                                                fonts_keep_their_time (-2.000 s)
-                                                and test_a_data_stream_kept_in_
-                                                a_ts_keeps_its_time (-0.510 s)
-  • Restore with -copyts alone                → killed, by the three tests
+  • Restore without -copyts, as before        → killed, only by the older-
+                                                point runs of test_subtitles_
+                                                restored_beside_fonts_keep_
+                                                their_time (-2.000 s) and
+                                                test_a_data_stream_kept_in_a_
+                                                ts_keeps_its_time (-0.510 s)
+  • Restore with -copyts alone                → killed, only by the older-
+                                                point runs of the three tests
                                                 that keep a file in MPEG-TS
                                                 (-1.400 s)
   • The processed file's first opening moved
-    back, its second opening not              → killed, only by
+    back, its second opening not              → killed, only by both runs of
                                                 test_a_data_stream_kept_in_
                                                 a_ts_keeps_its_time (+1.400 s)
-  • The offset's sign turned                  → killed, by the same three
-                                                (-2.800 s)
-  • A later job's capture without -copyts     → killed, only by
-                                                test_a_later_job_keeps_the_
-                                                earlier_sidecars_subtitles_in_
-                                                time (-2.000 s)
-  • A later job's capture with -copyts alone  → killed, only by
-                                                test_a_later_job_on_a_file_
-                                                that_stays_ts_keeps_its_time
-                                                (+1.400 s)
-  • A first capture with -copyts alone        → killed, by every test whose
+  • The offset's sign turned                  → killed, by both runs of the
+                                                same three (2.800 s) and by
+                                                four of the five tests of the
+                                                third case
+  • A later job's capture without -copyts     → killed, only by the older-
+                                                point run of test_a_later_job_
+                                                keeps_the_earlier_sidecars_
+                                                subtitles_in_time (-2.000 s)
+  • A later job's capture with -copyts alone  → killed, only by the older-
+                                                point run of test_a_later_job_
+                                                on_a_file_that_stays_ts_keeps_
+                                                its_time (+1.400 s)
+  • A first capture with -copyts alone        → killed, by the older-point
+                                                run of every test whose
                                                 original is a TS (+1.400 s)
 
-No equivalent mutants.
+The other eight came with the third case. Run first against the suite as
+it stood before its tests, with the code in place, seven survived; the
+sign flipped was already killed there, by the recorded-times runs of the
+three tests that keep a file in MPEG-TS, and is recorded as such:
+
+  • The offset alignment_offsets works out
+    with its sign flipped                     → already killed by those
+                                                three (2.800 s); now also by
+                                                four of the five tests of the
+                                                third case
+  • Each stream's start time recorded and
+    read instead of its first packet          → killed, only by the two MP4
+                                                tests (+0.021 s)
+  • The sidecar never placed                  → killed, only by the two MP4
+                                                tests (+0.021 s)
+  • The processed file never placed           → killed, by the four tests
+                                                with a removed track that
+                                                started first (+0.400 s,
+                                                +0.378 s in the MP4)
+  • The original's start not taken off        → killed, only by test_a_
+                                                removed_track_that_started_
+                                                first_keeps_its_time_in_a_ts,
+                                                the restored file beginning
+                                                1.4 s after the original
+  • The restore reading packet times for an
+    older point                               → killed, by the older-point
+                                                run of all six tests from
+                                                before the third case
+  • A later capture reading packet times for
+    an older point                            → killed, only by the older-
+                                                point runs of the two later-
+                                                job tests from before it
+  • A later job's capture not placing its
+    files                                     → killed, only by test_a_
+                                                later_job_keeps_a_track_that_
+                                                started_first_in_time
+                                                (+0.400 s)
+
+One mutant proposed with it is not in that list: the fallback for an
+older point removed. With no times recorded there is nothing to place a
+file by, so alignment_offsets has no offsets to give whether or not it
+checks the manifest's start time first; that check (and returning None)
+only keeps a manifest whose times were hand-edited away from failing. The
+two mutants that read times for an older point stand in for it, since
+reading them is all the code would do differently.
+
+No equivalent mutants among the fifteen.
 """
 import asyncio
 import os
@@ -147,9 +222,44 @@ def _offsets(original, restored):
     return found
 
 
+def _as_an_older_point(monkeypatch):
+    """
+    Capture and restore as for a point recorded before points recorded
+    when each stream starts: the first capture records no times, and
+    neither a later capture nor the restore reads any. Returns the files
+    capture asked for times, which a later capture must not add to.
+    """
+    import app.core.revert_capture as capture_mod
+    import app.core.revert_restore as restore_mod
+
+    asked = []
+
+    def none_recorded(path, *args):
+        asked.append(path)
+        return {}
+
+    def never(*args):
+        raise AssertionError("the restore read packet times for a point that recorded none")
+
+    monkeypatch.setattr(capture_mod, "first_packet_times", none_recorded)
+    monkeypatch.setattr(restore_mod, "first_packet_times", never)
+    return asked
+
+
+# The tests from before points recorded when each stream starts, run as
+# such a point too: a point recorded then is still restored, and a later
+# job still adds to it, the way they were before.
+_both_kinds_of_point = pytest.mark.parametrize(
+    "rig", [False, True], indirect=True, ids=["recorded times", "older point"])
+
+
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
-    """A recycle volume and a live database, and the steps of a job."""
+def rig(tmp_path, monkeypatch, request):
+    """
+    A recycle volume and a live database, and the steps of a job.
+    Parametrized True (_both_kinds_of_point), its points are older ones
+    (_as_an_older_point).
+    """
     from sqlalchemy.orm import sessionmaker
 
     from tests.conftest import memory_engine
@@ -170,15 +280,18 @@ def rig(tmp_path, monkeypatch):
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(session_mod, "SessionLocal", factory)
     monkeypatch.setattr(worker_mod, "SessionLocal", factory)
+    asked = (_as_an_older_point(monkeypatch)
+             if getattr(request, "param", False) else None)
     db = factory()
-    yield Rig(tmp_path, media, db)
+    yield Rig(tmp_path, media, db, asked)
     db.close()
 
 
 class Rig:
-    def __init__(self, tmp, media, db):
+    def __init__(self, tmp, media, db, asked=None):
         self.tmp, self.media, self.db = tmp, media, db
         self.jobs = 0
+        self.asked = asked
 
     def original(self, name, *ffmpeg_args):
         """Write the original with FFmpeg, keep a copy, and record its row."""
@@ -215,6 +328,9 @@ class Rig:
         ))
         assert error is None, error
         assert captured is not None, "the job recorded no revert point"
+        if self.asked is not None:
+            assert len(self.asked) == 1, (
+                "a later capture read packet times for a point that recorded none")
         os.replace(produced, self.path)
         _record_revert_point(self.row.id, captured, str(self.path), [])
 
@@ -257,6 +373,7 @@ def _tone(hz):
 _ENCODE = ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
 
 
+@_both_kinds_of_point
 def test_subtitles_restored_beside_fonts_keep_their_time(rig):
     """
     The job removes a subtitle track and the fonts, so the sidecar holds
@@ -274,6 +391,7 @@ def test_subtitles_restored_beside_fonts_keep_their_time(rig):
     assert rig.revert() == []
 
 
+@_both_kinds_of_point
 def test_a_file_that_stays_ts_keeps_its_tracks_in_time(rig):
     """
     A job that leaves a file in MPEG-TS writes it starting about 1.4 s in,
@@ -289,6 +407,7 @@ def test_a_file_that_stays_ts_keeps_its_tracks_in_time(rig):
     assert rig.revert() == []
 
 
+@_both_kinds_of_point
 def test_a_data_stream_kept_in_a_ts_keeps_its_time(rig):
     """
     The data stream stays in the processed file, and as a sparse stream
@@ -313,6 +432,7 @@ def test_a_data_stream_kept_in_a_ts_keeps_its_time(rig):
     assert rig.revert() == []
 
 
+@_both_kinds_of_point
 def test_a_later_job_keeps_the_earlier_sidecars_subtitles_in_time(rig):
     """
     The first job stores a subtitle track and the fonts, the second an
@@ -334,6 +454,7 @@ def test_a_later_job_keeps_the_earlier_sidecars_subtitles_in_time(rig):
     assert rig.revert() == []
 
 
+@_both_kinds_of_point
 def test_a_later_job_on_a_file_that_stays_ts_keeps_its_time(rig):
     """
     The second job is handed an MPEG-TS starting about 1.4 s in, and the
@@ -354,6 +475,7 @@ def test_a_later_job_on_a_file_that_stays_ts_keeps_its_time(rig):
     assert rig.revert() == []
 
 
+@_both_kinds_of_point
 def test_a_ts_converted_to_mp4_keeps_its_tracks_in_time(rig):
     """
     The commonest way a recording reaches a revert: converted to MP4, with
@@ -367,5 +489,104 @@ def test_a_ts_converted_to_mp4_keeps_its_tracks_in_time(rig):
                  "-metadata:s:a:0", "language=eng",
                  "-metadata:s:a:1", "language=fre", "-f", "mpegts")
     rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "mp4")
+
+    assert rig.revert() == []
+
+
+def _start(path):
+    """When the restored file's video begins, in its own timeline."""
+    kinds = _streams(path)
+    return _packet_times(path)[kinds.index("video")][0]
+
+
+def _later(*args):
+    """An input that begins 0.4 s after the file does."""
+    return ["-itsoffset", "0.4", *args]
+
+
+def test_a_removed_track_that_started_first_keeps_its_time(rig):
+    """
+    The German track starts 0.4 s before the video and the English track,
+    and the job removes it. The processed file starts at its first kept
+    stream, 0.4 s in, and the restore moved it back by that start, so the
+    kept tracks moved 0.4 s and the German track came back 0.4 s late
+    beside them.
+    """
+    rig.original("Show.mkv", *_later(*_VIDEO), *_later(*_tone(440)), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2", *_ENCODE, "-c:a", "flac",
+                 "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:1", "language=ger", "-f", "matroska")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "matroska")
+
+    assert rig.revert() == []
+
+
+def test_a_removed_track_that_started_first_keeps_its_time_in_an_mp4(rig):
+    """The same in an MP4 left as one, with AAC, whose packets begin
+    before the times ffprobe reports for its streams (see the next test)."""
+    rig.original("Film.mp4", *_later(*_VIDEO), *_later(*_tone(440)), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2", *_ENCODE, "-c:a", "aac",
+                 "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:1", "language=ger", "-f", "mp4")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "mp4")
+
+    assert rig.revert() == []
+
+
+def test_an_mp4s_removed_aac_keeps_its_time(rig):
+    """
+    An MP4's AAC begins with a packet of priming that its edit list skips:
+    ffprobe reports the stream starting at 0 and its first packet 21 ms
+    before. The sidecar keeps that packet, and the track restored from it
+    came back 21 ms late. Placed by each stream's start time rather than
+    its first packet, it still did (probe.first_packet_times).
+    """
+    rig.original("Film.mp4", *_VIDEO, *_tone(440), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2", *_ENCODE, "-c:a", "aac",
+                 "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:1", "language=ger", "-f", "mp4")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "mp4")
+
+    assert rig.revert() == []
+
+
+def test_a_removed_track_that_started_first_keeps_its_time_in_a_ts(rig):
+    """
+    In an MPEG-TS left as one, the processed file itself loses the 0.4 s:
+    FFmpeg writes it from 1.4 s whatever its first stream was. The
+    restored file also has to begin where the original did, which no
+    comparison relative to the video can see.
+    """
+    rig.original("Recording.ts", *_later(*_VIDEO), *_later(*_tone(440)), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2", *_ENCODE, "-c:a", "mp2",
+                 "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:1", "language=ger", "-f", "mpegts")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "mpegts")
+
+    assert rig.revert() == []
+    assert abs(_start(rig.path) - _start(rig.pristine)) <= TOLERANCE
+
+
+def test_a_later_job_keeps_a_track_that_started_first_in_time(rig):
+    """
+    The first job removes the German track, which starts 0.4 s before the
+    rest, and the second the French. The second sidecar mixes the file the
+    job was handed, starting 0.4 s in, with the first sidecar, starting at
+    the German track. Unless both are placed by the times the point
+    recorded, the file handed is moved back by its own start and the
+    French track is stored at the German track's time, without the 0.4 s
+    between them, so the restore can put back one of the two but not both:
+    placed by the French, the German came back 0.4 s late.
+    """
+    rig.original("Show.mkv", *_later(*_VIDEO), *_later(*_tone(440)),
+                 *_later(*_tone(550)), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2", "-map", "3",
+                 *_ENCODE, "-c:a", "flac",
+                 "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:1", "language=fre",
+                 "-metadata:s:a:2", "language=ger", "-f", "matroska")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-map", "0:a:1", "-c", "copy",
+            "-f", "matroska")
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "matroska")
 
     assert rig.revert() == []
