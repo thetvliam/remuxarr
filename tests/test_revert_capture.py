@@ -1284,7 +1284,7 @@ def job(tmp_path, recycle, monkeypatch):
     # The outputs here are not media files, so the tag check, which probes
     # both files, would refuse every run; it has its own tests
     # (test_kept_file_tags.py).
-    async def keeps_its_tags(input_path, produced_path):
+    async def keeps_its_tags(input_path, produced_path, dropped=()):
         return None
     monkeypatch.setattr(worker, "_lost_tags_error", keeps_its_tags)
 
@@ -1304,7 +1304,8 @@ def job(tmp_path, recycle, monkeypatch):
             # stub.
             actions.append(SimpleNamespace(action_type="drop_track",
                                            external_path=None, stream_index=9))
-        decision = SimpleNamespace(actions=actions, target_container=None)
+        decision = SimpleNamespace(actions=actions, target_container=None,
+                                   dropped_tags=[])
 
         def fake_load(_job_id):
             return (

@@ -342,8 +342,9 @@ def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
     no other; tests/test_mp4_tag_loss.py holds part of that. It took about
     33 ms a file, reading the result back included.
 
-    Stored on MediaFile.mp4_lost_tags at scan and at job pickup. Nothing
-    decides anything from it yet.
+    Stored on MediaFile.mp4_lost_tags at scan and at job pickup, for the
+    decision engine, which does what mp4_lost_tag_handling says with a
+    file that would lose any (decision.analyze_file).
     """
     from app.core.ffmpeg import output_muxer
 

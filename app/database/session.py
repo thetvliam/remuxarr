@@ -40,6 +40,12 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # install gets it off too, as _seed_defaults adds a missing key with
     # its default.
     "convert_dolby_vision_to_mp4": False,
+    # What happens to a file prefer_mp4_container would convert when an MP4
+    # cannot hold some of its own tags (MediaFile.mp4_lost_tags):
+    # "leave_file", "drop_tags" or "keep_container" (decision.analyze_file).
+    # Leave is what such a file got before the setting, without the job
+    # that failed first.
+    "mp4_lost_tag_handling": "leave_file",
     # Global dry-run toggle — no files are modified when True. Defaults to
     # True: a brand-new install's first scan should produce a complete,
     # safe preview of every planned action across the whole library

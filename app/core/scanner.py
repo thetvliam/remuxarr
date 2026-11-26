@@ -2283,6 +2283,8 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "font_attachments": media_file.font_attachments,
         "recording_signs":  media_file.recording_signs,
         "dolby_vision":     media_file.dolby_vision,
+        "mp4_lost_tags":    (None if media_file.mp4_lost_tags is None
+                             else json.loads(media_file.mp4_lost_tags)),
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
         "folder_entries":   _folder_entries(media_file.path),

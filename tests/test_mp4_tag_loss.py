@@ -1,7 +1,8 @@
 """
 Which of a file's own tags a job writing it as an MP4 would lose, found
 before any job runs (probe.mp4_lost_tags) and kept on
-MediaFile.mp4_lost_tags. Nothing decides anything from it yet.
+MediaFile.mp4_lost_tags, from which the decision engine does what Tags an
+MP4 Can't Hold says (test_mp4_tag_handling).
 
 A job refuses to replace a file whose output would lose any of its own
 tags (test_kept_file_tags): issue #67's Matroska, with an IMDB tag, was
@@ -51,7 +52,11 @@ as it stood before this file, all twelve survived it. Killed now:
                                                 no look at all
   • A scan of a changed file not storing
     them                                      → test_a_scan_of_a_changed_
-                                                file_finds_them_again
+                                                file_finds_them_again, and,
+                                                since the setting, the
+                                                agreement cases of a lost
+                                                tag, whose second scan keeps
+                                                the answer it should replace
   • A new file's row not storing them         → every agreement case, and
                                                 the two tests that read a
                                                 new row
@@ -134,22 +139,28 @@ KEPT = ["synopsis", "description", "comment", "genre"]
 @pytest.mark.parametrize("key", LOST + KEPT)
 @pytest.mark.parametrize("source", ["Film.mkv", "Film.mp4"],
                          ids=["Matroska converted", "MP4 rewritten"])
-def test_it_names_the_tags_a_job_is_refused_over(rig, source, key):
+def test_it_names_the_tags_a_job_is_refused_over(rig, monkeypatch, source, key):
     """
     Prefer MP4 converts the Matroska, and the MP4 is rewritten to remove
     its German track. The scan stores what the job then finds, and a file
     with nothing to lose is not refused.
+
+    A file known to lose tags is left alone before any job runs
+    (test_mp4_tag_handling), so once the scan's answer is read the file is
+    scanned again as one whose tags could not be found out beforehand
+    (test_kept_file_tags._not_known_beforehand), which queues the job.
     """
     _kt._set(rig, prefer_mp4_container=True)
     muxer = "matroska" if source.endswith(".mkv") else "mp4"
     _kt._file(rig.library / source, muxer, tag=(key, "Some value"))
     _scan(rig.Session, rig.library)
     found = _stored(rig.Session, source)
+    _kt._not_known_beforehand(monkeypatch)
 
-    jobs = _run_jobs(rig)
+    jobs, _ = _kt._scan_and_run(rig)
 
-    assert len(jobs) == 1
-    assert found == _refused_over(jobs[0][1])
+    assert jobs[-1][0] in ("success", "failed")
+    assert found == _refused_over(jobs[-1][1])
     assert len(found) == (1 if key in LOST else 0), "the case is not what it says"
 
 

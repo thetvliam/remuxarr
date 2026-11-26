@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2978 tests across 136 test files, plus 805 frontend tests under
+3005 tests across 137 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -242,6 +242,11 @@ plan is the same.
 file's own tags a job writing it as an MP4 would lose (issue #67), held against
 what real jobs are refused over, and that the check, which runs FFmpeg, never
 runs while a write is held.
+`test_mp4_tag_handling.py` covers Tags an MP4 Can't Hold: each of its three
+choices for a Matroska Prefer MP4 Container would convert, a file already MP4
+and one that would lose its date left as they are whatever it says, and a
+conversion that drops the tags letting exactly those go and being reverted with
+them back.
 `test_dolby_vision.py` covers a Dolby Vision stream through a job, a revert and
 an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
 MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise

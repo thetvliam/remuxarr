@@ -370,8 +370,10 @@ def test_a_date_ffmpeg_cannot_write_stops_the_job(rig, monkeypatch):
     A real phone video gave its date as "40096-09-19T03:52:44.000000Z".
     FFmpeg cannot write a file with such a date, so every probe of the
     source is given it here. FFmpeg passes it over and writes a file with no
-    date, and the tag check refuses that output: the job fails, and the
-    file is left as it was.
+    date. The job finds that out when it starts, from its own probe
+    (probe.mp4_lost_tags), and leaves the file as it was, naming the date;
+    the tag check refused the output of the whole job before that. No
+    setting lets a job drop the date (decision.analyze_file).
     """
     import app.core.ffmpeg as ffmpeg_module
     import app.core.worker as worker
@@ -392,8 +394,8 @@ def test_a_date_ffmpeg_cannot_write_stops_the_job(rig, monkeypatch):
 
     with rig.Session() as db:
         job = db.query(QueueItem).one()
-        assert job.status == "failed"
-        assert job.error_message.startswith(worker.LOST_TAGS)
-        assert job.error_message.endswith("It would lose: creation_time.")
+        assert job.status == "skipped"
+        assert job.reason == ("Rewriting this MP4 would lose its own tags creation_time, "
+                              "which FFmpeg cannot write into an MP4, so it is left as it is.")
     assert _audio_languages(source) == ["eng", "ger"]
     assert _dates(source)[0] == MADE

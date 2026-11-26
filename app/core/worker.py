@@ -868,13 +868,18 @@ LOST_DOLBY_VISION = (
 )
 
 
-async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
+async def _lost_tags_error(input_path: str, produced_path: str,
+                           dropped=()) -> str | None:
     """
     None when the finished output keeps every one of the source's own tags,
     and every video stream's Dolby Vision record, or else the error that
     stops the run before the source is touched (probe.lost_file_tags,
     probe.lost_dolby_vision). Run in the staging hook, where both files
     exist and nothing has been written over.
+
+    dropped are tags the job may lose, a conversion to MP4 under
+    mp4_lost_tag_handling "drop_tags" (ProcessingDecision.dropped_tags):
+    exactly those, by the names lost_file_tags gives, and no other.
 
     Dolby Vision first: a refusal over tags is an accepted loss to the
     testlib explorer, and one naming both would hide this one there.
@@ -891,7 +896,7 @@ async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
     lost = lost_dolby_vision(source, output)
     if lost:
         return f"{LOST_DOLBY_VISION} It would lose: {', '.join(lost)}."
-    lost = lost_file_tags(source, output)
+    lost = [tag for tag in lost_file_tags(source, output) if tag not in dropped]
     if lost:
         return f"{LOST_TAGS} It would lose: {', '.join(lost)}."
     return None
@@ -1437,9 +1442,13 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
         # Before the capture, so a run that is refused spends nothing on a
         # revert point it would only discard.
-        lost = await _lost_tags_error(input_path, produced_path)
+        lost = await _lost_tags_error(input_path, produced_path,
+                                      dropped=decision.dropped_tags)
         if lost:
             return lost
+        if decision.dropped_tags:
+            logger.info("Job %d: dropping tags an MP4 cannot hold, as Tags an MP4 "
+                        "Can't Hold says: %s", job_id, ", ".join(decision.dropped_tags))
 
         result, error = await revert_capture.capture(
             input_path    = input_path,

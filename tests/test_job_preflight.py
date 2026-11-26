@@ -536,6 +536,7 @@ def test_the_decision_is_recomputed_from_the_stored_file_and_tracks(rig):
         "font_attachments": 3,
         "recording_signs": "",
         "dolby_vision": "",
+        "mp4_lost_tags": None,
         "und_audio_threshold_acknowledged": True,
         "original_language": None,
         # The rig's folder holds only the video itself.

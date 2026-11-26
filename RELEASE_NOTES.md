@@ -60,6 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Added
+
+- Tags an MP4 Can't Hold, under Library: what happens to a file Prefer MP4 Container would convert when FFmpeg cannot write some of its own tags into an MP4, such as an IMDB ID in a Matroska (issue #67). By default it is left as it is, as before, but without a job failing first: History shows it as skipped and names the tags. It can instead be converted without those tags, or kept in its container with its unwanted tracks still removed. An MP4 that would lose tags when rewritten is likewise left as it is, without the failed job.
+
 ## Fixed
 
 - A revert could put a track back late: a track the job had removed that started before every track it kept, by the difference, and an AAC track removed from an MP4, by 21 to 23 ms. Reverts now put such tracks back in time. This needs a revert point recorded from this version on: older points, including ones a later job adds to, are restored as before, and files already reverted are not repaired.
