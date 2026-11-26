@@ -2,13 +2,15 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 36 files
+- `make_test_library.sh` builds a small library of unusual media: 38 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
   corrupt AAC packets, creation dates (a Matroska's to the microsecond, as
   mkvmerge writes it, and an MP4's), Dolby Vision (Profile 5 and 8.1 in
-  Matroska, Profile 5 in MP4), an audio-only file and a zero-byte one. A folder
+  Matroska, Profile 5 in MP4), tags FFmpeg cannot write into an MP4 (an IMDB
+  and a TMDB ID in a Matroska, a key of its own in an MP4), an audio-only file
+  and a zero-byte one. A folder
   layout of copies covers the extras rules, an existing sidecar and an
   output name that is already taken. The comment above each `fNN` function
   says what that file is built to exercise.
@@ -39,8 +41,8 @@ copy rather than only those with findings. Results go to
 otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
-16 seconds and all 19 profiles, review answers, Forge and reverts included, ran in
-about four minutes at `-j 2`. It has
+16 seconds and all 22 profiles, review answers, Forge and reverts included, ran in
+about five and a half minutes at `-j 2`. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -58,15 +60,18 @@ files. The library you pass in is only read.
 
 ## Profiles
 
-`default` is the app's own defaults. The other 18 vary the settings below
+`default` is the app's own defaults. The other 21 vary the settings below
 and the runner's three choices, so that every pair of values
 of any two of them appears together in at least one profile. All
 combinations would be about 10 million; the pairwise set is checked for
 full coverage each time it is built. Only pairs are covered, so the two
-Dolby Vision Matroska files are converted to MP4 in three profiles and
-reverted in one.
+Dolby Vision Matroska files are converted to MP4 in two profiles and
+reverted in both, and the anime Matroska with fonts is converted to MP4 in
+none: it was in one profile (Prefer MP4 Container on, fonts to be removed,
+its PGS track answered Remove) before Tags an MP4 Can't Hold was varied.
 
-`prefer_mp4_container`, `convert_dolby_vision_to_mp4`, `add_faststart_to_mp4`,
+`prefer_mp4_container`, `convert_dolby_vision_to_mp4`, `mp4_lost_tag_handling`,
+`add_faststart_to_mp4`,
 `fix_undefined_language`, `fix_undefined_language_audio`, `keep_default_audio`,
 `keep_forced_subtitles`, `extract_text_subtitles_to_srt`,
 `existing_srt_handling`, `image_subtitle_handling`,
@@ -179,7 +184,7 @@ route function, and the worker runs the Forge jobs:
     or waiting to undo, and nothing in the library changed but the forged
     files.
 
-Then, in each profile with revert on (15 of the 21; pairwise, so every value
+Then, in each profile with revert on (15 of the 22; pairwise, so every value
 of every other setting meets revert on at least once), every revert point is
 restored through the app's own `restore_revert_point`, and:
 
@@ -256,7 +261,9 @@ revert brings back from the sidecar is asked again, a job whose audio
 cannot be copied fails and leaves the file as it was, since nothing is
 re-encoded to get past it, and a job or a Forge run whose output would
 lose some of the file's own tags is refused and leaves the file as it was,
-except over its creation date, which both write back. These are listed
+except over its creation date, which both write back. A job now finds such
+tags before it runs and does what Tags an MP4 Can't Hold says, so that
+refusal is what stops one whose tags could not be found out beforehand. These are listed
 under "Accepted losses" with where each decision is recorded, and do not
 count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down

@@ -147,6 +147,7 @@ FORCED = {"dry_run_mode": False, "auto_start_jobs": True}
 VARIED = {
     "prefer_mp4_container":          [True, False],
     "convert_dolby_vision_to_mp4":   [False, True],
+    "mp4_lost_tag_handling":         ["leave_file", "drop_tags", "keep_container"],
     "add_faststart_to_mp4":          [True, False],
     "fix_undefined_language":        ["always_leave", "always_fix", "always_ask"],
     "fix_undefined_language_audio":  ["always_leave", "always_fix", "always_ask"],
