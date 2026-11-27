@@ -42,6 +42,10 @@ Each profile is checked against invariants instead:
      each revert below, reported under this number too.
  28. With Convert Dolby Vision Files to MP4 off, a file whose video has a
      Dolby Vision record is not converted to MP4.
+ 29. Every kept video, audio and subtitle track starts where it did against
+     the file's first video stream, to within 2 ms: video and audio at their
+     first decoded frame, subtitles at their first packet. The same goes
+     after each revert below, reported under this number too.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -522,6 +526,148 @@ def dovi_difference(before: dict, after: dict, when: str) -> str | None:
     return None
 
 
+# Check 29. How far a kept stream may move against the video, in seconds:
+# Matroska keeps time in whole milliseconds, so each of two streams there
+# can be half of one out. And how much of a file is read to find where
+# each stream starts.
+START_TOLERANCE = 0.002
+START_WINDOW = 30
+_ENCODER_DELAY = "README, Reverting a processed file: Limitations worth knowing"
+
+
+def stream_starts(path: str) -> dict[int, float] | None:
+    """
+    Check 29: when each video, audio and subtitle stream of a file starts,
+    in seconds, by stream index, from its first START_WINDOW seconds. None
+    when ffprobe cannot read it.
+
+    Video and audio start at their first decoded frame, which is what a
+    player shows or plays, and which their packets do not always say. The
+    first packets of an AVI's MPEG-4 with B-frames carry no time, where
+    FFmpeg still gives the first frame one (best_effort_timestamp), and a
+    revert that placed the file by the first packet that had one brought
+    its video back 80 ms late with every packet's checksum the same. And
+    an AAC, AC-3 or E-AC-3 track begins with start-up samples a decoder
+    leaves out only when the container says how many there are. Subtitles
+    start at their first packet. One ffprobe run reads every stream.
+    """
+    r = subprocess.run(
+        [FFPROBE, "-v", "error", "-read_intervals", f"%+{START_WINDOW}",
+         "-show_entries", "stream=index,codec_type:packet=stream_index,pts_time"
+         ":frame=stream_index,best_effort_timestamp_time", "-of", "json", path],
+        capture_output=True, text=True)
+    try:
+        data = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None
+    if r.returncode != 0 or not data.get("streams"):
+        return None
+    types = {s.get("index"): s.get("codec_type") for s in data["streams"]}
+    starts: dict[int, float] = {}
+    for item in data.get("packets_and_frames") or []:
+        index = item.get("stream_index")
+        if item.get("type") == "frame" and types.get(index) in ("video", "audio"):
+            t = _seconds(item.get("best_effort_timestamp_time"))
+        elif item.get("type") == "packet" and types.get(index) == "subtitle":
+            t = _seconds(item.get("pts_time"))
+        else:
+            continue
+        if t is not None:
+            starts.setdefault(index, t)
+    return starts
+
+
+def _seconds(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timed(stream: dict) -> str | None:
+    """
+    The kind check 29 pairs a stream by, or None for one it does not time:
+    a cover, a still picture with no place in the playback, and so also a
+    Matroska cover a revert gave back as a plain video track, known by the
+    file name it keeps.
+    """
+    k = kind(stream)
+    if k == "video" and any(t.lower() == "filename" for t in stream.get("tags") or {}):
+        return None
+    return k if k in ("video", "audio", "text-sub", "image-sub") else None
+
+
+def moved_starts(before: list[dict], after: list[dict], was: dict[int, float],
+                 now: dict[int, float]) -> tuple[dict | None, list[tuple[dict, dict, float]]]:
+    """
+    Check 29: (reference, moved). Each stream of `before` that starts
+    somewhere else in `after` against the reference, with its stream in
+    `after` and how far it moved, in seconds, later positive. The reference
+    is the first pair with a start on both sides, video before audio before
+    subtitles: the first video stream, in a file that has one. `was` and
+    `now` are stream_starts() of the two files.
+
+    Streams are paired by kind and in order, as check 3 pairs them. A kind
+    whose count differs is left out, as another check reports that, and so
+    is a stream with no start on either side.
+    """
+    pairs = []
+    for k in ("video", "audio", "text-sub", "image-sub"):
+        a = [s for s in before if _timed(s) == k]
+        b = [s for s in after if _timed(s) == k]
+        if len(a) == len(b):
+            pairs.extend(zip(a, b))
+    timed = [(s, t) for s, t in pairs if s.get("index") in was and t.get("index") in now]
+    if not timed:
+        return None, []
+    ref, ref_now = timed[0]
+    base, base_now = was[ref["index"]], now[ref_now["index"]]
+    moved = []
+    for s, t in timed[1:]:
+        shift = (now[t["index"]] - base_now) - (was[s["index"]] - base)
+        if abs(shift) > START_TOLERANCE:
+            moved.append((s, t, shift))
+    return ref, moved
+
+
+def moved_finding(ref: dict, moved: list[tuple[dict, dict, float]],
+                  when: str, was: str) -> str:
+    """Check 29's finding for moved_starts(), in whole milliseconds, so that
+    one cause in several profiles groups as one line."""
+    names = "; ".join(
+        f"{s.get('codec_type')} stream {s['index']} ({s.get('codec_name')}) starts "
+        f"{abs(shift) * 1000:.0f} ms {'later' if shift > 0 else 'earlier'}"
+        for s, _, shift in moved)
+    return (f"against {ref.get('codec_type')} stream {ref['index']} "
+            f"({ref.get('codec_name')}), {names} {when} than {was}")
+
+
+def lost_encoder_delay(before: dict, after: dict, shift: float) -> int | None:
+    """
+    Check 29's accepted loss after a revert: how many start-up samples an
+    audio stream of the original marked as its encoder delay (what FFmpeg
+    reports as initial_padding) and the restored stream does not, when
+    playing those samples is all its move is. None otherwise.
+
+    A Matroska says how many there are in the track; an MP4 holds them in
+    its edit list, which FFmpeg reads as samples to skip rather than as the
+    stream's padding, so going back to Matroska after a conversion to MP4
+    the track says none and a decoder plays them, ahead of the same samples
+    at the same times as before. The library's AAC (1024 samples at
+    44.1 kHz) moves 23 ms and its AC-3 and E-AC-3 (256) 6 ms.
+    """
+    if before.get("codec_type") != "audio":
+        return None
+    try:
+        lost = int(before.get("initial_padding") or 0) - int(after.get("initial_padding") or 0)
+        rate = int(before.get("sample_rate") or 0)
+    except ValueError:
+        return None
+    if lost <= 0 or rate <= 0:
+        return None
+    return lost if abs(shift + lost / rate) <= START_TOLERANCE else None
+
+
 def is_mp4(info: dict) -> bool:
     return "mp4" in ((info.get("format") or {}).get("format_name") or "")
 
@@ -605,6 +751,18 @@ def run_child(spec_path: str) -> None:
     from app.core.probe import is_faststart_mp4
     faststart_before = {r: is_faststart_mp4(str(lib / r)) for r, info in probes_before.items()
                         if info is not None and is_mp4(info)}
+    # For check 29: where each stream of an original starts, read from the
+    # library the run was given while its checksum says it is the same file,
+    # as a job or a revert can have replaced the copy here. Once per file,
+    # and only for a file a job or a revert touched.
+    original_starts: dict[str, dict | None] = {}
+
+    def starts_before(path: str) -> dict[int, float] | None:
+        if path not in original_starts:
+            given = Path(spec["library"]) / path
+            same = given.is_file() and sha(given) == before.get(path)
+            original_starts[path] = stream_starts(str(given)) if same else None
+        return original_starts[path]
 
     S.init_db()
     timings = {}
@@ -728,7 +886,7 @@ def run_child(spec_path: str) -> None:
                              probes_before.get(rel(source)), before, after,
                              cfg, canonical, allowed_changes, entry, several,
                              hashes_before.get(rel(source)),
-                             Path(spec["library"]) / rel(source))
+                             Path(spec["library"]) / rel(source), starts_before)
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -778,6 +936,7 @@ def run_child(spec_path: str) -> None:
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
         faststart_before, rel, collect, hashes_before, Path(spec["library"]),
+        starts_before,
     )
 
     result = {
@@ -1293,11 +1452,11 @@ def _without_attached_pic(sig: tuple) -> tuple:
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                         probes_before, faststart_before, rel, collect,
-                        hashes_before, pristine) -> int:
+                        hashes_before, pristine, starts_before) -> int:
     """
     Phase 2: restore every revert point through the app's own
-    restore_revert_point, then check the round trip (checks 9 to 15).
-    Returns how many points were restored.
+    restore_revert_point, then check the round trip (checks 9 to 15, and
+    27 and 29 again). Returns how many points were restored.
     """
     import asyncio
 
@@ -1462,6 +1621,28 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         dovi = dovi_difference(original, info, "after the revert")
         if dovi:
             find(27, source, dovi)
+        # 29. And where each stream starts against the video. Audio whose
+        # encoder delay did not come back is listed instead, as long as
+        # playing the samples it marked is the whole of its move.
+        was_at, now_at = starts_before(rel(source)), stream_starts(restored)
+        if was_at is None or now_at is None:
+            find(29, source, "could not read where the streams of the "
+                             f"{'original' if was_at is None else 'restored file'} start")
+            was_at = now_at = {}
+        ref, moved = moved_starts(original["streams"], info["streams"], was_at, now_at)
+        unexplained = []
+        for s, t, shift in moved:
+            delay = lost_encoder_delay(s, t, shift)
+            if delay is None:
+                unexplained.append((s, t, shift))
+                continue
+            known.append({"file": rel(source),
+                          "lost": f"audio stream {s['index']}'s encoder delay "
+                                  f"({delay} samples)",
+                          "why": _ENCODER_DELAY})
+        if unexplained:
+            find(29, source, moved_finding(ref, unexplained, "after the revert",
+                                           "in the original"))
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
@@ -1585,7 +1766,7 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
                      before, after, cfg, canonical, allowed_changes, entry, several=False,
-                     source_holds=None, kept_copy=None):
+                     source_holds=None, kept_copy=None, starts_before=None):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -1713,6 +1894,21 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     dovi = dovi_difference(info_before, info_after, "after the job")
     if dovi:
         find(27, source, dovi)
+
+    # 29. Every kept stream starts where it did against the video, kept
+    # streams paired as for check 3.
+    if starts_before is not None:
+        was = starts_before(Path(source).relative_to(lib).as_posix())
+        now = stream_starts(output)
+        if was is None or now is None:
+            find(29, source, "could not read where the streams of "
+                             f"{'the source' if was is None else Path(output).name} start")
+        else:
+            ref, moved = moved_starts([s for _, s in expected], info_after["streams"],
+                                      was, now)
+            if moved:
+                find(29, source, moved_finding(ref, moved, f"in {Path(output).name}",
+                                               "in the source"))
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

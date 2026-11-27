@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  36 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (52 files, about 29 MB, at the
+#  38 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (54 files, about 30 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and

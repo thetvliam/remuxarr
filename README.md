@@ -359,7 +359,14 @@ than an attachment, with its filename and mimetype intact; nothing is lost, but
 a player may list it as a second video stream. In an MP4 with a timecode
 track, the track comes back as the last one. And an MP4 whose Dolby Vision
 video is labelled `dvhe` comes back labelled `dvh1`, the other name for the
-same kind of stream, as FFmpeg cannot write `dvhe`. A phone's or camera's own
+same kind of stream, as FFmpeg cannot write `dvhe`. When a Matroska file was
+converted to MP4, an audio track that recorded its encoder delay, the
+start-up samples an encoder puts before the sound (FFmpeg records it for AAC,
+AC-3 and E-AC-3), comes back without that record: the MP4 kept it in a form
+FFmpeg doesn't carry back into Matroska. A player then plays those samples
+before the first frame of video, 23 ms of them for FFmpeg's AAC at 44.1 kHz
+and 6 ms for its AC-3 and E-AC-3, and the rest of the track is exactly where
+it was. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 

@@ -42,7 +42,7 @@ otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
 16 seconds and all 22 profiles, review answers, Forge and reverts included, ran in
-about five and a half minutes at `-j 2`. It has
+about five and a quarter minutes at `-j 2`, check 29 adding about 15%. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -147,6 +147,21 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
 28. With Convert Dolby Vision Files to MP4 off, which is the default, a file
     whose video has a Dolby Vision record is not converted to MP4, after any
     number of jobs.
+29. Every kept video, audio and subtitle track starts where it did against
+    the file's first video stream (its first audio stream in a file with
+    none), to within 2 ms, kept streams paired as for check 3; and so does
+    every stream after a revert, reported under this number too. Video and
+    audio start at their first decoded frame, which is what a player shows
+    or plays, and subtitles at their first packet. Checks 3 and 11 compare
+    what a stream holds, not when it plays, and packet times alone miss two
+    cases: the first packets of an AVI's MPEG-4 video with B-frames carry no
+    time, and a decoder leaves out an audio track's start-up samples only
+    when the container records how many there are. A revert that placed an
+    AVI by its first timed packet brought the video back 80 ms late with
+    every packet the same. No AVI here loses a track, as FFmpeg cannot tag
+    an AVI track's language and Remuxarr drops no audio from a file whose
+    tracks carry none (tried with a two-track AVI in all 22 profiles), so
+    that case is covered by `tests/test_revert_timing.py` instead.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its
@@ -259,9 +274,13 @@ revert, a job goes ahead without a revert point when capture reports one
 unavailable and Require Revert Point is off, an answer for a track a
 revert brings back from the sidecar is asked again, a job whose audio
 cannot be copied fails and leaves the file as it was, since nothing is
-re-encoded to get past it, and a job or a Forge run whose output would
-lose some of the file's own tags is refused and leaves the file as it was,
-except over its creation date, which both write back. A job now finds such
+re-encoded to get past it, a revert of a Matroska file converted to MP4
+gives an audio track back without the encoder delay it recorded (check 29
+accepts that only when playing those samples, as many as the restored
+track's `initial_padding` lost, is all that moved), and a job or a Forge
+run whose output would lose some of the file's own tags is refused and
+leaves the file as it was, except over its creation date, which both write
+back. A job now finds such
 tags before it runs and does what Tags an MP4 Can't Hold says, so that
 refusal is what stops one whose tags could not be found out beforehand. These are listed
 under "Accepted losses" with where each decision is recorded, and do not
