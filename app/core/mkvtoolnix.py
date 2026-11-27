@@ -35,7 +35,8 @@ that the job keeps (benefits) and none of the measured changes can reach it
 where a chapter has names in several languages to choose between, which
 benefits counts on its own.
 
-This module decides and builds the command; nothing calls it yet.
+This module decides and builds the command; ffmpeg.plan_mkvmerge and
+_run_mkvmerge put it in a job's path, with FFmpeg behind it.
 """
 from __future__ import annotations
 

@@ -204,13 +204,26 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     writes keeps each track's old code and no BCP 47 one, the first
     edition's top-level chapters with one name each (the last, or the TITLE
     of a tag aimed at that chapter, which it shows as the chapter's name)
-    and no chapter language, and no tag at another level. Every job writes
-    with FFmpeg, so each of those losses is listed as an accepted loss, as
-    are those of a conversion to MP4, which holds a flat list of chapters
-    and no tag levels, and of a revert, which writes with FFmpeg too (the
-    root README's revert limitations). Anything else is a finding: a
-    chapter that moved, one shown under a name it never had, a tag or a
-    region that appeared. The same checks run after each revert.
+    and no chapter language, and no tag at another level. A job whose
+    output FFmpeg wrote (check 34 says when that is right) lists each of
+    those losses as an accepted loss, as do a conversion to MP4, which holds
+    a flat list of chapters and no tag levels, and a revert, which writes
+    with FFmpeg too (the root README's revert limitations). Anything else is
+    a finding: a chapter that moved, one shown under a name it never had, a
+    tag or a region that appeared, and any loss at all in a file mkvmerge
+    wrote. The same checks run after each revert.
+34. A Matroska output is written by mkvmerge exactly when it should be: when
+    it keeps something FFmpeg drops (any of 31 to 33's losses, but a
+    chapter's language alone) and nothing stops it. What stops it, as the
+    app was measured to need: a WebM; tracks `mkvmerge -J` numbers
+    differently from ffprobe; a kept track whose old language code mkvmerge
+    reads differently (`en` as `eng`, `undefined` as `und`), as it would
+    write its own reading back; and a kept text subtitle that is not UTF-8,
+    whose bytes mkvmerge would replace and on which it exits 1, sending the
+    job back to FFmpeg. The tool is read from the output's writing
+    application. Worked out here rather than taken from
+    `app/core/mkvtoolnix.py`, so the check does not take its answer from the
+    code it checks.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its

@@ -2,12 +2,11 @@
 app/core/mkvtoolnix.py: whether a Matroska job would keep more through
 mkvmerge than through FFmpeg, what would stop it, the command, and the date.
 
-Nothing calls the module yet. These pin what it decides, so the commit that
-puts it in a job's path builds on behaviour already held: a region counts
-only on a track the job keeps with its own language, a chapter's language
-alone counts for nothing, an old language code mkvmerge would write back
-differently keeps the file with FFmpeg, and the date goes back exactly, to
-the nanosecond, where mkvpropedit drops the fraction.
+These pin what it decides; tests/test_mkvmerge_jobs.py runs it in a job.
+A region counts only on a track the job keeps with its own language, a
+chapter's language alone counts for nothing, an old language code mkvmerge
+would write back differently keeps the file with FFmpeg, and the date goes
+back exactly, to the nanosecond, where mkvpropedit drops the fraction.
 
 The real-binary tests build their files with FFmpeg and mkvmerge and skip
 without them; CI installs both (the release the image ships).

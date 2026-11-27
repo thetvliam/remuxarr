@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from app.config import settings as app_settings
+from app.core import mkvtoolnix
 from app.core.decision import ProcessingDecision
 from app.core.probe import (MP4_DATA_ENTRIES, QUICKTIME_BRAND, DolbyVision, ProbeError,
                             dolby_vision, probe_file)
@@ -1234,6 +1235,17 @@ async def execute_ffmpeg(
     duration = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
+    # mkvmerge first, for a Matroska job it keeps more of; FFmpeg below for
+    # every other job, and for this one if mkvmerge's attempt is thrown away.
+    plan = await plan_mkvmerge(input_path, decision, all_tracks, job_id)
+    if plan is not None:
+        attempt = await _run_mkvmerge(
+            plan, input_path, output_path, temp_output, decision, all_tracks, job_id,
+            current_action, progress_callback, timeout_seconds, before_staging,
+            before_swap, on_swap_ready)
+        if attempt is not None:
+            return attempt
+
     extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id)
     covers = extra.covers
     if extra.error:
@@ -1560,6 +1572,18 @@ async def execute_ffmpeg_combined(
     duration       = await probe_duration(input_path)
     current_action = _describe_action(decision)
 
+    # mkvmerge for the main file of a Matroska job it keeps more of, with
+    # the subtitles extracted by one FFmpeg pass first; the combined run
+    # below for every other job, and for this one if that is thrown away.
+    plan = await plan_mkvmerge(input_path, decision, all_tracks, job_id)
+    if plan is not None:
+        attempt = await _combined_through_mkvmerge(
+            plan, input_path, output_path, temp_main, tmp_dir, decision, all_tracks,
+            subtitle_extractions, job_id, duration, current_action, progress_callback,
+            timeout_seconds, before_staging, before_swap, on_swap_ready)
+        if attempt is not None:
+            return attempt
+
     extra = await _prepare_extra_streams(input_path, decision, tmp_dir, job_id)
     covers = extra.covers
     if extra.error:
@@ -1681,6 +1705,337 @@ async def execute_ffmpeg_combined(
         srt_results.append(ExtractionResult(success=True, output_path=srt_dest, error=None))
 
     return main_result, srt_results
+
+
+# ── mkvmerge, for the Matroska jobs FFmpeg would strip ───────────────────────
+#
+# mkvtoolnix.py says what FFmpeg drops from a Matroska file and why mkvmerge
+# is not used for every one. A job keeping a file Matroska goes to mkvmerge
+# only when its output would hold something FFmpeg drops and nothing
+# measured to change under mkvmerge can reach it (plan_mkvmerge). Then:
+#
+#   1. mkvmerge writes the temp file;
+#   2. the source's date goes back onto it as stored (mkvmerge writes the
+#      time it ran), and the output is checked against the source for what
+#      mkvmerge could have done differently from FFmpeg (_finish_mkvmerge_output);
+#   3. the job's own checks run as after FFmpeg: tags, Dolby Vision, the
+#      revert point's capture (the worker's before_staging), and staging.
+#
+# A non-zero exit (1 is warnings: a text subtitle that is not UTF-8, whose
+# bytes it replaced), a temp file missing, or a failed check in step 2
+# throws the output away and runs the job through FFmpeg as before, so a
+# job is never worse than it was. A refusal by the job's own checks is not
+# retried: it can mean the source changed, and FFmpeg would be refused too.
+
+
+@dataclass(frozen=True)
+class MkvmergePlan:
+    reasons: list[str]          # what mkvmerge keeps here, for the log
+    info: "mkvtoolnix.MatroskaInfo"
+    probe: dict                 # ffprobe's own output for the source
+    date_utc: int | None        # the source's DateUTC as stored, None for none
+    kept: list[int]
+    retagged: dict[int, str]
+
+
+async def plan_mkvmerge(input_path: str, decision: ProcessingDecision,
+                        all_tracks: list[dict], job_id: int) -> MkvmergePlan | None:
+    """
+    Whether this job goes to mkvmerge: a Matroska kept Matroska, with
+    MKVToolNix there, whose output would hold something FFmpeg drops
+    (mkvtoolnix.benefits) and nothing that keeps it with FFmpeg
+    (mkvtoolnix.blockers). None for FFmpeg. Logs why, whenever mkvmerge
+    would have kept something.
+    """
+    if decision.source_container != "mkv" or decision.target_container != "mkv":
+        return None
+    if not mkvtoolnix.available():
+        return None
+    loop = asyncio.get_running_loop()
+    info = await loop.run_in_executor(None, mkvtoolnix.read_matroska, input_path)
+    if info is None:
+        logger.info("Job %d: MKVToolNix could not read %s; remuxing with FFmpeg",
+                    job_id, input_path)
+        return None
+    kept = mkvtoolnix.kept_track_ids(decision, all_tracks)
+    retagged = mkvtoolnix.retagged_languages(decision)
+    reasons = mkvtoolnix.benefits(info, kept, retagged)
+    if not reasons:
+        return None
+    try:
+        probe = await loop.run_in_executor(None, probe_file, input_path,
+                                           app_settings.FFPROBE_PATH)
+        date_utc = await loop.run_in_executor(None, mkvtoolnix.read_date_utc, input_path)
+    except (ProbeError, mkvtoolnix.DateUnreadable, OSError) as exc:
+        logger.info("Job %d: remuxing with FFmpeg, though mkvmerge would keep %s: "
+                    "%s", job_id, "; ".join(reasons), exc)
+        return None
+    stopped = mkvtoolnix.blockers(info, probe, kept, retagged, input_path)
+    if stopped:
+        logger.info("Job %d: remuxing with FFmpeg, though mkvmerge would keep %s: %s",
+                    job_id, "; ".join(reasons), "; ".join(stopped))
+        return None
+    logger.info("Job %d: remuxing with mkvmerge, which keeps %s", job_id, "; ".join(reasons))
+    return MkvmergePlan(reasons, info, probe, date_utc, kept, retagged)
+
+
+def _tracks_of(probe: dict) -> dict[int, dict]:
+    return {s.get("index"): s for s in probe.get("streams", [])
+            if s.get("codec_type") in ("video", "audio", "subtitle")
+            and not (s.get("disposition") or {}).get("attached_pic")}
+
+
+def _finish_mkvmerge_output(plan: MkvmergePlan, produced: str) -> str | None:
+    """
+    Put the source's date on mkvmerge's output, then check the output for
+    what mkvmerge could have written differently from FFmpeg. None when it
+    holds what the job planned; otherwise what is wrong, and the job runs
+    through FFmpeg instead. Synchronous: it probes, so run it off the loop.
+
+    Checked: the tracks the plan keeps, in its order, each with the
+    language tag the source wrote (or the one the job gives it) and the
+    same default and forced flags; the date, exactly; and every region a
+    kept track had, which is the point of using mkvmerge at all. The job's
+    own checks of the file's tags and Dolby Vision follow in the worker.
+    """
+    try:
+        if plan.date_utc is not None:
+            mkvtoolnix.write_date_utc(produced, plan.date_utc)
+        out = probe_file(produced, app_settings.FFPROBE_PATH)
+    except (ProbeError, mkvtoolnix.DateUnreadable, OSError) as exc:
+        return f"could not be finished: {exc}"
+    source, now = _tracks_of(plan.probe), list(_tracks_of(out).values())
+    if [source[i].get("codec_type") for i in plan.kept] != [s.get("codec_type") for s in now]:
+        return "does not hold the tracks the job keeps, in its order"
+    for index, s in zip(plan.kept, now):
+        want = plan.retagged.get(index) or (source[index].get("tags") or {}).get("language")
+        got = (s.get("tags") or {}).get("language")
+        if (want or "und") != (got or "und"):
+            return f"writes track {index}'s language as {got}, not {want}"
+        for flag in ("default", "forced"):
+            if (source[index].get("disposition") or {}).get(flag) != (s.get("disposition") or {}).get(flag):
+                return f"changes track {index}'s {flag} flag"
+    made = ((plan.probe.get("format") or {}).get("tags") or {}).get("creation_time")
+    now_made = ((out.get("format") or {}).get("tags") or {}).get("creation_time")
+    if made != now_made:
+        return f"is dated {now_made}, not {made}"
+    regions = {t.id: t.language_ietf for t in plan.info.tracks
+               if t.id in plan.kept and t.id not in plan.retagged
+               and t.language_ietf and "-" in t.language_ietf}
+    if regions:
+        info = mkvtoolnix.read_matroska(produced)
+        written = [t.language_ietf for t in info.tracks] if info else []
+        position = {index: n for n, index in enumerate(plan.kept)}
+        for index, tag in regions.items():
+            n = position[index]
+            if n >= len(written) or written[n] != tag:
+                return f"loses track {index}'s language {tag}"
+    return None
+
+
+def _from(start: float, pct: float) -> float:
+    """A run's own percentage as a percentage of a job that had already
+    done `start` of its work before the run began."""
+    return min(100.0, start + pct * (100.0 - start) / 100.0)
+
+
+async def _run_mkvmerge(
+    plan: MkvmergePlan,
+    input_path: str,
+    output_path: str,
+    temp_output: str,
+    decision: ProcessingDecision,
+    all_tracks: list[dict],
+    job_id: int,
+    current_action: str,
+    progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
+    timeout_seconds: float | None,
+    before_staging: Callable[[str], Awaitable[str | None]] | None,
+    before_swap: Callable[[], Awaitable[str | None]] | None,
+    on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None,
+    sidecars: Sequence[StagedOutput] = (),
+    progress_from: float = 0.0,
+) -> FFmpegResult | None:
+    """
+    Run the job through mkvmerge (plan_mkvmerge said it goes there). The
+    result, or None when the job should run through FFmpeg instead.
+
+    sidecars are subtitles already extracted by FFmpeg (execute_ffmpeg_combined),
+    staged with the main file as one set, all or nothing, as a combined run
+    stages them. progress_from is where this run's progress starts, as a
+    percentage of the job.
+    """
+    cmd = mkvtoolnix.build_mkvmerge_command(input_path, temp_output, decision, all_tracks,
+                                            keep_date=plan.date_utc is not None)
+    logger.info("mkvmerge command:\n  %s", " ".join(cmd))
+    loop = asyncio.get_running_loop()
+    messages: list[str] = []
+    rejected: list[str] = []
+    refused: list[str] = []
+
+    def parse(line: str) -> dict[str, str] | None:
+        if line.startswith(("#GUI#warning", "#GUI#error")):
+            messages.append(line[len("#GUI#"):])
+        pct = mkvtoolnix.parse_gui_progress(line)
+        return None if pct is None else {"percent": str(pct)}
+
+    async def on_progress_line(kv: dict[str, str]) -> None:
+        if progress_callback:
+            pct = _from(progress_from, float(kv["percent"]))
+            await progress_callback(FFmpegProgress(percent=subprocess_percent(pct),
+                                                   current_action=current_action))
+
+    async def finish_then_check() -> str | None:
+        problem = await loop.run_in_executor(None, _finish_mkvmerge_output, plan, temp_output)
+        if problem:
+            rejected.append(problem)
+            return f"mkvmerge's output {problem}"
+        if before_staging is None:
+            return None
+        error = await before_staging(temp_output)
+        if error:
+            refused.append(error)
+        return error
+
+    try:
+        result = await run_staged_subprocess(
+            cmd,
+            [StagedOutput(temp_path=temp_output, final_path=output_path), *sidecars],
+            on_progress_line=on_progress_line,
+            progress_line_parser=parse,
+            stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
+            before_staging=finish_then_check,
+            on_staging_progress=_staging_progress(progress_callback),
+            before_swap=before_swap,
+            on_swap_ready=on_swap_ready,
+            ownership_from=input_path,
+        )
+    except OSError as exc:
+        # mkvmerge could not start, though available() found it moments ago.
+        logger.warning("Job %d: mkvmerge could not run (%s); remuxing with FFmpeg instead",
+                       job_id, exc)
+        return None
+
+    if result.success:
+        output_size = os.path.getsize(output_path)
+        logger.info("mkvmerge success → %s (%.1f MB)", output_path, output_size / 1024 / 1024)
+        return FFmpegResult(success=True, output_path=output_path, error=None,
+                            output_size=output_size)
+    if refused or result.returncode is None:
+        # The job's own checks refused it, or it ran out of time: as after FFmpeg.
+        return FFmpegResult(success=False, output_path=None, error=result.error,
+                            output_size=None)
+    if rejected:
+        why = rejected[0]
+    elif result.returncode != 0:
+        why = f"exited {result.returncode}" + (f" ({'; '.join(messages[:3])})" if messages else "")
+    else:
+        why = result.error or "failed"
+    logger.warning("Job %d: mkvmerge %s; remuxing with FFmpeg instead", job_id, why)
+    return None
+
+
+async def _combined_through_mkvmerge(
+    plan: MkvmergePlan,
+    input_path: str,
+    output_path: str,
+    temp_main: str,
+    tmp_dir: str,
+    decision: ProcessingDecision,
+    all_tracks: list[dict],
+    subtitle_extractions: list[tuple[int, str]],
+    job_id: int,
+    duration: float | None,
+    current_action: str,
+    progress_callback: Callable[[FFmpegProgress], Awaitable[None]] | None,
+    timeout_seconds: float | None,
+    before_staging: Callable[[str], Awaitable[str | None]] | None,
+    before_swap: Callable[[], Awaitable[str | None]] | None,
+    on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None,
+) -> tuple[FFmpegResult, list[ExtractionResult]] | None:
+    """
+    execute_ffmpeg_combined's job with mkvmerge writing the main file: one
+    FFmpeg pass writes every subtitle to its temp file (_sidecar_command),
+    then _run_mkvmerge writes the main file and stages it with them as one
+    set, all or nothing, as a combined run does. The first pass is half the
+    job's progress.
+
+    A failed first pass ends the job as a failed combined run would, with
+    FFmpeg's own error, so a subtitle that cannot be decoded goes to review
+    the same way (worker._is_subtitle_encoding_failure). None when mkvmerge's
+    attempt is thrown away: the combined run then does the whole job.
+    """
+    temps = [(index, os.path.join(tmp_dir, f"job_{job_id}_srt_{index}.remuxarr_tmp"))
+             for index, _ in subtitle_extractions]
+
+    def discard() -> None:
+        for _, temp in temps:
+            cleanup_temp_file(temp)
+
+    def failed(error: str) -> tuple[FFmpegResult, list[ExtractionResult]]:
+        return (FFmpegResult(success=False, output_path=None, error=error, output_size=None),
+                [ExtractionResult(success=False, output_path=None, error=error)
+                 for _ in subtitle_extractions])
+
+    async def on_sidecar_progress(kv: dict[str, str]) -> None:
+        if progress_callback and duration:
+            pct = min(100.0, parse_out_time_seconds(kv) / duration * 100) / 2
+            await progress_callback(FFmpegProgress(percent=subprocess_percent(pct),
+                                                   current_action=current_action))
+
+    cmd = _sidecar_command(input_path, temps)
+    logger.info("FFmpeg command (subtitles for mkvmerge):\n  %s", " ".join(cmd))
+    try:
+        # No outputs to stage: these temps are staged with the main file
+        # below. The runner gives the run its time limit and its abort.
+        sidecar_run = await run_staged_subprocess(
+            cmd, [], on_progress_line=on_sidecar_progress, stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds)
+    except BaseException:
+        discard()
+        raise
+    if not sidecar_run.success:
+        discard()
+        logger.error("FFmpeg (subtitles for mkvmerge) failed: %s", sidecar_run.error)
+        return failed(sidecar_run.error)
+    missing = [temp for _, temp in temps if not os.path.exists(temp)]
+    if missing:
+        discard()
+        return failed(f"Temp file(s) missing after command completed: {', '.join(missing)}")
+
+    sidecars = [StagedOutput(temp_path=temp, final_path=dest)
+                for (_, temp), (_, dest) in zip(temps, subtitle_extractions)]
+    # From here the subtitles' temps are outputs of the mkvmerge run, which
+    # removes every one of them on any failure, as it does the main file's.
+    result = await _run_mkvmerge(
+        plan, input_path, output_path, temp_main, decision, all_tracks, job_id,
+        current_action, progress_callback, timeout_seconds, before_staging,
+        before_swap, on_swap_ready, sidecars=sidecars, progress_from=50.0)
+    if result is None:
+        return None
+    if not result.success:
+        return result, [ExtractionResult(success=False, output_path=None, error=result.error)
+                        for _ in subtitle_extractions]
+    for _, dest in subtitle_extractions:
+        logger.info("Subtitle extracted → %s", dest)
+    return result, [ExtractionResult(success=True, output_path=dest, error=None)
+                    for _, dest in subtitle_extractions]
+
+
+def _sidecar_command(input_path: str, subtitle_extractions: list[tuple[int, str]]) -> list[str]:
+    """
+    One FFmpeg pass that writes every subtitle a job extracts and nothing
+    else, for a job whose main file mkvmerge writes: two reads of the source
+    rather than one per subtitle, as a combined run exists to read a file on
+    an array once. Each output is written as a combined run writes it
+    (execute_ffmpeg_combined).
+    """
+    cmd = [app_settings.FFMPEG_PATH, "-i", input_path, "-y", "-v", "error", "-nostats",
+           "-progress", "pipe:1"]
+    for stream_idx, temp in subtitle_extractions:
+        cmd += ["-map", f"0:{stream_idx}", "-c:s", "srt", "-f", "srt", temp]
+    return cmd
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

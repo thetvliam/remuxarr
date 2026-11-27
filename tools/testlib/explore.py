@@ -67,8 +67,15 @@ Each profile is checked against invariants instead:
      or an attachment, and nested ones, in any order.
      For 31 to 33, a job written by FFmpeg loses each of these, an MP4
      holds none but a flat list of chapters, and a revert writes with FFmpeg
-     too, all listed as accepted losses; anything else is a finding. The
-     same goes after each revert below, reported under these numbers.
+     too, all listed as accepted losses; anything else is a finding, and so
+     is any loss in a file mkvmerge wrote. The same goes after each revert
+     below, reported under these numbers.
+ 34. A Matroska output is written by mkvmerge exactly when it keeps
+     something FFmpeg drops (31 to 33) and nothing stops it: a WebM, tracks
+     numbered differently from ffprobe, a kept track's old language code
+     mkvmerge reads differently, or a kept text subtitle that is not UTF-8,
+     on which mkvmerge exits 1 and the job goes back to FFmpeg. Worked out
+     here, not taken from the app.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -823,9 +830,11 @@ def matroska_meta(path: str) -> dict | None:
     if not container.get("recognized"):
         return None
     tracks = [{"id": t["id"], "type": t["type"],
-               "ietf": (t.get("properties") or {}).get("language_ietf")}
+               "ietf": (t.get("properties") or {}).get("language_ietf"),
+               "language": (t.get("properties") or {}).get("language")}
               for t in j.get("tracks", [])]
-    meta = {"tracks": tracks, "chapters": None, "tags": None}
+    meta = {"tracks": tracks, "chapters": None, "tags": None,
+            "writer": (container.get("properties") or {}).get("writing_application") or ""}
     if container.get("type") != "Matroska":
         return meta
     root = _mkv_xml(path, "chapters")
@@ -990,6 +999,70 @@ def tag_losses(before: list, after: list | None) -> tuple[list[str], list[str]]:
     return losses, findings
 
 
+_TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "text"}
+
+
+def _utf8(path: str, index: int) -> bool | None:
+    """Whether a text subtitle stream's packets are UTF-8, read as stored
+    (mkvextract replaces bytes that are not, so it cannot tell)."""
+    r = subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-i", path, "-map", f"0:{index}",
+                        "-c", "copy", "-f", "data", "-"], capture_output=True)
+    if r.returncode != 0:
+        return None
+    try:
+        r.stdout.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def expected_muxer(was: dict, info_before: dict, kept: set[int], retagged: set[int],
+                   source: str) -> tuple[bool, str]:
+    """
+    (whether mkvmerge should have written a Matroska job's output, why),
+    worked out here rather than imported (app/core/mkvtoolnix.py), so the
+    check does not take its answer from the code it is checking. mkvmerge
+    when the output keeps something FFmpeg drops (checks 31 to 33's
+    losses) and nothing measured to change under mkvmerge reaches it: a
+    WebM, tracks numbered differently from ffprobe, a kept track's old
+    language code mkvmerge reads differently, or a kept text subtitle that
+    is not UTF-8, on which it exits 1 and the job goes back to FFmpeg.
+    """
+    gains = []
+    if any(t["id"] in kept and t["id"] not in retagged and "-" in (t["ietf"] or "")
+           for t in was["tracks"]):
+        gains.append("regional languages")
+    shape = _chapter_shape(was["chapters"])
+    every = [a for e in was["chapters"] for a, _ in _atoms(e["atoms"])]
+    if shape["editions"] > 1 or shape["nested"] or shape["flags"] \
+            or any(len(a["names"]) > 1 for a in every):
+        gains.append("chapters")
+    if was["tags"]:
+        gains.append("tags at other levels")
+    if not gains:
+        return False, "FFmpeg drops nothing from it"
+    if source.lower().endswith(".webm"):
+        return False, "it is a WebM"
+    streams = [s for s in info_before["streams"]
+               if s.get("codec_type") in ("video", "audio", "subtitle")
+               and not (s.get("disposition") or {}).get("attached_pic")]
+    names = {"video": "video", "audio": "audio", "subtitles": "subtitle"}
+    if [(t["id"], names.get(t["type"])) for t in was["tracks"]] != \
+            [(s["index"], s["codec_type"]) for s in streams]:
+        return False, "mkvmerge numbers its tracks differently from ffprobe"
+    by_index = {s["index"]: s for s in streams}
+    for t in was["tracks"]:
+        if t["id"] not in kept or t["id"] in retagged:
+            continue
+        s = by_index[t["id"]]
+        if ((s.get("tags") or {}).get("language") or "und") != (t["language"] or "und"):
+            return False, f"mkvmerge reads track {t['id']}'s language code differently"
+        if s.get("codec_type") == "subtitle" and s.get("codec_name") in _TEXT_SUBTITLE_CODECS \
+                and _utf8(source, t["id"]) is False:
+            return False, f"track {t['id']} is a text subtitle that is not UTF-8"
+    return True, f"mkvmerge keeps its {', '.join(gains)} and nothing stops it"
+
+
 def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: dict,
                      why: str, kept: set[int] | None, where: str,
                      retagged: set[int] = frozenset()) -> None:
@@ -1005,7 +1078,9 @@ def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: 
                 value for _, aim, name, value, _ in was["tags"]
                 if name == "TITLE" and "chapter" in aim.split("+")))),
             (33, tag_losses(was["tags"], now["tags"]))):
-        if losses:
+        if losses and why is None:
+            find(check, source, f"lost {', '.join(losses)} {where}")
+        elif losses:
             known.append({"file": rel_source, "lost": ", ".join(losses), "why": why})
         for f in findings:
             find(check, source, f"{f} {where}")
@@ -2330,14 +2405,25 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
         if now is None:
             find(31, source, f"mkvmerge cannot read {Path(output).name}")
         else:
-            why = _FFMPEG_MATROSKA if now["chapters"] is not None else _MP4_HOLDS_NONE
             kept = {s["index"] for k, s in expected
                     if k in ("video", "audio", "text-sub", "image-sub")}
             # A track the plan gives a language is check 4's: its tag is
             # meant to change.
             retagged = {a.stream_index for a in actions if getattr(a, "target_language", None)}
+            matroska_out = now["chapters"] is not None
+            by_mkvmerge = matroska_out and now["writer"].startswith("mkvmerge")
+            # What mkvmerge writes, it keeps: a loss there is a finding.
+            why = None if by_mkvmerge else (_FFMPEG_MATROSKA if matroska_out else _MP4_HOLDS_NONE)
             _matroska_checks(find, known, Path(source).relative_to(lib).as_posix(), source,
                              was, now, why, kept, f"in {Path(output).name}", retagged)
+            # 34. The tool that wrote a Matroska output is the one it should
+            # have been.
+            if matroska_out:
+                want, because = expected_muxer(was, info_before, kept, retagged,
+                                               str(kept_copy or source))
+                if by_mkvmerge != want:
+                    find(34, source, f"{Path(output).name} was written by "
+                                     f"{'mkvmerge' if by_mkvmerge else 'FFmpeg'}, though {because}")
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

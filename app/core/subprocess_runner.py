@@ -345,9 +345,16 @@ async def run_staged_subprocess(
     before_swap: Callable[[], Awaitable[str | None]] | None = None,
     on_swap_ready: Callable[[list[tuple[str, str]]], Awaitable[str | None]] | None = None,
     ownership_from: str | None = None,
+    progress_line_parser: Callable[[str], dict[str, str] | None] | None = None,
 ) -> SubprocessRunResult:
     """
     Run `cmd` as a subprocess, stream progress, then stage output files.
+
+    progress_line_parser: for a command that does not print FFmpeg's
+    -progress key=value lines. Given, it sees every line the command prints
+    on stdout, and on_progress_line is called with whatever dict it returns
+    for a line (None: nothing to report). mkvmerge prints "#GUI#progress 45%"
+    instead (ffmpeg._run_mkvmerge).
 
     ownership_from: the file whose owner, group and permissions every
     output takes, given to each staged .part before it is swapped in (see
@@ -432,6 +439,11 @@ async def run_staged_subprocess(
             assert proc.stdout
             async for raw in proc.stdout:
                 line = raw.decode(errors="replace").strip()
+                if progress_line_parser is not None:
+                    parsed = progress_line_parser(line)
+                    if parsed is not None and on_progress_line:
+                        await on_progress_line(parsed)
+                    continue
                 if "=" not in line:
                     continue
                 key, _, val = line.partition("=")
