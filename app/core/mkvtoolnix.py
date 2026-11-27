@@ -36,7 +36,9 @@ where a chapter has names in several languages to choose between, which
 benefits counts on its own.
 
 This module decides and builds the command; ffmpeg.plan_mkvmerge and
-_run_mkvmerge put it in a job's path, with FFmpeg behind it.
+_run_mkvmerge put it in a job's path, with FFmpeg behind it. It also puts a
+reverted file's BCP 47 languages back with mkvpropedit (write_languages),
+which edits the track headers in place and leaves the old codes alone.
 """
 from __future__ import annotations
 
@@ -210,6 +212,16 @@ def bcp47_languages(path: str, probe_data: dict) -> dict[int, str] | None:
     """
     if "matroska" not in ((probe_data.get("format") or {}).get("format_name") or ""):
         return {}
+    tracks = _tracks_as_probed(path, probe_data)
+    if tracks is None:
+        return None
+    return {t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks}
+
+
+def _tracks_as_probed(path: str, probe_data: dict) -> list[dict] | None:
+    """mkvmerge -J's tracks of a Matroska file, each one's id being its
+    ffprobe stream index. None without mkvmerge, for a failed read, and when
+    mkvmerge numbers the tracks differently from ffprobe."""
     if not shutil.which(app_settings.MKVMERGE_PATH):
         return None
     r = _run([app_settings.MKVMERGE_PATH, "-J", path])
@@ -226,9 +238,44 @@ def bcp47_languages(path: str, probe_data: dict) -> dict[int, str] | None:
                and not (s.get("disposition") or {}).get("attached_pic")]
     if [(t["id"], names.get(t["type"])) for t in tracks] != streams:
         logger.info("mkvmerge numbers the tracks of %s differently from ffprobe; "
-                    "their BCP 47 languages are not stored", path)
+                    "their BCP 47 languages are not read or written", path)
         return None
-    return {t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks}
+    return tracks
+
+
+def write_languages(path: str, probe_data: dict, languages: dict[int, str]) -> str | None:
+    """
+    Give each track of a Matroska file the BCP 47 language in `languages`
+    (by ffprobe's stream index), in place, with mkvpropedit. A revert writes
+    the file with FFmpeg, which writes none, and puts back the ones the
+    revert point recorded this way (revert_restore). mkvpropedit edits the
+    track headers only: the old language code FFmpeg wrote is left as it is.
+
+    None when they were written, or when none could be: no mkvpropedit or
+    mkvmerge, or tracks mkvmerge numbers differently from ffprobe, where a
+    language could land on the wrong track. Such a file keeps what FFmpeg
+    wrote, as every revert did before. The message when mkvpropedit failed.
+    """
+    if not shutil.which(app_settings.MKVPROPEDIT_PATH):
+        logger.warning("No mkvpropedit, so %s keeps no BCP 47 languages", path)
+        return None
+    tracks = _tracks_as_probed(path, probe_data)
+    if tracks is None:
+        return None
+    edits = []
+    for t in tracks:
+        properties = t.get("properties") or {}
+        tag = languages.get(t["id"])
+        if tag and properties.get("language_ietf") != tag:
+            edits += ["--edit", f"track:@{properties['number']}", "--set", f"language-ietf={tag}"]
+    if not edits:
+        return None
+    r = _run([app_settings.MKVPROPEDIT_PATH, path, *edits])
+    # 1 is a warning: the change was made.
+    if r is None or r.returncode not in (0, 1):
+        detail = "it could not be run" if r is None else (r.stdout + r.stderr).strip()[-300:]
+        return f"mkvpropedit could not write the tracks' BCP 47 languages: {detail}"
+    return None
 
 
 def matroska_record(path: str, probe_data: dict) -> dict | None:
@@ -236,10 +283,11 @@ def matroska_record(path: str, probe_data: dict) -> dict | None:
     What a revert point records of a Matroska original that ffprobe cannot
     see (revert.build_manifest): each track's BCP 47 language
     (bcp47_languages), and the chapters and the tags as mkvextract writes
-    them, verbatim, so they can be written back as they were. Nothing
-    restores them yet: a revert writes the file with FFmpeg, which keeps
-    none of them. Recorded now so that a point made from here on holds what
-    a restore that does will need.
+    them, verbatim, so they can be written back as they were. A revert
+    writes the file with FFmpeg, which keeps none of them, then writes the
+    languages back (write_languages). The chapters and the tags are not
+    restored yet: recorded so that a point made from here on holds what a
+    restore that does will need.
 
     None for a file that is not Matroska, or without MKVToolNix. A part
     that could not be read is None; chapters or tags the file does not

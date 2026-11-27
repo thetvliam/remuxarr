@@ -74,7 +74,8 @@ def build_manifest(probe_data: dict, *, original_path: str,
 
     matroska is mkvtoolnix.matroska_record for the same file: each stream's
     BCP 47 language, and the chapters and tags as mkvextract writes them.
-    Recorded, not yet restored (that function says why). Without it the
+    The languages are written back by a revert; the chapters and tags are
+    not restored yet (that function says why). Without it the
     manifest has none of them, as points recorded before it do not.
     """
     streams = []

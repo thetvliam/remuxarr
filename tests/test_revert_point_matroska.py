@@ -4,11 +4,15 @@ What a revert point records of a Matroska original that ffprobe cannot see
 stream's BCP 47 language, and the chapters and tags as mkvextract writes
 them, verbatim.
 
-Nothing restores them yet. A revert writes the file with FFmpeg, which
-keeps none of them (the root README's revert limitations): the restore that
-does will need them, and only the first job ever sees the original, so a
-point records them now or never. They come from the original, not from what
-the job wrote: a dropped track's region is only there.
+A revert writes the file with FFmpeg, which keeps none of them, then puts
+each track's BCP 47 language back with mkvpropedit
+(mkvtoolnix.write_languages): without it an es-419 subtitle came back plain
+Spanish, a Keep Subtitle Languages entry of es-419 matched nothing, and the
+next job dropped the track the first one kept. The chapters and the tags
+are not restored yet (the root README's revert limitations): the restore
+that does will need them, and only the first job ever sees the original, so
+a point records them now or never. They come from the original, not from
+what the job wrote: a dropped track's region is only there.
 
 Verified by mutation, 8 applied, 8 killed. Run first against the suite as it
 stood before this file, two (capture recording nothing, the streams'
@@ -17,6 +21,18 @@ test for its behaviour: capture recording nothing, or recording what the job
 wrote instead of the original; the streams' languages, the chapters or the
 tags not recorded (one mutant each); a file that is not Matroska recorded;
 a record made without MKVToolNix; a manifest without a record given one.
+
+The languages written back, verified by mutation, 9 applied, 9 killed. Run
+first against the suite as it stood before them, the write not made at all
+survived all 3107 tests. A second, tracks numbered differently written
+anyway, failed one: test_track_regions' revert test, which said a revert
+stores no region and failed on the fix without a mutant, so it was no kill;
+it now says the regions come back. Killed now, each by the test for its
+behaviour: the write not made; a failed write ignored, or its message lost;
+tracks numbered differently written; a track that already has its language
+written again; mkvpropedit's warning taken as a failure; no mkvpropedit
+failing the revert; a track given none written as und; the language written
+to the wrong track.
 """
 import shutil
 import subprocess
@@ -139,3 +155,99 @@ def test_a_job_records_the_original_not_what_it_wrote(rig):
 
     outcome = asyncio.run(restore_revert_point(point_id))
     assert outcome.success, outcome.error
+
+
+# ── Written back by a revert ─────────────────────────────────────────────────
+
+def _job_and_point(rig):
+    """The job drops the German (de-AT) track and keeps the English
+    (en-GB) one: (the original's path, the point's id)."""
+    from app.database.models import RevertPoint
+    source = _original(rig.library / "Film.mkv")
+    _cd._run_job(rig, source)
+    with rig.Session() as db:
+        return source, db.query(RevertPoint).one().id
+
+
+def _revert(point_id):
+    import asyncio
+    from app.core.revert_restore import restore_revert_point
+    return asyncio.run(restore_revert_point(point_id))
+
+
+def _languages(path):
+    return mkv.bcp47_languages(str(path), _probe(path))
+
+
+def _failing(tmp_path, code):
+    """A stand-in mkvpropedit that says why and exits with code."""
+    script = tmp_path / f"mkvpropedit-{code}"
+    script.write_text(f"#!/bin/sh\necho 'Error: the file could not be opened' >&2\nexit {code}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def test_a_revert_writes_each_tracks_regional_language_back(rig):
+    """The dropped track's region as well as the kept one's, and the old
+    language codes FFmpeg wrote are left as they were."""
+    source, point_id = _job_and_point(rig)
+    outcome = _revert(point_id)
+    assert outcome.success, outcome.error
+    assert _languages(source) == {0: "", 1: "en-GB", 2: "de-AT"}
+    assert [s.get("tags", {}).get("language") for s in _probe(source)["streams"]] == [
+        None, "eng", "ger"]
+
+
+def test_without_mkvpropedit_a_revert_goes_on_without_them(rig, tmp_path, monkeypatch):
+    source, point_id = _job_and_point(rig)
+    monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", str(tmp_path / "no-mkvpropedit-here"))
+    outcome = _revert(point_id)
+    assert outcome.success, outcome.error
+    assert _languages(source) == {0: "", 1: "", 2: ""}
+
+
+def test_a_failed_write_stops_the_revert_and_changes_nothing(rig, tmp_path, monkeypatch):
+    """mkvpropedit edits the file in place: one that fails may have left it
+    half written, so it is not swapped in, and the point is kept."""
+    from app.database.models import RevertPoint
+    source, point_id = _job_and_point(rig)
+    processed = source.read_bytes()
+    monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 2))
+    outcome = _revert(point_id)
+    assert not outcome.success
+    assert "mkvpropedit could not write the tracks' BCP 47 languages" in outcome.error
+    assert "could not be opened" in outcome.error
+    assert outcome.error.endswith("Nothing was changed.")
+    assert source.read_bytes() == processed
+    with rig.Session() as db:
+        assert db.query(RevertPoint).count() == 1
+
+
+def test_a_warning_from_mkvpropedit_is_not_a_failure(tmp_path, monkeypatch):
+    """mkvpropedit exits 1 when it made the change but has a warning."""
+    path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng",))
+    monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 1))
+    assert mkv.write_languages(str(path), _probe(path), {1: "en-GB"}) is None
+
+
+def test_a_track_that_already_has_its_language_is_left_alone(tmp_path, monkeypatch):
+    """Nothing to change runs nothing, so not even a failing mkvpropedit
+    stops it."""
+    path = _original(tmp_path / "Film.mkv")
+    monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 2))
+    assert mkv.write_languages(str(path), _probe(path), {1: "en-GB", 2: "de-AT"}) is None
+
+
+def test_tracks_numbered_differently_are_given_none(tmp_path):
+    """A language written to the wrong track would be worse than none."""
+    path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng", "ger"))
+    probe = _probe(path)
+    probe["streams"][1]["index"], probe["streams"][2]["index"] = 2, 1
+    assert mkv.write_languages(str(path), probe, {1: "en-GB", 2: "de-AT"}) is None
+    assert _languages(path) == {0: "", 1: "", 2: ""}
+
+
+def test_only_the_tracks_given_one_are_changed(tmp_path):
+    path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng", "ger"))
+    assert mkv.write_languages(str(path), _probe(path), {2: "de-CH"}) is None
+    assert _languages(path) == {0: "", 1: "", 2: "de-CH"}

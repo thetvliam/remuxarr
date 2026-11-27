@@ -25,6 +25,7 @@ Values are arbitrary JSON (string, list, bool, int).
 import json
 import urllib.error
 import urllib.request
+from app.core.langcodes import keep_entry
 from app.core.timeutil import utcnow_iso_z
 from typing import Any
 
@@ -497,6 +498,15 @@ def setting_problem(key: str, value: Any) -> str | None:
             return f"{key} must be a list of text, not {_json_kind(value)}"
         if not all(isinstance(item, str) for item in value):
             return f"{key} must be a list of text, and holds something else"
+        if key in ("keep_audio_languages", "keep_subtitle_languages"):
+            # Saved as typed, an entry that is not a code matched no track,
+            # and every track in the language meant was dropped: pt-BR
+            # became pt-br before regions were understood (langcodes.keep_entry).
+            wrong = [item for item in value if keep_entry(item) is None]
+            if wrong:
+                return (f"{key} holds {', '.join(repr(w) for w in wrong)}, which is not a "
+                        f"language code (eng, fre, jpn) or one with a region or script "
+                        f"(es-419, pt-BR, zh-Hans)")
     return None
 
 
@@ -739,7 +749,11 @@ SETTINGS_SCHEMA = [
         "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
                        "either three-letter form (deu or ger) are accepted, "
                        "saved as the ISO 639-2/B form (eng, ger), and match "
-                       "tracks tagged with any of them. "
+                       "tracks tagged with any of them. A code with a region "
+                       "or script (es-419, pt-BR, zh-Hans) keeps only tracks "
+                       "a Matroska file tags with it, or with a narrower tag "
+                       "under it (zh-Hant-TW under zh-Hant): es-419 keeps Latin "
+                       "American Spanish and not Spain's, where spa keeps both. "
                        "Audio in other languages will be removed.",
     },
     {
@@ -789,7 +803,11 @@ SETTINGS_SCHEMA = [
         "description": "Language codes (e.g. eng, fre, jpn). Two-letter codes (en) and "
                        "either three-letter form (deu or ger) are accepted, "
                        "saved as the ISO 639-2/B form (eng, ger), and match "
-                       "tracks tagged with any of them. "
+                       "tracks tagged with any of them. A code with a region "
+                       "or script (es-419, pt-BR, zh-Hans) keeps only tracks "
+                       "a Matroska file tags with it, or with a narrower tag "
+                       "under it (zh-Hant-TW under zh-Hant): es-419 keeps Latin "
+                       "American Spanish and not Spain's, where spa keeps both. "
                        "Subtitles in other languages will be removed.",
     },
     {

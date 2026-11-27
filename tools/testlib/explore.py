@@ -69,13 +69,21 @@ Each profile is checked against invariants instead:
      holds none but a flat list of chapters, and a revert writes with FFmpeg
      too, all listed as accepted losses; anything else is a finding, and so
      is any loss in a file mkvmerge wrote. The same goes after each revert
-     below, reported under these numbers.
+     below, reported under these numbers, but for regions: a revert writes
+     each track's back from its point, so one lost is a finding, unless
+     mkvmerge numbers the original's tracks differently from ffprobe and
+     the point recorded none.
  34. A Matroska output is written by mkvmerge exactly when it keeps
      something FFmpeg drops (31 to 33) and nothing stops it: a WebM, tracks
      numbered differently from ffprobe, a kept track's old language code
      mkvmerge reads differently, or a kept text subtitle that is not UTF-8,
      on which mkvmerge exits 1 and the job goes back to FFmpeg. Worked out
      here, not taken from the app.
+ 35. In a profile whose Keep Subtitle Languages has an entry with a region
+     or script (the fixed profile r01), a subtitle with that region, or a
+     narrower one under it, is kept, and one of the same language with no
+     matching region is dropped unless the language is listed plainly.
+     Forced, answered and retagged subtitles are left out. Worked out here.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -316,10 +324,23 @@ def _pairwise_profiles() -> list[dict]:
     return rows
 
 
+# Profiles run as well as the pairwise ones, for a combination pairwise
+# cannot reach without growing every profile. r01 keeps by region (check
+# 35): English from Britain and Latin American Spanish, in Matroska, with
+# subtitles left in the file so the plan says what each one's fate was.
+# Adding a regional value to VARIED instead would rebuild every profile.
+FIXED_PROFILES = {
+    "r01": {"prefer_mp4_container": False, "extract_text_subtitles_to_srt": False,
+            "keep_audio_languages": ["en-GB"], "keep_subtitle_languages": ["en-GB", "es-419"],
+            "revert_enabled": True},
+}
+
+
 def all_profiles() -> dict[str, dict]:
     profiles = {"default": {}}
     for i, row in enumerate(_pairwise_profiles(), 1):
         profiles[f"p{i:02d}"] = row
+    profiles.update(FIXED_PROFILES)
     return profiles
 
 
@@ -780,6 +801,11 @@ _MP4_HOLDS_NONE = ("an MP4 holds one list of chapters with one name each and no 
                    "README.md, Features, Container remuxing")
 _REVERT_REWRITES = ("a revert writes the file with FFmpeg, which writes none of these "
                     "back: README, Reverting a processed file: Limitations worth knowing")
+# A revert writes each track's region back from its point, which records
+# them only when mkvmerge numbers the original's tracks as ffprobe does.
+_REVERT_UNNUMBERED = ("mkvmerge numbers the original's tracks differently from ffprobe, "
+                      "so its revert point records no regional languages to write back: "
+                      "README, Reverting a processed file: Limitations worth knowing")
 
 # Tags every muxer rewrites, left out of check 33 as checks 26 and 30 leave
 # them out.
@@ -1063,14 +1089,74 @@ def expected_muxer(was: dict, info_before: dict, kept: set[int], retagged: set[i
     return True, f"mkvmerge keeps its {', '.join(gains)} and nothing stops it"
 
 
+def regional_keep_problems(was: dict, info_before: dict, by_stream: dict, cfg: dict,
+                           canonical, answers: dict) -> list[str]:
+    """
+    Check 35, for subtitles: with a regional entry in Keep Subtitle
+    Languages (es-419), a subtitle whose BCP 47 language is that entry, or a
+    narrower tag under it, is kept (or extracted), and one of the same
+    language whose region matches no entry is dropped, unless its language
+    is in the list plainly. Worked out here, not taken from the app.
+    Forced, answered, retagged and untagged tracks are left out: other
+    rules keep those.
+    """
+    entries = cfg.get("keep_subtitle_languages") or []
+    regions = [e.lower() for e in entries if "-" in e]
+    if not regions:
+        return []
+    plain = {canonical(e) for e in entries if "-" not in e}
+    # Stream indexes with an answer of any kind (subtitle, language).
+    answered = {int(si) for record in answers.values() if isinstance(record, dict)
+                for si in record}
+    streams = {s["index"]: s for s in info_before["streams"]}
+    problems = []
+    for t in was["tracks"]:
+        tag = (t["ietf"] or "").lower()
+        s = streams.get(t["id"], {})
+        if t["type"] != "subtitles" or not tag or tag == "und":
+            continue
+        action = by_stream.get(t["id"])
+        # Forced by flag or by title, as the probe reads either.
+        forced = ((s.get("disposition") or {}).get("forced")
+                  or "forced" in ((s.get("tags") or {}).get("title") or "").lower())
+        if (forced or t["id"] in answered
+                or (action is not None and action.target_language)):
+            continue
+        language = canonical((s.get("tags") or {}).get("language") or "und")
+        kept = action is None or action.action_type != "drop_track"
+        matched = any(tag == r or tag.startswith(r + "-") for r in regions)
+        if matched and not kept:
+            problems.append(f"subtitle {t['id']} ({t['ietf']}) dropped, though "
+                            f"Keep Subtitle Languages holds {entries}")
+        elif not matched and language not in plain and kept:
+            problems.append(f"subtitle {t['id']} ({t['ietf']}) kept, though "
+                            f"Keep Subtitle Languages holds {entries}")
+    return problems
+
+
+def numbered_alike(was: dict, info: dict) -> bool:
+    """Whether mkvmerge numbers a Matroska file's tracks (was, from
+    matroska_meta) as ffprobe numbers its streams (info), cover art and
+    attachments aside."""
+    names = {"video": "video", "audio": "audio", "subtitles": "subtitle"}
+    streams = [(s["index"], s.get("codec_type")) for s in info["streams"]
+               if s.get("codec_type") in ("video", "audio", "subtitle")
+               and not (s.get("disposition") or {}).get("attached_pic")]
+    return [(t["id"], names.get(t["type"])) for t in was["tracks"]] == streams
+
+
+_SAME = object()
+
+
 def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: dict,
-                     why: str, kept: set[int] | None, where: str,
-                     retagged: set[int] = frozenset()) -> None:
+                     why_all: str, kept: set[int] | None, where: str,
+                     retagged: set[int] = frozenset(), why_regions=_SAME) -> None:
     """Checks 31 to 33 between a Matroska original (was) and a file made
     from it (now): each kind of loss FFmpeg is known for is listed with
-    why, anything else is a finding. kept is the original's tracks the file
-    should still hold, by id (None for all of them), and retagged those of
-    them the plan gives another language."""
+    why, anything else is a finding. why_regions, given, is check 31's
+    instead (None: any loss is a finding). kept is the original's tracks the
+    file should still hold, by id (None for all of them), and retagged those
+    of them the plan gives another language."""
     tracks = [t for t in was["tracks"] if kept is None or t["id"] in kept]
     for check, (losses, findings) in (
             (31, regional_losses(tracks, now["tracks"], retagged)),
@@ -1078,6 +1164,7 @@ def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: 
                 value for _, aim, name, value, _ in was["tags"]
                 if name == "TITLE" and "chapter" in aim.split("+")))),
             (33, tag_losses(was["tags"], now["tags"]))):
+        why = why_regions if check == 31 and why_regions is not _SAME else why_all
         if losses and why is None:
             find(check, source, f"lost {', '.join(losses)} {where}")
         elif losses:
@@ -2108,8 +2195,12 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             if now is None:
                 find(31, source, "mkvmerge cannot read the restored file")
             else:
+                # Regions are written back (revert_restore); the chapters
+                # and the tags are not yet.
                 _matroska_checks(find, known, rel(source), source, was, now,
-                                 _REVERT_REWRITES, None, "after the revert")
+                                 _REVERT_REWRITES, None, "after the revert",
+                                 why_regions=(None if numbered_alike(was, original)
+                                              else _REVERT_UNNUMBERED))
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
@@ -2424,6 +2515,10 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
                 if by_mkvmerge != want:
                     find(34, source, f"{Path(output).name} was written by "
                                      f"{'mkvmerge' if by_mkvmerge else 'FFmpeg'}, though {because}")
+            # 35. A regional keep entry keeps its region and drops the rest.
+            for problem in regional_keep_problems(
+                    was, info_before, by_stream, cfg, canonical, entry.get("answered") or {}):
+                find(35, source, problem)
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

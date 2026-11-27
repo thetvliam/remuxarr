@@ -259,8 +259,10 @@ def test_a_job_stores_the_regions_of_what_it_wrote(rig):
 
 
 def test_a_revert_stores_the_regions_of_what_it_restored(rig):
-    """A revert writes with FFmpeg, which writes no region: every track of
-    the restored file is stored with none, which is known, not unknown."""
+    """A revert writes with FFmpeg, which writes no region, then writes back
+    the ones its point recorded (mkvtoolnix.write_languages) before the file
+    is swapped in: the restored file's tracks are stored with those, the
+    German track's included, though the job dropped it."""
     from app.core.revert_restore import restore_revert_point
     from app.database.models import RevertPoint
 
@@ -272,8 +274,8 @@ def test_a_revert_stores_the_regions_of_what_it_restored(rig):
     outcome = asyncio.run(restore_revert_point(point_id))
 
     assert outcome.success, outcome.error
-    assert _rows(rig.Session, "Film.mkv") == [("video", "und", ""), ("audio", "eng", ""),
-                                              ("audio", "ger", "")]
+    assert _rows(rig.Session, "Film.mkv") == [("video", "und", ""), ("audio", "eng", "en-GB"),
+                                              ("audio", "ger", "de-AT")]
 
 
 def test_ac3_forge_stores_the_regions_of_what_it_rewrote(tmp_path):

@@ -368,10 +368,12 @@ FFmpeg doesn't carry back into Matroska. A player then plays those samples
 before the first frame of video, 23 ms of them for FFmpeg's AAC at 44.1 kHz
 and 6 ms for its AC-3 and E-AC-3, and the rest of the track is exactly where
 it was. A revert writes the file with FFmpeg, so a Matroska file does not get
-back a language's region or script (en-GB returns as plain English), chapter
-editions after the first, nested chapters, a chapter's names in other languages
-and its language, or tags above or below the film's own level, though a revert
-point made from this version on records them. A phone's or camera's own
+back chapter editions after the first, nested chapters, a chapter's names in
+other languages and its language, or tags above or below the film's own level,
+though a revert point made from this version on records them. It does get back
+each track's region or script (en-GB, es-419), which the revert writes back
+with MKVToolNix's mkvpropedit from what the point recorded; a point made by an
+earlier version recorded none, so its file returns with plain languages. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 

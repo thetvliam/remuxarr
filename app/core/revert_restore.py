@@ -62,7 +62,7 @@ from app.core.ffmpeg import (
     _pick_temp_dir,
     build_restore_command,
 )
-from app.core.mkvtoolnix import bcp47_languages, with_bcp47
+from app.core.mkvtoolnix import bcp47_languages, with_bcp47, write_languages
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
                             first_packet_times, rebuilt_track_indices,
                             extract_tracks, probe_file, start_time)
@@ -523,6 +523,31 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         logger.warning("Revert point %d stopped: %s", point_id, detail)
         return f"{detail}. Nothing was changed."
 
+    # Each track's BCP 47 language, which FFmpeg writes none of, put back
+    # into the finished file before it is staged: an es-419 subtitle came
+    # back plain Spanish, and a Keep Subtitle Languages entry of es-419
+    # then matched nothing, so the next job dropped the very track the
+    # first one kept. The restored file holds the manifest's streams in the
+    # manifest's order (build_restore_command), so stream k is the one the
+    # manifest lists k-th. Points recorded before the languages were have
+    # none to put back.
+    languages = {k: s["language_ietf"]
+                 for k, s in enumerate(plan.manifest.get("streams") or [])
+                 if s.get("language_ietf")}
+
+    async def put_back_languages() -> str | None:
+        try:
+            restored = await asyncio.get_running_loop().run_in_executor(
+                None, probe_file, temp_output, app_settings.FFPROBE_PATH)
+        except ProbeError:
+            return None
+        problem = await asyncio.get_running_loop().run_in_executor(
+            None, write_languages, temp_output, restored, languages)
+        if problem:
+            logger.warning("Revert point %d stopped: %s", point_id, problem)
+            return f"{problem}. Nothing was changed."
+        return None
+
     logger.info(
         "Reverting %s → %s", plan.current_path, plan.destination,
     )
@@ -533,6 +558,7 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         stderr_tail_lines=30,
         timeout_seconds=timeout_seconds,
         timeout_label="Revert",
+        before_staging=put_back_languages if languages else None,
         before_swap=unchanged,
         # The processed file's, which is the original's for any file a job
         # has written since jobs kept it. Capture records no owner, so a

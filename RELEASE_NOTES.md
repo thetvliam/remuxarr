@@ -62,4 +62,9 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Added
 
-- Matroska files keep what FFmpeg drops: a job that keeps a file Matroska now writes it with MKVToolNix's mkvmerge when the file has regional languages (such as es-419 beside es-ES, which FFmpeg turned into two plain Spanish tracks), chapter editions, nested chapters, chapters named in several languages, or tags above or below the film's own level. Every other file is written by FFmpeg as before, and so is one mkvmerge would change in other ways, such as a subtitle that is not UTF-8. The image now includes MKVToolNix, which makes it roughly 80 MB larger. A revert still writes the file with FFmpeg, so a reverted file does not keep them.
+- Matroska files keep what FFmpeg drops: a job that keeps a file Matroska now writes it with MKVToolNix's mkvmerge when the file has regional languages (such as es-419 beside es-ES, which FFmpeg turned into two plain Spanish tracks), chapter editions, nested chapters, chapters named in several languages, or tags above or below the film's own level. Every other file is written by FFmpeg as before, and so is one mkvmerge would change in other ways, such as a subtitle that is not UTF-8. The image now includes MKVToolNix, which makes it roughly 80 MB larger. A revert still writes the file with FFmpeg, so a reverted file does not get back its chapter editions, nested chapters, chapter names or tag levels; it does get back each track's region, which it now writes back with MKVToolNix.
+- Keep Audio Languages and Keep Subtitle Languages take regional entries: es-419 keeps Latin American Spanish and drops Spain's, en-GB keeps British English, while a plain code (spa, eng) keeps every region as before. A region is only known for Matroska files, after a rescan.
+
+## Fixed
+
+- An entry such as pt-BR in Keep Audio or Subtitle Languages matched nothing, so every Portuguese track was dropped without a word. It now keeps Brazilian Portuguese, and an entry that is not a language code is refused with a message instead of saved.

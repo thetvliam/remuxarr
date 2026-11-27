@@ -12,7 +12,7 @@ from sqlalchemy import and_, create_engine, inspect, or_, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.core.langcodes import canonical
+from app.core.langcodes import canonical, keep_entry
 from app.core.timeutil import utcnow
 from app.database.models import (AppSetting, AudioLanguageFlag, Base, MediaFile,
                                   PlannedAction, QueueItem, Track)
@@ -1123,9 +1123,11 @@ def _stored_value_fits(key: str, value: Any) -> bool:
 
 
 # Saved in one form, ISO 639-2/B (app.core.langcodes), whichever of en, eng,
-# de, deu or ger was typed. The decision engine compares that form, so a
-# setting saved before this still works; saving it again shows the stored
-# form on the Settings page, which reloads from here after a save.
+# de, deu or ger was typed, and a keep-list entry with a region or script in
+# BCP 47's (langcodes.keep_entry: pt-br is saved pt-BR). The decision engine
+# compares those forms, so a setting saved before this still works; saving
+# it again shows the stored form on the Settings page, which reloads from
+# here after a save.
 _LANGUAGE_LIST_SETTINGS = {"keep_audio_languages", "keep_subtitle_languages"}
 _LANGUAGE_SETTINGS = {"undefined_language_value"}
 
@@ -1134,7 +1136,8 @@ def _canonical_setting(key: str, value: Any) -> Any:
     if key in _LANGUAGE_LIST_SETTINGS and isinstance(value, list):
         out = []
         for code in value:
-            code = canonical(code) if isinstance(code, str) else code
+            if isinstance(code, str):
+                code = keep_entry(code) or canonical(code)
             if code not in out:
                 out.append(code)
         return out

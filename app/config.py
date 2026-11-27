@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     # Dockerfile): mkvmerge, and mkvextract to read a file's chapters and
     # tags. A job keeping a file Matroska uses them when mkvmerge keeps more
     # of it (app/core/ffmpeg.py, plan_mkvmerge); without them every job uses
-    # FFmpeg.
+    # FFmpeg. mkvpropedit writes a reverted file's regional languages back
+    # (mkvtoolnix.write_languages); without it a revert writes none.
     MKVMERGE_PATH: str = "mkvmerge"
     MKVEXTRACT_PATH: str = "mkvextract"
+    MKVPROPEDIT_PATH: str = "mkvpropedit"
 
     # Worker
     # Note: worker concurrency (max concurrent jobs) is deliberately NOT

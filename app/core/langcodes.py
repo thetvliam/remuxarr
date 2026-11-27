@@ -33,6 +33,8 @@ the twenty languages whose /T code differs from /B), generated from
 pycountry's copy of it rather than typed. test_language_codes.py checks them
 against each other.
 """
+import re
+
 
 TWO_LETTER = {
     "aa": "aar", "ab": "abk", "ae": "ave", "af": "afr", "ak": "aka", "am": "amh",
@@ -134,6 +136,53 @@ def two_letter(code: str) -> str:
     """The code a .srt name carries: ISO 639-1 if the language has one."""
     code = canonical(code)
     return _TO_TWO_LETTER.get(code, code)
+
+
+# BCP 47's language subtag is the shortest ISO 639 code: the two-letter one
+# where the language has one. No .srt-name exceptions here (nb stays nb).
+_SHORTEST = {b: two for two, b in TWO_LETTER.items()}
+_ALPHA2_3 = re.compile(r"^[a-z]{2,3}$")
+_SCRIPT = re.compile(r"^[A-Za-z]{4}$")
+_REGION = re.compile(r"^(?:[A-Za-z]{2}|[0-9]{3})$")
+
+
+def keep_entry(code: str) -> str | None:
+    """
+    A Keep Audio or Subtitle Languages entry in the form it is saved and
+    compared in, or None for one that is not a language code.
+
+    A plain code is canonical()'s ISO 639-2/B ("en" and "eng" give "eng").
+    One with a script or a region (BCP 47: es-419, pt-BR, zh-Hans,
+    zh-Hant-TW) keeps them, in BCP 47's form: the language as its shortest
+    code, the script title-cased, the region upper-cased ("spa-419" and
+    "ES-419" give "es-419"), matched against a track's own BCP 47 language
+    (Track.language_ietf) rather than its old code.
+
+    Two letters must be an ISO 639-1 code. Three letters are taken as an
+    ISO 639-2 code without a table of them all, as canonical() takes them.
+    Anything else (a name, a list in one entry, a variant or extension
+    subtag) is None: saved as it was typed it matched no track, and every
+    track in the language meant was dropped.
+    """
+    parts = code.strip().split("-")
+    language = parts[0].lower()
+    if not _ALPHA2_3.match(language) or (len(language) == 2 and language not in TWO_LETTER):
+        return None
+    if len(parts) == 1:
+        return canonical(language)
+    rest, subtags = parts[1:], [_SHORTEST.get(canonical(language), canonical(language))]
+    if rest and _SCRIPT.match(rest[0]):
+        subtags.append(rest.pop(0).title())
+    if rest and _REGION.match(rest[0]):
+        subtags.append(rest.pop(0).upper())
+    if rest or len(subtags) == 1:
+        return None
+    return "-".join(subtags)
+
+
+def regional(entry: str) -> bool:
+    """Whether a saved keep-list entry names a script or a region."""
+    return "-" in entry
 
 
 def from_arr_language(language) -> str | None:

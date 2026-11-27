@@ -45,8 +45,8 @@ copy rather than only those with findings. Results go to
 otherwise, so a run from the repository root leaves the checkout alone.
 
 In the sandbox this was written in (two CPUs), the library built in 5 to
-16 seconds and all 22 profiles, review answers, Forge and reverts included, ran in
-about five and a quarter minutes at `-j 2`, check 29 adding about 15%. It has
+16 seconds and all 23 profiles, review answers, Forge and reverts included, ran in
+about seven minutes at `-j 2`, check 29 adding about 15%. It has
 not been tried inside the Remuxarr container, and the image does not
 include `tools/`.
 
@@ -64,7 +64,7 @@ files. The library you pass in is only read.
 
 ## Profiles
 
-`default` is the app's own defaults. The other 21 vary the settings below
+`default` is the app's own defaults. Twenty-one more vary the settings below
 and the runner's three choices, so that every pair of values
 of any two of them appears together in at least one profile. All
 combinations would be about 10 million; the pairwise set is checked for
@@ -89,6 +89,11 @@ refuses it; and `_language_answer` (ignore, `eng` or `jpn`), given to every
 audio and subtitle language question; and `_forge_undo` (yes or no), whether
 to undo each AC3 Forge job after it runs. The default profile keeps,
 ignores and does not undo.
+
+`r01` is a fixed profile run beside the pairwise ones: Keep Audio
+Languages `en-GB`, Keep Subtitle Languages `en-GB` and `es-419`, Matroska
+kept, subtitles left in the file and revert on, for check 35. A regional
+value added to the varied lists instead would rebuild every profile.
 
 Each profile is checked against the app's settings schema before it runs,
 so a setting or value the app no longer has stops the run instead of being
@@ -208,10 +213,14 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     output FFmpeg wrote (check 34 says when that is right) lists each of
     those losses as an accepted loss, as do a conversion to MP4, which holds
     a flat list of chapters and no tag levels, and a revert, which writes
-    with FFmpeg too (the root README's revert limitations). Anything else is
-    a finding: a chapter that moved, one shown under a name it never had, a
-    tag or a region that appeared, and any loss at all in a file mkvmerge
-    wrote. The same checks run after each revert.
+    with FFmpeg too (the root README's revert limitations), but for
+    regions: a revert writes each track's back with mkvpropedit from its
+    point, so a region lost after a revert is a finding, unless mkvmerge
+    numbers the original's tracks differently from ffprobe and the point
+    recorded none. Anything else is a finding: a chapter that moved, one
+    shown under a name it never had, a tag or a region that appeared, and
+    any loss at all in a file mkvmerge wrote. The same checks run after
+    each revert.
 34. A Matroska output is written by mkvmerge exactly when it should be: when
     it keeps something FFmpeg drops (any of 31 to 33's losses, but a
     chapter's language alone) and nothing stops it. What stops it, as the
@@ -224,6 +233,13 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     application. Worked out here rather than taken from
     `app/core/mkvtoolnix.py`, so the check does not take its answer from the
     code it checks.
+35. In a profile whose Keep Subtitle Languages holds an entry with a region
+    or script (`r01`), a subtitle whose language, as `mkvmerge -J` reads it,
+    is that entry or a narrower tag under it is kept, and one of the same
+    language matching no entry is dropped, unless its language is also
+    listed plainly. Forced subtitles (by flag or title), answered ones and
+    ones the plan gives a language are left out, since other rules decide
+    those.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its
@@ -261,7 +277,7 @@ route function, and the worker runs the Forge jobs:
     or waiting to undo, and nothing in the library changed but the forged
     files.
 
-Then, in each profile with revert on (15 of the 22; pairwise, so every value
+Then, in each profile with revert on (16 of the 23; pairwise, so every value
 of every other setting meets revert on at least once), every revert point is
 restored through the app's own `restore_revert_point`, and:
 

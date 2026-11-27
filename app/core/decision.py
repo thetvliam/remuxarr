@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path
 from typing import Literal
 
-from app.core.langcodes import canonical, two_letter
+from app.core.langcodes import canonical, regional, two_letter
 from app.core.probe import _FORCED_RE, _SDH_RE, _DUB_RE
 
 logger = logging.getLogger(__name__)
@@ -424,6 +424,33 @@ def _resolve_undefined_audio_language(
     return mapped
 
 
+
+def _keep_list(codes) -> tuple[set[str], tuple[str, ...]]:
+    """
+    A Keep Audio or Subtitle Languages setting as (its plain codes in ISO
+    639-2/B, its regional entries lower-cased). A plain code matches a
+    track's old code (eng, spa); a regional one (es-419, zh-Hant) matches
+    its BCP 47 language (Track.language_ietf), so es-419 keeps Latin
+    American Spanish and not Spain's, which spa keeps alike.
+    """
+    plain, regions = set(), []
+    for code in codes:
+        if isinstance(code, str) and regional(code):
+            regions.append(code.strip().lower())
+        else:
+            plain.add(canonical(code))
+    return plain, tuple(regions)
+
+
+def _regional_match(track: dict, regions: tuple[str, ...]) -> bool:
+    """
+    Whether a track's BCP 47 language is one of the regional entries, or a
+    narrower tag under one (zh-Hant-TW under zh-Hant). A track whose BCP 47
+    language is unknown or absent matches none: only a Matroska file says.
+    """
+    tag = (track.get("language_ietf") or "").lower()
+    return any(tag == r or tag.startswith(r + "-") for r in regions)
+
 def analyze_file(
     file_info: dict,
     tracks:    list[dict],
@@ -515,8 +542,10 @@ def analyze_file(
         si: canonical(lang) for si, lang in (audio_language_overrides or {}).items()}
     subtitle_language_overrides = {
         si: canonical(lang) for si, lang in (subtitle_language_overrides or {}).items()}
-    keep_audio_langs    = {canonical(c) for c in settings.get("keep_audio_languages",   ["eng"])}
-    keep_sub_langs      = {canonical(c) for c in settings.get("keep_subtitle_languages", ["eng"])}
+    # A regional entry (es-419) is matched against a track's BCP 47
+    # language, a plain one against its old code (_keep_list).
+    keep_audio_langs, keep_audio_regions = _keep_list(settings.get("keep_audio_languages", ["eng"]))
+    keep_sub_langs, keep_sub_regions = _keep_list(settings.get("keep_subtitle_languages", ["eng"]))
     keep_forced_subs    = settings.get("keep_forced_subtitles",   True)
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
@@ -727,6 +756,9 @@ def analyze_file(
         # on that, which is the point of resolving first.
         return (
             lang in keep_sub_langs
+            # Its region, unless the job gives it a language of its own.
+            or (track["stream_index"] not in und_sub_language
+                and _regional_match(track, keep_sub_regions))
             or (keep_forced_subs and is_forced)
             or lang == "und"
             # Answered in Subtitle Language Review: see "Language Review
@@ -994,12 +1026,22 @@ def analyze_file(
                 or track["language"] or "und")
 
     file_keep_audio_langs = keep_audio_langs
+    file_keep_audio_regions = keep_audio_regions
     original_mode = settings.get("original_language_audio", "off")
     if original_language and original_mode == "keep_both":
         file_keep_audio_langs = keep_audio_langs | {original_language}
     elif (original_language and original_mode == "original_only"
             and any(_audio_lang(t) == original_language for t in audio_tracks)):
         file_keep_audio_langs = {original_language}
+        file_keep_audio_regions = ()
+
+    def _in_audio_list(track: dict, langs: set, regions: tuple) -> bool:
+        # Its region counts only while the track has its own language: a
+        # Language Review answer or the Fix pass gives it one the job
+        # writes, which replaces the region.
+        own = (track["stream_index"] not in audio_language_overrides
+               and track["stream_index"] not in und_audio_language)
+        return _audio_lang(track) in langs or (own and _regional_match(track, regions))
 
     # Pre-check: is there at least one audio track in the preferred language
     # list?  The keep_default_audio guard below uses this to limit its scope —
@@ -1015,7 +1057,7 @@ def analyze_file(
     # undefined or non-preferred language — not to override the language filter
     # when a preferred track is available.
     has_preferred_audio = any(
-        _audio_lang(t) in file_keep_audio_langs
+        _in_audio_list(t, file_keep_audio_langs, file_keep_audio_regions)
         for t in audio_tracks
     )
 
@@ -1059,7 +1101,7 @@ def analyze_file(
     # Keeping the two expressions in step is what makes the invariant hold,
     # so any future change to should_keep's terms belongs here too.
     survives_without_fallback = any(
-        _audio_lang(t) in file_keep_audio_langs
+        _in_audio_list(t, file_keep_audio_langs, file_keep_audio_regions)
         or _audio_lang(t) == "und"
         or t["stream_index"] in audio_language_overrides
         or (keep_default_audio and t.get("is_default") and not has_preferred_audio)
@@ -1102,7 +1144,7 @@ def analyze_file(
         codec    = (track["codec"] or "").lower()
 
         should_keep = (
-            lang in file_keep_audio_langs
+            _in_audio_list(track, file_keep_audio_langs, file_keep_audio_regions)
             # Undefined-language audio is ALWAYS kept — deliberately
             # asymmetric with subtitles, where _sub_is_kept (above) has no
             # equivalent branch and an "und" subtitle only survives by
@@ -1158,7 +1200,8 @@ def analyze_file(
             why = (
                 f"not the original language [{original_language}] "
                 "(Original Language Audio: Keep original only)"
-                if original_mode == "original_only" and lang in keep_audio_langs
+                if original_mode == "original_only"
+                and _in_audio_list(track, keep_audio_langs, keep_audio_regions)
                 else "not in keep list"
             )
             # The line shows the [und] the track has now, and an untagged
