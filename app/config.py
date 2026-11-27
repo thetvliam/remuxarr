@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     FFMPEG_PATH: str = "ffmpeg"
     FFPROBE_PATH: str = "ffprobe"
 
+    # MKVToolNix binaries (on PATH inside the container, pinned in the
+    # Dockerfile): mkvmerge, and mkvextract to read a file's chapters and
+    # tags. app/core/mkvtoolnix.py runs them; no job uses it yet.
+    MKVMERGE_PATH: str = "mkvmerge"
+    MKVEXTRACT_PATH: str = "mkvextract"
+
     # Worker
     # Note: worker concurrency (max concurrent jobs) is deliberately NOT
     # here — it's a runtime setting, read exclusively from the
