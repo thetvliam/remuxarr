@@ -8,7 +8,12 @@ on:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the MKVToolNix package installed below is
+    # built for one Ubuntu release (MKVTOOLNIX_SUITE), and ubuntu-latest
+    # moves to the next release on GitHub's schedule (24.04 to 26.04 between
+    # October and November 2026). Move this and that step together;
+    # tests/test_deployment_config.py fails if they disagree.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v6
 
@@ -72,6 +77,40 @@ jobs:
           ffprobe -version | head -1
           ffmpeg -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-"
           ffprobe -version | head -1 | grep -qF "version ${FFMPEG_VERSION}-"
+
+      # The same MKVToolNix release the image installs (see the Dockerfile's
+      # comment on why it comes from MKVToolNix's own repository, not the
+      # distribution's), built for this runner's Ubuntu. The package and
+      # checksum differ from the image's, as each is built for its own
+      # system; the version must not. Ubuntu's own mkvtoolnix is another
+      # version, so this checks that the one installed is the one on PATH.
+      - name: Install MKVToolNix (the release the Docker image ships)
+        env:
+          MKVTOOLNIX_VERSION: "104.0"
+          MKVTOOLNIX_SUITE: resolute
+          MKVTOOLNIX_BUILD: ubuntu2604
+          MKVTOOLNIX_SHA256: c26d61108edf193722d6a84279a2db658bb60fcfa30862e9ccb51cbe1af74dba
+        run: |
+          set -eu
+          . /etc/os-release
+          [ "$VERSION_CODENAME" = "$MKVTOOLNIX_SUITE" ] \
+            || { echo "The MKVToolNix package is built for ${MKVTOOLNIX_SUITE}, and this runner is ${VERSION_CODENAME}. Move runs-on and the package together." >&2; exit 1; }
+          deb="mkvtoolnix_${MKVTOOLNIX_VERSION}-0~${MKVTOOLNIX_BUILD}bunkus01_amd64.deb"
+          url="https://mkvtoolnix.download/ubuntu/pool/${MKVTOOLNIX_SUITE}/main/m/mkvtoolnix/${deb}"
+          echo "Downloading MKVToolNix: $url"
+          curl -fsSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/mkvtoolnix.deb" "$url" \
+            || { echo "Could not download $url" >&2; exit 1; }
+          echo "${MKVTOOLNIX_SHA256}  $RUNNER_TEMP/mkvtoolnix.deb" | sha256sum -c - \
+            || { echo "The MKVToolNix download does not match its pinned SHA-256" >&2; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "$RUNNER_TEMP/mkvtoolnix.deb"
+          mkvmerge    --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+            || { echo "mkvmerge on PATH is not the pinned ${MKVTOOLNIX_VERSION}" >&2; exit 1; }
+          mkvpropedit --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+            || { echo "mkvpropedit on PATH is not the pinned ${MKVTOOLNIX_VERSION}" >&2; exit 1; }
+          mkvextract  --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+            || { echo "mkvextract on PATH is not the pinned ${MKVTOOLNIX_VERSION}" >&2; exit 1; }
+          mkvmerge --version
 
       - name: Byte-compile (syntax check)
         run: python -m compileall -q app

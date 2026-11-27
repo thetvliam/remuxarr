@@ -97,6 +97,55 @@ LABEL org.opencontainers.image.source="https://github.com/thetvliam/remuxarr"
 COPY --from=ffmpeg-downloader /usr/local/bin/ffmpeg  /usr/local/bin/ffmpeg
 COPY --from=ffmpeg-downloader /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 
+# MKVToolNix (mkvmerge, mkvpropedit, mkvextract), pinned to one exact
+# package, checked by its SHA-256, as FFmpeg is. Nothing runs it yet.
+#
+# Why not Debian's own package: trixie ships 92.0 and moves it with point
+# releases, and CI runs on Ubuntu, whose archive has another version again
+# (82.0 in 24.04). MKVToolNix's own repository builds every release for both,
+# and keeps the old ones, so the image and CI install the same release here.
+#
+# A .deb, unlike FFmpeg's static build, is built for one release of one
+# distribution and installs its libraries (Qt 6 core, Boost, FLAC and the
+# rest: about 80 MB with the package, measured on Ubuntu 24.04) from that
+# release's archive. So the build stops unless the base image is the
+# release the package is for: a python:3.14-slim that moves to a newer
+# Debian fails here, not at run time. Downloaded with the base image's own
+# Python, so no download tool is installed for it, and installed in the same
+# layer that removes the package file.
+#
+# To move it: in the repository's Packages index for this suite
+# (https://mkvtoolnix.download/debian/dists/trixie/main/binary-amd64/Packages)
+# find the mkvtoolnix entry for the new version; its SHA256 line is
+# MKVTOOLNIX_SHA256. Change MKVTOOLNIX_VERSION in .github/workflows/ci.yml
+# too, with its own build's checksum: tests/test_deployment_config.py fails
+# if the versions differ.
+RUN set -eu; \
+    MKVTOOLNIX_VERSION="104.0"; \
+    MKVTOOLNIX_SUITE="trixie"; \
+    MKVTOOLNIX_BUILD="debian13"; \
+    MKVTOOLNIX_SHA256="248672f36237a8c7239e8ba693dd19742deba06d09bf5ec5248aa0df27e3de0d"; \
+    . /etc/os-release; \
+    [ "$VERSION_CODENAME" = "$MKVTOOLNIX_SUITE" ] \
+      || { echo "ERROR: the MKVToolNix package is built for ${MKVTOOLNIX_SUITE}, and this base image is ${VERSION_CODENAME}. Move MKVTOOLNIX_SUITE, MKVTOOLNIX_BUILD and MKVTOOLNIX_SHA256 to that release's package (see the comment above)." >&2; exit 1; }; \
+    deb="mkvtoolnix_${MKVTOOLNIX_VERSION}-0~${MKVTOOLNIX_BUILD}bunkus01_amd64.deb"; \
+    url="https://mkvtoolnix.download/debian/pool/${MKVTOOLNIX_SUITE}/main/m/mkvtoolnix/${deb}"; \
+    echo "Downloading MKVToolNix: $url"; \
+    python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$url" /tmp/mkvtoolnix.deb \
+      || { echo "ERROR: could not download $url" >&2; exit 1; }; \
+    echo "${MKVTOOLNIX_SHA256}  /tmp/mkvtoolnix.deb" | sha256sum -c - \
+      || { echo "ERROR: the MKVToolNix download does not match its pinned SHA-256" >&2; exit 1; }; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends /tmp/mkvtoolnix.deb; \
+    rm -rf /var/lib/apt/lists/* /tmp/mkvtoolnix.deb; \
+    mkvmerge    --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+      || { echo "ERROR: mkvmerge does not report the pinned version ${MKVTOOLNIX_VERSION}" >&2; exit 1; }; \
+    mkvpropedit --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+      || { echo "ERROR: mkvpropedit does not report the pinned version ${MKVTOOLNIX_VERSION}" >&2; exit 1; }; \
+    mkvextract  --version | grep -qF "v${MKVTOOLNIX_VERSION} (" \
+      || { echo "ERROR: mkvextract does not report the pinned version ${MKVTOOLNIX_VERSION}" >&2; exit 1; }; \
+    echo "MKVToolNix installed: $(mkvmerge --version)"
+
 WORKDIR /app
 
 COPY requirements.txt .

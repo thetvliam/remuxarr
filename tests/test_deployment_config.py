@@ -858,6 +858,158 @@ def test_the_pinned_ffmpeg_build_is_not_near_deletion():
         f"comment has the steps.")
 
 
+# ── The MKVToolNix package ─────────────────────────────────────────────────
+#
+# The image and CI each install one exact MKVToolNix package from
+# MKVToolNix's own repository, named by four values written in each file:
+# the release, the distribution release it is built for (the repository's
+# suite), MKVToolNix's name for that build, and the package's SHA-256. The
+# Dockerfile's comment says why the distributions' own packages are not
+# used. Unlike FFmpeg's static build, a .deb is built for one system, so the
+# two files install different packages with different checksums; what must
+# match is the release, and each package must be the one built for the
+# system it lands on.
+#
+# Verified by mutation, 14 applied, 14 killed, each surviving first every
+# test that reads either file (three test files): CI on another release
+# than the image; the checksum check removed from either; one version check
+# loosened in each file (mkvextract in the image, mkvmerge in CI); the image
+# taking the Ubuntu build; CI downloading from the Debian repository; CI's
+# runner back on ubuntu-latest; CI's suite not its runner's release; the
+# release check removed from either; the image installing a file other than
+# the one it checked; the package name not built from the pinned values;
+# and the install moved out of the runtime stage.
+
+_MKVTOOLNIX_FILES = ("Dockerfile", ".github/workflows/ci.yml")
+_MKVTOOLNIX_PIN_FIELDS = ("MKVTOOLNIX_VERSION", "MKVTOOLNIX_SUITE",
+                          "MKVTOOLNIX_BUILD", "MKVTOOLNIX_SHA256")
+# The repository directory each file installs from.
+_MKVTOOLNIX_REPOSITORY = {"Dockerfile": "debian", ".github/workflows/ci.yml": "ubuntu"}
+# MKVToolNix's build name for each release it packages for: the part of a
+# package's version between "0~" and "bunkus01".
+_MKVTOOLNIX_BUILDS = {"bookworm": "debian12", "trixie": "debian13",
+                      "noble": "ubuntu2404", "resolute": "ubuntu2604"}
+# The Ubuntu release behind each GitHub runner label CI may name.
+_RUNNER_SUITES = {"ubuntu-24.04": "noble", "ubuntu-26.04": "resolute"}
+_MKVTOOLNIX_TOOLS = ("mkvmerge", "mkvpropedit", "mkvextract")
+
+
+def _mkvtoolnix_pin(name):
+    """The four pinned values as one file writes them: `MKVTOOLNIX_SUITE="..."`
+    in the Dockerfile's shell, `MKVTOOLNIX_SUITE: ...` in the workflow's env."""
+    import re
+
+    text = _read(name)
+    pin = {}
+    for field in _MKVTOOLNIX_PIN_FIELDS:
+        found = re.findall(rf'^\s*{field}(?:=|:[ \t]*)"?([^"\s;]+)', text, re.M)
+        assert len(found) == 1, (
+            f"{name} should set {field} once, and sets it {len(found)} times")
+        pin[field] = found[0]
+    return pin
+
+
+def test_ci_installs_the_mkvtoolnix_release_the_image_ships():
+    """
+    CI installs MKVToolNix so tests that run it run the release users get.
+    The packages differ, being built for Debian and for Ubuntu; the release
+    must not, and nothing but this compares the two files.
+    """
+    import re
+
+    pins = {name: _mkvtoolnix_pin(name) for name in _MKVTOOLNIX_FILES}
+    image, ci = pins["Dockerfile"], pins[".github/workflows/ci.yml"]
+    assert image["MKVTOOLNIX_VERSION"] == ci["MKVTOOLNIX_VERSION"], (
+        f"the image installs MKVToolNix {image['MKVTOOLNIX_VERSION']} and CI "
+        f"{ci['MKVTOOLNIX_VERSION']}. Move both together, or the suite is not "
+        f"testing what ships.")
+    for name, pin in pins.items():
+        assert re.fullmatch(r"\d+\.\d+", pin["MKVTOOLNIX_VERSION"]), (
+            f"{name} pins MKVToolNix {pin['MKVTOOLNIX_VERSION']!r}, not a release number")
+        assert re.fullmatch(r"[0-9a-f]{64}", pin["MKVTOOLNIX_SHA256"]), (
+            f"{name}'s MKVTOOLNIX_SHA256 is not a lowercase hex SHA-256")
+
+
+def test_each_mkvtoolnix_install_takes_the_package_built_for_its_system():
+    """
+    A package built for another release installs against libraries that
+    are not there, or not that version. Each file downloads from its own
+    distribution's repository, by a package name built from its pinned
+    values, and refuses to go on if the system it runs on is not the
+    release the package is for. CI's runner is pinned to that release, as
+    ubuntu-latest moves on GitHub's schedule.
+    """
+    import re
+
+    for name in _MKVTOOLNIX_FILES:
+        text = _read(name)
+        pin = _mkvtoolnix_pin(name)
+        repository = _MKVTOOLNIX_REPOSITORY[name]
+        suite = pin["MKVTOOLNIX_SUITE"]
+        assert _MKVTOOLNIX_BUILDS.get(suite) == pin["MKVTOOLNIX_BUILD"], (
+            f"{name} installs the {pin['MKVTOOLNIX_BUILD']} build from the "
+            f"{suite} suite; MKVToolNix names that release's build "
+            f"{_MKVTOOLNIX_BUILDS.get(suite)!r}")
+        assert pin["MKVTOOLNIX_BUILD"].startswith(repository), (
+            f"{name} installs on {repository} and takes the "
+            f"{pin['MKVTOOLNIX_BUILD']} build")
+        assert ('deb="mkvtoolnix_${MKVTOOLNIX_VERSION}-0~${MKVTOOLNIX_BUILD}'
+                'bunkus01_amd64.deb"') in text, (
+            f"{name} no longer names the package from its pinned values")
+        assert (f'url="https://mkvtoolnix.download/{repository}/pool/'
+                '${MKVTOOLNIX_SUITE}/main/m/mkvtoolnix/${deb}"') in text, (
+            f"{name} no longer downloads the package from the {repository} "
+            f"repository's pool for its suite")
+        assert re.search(r'\. /etc/os-release;?[ \t]*\\?\n\s*\[ "\$VERSION_CODENAME" = '
+                         r'"\$MKVTOOLNIX_SUITE" \]', text), (
+            f"{name} no longer stops on a system that is not {suite}")
+
+    workflow = _read(".github/workflows/ci.yml")
+    backend = re.search(r"^  backend:\n(.*?)(?=^  \w)", workflow, re.M | re.S).group(1)
+    runner = re.search(r"^    runs-on: (\S+)", backend, re.M).group(1)
+    suite = _mkvtoolnix_pin(".github/workflows/ci.yml")["MKVTOOLNIX_SUITE"]
+    assert _RUNNER_SUITES.get(runner) == suite, (
+        f"CI's backend job runs on {runner} and installs the MKVToolNix "
+        f"package built for {suite}. Pin runs-on to that release's label.")
+
+
+def test_both_mkvtoolnix_installs_check_the_checksum_and_version():
+    """
+    The checksum makes the pin exact: without it a re-uploaded or truncated
+    package installs silently. It only counts if the file it checked is the
+    file installed. The version checks prove each tool runs and is the
+    pinned release, not merely some MKVToolNix: Ubuntu's runner can carry
+    its own, and Debian has another version again.
+    """
+    import re
+
+    for name in _MKVTOOLNIX_FILES:
+        text = _read(name)
+        checked = re.findall(r'echo "\$\{MKVTOOLNIX_SHA256\}  ([^"]+)" \| sha256sum -c -', text)
+        assert len(checked) == 1, (
+            f"{name} no longer checks the download against MKVTOOLNIX_SHA256")
+        installed = re.findall(r"apt-get install -y --no-install-recommends ([^\s;]+)", text)
+        installed = [path.strip('"') for path in installed if "mkvtoolnix" in path]
+        assert installed == checked, (
+            f"{name} installs {installed}, not the file it checked, {checked}")
+        for tool in _MKVTOOLNIX_TOOLS:
+            assert re.search(rf'^\s*{tool}\s+--version \| grep -qF '
+                             r'"v\$\{MKVTOOLNIX_VERSION\} \("', text, re.M), (
+                f"{name} no longer checks that {tool} is the pinned release")
+
+
+def test_the_image_installs_mkvtoolnix_in_its_runtime_stage():
+    """
+    The image is its last stage only. Installed in an earlier one, the
+    package would pass every check above and never reach the image.
+    """
+    text = _read("Dockerfile")
+    runtime = text.rsplit("\nFROM ", 1)[1]
+    assert "apt-get install -y --no-install-recommends /tmp/mkvtoolnix.deb" in runtime, (
+        "the Dockerfile no longer installs MKVToolNix in the stage that "
+        "becomes the image")
+
+
 # ── What publishes an image ────────────────────────────────────────────────
 #
 # publish.yml runs only for a push that changes a file the image is built

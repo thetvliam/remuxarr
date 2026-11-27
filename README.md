@@ -249,7 +249,7 @@ cp .env.example .env      # required — the bundled compose file reads it
 docker compose up -d --build
 ```
 
-Every value in `.env.example` already matches the app's own built-in default, so an untouched copy is fine; edit it only to override something specific (the file's own comments explain each one). The first build takes a few minutes - it installs dependencies, builds the frontend, and fetches FFmpeg. Subsequent starts are fast.
+Every value in `.env.example` already matches the app's own built-in default, so an untouched copy is fine; edit it only to override something specific (the file's own comments explain each one). The first build takes a few minutes - it installs dependencies, builds the frontend, and fetches FFmpeg and MKVToolNix. Subsequent starts are fast.
 
 The bundled `docker-compose.yml` builds the image locally rather than pulling it, and is also the fully annotated reference for the SELinux labels and `tmpfs` staging mentioned above.
 
