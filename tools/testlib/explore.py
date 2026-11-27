@@ -14,7 +14,9 @@ Each profile is checked against invariants instead:
      exception. A scan error is expected only on a file ffprobe cannot read.
      A job refused because its output would lose some of the file's own
      tags is an accepted loss, unless one of them is the date the file says
-     it was made, which a job writes back.
+     it was made, which a job writes back, or the job wrote an MP4 and which
+     tags an MP4 would lose was known before it ran: Tags an MP4 Can't Hold
+     decides about those, and the refusal is left to stop the rest.
   2. Every output probes, and its video and audio decode without an error.
   3. Every input stream is in the output, dropped by a planned action or
      extracted to a sidecar, and the chapters survive. Every stream kept
@@ -46,6 +48,14 @@ Each profile is checked against invariants instead:
      the file's first video stream, to within 2 ms: video and audio at their
      first decoded frame, subtitles at their first packet. The same goes
      after each revert below, reported under this number too.
+ 30. Every processed file keeps its own tags, as opposed to its streams':
+     each name, matched ignoring case, with its value, but for an MP4's
+     brand and the name of the program that wrote the file, which muxers
+     write for themselves. The date the file says it was made counts as
+     kept in the same second in an MP4, which holds whole seconds. A
+     conversion to MP4 under Tags an MP4 Can't Hold's drop_tags may lose
+     the tags the worker found an MP4 would lose, an accepted loss, and no
+     others.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -88,7 +98,8 @@ revert route refuses one), and:
  11. The restored file matches the original stream for stream, in what
      each stream says it is and in what it holds (its packets, or the same
      decoded frames), and an MP4's fast-start layout matches too, as does
-     the date the file says it was made, exactly.
+     the date the file says it was made, exactly, and every other tag of
+     the file's own, as check 30 compares them, with none added.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
  14. A revert leaves no answer or confirmation stored for the file, and a
@@ -134,6 +145,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -668,6 +680,60 @@ def lost_encoder_delay(before: dict, after: dict, shift: float) -> int | None:
     return lost if abs(shift + lost / rate) <= START_TOLERANCE else None
 
 
+# Check 30. A file's own tags no job or revert is held to: an MP4's file
+# type box, which check 11 compares as the brand, and the name of the
+# program that wrote the file, which every muxer writes for itself.
+# Written out here rather than imported (probe.REWRITTEN_TAGS), so the
+# check does not take its answer from the code it is checking.
+_FILE_TAGS_NOT_COMPARED = frozenset({"major_brand", "minor_version", "compatible_brands",
+                                     "encoder", "software"})
+_TAGS_DROPPED = ("Tags an MP4 Can't Hold set to convert without them: README.md, "
+                 "\"Never drops a file's own tags or its Dolby Vision unless told to\"")
+
+
+def own_tags(info: dict) -> dict:
+    """A file's own tags, as opposed to its streams', by name as the file
+    has them, leaving out _FILE_TAGS_NOT_COMPARED."""
+    tags = (info.get("format") or {}).get("tags") or {}
+    return {k: v for k, v in tags.items() if k.lower() not in _FILE_TAGS_NOT_COMPARED}
+
+
+def lost_own_tags(before: dict, after: dict, whole_seconds: bool = False) -> list[str]:
+    """
+    The own tags of the file `before` that `after` lacks or holds another
+    value for, by `before`'s names, in order. Names match ignoring case, as
+    a Matroska stores them in capitals and an MP4 in lower case. With
+    whole_seconds the date the file says it was made counts as kept in the
+    same second, as an MP4 holds it in whole seconds.
+    """
+    now = {k.lower(): v for k, v in own_tags(after).items()}
+
+    def kept(name: str, value) -> bool:
+        if now.get(name) == value:
+            return True
+        return (whole_seconds and name == "creation_time"
+                and _to_the_second(value) is not None
+                and _to_the_second(value) == _to_the_second(now.get(name)))
+    return sorted(k for k, v in own_tags(before).items() if not kept(k.lower(), v))
+
+
+def _to_the_second(value):
+    try:
+        return datetime.fromisoformat(value).replace(microsecond=0)
+    except (TypeError, ValueError):
+        return None
+
+
+def stored_list(value: str | None) -> list[str] | None:
+    """A JSON list of names as the app stores one (MediaFile.mp4_lost_tags),
+    or None for none stored or one that does not read as a list."""
+    try:
+        names = json.loads(value) if value is not None else None
+    except ValueError:
+        return None
+    return names if isinstance(names, list) else None
+
+
 def is_mp4(info: dict) -> bool:
     return "mp4" in ((info.get("format") or {}).get("format_name") or "")
 
@@ -861,8 +927,22 @@ def run_child(spec_path: str) -> None:
                     continue
                 if (j.status == "failed" and error.startswith(worker.LOST_TAGS)
                         and not _loses_its_date(error)):
+                    lost = error.split("It would lose: ")[-1]
+                    # Known before the job, the tags an MP4 would lose are
+                    # for Tags an MP4 Can't Hold to decide on, and a job
+                    # writing an MP4 is not refused over them; the refusal
+                    # stops only what could not be known beforehand.
+                    foreseen = stored_list(media.mp4_lost_tags)
+                    wrote_mp4 = (is_mp4(probes_before.get(rel(source)) or {}) or any(
+                        a.action_type == "change_container" for a in
+                        db.query(PlannedAction).filter(PlannedAction.queue_item_id == j.id)))
+                    if foreseen is not None and wrote_mp4:
+                        find(1, source, f"job refused over its own tags ({lost.rstrip('.')}), "
+                                        "though which tags an MP4 would lose was known "
+                                        f"before it ran: {', '.join(foreseen) or 'none'}")
+                        continue
                     known.append({"file": rel(source), "lost": "job refused",
-                                  "why": f"{_LOST_TAGS} ({error.split('It would lose: ')[-1]})"})
+                                  "why": f"{_LOST_TAGS} ({lost})"})
                     entry["refused"] = True
                     continue
                 find(1, source, f"job {j.status}: {error[:300]}")
@@ -882,6 +962,8 @@ def run_child(spec_path: str) -> None:
             entry["actions"] = [f"{a.action_type}:{a.stream_index}" for a in actions]
             entry["source"] = source
             entry["plan"] = _plan_of(actions)
+            # For check 30, as the worker stored it when it took the job.
+            entry["mp4_lost_tags"] = stored_list(media.mp4_lost_tags)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
                              cfg, canonical, allowed_changes, entry, several,
@@ -1615,6 +1697,17 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         made, made_now = _made(original), _made(info)
         if made is not None and made_now != made:
             find(11, source, f"creation date {made} in the original, {made_now} after the revert")
+        # And every other tag of the file's own, which a revert writes back
+        # from its point too, exactly, and no other: a job that converted
+        # the file to MP4 under Tags an MP4 Can't Hold's drop_tags lost the
+        # ones an MP4 cannot hold, and the revert is where they come back.
+        lost = [t for t in lost_own_tags(original, info) if t.lower() != "creation_time"]
+        if lost:
+            find(11, source, f"own tag(s) {', '.join(lost)} lost or changed after the revert")
+        had = {k.lower() for k in own_tags(original)}
+        gained = sorted(k for k in own_tags(info) if k.lower() not in had)
+        if gained:
+            find(11, source, f"own tag(s) {', '.join(gained)} appeared after the revert")
         # 27. And each video stream's Dolby Vision record: its own check
         # rather than part of the signature, so that one number covers it
         # wherever it is lost.
@@ -1909,6 +2002,25 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
             if moved:
                 find(29, source, moved_finding(ref, moved, f"in {Path(output).name}",
                                                "in the source"))
+
+    # 30. The file keeps its own tags. A conversion to MP4 under Tags an MP4
+    # Can't Hold's drop_tags may lose the ones the worker found an MP4 would
+    # lose when it took the job, and no others: never the date the file
+    # says it was made, which a job writes back, and which an MP4 holds in
+    # whole seconds.
+    to_mp4 = is_mp4(info_after) and not is_mp4(info_before)
+    lost = lost_own_tags(info_before, info_after, whole_seconds=is_mp4(info_after))
+    allowed = set()
+    if to_mp4 and cfg.get("mp4_lost_tag_handling") == "drop_tags":
+        allowed = {t.lower() for t in entry.get("mp4_lost_tags") or []} - {"creation_time"}
+    dropped = [t for t in lost if t.lower() in allowed]
+    if dropped:
+        known.append({"file": Path(source).relative_to(lib).as_posix(),
+                      "lost": f"own tag(s) {', '.join(dropped)}", "why": _TAGS_DROPPED})
+    unexplained = [t for t in lost if t.lower() not in allowed]
+    if unexplained:
+        find(30, source, f"lost or changed its own tag(s) {', '.join(unexplained)} "
+                         f"in {Path(output).name}")
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")
