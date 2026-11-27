@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  38 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (54 files, about 30 MB, at the
+#  40 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (56 files, about 30 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -26,12 +26,14 @@
 #    --duration N       seconds per file (default 6, minimum 4).
 #    --force            delete OUTPUT_DIR first if it exists.
 #
-#  Environment: FFMPEG, FFPROBE, PYTHON override the binaries used.
+#  Environment: FFMPEG, FFPROBE, PYTHON, MKVMERGE override the binaries used.
 #
 #  Needs: FFmpeg with libx264, libx265, libvpx-vp9, libopus, libmp3lame,
 #  libxvid, and the dovi_rpu bitstream filter (the BtbN 8.1 build the
-#  Dockerfile pins has all of them), and Python 3 (stdlib only) for the two
-#  helpers next to this script.
+#  Dockerfile pins has all of them), Python 3 (stdlib only) for the two
+#  helpers next to this script, and MKVToolNix's mkvmerge for files 39 and 40,
+#  which hold what FFmpeg cannot write: regional languages, chapter editions
+#  and tag levels.
 #
 #  The comment on each file below says what it is built to exercise. What
 #  Remuxarr does with it depends on the settings, which is why explore.py
@@ -42,6 +44,7 @@ set -euo pipefail
 FFMPEG="${FFMPEG:-ffmpeg}"
 FFPROBE="${FFPROBE:-ffprobe}"
 PYTHON="${PYTHON:-python3}"
+MKVMERGE="${MKVMERGE:-mkvmerge}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FONT=""; PGS_IN=""; VOBSUB_IN=""; DUR=6; FORCE=0; OUT=""
@@ -68,6 +71,7 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 command -v "$FFMPEG"  >/dev/null || die "ffmpeg not found (set FFMPEG=...)"
 command -v "$FFPROBE" >/dev/null || die "ffprobe not found (set FFPROBE=...)"
 command -v "$PYTHON"  >/dev/null || die "python3 not found (set PYTHON=...)"
+command -v "$MKVMERGE" >/dev/null || die "mkvmerge not found (set MKVMERGE=...); files 39 and 40 need MKVToolNix"
 for helper in make_pgs.py corrupt_aac.py; do
   [[ -f "$SCRIPT_DIR/$helper" ]] || die "$helper must sit next to this script"
 done
@@ -551,7 +555,61 @@ f38() {  # MP4 with a tag of its own kept as a QuickTime key, which an MP4 rewri
     "$OUT/38 - tagged mp4.mp4"
 }
 
-for n in $(seq -w 1 38); do
+# Files 39 and 40 hold what only mkvmerge writes, so FFmpeg makes their
+# streams and mkvmerge puts them together. --no-date: mkvmerge would
+# otherwise stamp each build with the time it ran.
+f39() {  # Matroska whose languages carry a region (BCP 47): en-GB and en-US subtitles share the old code eng, and es-419 and es-ES share spa, so only the regional tag tells each pair apart, as in a real web release. Checks 31: a kept track keeps its region. German (de-AT) audio and the Spanish subtitles to drop.
+  local a=(); add a video_in "39 regional languages"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac "$A/f39.mkv"
+  srt "$A/f39_engb.srt" "EN-GB"; srt "$A/f39_enus.srt" "EN-US"; srt "$A/f39_frca.srt" "FR-CA"
+  srt "$A/f39_es419.srt" "ES-419"; srt "$A/f39_eses.srt" "ES-ES"
+  "$MKVMERGE" -q --no-date -o "$OUT/39 - regional languages.mkv" \
+    --language 1:en-GB --language 2:de-AT --default-track-flag 2:0 "$A/f39.mkv" \
+    --language 0:en-GB --default-track-flag 0:0 "$A/f39_engb.srt" \
+    --language 0:en-US --default-track-flag 0:0 "$A/f39_enus.srt" \
+    --language 0:fr-CA --default-track-flag 0:0 "$A/f39_frca.srt" \
+    --language 0:es-419 --default-track-flag 0:0 "$A/f39_es419.srt" \
+    --language 0:es-ES --default-track-flag 0:0 "$A/f39_eses.srt"
+}
+
+f40() {  # Matroska with two chapter editions, a nested chapter, a chapter named in English and in French, and tags at the collection (70) and film (50) levels plus one aimed at a chapter. FFmpeg writes back one edition, no nesting, one name per chapter and no chapter language. Checks 32 and 33. German audio to drop.
+  local a=(); add a video_in "40 chapters and tag levels"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac "$A/f40.mkv"
+  hms() { printf '%02d:%02d:%02d.000' $(( $1 / 3600 )) $(( $1 % 3600 / 60 )) $(( $1 % 60 )); }
+  local mid end; mid="$(hms $(( DUR / 2 )))"; end="$(hms "$DUR")"
+  cat > "$A/f40_chapters.xml" <<XML
+<?xml version="1.0"?>
+<Chapters>
+ <EditionEntry><EditionFlagDefault>1</EditionFlagDefault>
+  <ChapterAtom><ChapterUID>401</ChapterUID><ChapterTimeStart>00:00:00.000</ChapterTimeStart><ChapterTimeEnd>${mid}</ChapterTimeEnd>
+   <ChapterDisplay><ChapterString>Part one</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay>
+   <ChapterDisplay><ChapterString>Partie un</ChapterString><ChapLanguageIETF>fr</ChapLanguageIETF></ChapterDisplay>
+   <ChapterAtom><ChapterUID>402</ChapterUID><ChapterTimeStart>00:00:01.000</ChapterTimeStart><ChapterTimeEnd>00:00:02.000</ChapterTimeEnd>
+    <ChapterDisplay><ChapterString>Nested</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay></ChapterAtom>
+  </ChapterAtom>
+  <ChapterAtom><ChapterUID>403</ChapterUID><ChapterTimeStart>${mid}</ChapterTimeStart><ChapterTimeEnd>${end}</ChapterTimeEnd>
+   <ChapterDisplay><ChapterString>Part two</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay></ChapterAtom>
+ </EditionEntry>
+ <EditionEntry>
+  <ChapterAtom><ChapterUID>404</ChapterUID><ChapterTimeStart>00:00:00.000</ChapterTimeStart><ChapterTimeEnd>${end}</ChapterTimeEnd>
+   <ChapterDisplay><ChapterString>Director's cut</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay></ChapterAtom>
+ </EditionEntry>
+</Chapters>
+XML
+  cat > "$A/f40_tags.xml" <<'XML'
+<?xml version="1.0"?>
+<Tags>
+ <Tag><Targets><TargetTypeValue>70</TargetTypeValue></Targets><Simple><Name>TITLE</Name><String>The Collection</String></Simple></Tag>
+ <Tag><Targets><TargetTypeValue>50</TargetTypeValue></Targets><Simple><Name>TITLE</Name><String>The Film</String></Simple></Tag>
+ <Tag><Targets><TargetTypeValue>30</TargetTypeValue><ChapterUID>403</ChapterUID></Targets><Simple><Name>TITLE</Name><String>The Second Part</String></Simple></Tag>
+</Tags>
+XML
+  "$MKVMERGE" -q --no-date -o "$OUT/40 - chapter editions and tag levels.mkv" \
+    --chapters "$A/f40_chapters.xml" --global-tags "$A/f40_tags.xml" \
+    --language 1:en --language 2:de --default-track-flag 2:0 "$A/f40.mkv"
+}
+
+for n in $(seq -w 1 40); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

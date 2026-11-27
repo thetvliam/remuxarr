@@ -2,15 +2,19 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 38 files
+- `make_test_library.sh` builds a small library of unusual media: 40 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
   corrupt AAC packets, creation dates (a Matroska's to the microsecond, as
   mkvmerge writes it, and an MP4's), Dolby Vision (Profile 5 and 8.1 in
   Matroska, Profile 5 in MP4), tags FFmpeg cannot write into an MP4 (an IMDB
-  and a TMDB ID in a Matroska, a key of its own in an MP4), an audio-only file
-  and a zero-byte one. A folder
+  and a TMDB ID in a Matroska, a key of its own in an MP4), regional
+  languages (en-GB beside en-US, es-419 beside es-ES), two chapter editions
+  with a nested chapter and names in two languages, tags at the collection
+  level and aimed at a chapter, an audio-only file and a zero-byte one.
+  Files 39 and 40 are put together with mkvmerge, as FFmpeg cannot write
+  what they hold, so building the library needs MKVToolNix as well. A folder
   layout of copies covers the extras rules, an existing sidecar and an
   output name that is already taken. The comment above each `fNN` function
   says what that file is built to exercise.
@@ -178,6 +182,35 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     when it took the job, listed as an accepted loss, and no others, never
     `creation_time`. The worker makes the same comparison before a file is
     replaced, and this check is what shows it held.
+31. Every kept track of a Matroska original whose language has a region or
+    a script keeps exactly that tag. ffprobe reports only a track's old
+    three-letter code, so checks 4 and 26 cannot see this: these read
+    `mkvmerge -J`, whose track numbering matched ffprobe's for every
+    Matroska file of the library. A track the plan gives a language is left
+    to check 4. Losing the region (none, or only the language) is the
+    accepted loss below; any other tag in its place is a finding.
+32. A Matroska original's chapters survive, as `mkvextract` reads them:
+    every edition with its flags, nested chapters, each chapter's names
+    with their languages, and the default edition's top-level chapters at
+    the same starts under names the original gave them. ffprobe shows one
+    edition with one name per chapter, which is all check 3 counts.
+33. A Matroska original's tags that checks 26 and 30 cannot see survive:
+    tags at a level other than 50 (the collection's at 70, a chapter's at
+    30), tags aimed at a chapter, an edition or an attachment, and nested
+    tags, compared in any order, as FFmpeg reorders a file's tags (file 37)
+    and order means nothing to a player.
+
+    For 31 to 33, measured with FFmpeg n8.1.3: a Matroska file FFmpeg
+    writes keeps each track's old code and no BCP 47 one, the first
+    edition's top-level chapters with one name each (the last, or the TITLE
+    of a tag aimed at that chapter, which it shows as the chapter's name)
+    and no chapter language, and no tag at another level. Every job writes
+    with FFmpeg, so each of those losses is listed as an accepted loss, as
+    are those of a conversion to MP4, which holds a flat list of chapters
+    and no tag levels, and of a revert, which writes with FFmpeg too (the
+    root README's revert limitations). Anything else is a finding: a
+    chapter that moved, one shown under a name it never had, a tag or a
+    region that appeared. The same checks run after each revert.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its
@@ -302,7 +335,9 @@ back. A job finds the tags an MP4 would lose before it runs and does what
 Tags an MP4 Can't Hold says, so the refusal is accepted only where they
 could not be found out, or where the job kept a container other than MP4
 (check 1), and a conversion under `drop_tags` that loses tags found that
-way, and no others, is listed too (check 30). These are listed
+way, and no others, is listed too (check 30). What FFmpeg drops from a
+Matroska file and an MP4 cannot hold (checks 31 to 33) is listed too, as
+the root README says for a conversion and a revert. These are listed
 under "Accepted losses" with where each decision is recorded, and do not
 count as findings. Add to
 `KNOWN_LOSSES` in `explore.py` only when the decision is written down

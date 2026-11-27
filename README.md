@@ -104,7 +104,7 @@ Most media coming out of Sonarr/Radarr carries far more than you actually need -
 
 Remuxarr only ever touches what's cheap and lossless to touch:
 
-- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video. A file with Dolby Vision video keeps its container unless Convert Dolby Vision Files to MP4 is on, as whether a player shows Dolby Vision from an MP4 depends on the player. Converted, it keeps what marks it as Dolby Vision, and Profile 5, which has no HDR10 picture to fall back on, is written as `dvh1`, the form Apple asks for. A Dolby Vision TS that would stay TS is left as it is, as FFmpeg cannot write Dolby Vision into a TS.
+- **Container remuxing** - MKV → MP4 when every track inside is already MP4-compatible, so no video re-encode is ever needed for this. An AVI whose Xvid or DivX video stores its B-frames packed stays AVI, as its frames cannot be timed correctly in an MP4 without altering the video. A file with Dolby Vision video keeps its container unless Convert Dolby Vision Files to MP4 is on, as whether a player shows Dolby Vision from an MP4 depends on the player. Converted, it keeps what marks it as Dolby Vision, and Profile 5, which has no HDR10 picture to fall back on, is written as `dvh1`, the form Apple asks for. A Dolby Vision TS that would stay TS is left as it is, as FFmpeg cannot write Dolby Vision into a TS. A Matroska file converted to MP4 loses what an MP4 cannot hold: chapter editions after the first, nested chapters, a chapter's names in other languages and tags above or below the film's own level; and FFmpeg writes a language into an MP4 without its region or script, so an en-GB track becomes plain English.
 - **Track filtering** - drops audio/subtitle tracks outside your kept languages, using stream copy, never transcoding anything to do it.
 - **Original language audio** - optionally keeps the audio a film or series was made in, as Sonarr or Radarr records it, alongside your kept languages or instead of them (**Settings → Library & Processing → Audio**).
 - **Metadata correction** - fixes missing (`und`) language tags, and can correct *wrong* ones too (e.g. a track mistagged in a completely different language than what's actually spoken). Audio and subtitles are controlled separately, so you can tag undefined audio automatically while holding undefined subtitles for a decision, or the reverse (**Settings → Library & Processing → Metadata**).
@@ -366,7 +366,11 @@ AC-3 and E-AC-3), comes back without that record: the MP4 kept it in a form
 FFmpeg doesn't carry back into Matroska. A player then plays those samples
 before the first frame of video, 23 ms of them for FFmpeg's AAC at 44.1 kHz
 and 6 ms for its AC-3 and E-AC-3, and the rest of the track is exactly where
-it was. A phone's or camera's own
+it was. A revert writes the file with FFmpeg, and the revert point records
+none of these, so they do not come back to a Matroska file: a language's
+region or script (en-GB returns as plain English), chapter editions after the
+first, nested chapters, a chapter's names in other languages and its
+language, and tags above or below the film's own level. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 

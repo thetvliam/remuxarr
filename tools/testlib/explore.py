@@ -56,6 +56,19 @@ Each profile is checked against invariants instead:
      conversion to MP4 under Tags an MP4 Can't Hold's drop_tags may lose
      the tags the worker found an MP4 would lose, an accepted loss, and no
      others.
+ 31. Every kept track of a Matroska original whose language has a region
+     or a script (BCP 47, as mkvmerge reads it: en-GB, zh-Hans) keeps
+     exactly that tag, unless the plan gives the track a language.
+ 32. A Matroska original's chapters survive as mkvextract reads them: every
+     edition and its flags, nesting, each name with its language, and the
+     default edition's chapters where they started, under their own names.
+ 33. A Matroska original's tags that checks 26 and 30 cannot see survive:
+     those at a level other than 50, those aimed at a chapter, an edition
+     or an attachment, and nested ones, in any order.
+     For 31 to 33, a job written by FFmpeg loses each of these, an MP4
+     holds none but a flat list of chapters, and a revert writes with FFmpeg
+     too, all listed as accepted losses; anything else is a finding. The
+     same goes after each revert below, reported under these numbers.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -734,6 +747,270 @@ def stored_list(value: str | None) -> list[str] | None:
     return names if isinstance(names, list) else None
 
 
+# ── What only MKVToolNix reads (checks 31 to 33) ────────────────────────────
+#
+# ffprobe shows a track's old three-letter language and nothing of a BCP 47
+# one, the chapters of one edition with one name each, and tags flattened to
+# names, so a job could lose a region, an edition or a tag level and pass
+# checks 3, 4, 26 and 30. These read the file the way mkvmerge and
+# mkvextract do.
+
+MKVMERGE = os.environ.get("MKVMERGE", "mkvmerge")
+MKVEXTRACT = os.environ.get("MKVEXTRACT", "mkvextract")
+_MKV_ENV = {**os.environ, "LC_ALL": "C.UTF-8"}
+
+# Measured with FFmpeg n8.1.3: a Matroska it writes keeps each track's old
+# code and no BCP 47 one, the first edition's top-level chapters with one
+# name each (the last, or the TITLE of a tag aimed at the chapter) and no
+# chapter language, and no tag at another level.
+_FFMPEG_MATROSKA = ("FFmpeg writes a Matroska file with no regional or script "
+                    "language, one chapter edition, no nested chapters, one name per "
+                    "chapter (a chapter's TITLE tag, if it has one), no chapter "
+                    "language and no tags at other levels (measured with n8.1.3): "
+                    "tools/testlib/README.md, checks 31 to 33")
+_MP4_HOLDS_NONE = ("an MP4 holds one list of chapters with one name each and no tag "
+                   "levels, and FFmpeg writes no regional language into one: "
+                   "README.md, Features, Container remuxing")
+_REVERT_REWRITES = ("a revert writes the file with FFmpeg, and its point records none "
+                    "of these: README, Reverting a processed file: Limitations worth knowing")
+
+# Tags every muxer rewrites, left out of check 33 as checks 26 and 30 leave
+# them out.
+_MKV_STATISTICS = frozenset({"BPS", "DURATION", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
+                             "ENCODER"})
+
+
+def _mkv_xml(path: str, what: str):
+    r = subprocess.run([MKVEXTRACT, path, what, "-"], capture_output=True, text=True,
+                       env=_MKV_ENV)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    import xml.etree.ElementTree as ET
+    try:
+        return ET.fromstring(r.stdout)
+    except ET.ParseError:
+        return None
+
+
+def _chapter_atom(atom) -> dict:
+    names = []
+    for d in atom.findall("ChapterDisplay"):
+        legacy = d.findtext("ChapterLanguage") or "und"
+        names.append((d.findtext("ChapterString") or "", legacy,
+                      d.findtext("ChapLanguageIETF")))
+    return {"start": atom.findtext("ChapterTimeStart"),
+            "hidden": atom.findtext("ChapterFlagHidden") == "1",
+            "enabled": atom.findtext("ChapterFlagEnabled") != "0",
+            "names": names,
+            "children": [_chapter_atom(a) for a in atom.findall("ChapterAtom")]}
+
+
+def matroska_meta(path: str) -> dict | None:
+    """
+    What MKVToolNix reads that ffprobe does not: each video, audio and
+    subtitle track's BCP 47 language in mkvmerge's order (the same order and
+    numbering as ffprobe's for every Matroska file of the library), and for
+    a Matroska its chapters and its tags. chapters and tags are None for a
+    file that is not Matroska, which mkvextract cannot read. None for a file
+    mkvmerge does not read at all.
+    """
+    r = subprocess.run([MKVMERGE, "-J", path], capture_output=True, text=True, env=_MKV_ENV)
+    try:
+        j = json.loads(r.stdout)
+    except ValueError:
+        return None
+    container = j.get("container") or {}
+    if not container.get("recognized"):
+        return None
+    tracks = [{"id": t["id"], "type": t["type"],
+               "ietf": (t.get("properties") or {}).get("language_ietf")}
+              for t in j.get("tracks", [])]
+    meta = {"tracks": tracks, "chapters": None, "tags": None}
+    if container.get("type") != "Matroska":
+        return meta
+    root = _mkv_xml(path, "chapters")
+    meta["chapters"] = [] if root is None else [
+        {"default": e.findtext("EditionFlagDefault") == "1",
+         "ordered": e.findtext("EditionFlagOrdered") == "1",
+         "hidden": e.findtext("EditionFlagHidden") == "1",
+         "atoms": [_chapter_atom(a) for a in e.findall("ChapterAtom")]}
+        for e in root.findall("EditionEntry")]
+    # Only the tags FFmpeg's reading cannot carry: at a level other than
+    # 50, aimed at a chapter, an edition or an attachment, or nested. A file
+    # tag at level 50 is check 30's and a track's own is check 26's.
+    tags = []
+    root = _mkv_xml(path, "tags")
+    for tag in [] if root is None else root.findall("Tag"):
+        targets = tag.find("Targets")
+        level = (targets.findtext("TargetTypeValue") if targets is not None else None) or "50"
+        aims = sorted({c.tag[:-3].lower() for c in (targets if targets is not None else [])
+                       if c.tag.endswith("UID")})
+        for simple in tag.findall("Simple"):
+            name = simple.findtext("Name") or ""
+            if name in _MKV_STATISTICS or name.startswith("_STATISTICS"):
+                continue
+            nested = simple.find("Simple") is not None
+            if level != "50" or set(aims) - {"track"} or nested:
+                tags.append((level, "+".join(aims) or "file", name,
+                             simple.findtext("String"), nested))
+    meta["tags"] = sorted(tags, key=repr)
+    return meta
+
+
+def _atoms(atoms, depth=1):
+    for a in atoms:
+        yield a, depth
+        yield from _atoms(a["children"], depth + 1)
+
+
+def _chapter_shape(chapters: list[dict]) -> dict:
+    """Counts of what FFmpeg is known to drop, and the default edition's
+    top-level chapters by start, which nothing may move or rename."""
+    every = [(a, d) for e in chapters for a, d in _atoms(e["atoms"])]
+    main = next((e for e in chapters if e["default"]), chapters[0] if chapters else None)
+    return {
+        "editions": len(chapters),
+        "nested": sum(1 for _, d in every if d > 1),
+        "names": sum(len(a["names"]) for a, _ in every),
+        "languages": sum(1 for a, _ in every for _, legacy, ietf in a["names"]
+                         if (ietf or legacy) not in ("und", None)),
+        "flags": sum(1 for e in chapters if e["ordered"] or e["hidden"])
+                 + sum(1 for a, _ in every if a["hidden"] or not a["enabled"]),
+        "main": [(a["start"], [n for n, _, _ in a["names"]])
+                 for a in (main["atoms"] if main else [])],
+    }
+
+
+def chapter_losses(before: list[dict], after: list[dict] | None,
+                   tag_titles: frozenset = frozenset()) -> tuple[list[str], list[str]]:
+    """
+    (losses, findings) between two files' chapters. A loss is something of
+    a kind FFmpeg drops (an edition, a nested chapter, a name, a chapter
+    language, an edition's or a chapter's flags), or a chapter shown under
+    the TITLE of a tag aimed at a chapter (tag_titles), which FFmpeg reads
+    as the chapter's name; after None means a file that holds none of that,
+    and every such thing is a loss. A finding is anything else: a top-level
+    chapter of the default edition gone, moved, or shown under a name the
+    original never gave it.
+    """
+    shape = _chapter_shape(before)
+    if after is None:
+        now = {"editions": min(shape["editions"], 1), "nested": 0,
+               "names": len(shape["main"]), "languages": 0, "flags": 0, "main": None}
+    else:
+        now = _chapter_shape(after)
+    words = {"editions": "chapter edition(s)", "nested": "nested chapter(s)",
+             "names": "chapter name(s)", "languages": "chapter language(s)",
+             "flags": "edition or chapter flag(s)"}
+    losses = [f"{shape[k] - now[k]} {w}" for k, w in words.items() if now[k] < shape[k]]
+    findings = [f"{now[k] - shape[k]} {w} appeared" for k, w in words.items()
+                if now[k] > shape[k]]
+    if now["main"] is not None:
+        if [s for s, _ in now["main"]] != [s for s, _ in shape["main"]]:
+            findings.append(f"chapters start at {[s for s, _ in now['main']]}, "
+                            f"not {[s for s, _ in shape['main']]}")
+        else:
+            for (start, names), (_, had) in zip(now["main"], shape["main"]):
+                strange = [n for n in names if n not in had]
+                tagged = [n for n in strange if n in tag_titles]
+                if tagged:
+                    losses.append(f"the chapter at {start} renamed {tagged} from a tag")
+                    strange = [n for n in strange if n not in tag_titles]
+                if strange:
+                    findings.append(f"the chapter at {start} is named {strange}, "
+                                    f"which the original never called it")
+    if not losses and not findings and after is not None and not _same_chapters(before, after):
+        findings.append("the chapters differ in a way checks 3 and 32 do not name")
+    return losses, findings
+
+
+def _same_chapters(before, after) -> bool:
+    """Whether two files' chapters match, a name's BCP 47 language counted
+    only where the original has one: mkvmerge adds one beside every old
+    code, which says the same thing."""
+    def atom_same(a, b):
+        if (a["start"], a["hidden"], a["enabled"]) != (b["start"], b["hidden"], b["enabled"]):
+            return False
+        if len(a["names"]) != len(b["names"]) or len(a["children"]) != len(b["children"]):
+            return False
+        for (n, legacy, ietf), (m, legacy2, ietf2) in zip(a["names"], b["names"]):
+            if n != m or legacy != legacy2 or (ietf is not None and ietf != ietf2):
+                return False
+        return all(atom_same(x, y) for x, y in zip(a["children"], b["children"]))
+    if len(before) != len(after):
+        return False
+    for e, f in zip(before, after):
+        if (e["default"], e["ordered"], e["hidden"]) != (f["default"], f["ordered"], f["hidden"]):
+            return False
+        if len(e["atoms"]) != len(f["atoms"]):
+            return False
+        if not all(atom_same(x, y) for x, y in zip(e["atoms"], f["atoms"])):
+            return False
+    return True
+
+
+def regional_losses(before: list[dict], after: list[dict],
+                    skip: set[int] = frozenset()) -> tuple[list[str], list[str]]:
+    """
+    (losses, findings) between the tracks of a file and the same tracks in
+    another, paired in order within each type. A track whose BCP 47
+    language has a region or a script (en-GB, zh-Hans) must keep exactly
+    that tag. Losing the region is a loss; any other tag in its place is a
+    finding. Pairs only when both sides have as many tracks of a type, as
+    check 3 owns a missing track. A track in skip (by the original's id)
+    is paired but not compared.
+    """
+    losses, findings = [], []
+    for kind_ in ("video", "audio", "subtitles"):
+        was = [t for t in before if t["type"] == kind_]
+        now = [t for t in after if t["type"] == kind_]
+        if len(was) != len(now):
+            continue
+        for n, (t, u) in enumerate(zip(was, now)):
+            tag = t["ietf"] or ""
+            if t["id"] in skip or "-" not in tag or u["ietf"] == tag:
+                continue
+            if u["ietf"] in (None, tag.split("-")[0]):
+                losses.append(f"{kind_} {n}'s {tag}")
+            else:
+                findings.append(f"{kind_} {n} is {u['ietf']}, not {tag}")
+    return losses, findings
+
+
+def tag_losses(before: list, after: list | None) -> tuple[list[str], list[str]]:
+    """(losses, findings) for the tags matroska_meta keeps, compared as a
+    multiset: FFmpeg reorders a file's tags (file 37), and order says
+    nothing a player reads. after None is a file that holds none of them."""
+    now = Counter(map(tuple, after or []))
+    was = Counter(map(tuple, before))
+    losses = [f"tag {name} at level {level} ({aim})"
+              for level, aim, name, _, _ in sorted((was - now).elements(), key=repr)]
+    findings = [f"tag {name} at level {level} ({aim}) appeared"
+                for level, aim, name, _, _ in sorted((now - was).elements(), key=repr)]
+    return losses, findings
+
+
+def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: dict,
+                     why: str, kept: set[int] | None, where: str,
+                     retagged: set[int] = frozenset()) -> None:
+    """Checks 31 to 33 between a Matroska original (was) and a file made
+    from it (now): each kind of loss FFmpeg is known for is listed with
+    why, anything else is a finding. kept is the original's tracks the file
+    should still hold, by id (None for all of them), and retagged those of
+    them the plan gives another language."""
+    tracks = [t for t in was["tracks"] if kept is None or t["id"] in kept]
+    for check, (losses, findings) in (
+            (31, regional_losses(tracks, now["tracks"], retagged)),
+            (32, chapter_losses(was["chapters"], now["chapters"], frozenset(
+                value for _, aim, name, value, _ in was["tags"]
+                if name == "TITLE" and "chapter" in aim.split("+")))),
+            (33, tag_losses(was["tags"], now["tags"]))):
+        if losses:
+            known.append({"file": rel_source, "lost": ", ".join(losses), "why": why})
+        for f in findings:
+            find(check, source, f"{f} {where}")
+
+
 def is_mp4(info: dict) -> bool:
     return "mp4" in ((info.get("format") or {}).get("format_name") or "")
 
@@ -829,6 +1106,18 @@ def run_child(spec_path: str) -> None:
             same = given.is_file() and sha(given) == before.get(path)
             original_starts[path] = stream_starts(str(given)) if same else None
         return original_starts[path]
+
+    # For checks 31 to 33: what MKVToolNix reads of each Matroska original,
+    # taken the same way. None for an original that is not Matroska.
+    original_meta: dict[str, dict | None] = {}
+
+    def meta_before(path: str) -> dict | None:
+        if path not in original_meta:
+            given = Path(spec["library"]) / path
+            same = given.is_file() and sha(given) == before.get(path)
+            meta = matroska_meta(str(given)) if same else None
+            original_meta[path] = meta if meta and meta["chapters"] is not None else None
+        return original_meta[path]
 
     S.init_db()
     timings = {}
@@ -968,7 +1257,8 @@ def run_child(spec_path: str) -> None:
                              probes_before.get(rel(source)), before, after,
                              cfg, canonical, allowed_changes, entry, several,
                              hashes_before.get(rel(source)),
-                             Path(spec["library"]) / rel(source), starts_before)
+                             Path(spec["library"]) / rel(source), starts_before,
+                             meta_before)
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -1018,7 +1308,7 @@ def run_child(spec_path: str) -> None:
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
         faststart_before, rel, collect, hashes_before, Path(spec["library"]),
-        starts_before,
+        starts_before, meta_before,
     )
 
     result = {
@@ -1534,7 +1824,7 @@ def _without_attached_pic(sig: tuple) -> tuple:
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                         probes_before, faststart_before, rel, collect,
-                        hashes_before, pristine, starts_before) -> int:
+                        hashes_before, pristine, starts_before, meta_before) -> int:
     """
     Phase 2: restore every revert point through the app's own
     restore_revert_point, then check the round trip (checks 9 to 15, and
@@ -1736,6 +2026,15 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         if unexplained:
             find(29, source, moved_finding(ref, unexplained, "after the revert",
                                            "in the original"))
+        # 31 to 33. And what only MKVToolNix reads of a Matroska original.
+        was = meta_before(rel(source))
+        if was is not None:
+            now = matroska_meta(restored)
+            if now is None:
+                find(31, source, "mkvmerge cannot read the restored file")
+            else:
+                _matroska_checks(find, known, rel(source), source, was, now,
+                                 _REVERT_REWRITES, None, "after the revert")
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
@@ -1859,7 +2158,8 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
                      before, after, cfg, canonical, allowed_changes, entry, several=False,
-                     source_holds=None, kept_copy=None, starts_before=None):
+                     source_holds=None, kept_copy=None, starts_before=None,
+                     meta_before=None):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -2021,6 +2321,23 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     if unexplained:
         find(30, source, f"lost or changed its own tag(s) {', '.join(unexplained)} "
                          f"in {Path(output).name}")
+
+    # 31 to 33. What only MKVToolNix reads of a Matroska original: each kept
+    # track's regional language, the chapters, and tags at other levels.
+    was = meta_before(Path(source).relative_to(lib).as_posix()) if meta_before else None
+    if was is not None:
+        now = matroska_meta(output)
+        if now is None:
+            find(31, source, f"mkvmerge cannot read {Path(output).name}")
+        else:
+            why = _FFMPEG_MATROSKA if now["chapters"] is not None else _MP4_HOLDS_NONE
+            kept = {s["index"] for k, s in expected
+                    if k in ("video", "audio", "text-sub", "image-sub")}
+            # A track the plan gives a language is check 4's: its tag is
+            # meant to change.
+            retagged = {a.stream_index for a in actions if getattr(a, "target_language", None)}
+            _matroska_checks(find, known, Path(source).relative_to(lib).as_posix(), source,
+                             was, now, why, kept, f"in {Path(output).name}", retagged)
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")
