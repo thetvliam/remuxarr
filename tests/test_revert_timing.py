@@ -49,7 +49,10 @@ converted: placed by its SRT, a sidecar holding nothing but an MP4's
 mov_text moved back by the gap before the first line, the MP4 beginning
 it with an empty sample at 0 and the SRT at the line. A sidecar holding
 nothing but a TS's DVB subtitle has to be placed by it, or it comes back
-a frame of audio early.
+a frame of audio early. And a stream whose first packet has no time places
+nothing: in an AVI, MPEG-4 video with B-frames has none on its first
+packets, its earliest timed one is a frame late, and placed by it a video
+converted to MP4 came back 80 ms late.
 
 Each test compares every stream with the original's, relative to the
 video, to within 2 ms (Matroska stores milliseconds): the first packet of
@@ -75,9 +78,11 @@ Two came after, with the fix that stopped a converted subtitle placing a
 file. The MP4's removed subtitle fails against the code before it, losing
 a line with the rest moved back 0.5 s. The TS's removed DVB subtitle
 passed there, and failed by -0.021 s against the fix as first proposed,
-which let no subtitle place a file.
+which let no subtitle place a file. The AVI converted to MP4 came after
+that, and fails against the code before it with its audio 0.080 s off
+against its video.
 
-Verified by mutation, 18 applied, 18 killed.
+Verified by mutation, 19 applied, 19 killed.
 
 The first seven came with the first two cases, each run first against the
 suite as it stood before this file, and all seven survived it. Their exact
@@ -188,7 +193,15 @@ only keeps a manifest whose times were hand-edited away from failing. The
 two mutants that read times for an older point stand in for it, since
 reading them is all the code would do differently.
 
-No equivalent mutants among the eighteen.
+One more came with the AVI: a stream whose first packet has no time
+placing its file all the same. Run first against the suite as it stood
+before its test, it survived:
+
+  • An untimed first packet still placing     → killed, only by test_an_
+    its file                                    avi_converted_to_mp4_keeps_
+                                                its_video_in_time (-0.080 s)
+
+No equivalent mutants among the nineteen.
 """
 import asyncio
 import os
@@ -684,5 +697,31 @@ def test_a_tss_removed_dvb_subtitle_keeps_its_time(rig):
     times = _packet_times(rig.pristine)
     assert times[1][0] < times[2][0]
     rig.job("-map", "0:v", "-map", "0:a", "-c", "copy", "-f", "mpegts")
+
+    assert rig.revert() == []
+
+
+def test_an_avi_converted_to_mp4_keeps_its_video_in_time(rig):
+    """
+    FFmpeg gives no time to the first packets of an AVI's MPEG-4 video with
+    B-frames, so its earliest timed packet is a frame after its first
+    frame, while in the MP4 the job writes every packet has one. Placed by
+    those, the processed file moved a frame and more, and the restored
+    video came back 80 ms late. A stream whose first packet has no time
+    places nothing now, and the audio places the file
+    (probe.first_packet_times).
+    """
+    rig.original("Old.avi", *_VIDEO, *_tone(440), *_tone(660),
+                 "-map", "0", "-map", "1", "-map", "2",
+                 "-c:v", "mpeg4", "-bf", "2", "-q:v", "4", "-c:a", "libmp3lame",
+                 "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=ger",
+                 "-f", "avi")
+    # What makes this case: the video's first packet carries no time.
+    first = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-read_intervals", "%+#1", "-show_entries", "packet=pts_time",
+                            "-of", "csv=p=0", str(rig.pristine)],
+                           capture_output=True, text=True, check=True).stdout.split()
+    assert first[:1] == ["N/A"]
+    rig.job("-map", "0:v", "-map", "0:a:0", "-c", "copy", "-f", "mp4")
 
     assert rig.revert() == []

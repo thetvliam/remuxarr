@@ -688,8 +688,17 @@ def first_packet_times(path: str, ffprobe_bin: str | None = None) -> dict[int, f
     Packet times rather than each stream's start_time, because the two
     differ where a revert needs them to agree: an MP4's AAC reports a
     start_time of 0 while its first packet sits 21 ms earlier at 48 kHz
-    (the priming its edit list skips), and a sidecar cut from it holds the packets.
-    Aligned on start_time, that track came back 21 ms late.
+    (the priming its edit list skips), and a sidecar cut from it holds the
+    packets. Aligned on start_time, that track came back 21 ms late.
+
+    A stream whose first packet carries no time gets none. In an AVI,
+    FFmpeg gives no time to the first packets of MPEG-4 video with B-frames
+    (the first two, measured), so its earliest timed packet came a frame
+    after its first frame; in the MP4 a job converts it to, every packet
+    has one. Placed by those, an AVI's video
+    came back from a revert 80 ms late, its first frame at 0.12 s against
+    the original's 0.04 s. Without a time it does not place its file, and
+    the file's audio does (ffmpeg.alignment_offsets).
     """
     if ffprobe_bin is None:
         ffprobe_bin = app_settings.FFPROBE_PATH
@@ -716,10 +725,18 @@ def first_packet_times(path: str, ffprobe_bin: str | None = None) -> dict[int, f
         return {}
 
     times: dict[int, float] = {}
+    first_seen: set[int] = set()
+    untimed: set[int] = set()
     for packet in packets:
         pts = _float_or_none(packet.get("pts_time"))
         index = packet.get("stream_index")
-        if pts is None or index is None:
+        if index is None:
+            continue
+        if index not in first_seen:
+            first_seen.add(index)
+            if pts is None:
+                untimed.add(index)
+        if pts is None or index in untimed:
             continue
         times[index] = min(times.get(index, pts), pts)
     return times
