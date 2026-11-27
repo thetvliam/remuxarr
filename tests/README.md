@@ -1,6 +1,6 @@
 # Remuxarr test suite
 
-2935 tests across 135 test files, plus 805 frontend tests under
+3006 tests across 137 test files, plus 805 frontend tests under
 `frontend/src/**/__tests__/`. Backend line coverage is around 87%, though it is
 not the measure used here — see How these tests are written below.
 
@@ -238,6 +238,15 @@ the owner through a recorded `os.chown`.
 output replaces the file: one that would lose any of the file's own tags is
 refused with the file untouched, and a scan does not queue it again while its
 plan is the same.
+`test_mp4_tag_loss.py` covers finding out, before any job runs, which of a
+file's own tags a job writing it as an MP4 would lose (issue #67), held against
+what real jobs are refused over, and that the check, which runs FFmpeg, never
+runs while a write is held.
+`test_mp4_tag_handling.py` covers Tags an MP4 Can't Hold: each of its three
+choices for a Matroska Prefer MP4 Container would convert, a file already MP4
+and one that would lose its date left as they are whatever it says, and a
+conversion that drops the tags letting exactly those go and being reverted with
+them back.
 `test_dolby_vision.py` covers a Dolby Vision stream through a job, a revert and
 an AC3 Forge add and undo (issue #62). A job or a Forge run writing one to an
 MP4 asks FFmpeg for its configuration record, which the MP4 muxer otherwise
@@ -434,7 +443,12 @@ by its own start time: a sidecar holding fonts beside its subtitles starts at
 its first subtitle line, so they came back early by that much. A data stream
 kept in a TS came back early by its own start, which FFmpeg took for the
 start of the second opening of the file that reads it. The packets were right
-either way, which is all the other revert tests compared.
+either way, which is all the other revert tests compared. A track the job
+removed that started before every track it kept still came back late by the
+difference, and an MP4's removed AAC 21 to 23 ms late, until capture recorded when
+each stream's first packet was and the restore placed each file by it. The
+tests from before that also run as a point recorded without those times,
+which is still restored the old way.
 `test_deployment_config.py` also checks the build beyond the recycle volume.
 Among other things, CI and the image install the frontend with `npm ci`, from
 a lockfile that matches `package.json`: both ran `npm install`, which ignored
@@ -508,9 +522,9 @@ coverage is still useful as a *finder*: a block sitting at zero is a reliable
 signal that nothing exercises it, which is how most of the units above were
 picked. It is the target that is wrong, not the tool.
 
-## Running it — two options, same suite either way
+## Running it
 
-**Option A — locally.**
+From a checkout of the repository:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt
@@ -519,20 +533,9 @@ pytest
 cd frontend && npm ci && npm test
 ```
 
-**Option B — inside the deployed container**, against the real production
-environment (real ffmpeg, real file paths), as an independent check after a
-deploy:
-
-```bash
-docker exec -it remuxarr bash
-cd /app
-pip install -r tests/requirements-test.txt --break-system-packages
-pytest tests/ -v
-```
-
-`pytest` and its dependencies aren't part of the production `requirements.txt`
-on purpose — they only get installed if you actually run this, so the deployed
-image doesn't carry test tooling it never uses day to day.
+The suite runs from a checkout only. The image holds the app and its built
+frontend, not `tests/`, so there is nothing to run inside a deployed
+container.
 
 ## Release notes are part of the change, not a step after it
 

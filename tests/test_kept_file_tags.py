@@ -267,6 +267,20 @@ def _scan_and_run(rig):
     return jobs, stats
 
 
+def _not_known_beforehand(monkeypatch):
+    """
+    The tags an MP4 would lose not found out before the job, as when the
+    check that looks for them could not run (probe.mp4_lost_tags). A file
+    whose tags are known is left alone or decided otherwise before any job
+    runs (test_mp4_tag_handling); this is the run the staging check stops.
+    """
+    import app.core.scanner as scanner
+    import app.core.worker as worker
+
+    monkeypatch.setattr(scanner, "mp4_lost_tags", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "mp4_lost_tags", lambda *args, **kwargs: None)
+
+
 def _leftovers(rig):
     """Anything a run left beside the file, and every revert point."""
     from app.database.models import RevertPoint
@@ -277,9 +291,10 @@ def _leftovers(rig):
 
 
 @needs_ffmpeg
-def test_an_mp4_rewrite_that_would_lose_a_tag_leaves_the_file_as_it_was(rig):
+def test_an_mp4_rewrite_that_would_lose_a_tag_leaves_the_file_as_it_was(rig, monkeypatch):
     """The German track is to go, and the MP4 muxer cannot write the
-    file's purchase date back."""
+    file's purchase date back. Not known beforehand (_not_known_beforehand)."""
+    _not_known_beforehand(monkeypatch)
     source = _file(rig.library / "Film.mp4", "mp4", tag=("purchase_date", "2020-01-01"))
     before = _digest(source)
     assert _file_tags(source)["purchase_date"] == "2020-01-01", "fixture"
@@ -293,9 +308,11 @@ def test_an_mp4_rewrite_that_would_lose_a_tag_leaves_the_file_as_it_was(rig):
 
 
 @needs_ffmpeg
-def test_a_conversion_to_mp4_that_would_lose_a_tag_leaves_the_file_as_it_was(rig):
+def test_a_conversion_to_mp4_that_would_lose_a_tag_leaves_the_file_as_it_was(rig, monkeypatch):
     """A Matroska's own tag, its case as Matroska keeps it, which no MP4
-    can hold. Its title an MP4 can hold, and is not listed."""
+    can hold. Its title an MP4 can hold, and is not listed. Not known
+    beforehand (_not_known_beforehand)."""
+    _not_known_beforehand(monkeypatch)
     _set(rig, prefer_mp4_container=True)
     source = _file(rig.library / "Film.mkv", "matroska", tag=("RELEASE_GROUP", "NTb"),
                    audio=("eng",))
@@ -344,12 +361,14 @@ def test_an_ordinary_mp4_job_is_not_refused(rig):
 
 
 @needs_ffmpeg
-def test_a_refused_file_is_not_queued_again_until_its_plan_changes(rig):
+def test_a_refused_file_is_not_queued_again_until_its_plan_changes(rig, monkeypatch):
     """
     A scan with the same plan would run the same job to the same refusal.
     With Prefer MP4 off the plan is another, which keeps the Matroska and
-    its tag, and the file is queued and processed.
+    its tag, and the file is queued and processed. Not known beforehand
+    (_not_known_beforehand).
     """
+    _not_known_beforehand(monkeypatch)
     _set(rig, prefer_mp4_container=True)
     source = _file(rig.library / "Film.mkv", "matroska", tag=("RELEASE_GROUP", "NTb"))
     jobs, _ = _scan_and_run(rig)

@@ -117,7 +117,7 @@ This application was generated entirely using Claude. I acted as the architect, 
 
 - **Automatic library scanning** - full probe on first sight, fast delta (size/mtime) scans afterward.
 - **Leaves your own recordings alone** - a video from a phone or a camera is skipped whatever the settings, with the reason in History: Remuxarr is for downloaded films and series, and processing a recording would cost it what a download does not have, such as an iPhone video's metadata tracks or a phone's device tag. An MP4, M4V or MOV file counts as one when it has a data track of the kind cameras write, a GPS location, a device tag or a camera's file brand, which every QuickTime `.mov` has. A recording with none of these, such as one an editor or a messaging app has rewritten, looks like any download and is processed like one.
-- **Never drops a file's own tags or its Dolby Vision** - before a processed file replaces the original, its tags are compared with the original's, and so is what marks its video as Dolby Vision: if any would be lost, such as the content rating and cast an iTunes-tagged MP4 carries, which Remuxarr cannot write into an MP4, the original is kept and History names what would have gone. AC3 Forge is checked the same way.
+- **Never drops a file's own tags or its Dolby Vision unless told to** - before a processed file replaces the original, its tags are compared with the original's, and so is what marks its video as Dolby Vision: if any would be lost, the original is kept and History names what would have gone. AC3 Forge is checked the same way. Tags FFmpeg cannot write into an MP4, such as an IMDB ID in a Matroska, are found before any job runs, and **Tags an MP4 Can't Hold** decides what happens to a file Prefer MP4 Container would convert: left as it is (the default), converted without them, or kept in its container with its unwanted tracks still removed. A file already MP4 that would lose tags when rewritten, such as the content rating and cast an iTunes-tagged MP4 carries, is always left as it is, as is one that would lose the date it says it was made.
 - **Keeps who owns a file** - what a job, a revert or AC3 Forge writes keeps the owner, group and permissions of the file it came from, and a subtitle extracted beside a file takes the file's, so a program running as that user, such as Plex or Sonarr, can still change it. Giving a file to its owner needs root, which the image runs as. Run as another user (`--user`), Remuxarr still keeps the permissions, but the file belongs to that user and the log says so.
 - **Leaves extras alone** - trailers, featurettes and other extras named the way Plex or Jellyfin expect, and Plex's optimised versions, are skipped by default, and your own exclude patterns keep Remuxarr away from any other folder or file. Always Include brings back any file either of them catches that you do want processed.
 - **Sonarr / Radarr webhook integration** - reacts to imports and upgrades directly, with automatic path translation between how each *arr sees files and how Remuxarr does.
@@ -359,7 +359,14 @@ than an attachment, with its filename and mimetype intact; nothing is lost, but
 a player may list it as a second video stream. In an MP4 with a timecode
 track, the track comes back as the last one. And an MP4 whose Dolby Vision
 video is labelled `dvhe` comes back labelled `dvh1`, the other name for the
-same kind of stream, as FFmpeg cannot write `dvhe`. A phone's or camera's own
+same kind of stream, as FFmpeg cannot write `dvhe`. When a Matroska file was
+converted to MP4, an audio track that recorded its encoder delay, the
+start-up samples an encoder puts before the sound (FFmpeg records it for AAC,
+AC-3 and E-AC-3), comes back without that record: the MP4 kept it in a form
+FFmpeg doesn't carry back into Matroska. A player then plays those samples
+before the first frame of video, 23 ms of them for FFmpeg's AAC at 44.1 kHz
+and 6 ms for its AC-3 and E-AC-3, and the rest of the track is exactly where
+it was. A phone's or camera's own
 recording never gets this far: it is left as it is, and AC3 Forge does not
 offer it (see Features).
 
@@ -389,7 +396,7 @@ Both run in CI on every push, alongside pyflakes and eslint. A few backend
 tests exercise a real FFmpeg/ffprobe and skip if the binaries are missing - CI
 installs them so they always run.
 
-See [`tests/README.md`](tests/README.md) for more detail, including how to run this same suite inside a deployed container against production FFmpeg.
+See [`tests/README.md`](tests/README.md) for more detail.
 
 ## License
 

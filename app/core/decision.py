@@ -184,6 +184,12 @@ class ProcessingDecision:
     # outcome line — see where the container is decided.
     mp4_blocked_beyond_subtitles: bool = False
 
+    # The file's own tags a conversion to MP4 drops because the user chose
+    # that (mp4_lost_tag_handling "drop_tags"), by the names
+    # probe.lost_file_tags gives them. The job's staging check lets exactly
+    # these go (worker._lost_tags_error) and refuses any other loss.
+    dropped_tags: list[str] = field(default_factory=list)
+
     # Undefined-language audio tracks for Audio Language Review, one entry
     # per track, in stream order: {"stream_index": int, "origin": str}. The
     # origin is always "undefined": a track Always Fix did not tag, or any
@@ -515,6 +521,7 @@ def analyze_file(
     keep_default_audio  = settings.get("keep_default_audio",      True)
     prefer_mp4          = settings.get("prefer_mp4_container",    True)
     convert_dv          = settings.get("convert_dolby_vision_to_mp4", False)
+    lost_tag_handling   = settings.get("mp4_lost_tag_handling", "leave_file")
     extract_subs_to_srt = settings.get("extract_text_subtitles_to_srt", True)
     add_faststart       = settings.get("add_faststart_to_mp4", True)
 
@@ -1399,6 +1406,19 @@ def analyze_file(
     dolby_vision = file_info.get("dolby_vision") or ""
     dv_held = bool(dolby_vision) and not convert_dv and current_container != "mp4"
 
+    # The file's own tags an MP4 cannot hold (MediaFile.mp4_lost_tags,
+    # probe.mp4_lost_tags), and what the user wants done about them
+    # (mp4_lost_tag_handling). "keep_container" holds the file here, as
+    # Dolby Vision does; "leave_file" leaves it alone altogether, and a
+    # file already MP4 is left alone whatever the setting, both further
+    # down, beside the other files left as they are; "drop_tags" converts,
+    # and the job lets exactly these go. None, not looked at yet, decides
+    # as before the setting: the worker looks at pickup and decides again,
+    # and the staging check still refuses a loss.
+    lost_in_mp4 = file_info.get("mp4_lost_tags") or []
+    tags_held = (bool(lost_in_mp4) and lost_tag_handling == "keep_container"
+                 and current_container != "mp4")
+
     # Whether anything OTHER than the kept subtitles keeps this file out of
     # MP4. The Review page needs it to tell two sentences apart: "keeping
     # this track is what holds the file as MKV" and "this file stays MKV
@@ -1410,7 +1430,7 @@ def analyze_file(
     # Informational, like audio_language_mismatch: it changes no action and
     # no outcome here. Computed from the same conditions the container
     # decision below uses, so the two cannot disagree.
-    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4 or dv_held
+    mp4_blocked_beyond_subtitles = not video_audio_ok or not prefer_mp4 or dv_held or tags_held
 
     subs_block_mp4 = any(
         (t.get("codec") or "").lower() in MP4_INCOMPATIBLE_SUBS
@@ -1424,13 +1444,21 @@ def analyze_file(
     # Whether Dolby Vision alone held a conversion that would otherwise
     # have happened, for the reasons given below, as for packed B-frames.
     dv_holds_container = dv_held and prefer_mp4 and video_audio_ok and not subs_block_mp4
+    # The same for the tags an MP4 cannot hold, under "keep_container".
+    tags_hold_container = (tags_held and prefer_mp4 and video_audio_ok
+                           and not subs_block_mp4 and not dv_held)
 
+    dropped_tags: list[str] = []
     if (prefer_mp4 and current_container != "mp4" and video_audio_ok and not subs_block_mp4
-            and not dv_held):
+            and not dv_held and not tags_held):
         target_container = "mp4"
+        if lost_in_mp4 and lost_tag_handling == "drop_tags":
+            dropped_tags = list(lost_in_mp4)
         actions.append(Action(
             action_type="change_container",
-            description=f"Convert container: {current_container.upper()} → MP4",
+            description=(f"Convert container: {current_container.upper()} → MP4"
+                         + (f" — drops tags an MP4 cannot hold: {', '.join(dropped_tags)}"
+                            if dropped_tags else "")),
             order=order,
         ))
         order += 1
@@ -1739,7 +1767,17 @@ def analyze_file(
     cannot_write = output_muxer(target_container) is None
     loses_dv = bool(dolby_vision) and not cannot_write and not keeps_dolby_vision(target_container)
     recording = file_info.get("recording_signs")
-    if cannot_write or loses_dv or recording or not writes_language:
+    # Written as an MP4, it would lose tags an MP4 cannot hold, and either
+    # the user chose to leave such a file, or no setting lets it lose them:
+    # it is an MP4 already, or the tag is the date it says it was made,
+    # which a job writes back (ffmpeg.build_ffmpeg_command) and which is
+    # lost all the same when FFmpeg cannot write it, as a phone video's
+    # was (test_creation_date). See where it is left alone, below.
+    keeps_its_date = not any(tag.lower() == "creation_time" for tag in lost_in_mp4)
+    tags_left = (bool(lost_in_mp4) and target_container == "mp4"
+                 and (lost_tag_handling == "leave_file" or current_container == "mp4"
+                      or not keeps_its_date))
+    if cannot_write or loses_dv or recording or tags_left or not writes_language:
         audio_language_mismatch = None
         undefined_audio_flags = []
         subtitle_language_mismatches = []
@@ -1756,7 +1794,8 @@ def analyze_file(
             should_process=False,
             reason=_unchanged_reason(target_container, prefer_mp4,
                                      packed_holds_container, tag_unwritten,
-                                     dolby_vision if dv_holds_container else ""),
+                                     dolby_vision if dv_holds_container else "",
+                                     lost_in_mp4 if tags_hold_container else ()),
             actions=[],
             audio_language_mismatch=audio_language_mismatch,
             undefined_audio_flags=undefined_audio_flags,
@@ -1829,6 +1868,37 @@ def analyze_file(
             faststart_enabled=add_faststart,
         )
 
+    # ── Tags an MP4 cannot hold ────────────────────────────────────────────
+    # A job writing this file as an MP4 would lose some of its own tags
+    # (probe.mp4_lost_tags), and the staging check would refuse it after
+    # the whole job had run (worker._lost_tags_error): issue #67's
+    # Matroska, with an IMDB tag, was refused every conversion that way,
+    # and held back by every scan after. Left as it is instead, with the
+    # tags named in History, when the user chose that; always for a file
+    # already MP4, as an iTunes-tagged file's content rating and cast
+    # cannot be written back by a revert either, a revert writing an MP4
+    # the same way (probe.lost_file_tags); and always when the date the
+    # file says it was made is among them, which no setting lets a job
+    # drop (a phone video gave one FFmpeg could not read,
+    # test_creation_date).
+    if tags_left:
+        names = ", ".join(lost_in_mp4)
+        if current_container == "mp4":
+            reason = (f"Rewriting this MP4 would lose its own tags {names}, which "
+                      "FFmpeg cannot write into an MP4, so it is left as it is.")
+        else:
+            reason = (f"FFmpeg cannot write this file's own tags {names} into an "
+                      "MP4, so it is left as it is. Tags an MP4 Can't Hold can "
+                      + ("convert it without them or keep its container instead."
+                         if keeps_its_date else "keep its container instead."))
+        return ProcessingDecision(
+            should_process=False,
+            reason=reason,
+            actions=[],
+            mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
+            faststart_enabled=add_faststart,
+        )
+
     # ── Two-letter tags, written in full ─────────────────────────────────
     # Only for a file being processed anyway: a two-letter tag in Matroska
     # is understood now that every comparison goes through canonical(), and
@@ -1856,7 +1926,9 @@ def analyze_file(
         if n_audio: parts.append(f"Remove {n_audio} audio track{'s' if n_audio > 1 else ''}")
         if n_sub:   parts.append(f"Remove {n_sub} subtitle track{'s' if n_sub > 1 else ''}")
     if has_container:
-        parts.append(f"Convert {current_container.upper()} → MP4")
+        parts.append(f"Convert {current_container.upper()} → MP4"
+                     + (f", dropping tags an MP4 cannot hold ({', '.join(dropped_tags)})"
+                        if dropped_tags else ""))
     if has_extract:
         n = sum(1 for a in actions if a.action_type == "extract_subtitle")
         parts.append(f"Extract {n} subtitle{'s' if n > 1 else ''} to external SRT")
@@ -1881,6 +1953,7 @@ def analyze_file(
         audio_language_mismatch=audio_language_mismatch,
         undefined_audio_flags=undefined_audio_flags,
         mp4_blocked_beyond_subtitles=mp4_blocked_beyond_subtitles,
+        dropped_tags=dropped_tags,
         subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,
@@ -1962,17 +2035,23 @@ def _apply_language_override_pass(
 
 
 def _unchanged_reason(target_container: str, prefer_mp4: bool,
-                      packed: bool, tag_unwritten: bool, dolby_vision: str = "") -> str:
+                      packed: bool, tag_unwritten: bool, dolby_vision: str = "",
+                      held_tags=()) -> str:
     """
     The reason given when a file is left as it is: what kept it from MP4,
     and a language tag its container could not keep, when either is so.
     dolby_vision is MediaFile.dolby_vision's profiles when Dolby Vision
-    alone kept it from MP4, "" otherwise.
+    alone kept it from MP4, "" otherwise. held_tags are the file's own tags
+    an MP4 cannot hold, when they alone kept it from MP4 under
+    mp4_lost_tag_handling "keep_container".
     """
-    if not (packed or tag_unwritten or dolby_vision):
+    if not (packed or tag_unwritten or dolby_vision or held_tags):
         return "File already meets all configured criteria — no changes needed."
     name = target_container.upper()
     parts = []
+    if held_tags:
+        parts.append(f"FFmpeg cannot write its own tags {', '.join(held_tags)} into "
+                     f"an MP4, so it stays {name}, as Tags an MP4 Can't Hold says.")
     if packed:
         parts.append(f"Its video stores B-frames packed, the way some DivX and Xvid "
                      f"encoders did, which cannot be converted to MP4 correctly, so it "
@@ -1982,7 +2061,7 @@ def _unchanged_reason(target_container: str, prefer_mp4: bool,
                      f"{name}. Turn on Convert Dolby Vision Files to MP4 to convert it.")
     if tag_unwritten:
         tags = f"{name} files cannot store language tags, so this one's are left as they are."
-        if not (packed or dolby_vision):
+        if not (packed or dolby_vision or held_tags):
             tags += (" Turn on Prefer MP4 Container to convert it." if not prefer_mp4 else
                      " Its tracks cannot go into MP4.")
         parts.append(tags)

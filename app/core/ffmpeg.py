@@ -672,8 +672,73 @@ def _opening_args(paths: list[str], openings: dict[int, int]) -> list[str]:
     return args
 
 
+def alignment_offsets(
+    manifest: dict,
+    located: list[tuple[dict, tuple[int, int]]],
+    times: dict[tuple[int, int], float],
+) -> dict[int, float] | None:
+    """
+    How far to move each input of a command that mixes files of one
+    timeline (_input_args), so every stream lands where it was in the
+    original, measured from the original's start.
+
+    located pairs each manifest stream with where it is read from (input
+    number, stream index), and times holds the first packet time of each
+    such stream as the input has it now (probe.first_packet_times). Each
+    input is placed by its first stream that both the manifest and the
+    input have a time for; the streams of one file keep their distances
+    from each other, so one is enough.
+
+    Video, audio and subtitle tracks place a file. An attachment has no
+    packets, and a cover's one picture says nothing about the timeline. A
+    subtitle is needed for a sidecar of nothing but subtitles: a TS's DVB
+    subtitle stored on its own came back 23 ms early unless placed by
+    itself. FFmpeg corrects an MPEG-TS input's start time to the streams it
+    reads, so a sidecar cut from the subtitle alone was moved back by the
+    subtitle's start, not by the original's, which its audio set 23 ms
+    earlier and which the manifest records.
+
+    Never by a subtitle the sidecar stored converted (_SUBTITLE_TRANSCODE),
+    whose first packet does not mean the same in both files: FFmpeg's MP4
+    muxer fills the gaps between mov_text lines with empty samples, so an
+    MP4's subtitle begins with one at 0, and its SRT in the sidecar, which
+    has no empty lines, begins at the first real one. Placed by it, a
+    sidecar holding only that subtitle moved back by the gap (0.5 s
+    measured) and lost a line. A subtitle a job converts (an SRT made
+    mov_text for an MP4, which gains the same empty sample) does not place
+    the processed file in its new form: its codec no longer matches, so
+    capture keeps the original in the sidecar (revert.match_streams), and
+    it is found there. A file nothing can place keeps its stored times, as every file did
+    before these times were recorded.
+
+    None when the manifest recorded no times (a point made before they
+    were) or no input could be placed: the caller then times the files as
+    before.
+    """
+    base = manifest.get("start_time")
+    if base is None:
+        return None
+    offsets: dict[int, float] = {}
+    for stream, (number, index) in located:
+        if number in offsets:
+            continue
+        if stream.get("type") not in ("video", "audio", "subtitle"):
+            continue
+        if "attached_pic" in (stream.get("disposition") or []):
+            continue
+        if stream.get("codec") in _SUBTITLE_TRANSCODE:
+            continue
+        recorded = stream.get("first_pts")
+        now = times.get((number, index))
+        if recorded is None or now is None:
+            continue
+        offsets[number] = (recorded - base) - now
+    return offsets or None
+
+
 def _input_args(paths: list[str], openings: dict[int, int],
-                first_start: float | None) -> list[str]:
+                first_start: float | None,
+                offsets: dict[int, float] | None = None) -> list[str]:
     """
     The input arguments for a command that mixes streams from several
     files of one timeline (a restore, or a sidecar a later job adds to):
@@ -707,28 +772,38 @@ def _input_args(paths: list[str], openings: dict[int, int],
     back 0.51 s early. With -copyts FFmpeg takes off no start time at all,
     only the offset given here, so the correction no longer counts.
 
-    Not complete: a stream the job removed that started before every
-    stream it kept comes back late by the difference (0.4 s measured), as
-    it did before this. Correcting that needs the original's start times,
-    which capture does not record.
+    That much was not enough on its own. A stream the job removed that
+    started before every stream it kept came back late by the difference
+    (0.4 s measured): the processed file starts at its first kept stream,
+    so moving it back by its own start moved the kept streams too far. An
+    MPEG-TS the job left as one lost the difference in the processed file
+    itself. Where the revert point recorded when each stream's first
+    packet was, offsets (alignment_offsets) moves each file so its streams
+    land at those times instead, and first_start is used only for the
+    first file when no stream of it could be placed.
 
     first_start is the first file's start time (probe.start_time). None,
-    when the caller could not probe it, gives the arguments used before,
-    every input moved by its own start time.
+    when the caller could not probe it, with no offsets either, gives the
+    arguments used before -copyts, every input moved by its own start time.
     """
-    if first_start is None:
+    if first_start is None and offsets is None:
         args: list[str] = []
         for path in paths:
             args += ["-i", path]
         return args + _opening_args(paths, openings)
 
-    # A zero offset changes nothing, so it is left out of the command.
-    offset = ["-itsoffset", f"{-first_start:.6f}"] if first_start else []
+    def moved(number: int) -> list[str]:
+        offset = (offsets or {}).get(number)
+        if offset is None:
+            offset = -(first_start or 0.0) if number == 0 else 0.0
+        # A zero offset changes nothing, so it is left out of the command.
+        return ["-itsoffset", f"{offset:.6f}"] if offset else []
+
     args = ["-copyts"]
     for number, path in enumerate(paths):
-        args += (offset if number == 0 else []) + ["-i", path]
+        args += moved(number) + ["-i", path]
     for source, _number in sorted(openings.items(), key=lambda item: item[1]):
-        args += (offset if source == 0 else []) + ["-i", paths[source]]
+        args += moved(source) + ["-i", paths[source]]
     return args
 
 
@@ -737,6 +812,7 @@ def build_sidecar_command(
     sidecar_path: str,
     sources: list[tuple[dict, int, int]],
     first_input_start: float | None = None,
+    offsets: dict[int, float] | None = None,
 ) -> list[str]:
     """
     Return the FFmpeg argv to collect destroyed streams into a single
@@ -783,8 +859,11 @@ def build_sidecar_command(
                 if len(inputs) > 1 else {})
 
     cmd = [app_settings.FFMPEG_PATH]
+    # offsets (alignment_offsets) only for a mix, like the start time: a
+    # sidecar read from one file keeps its old command.
     cmd += _input_args(inputs, openings,
-                       first_input_start if len(inputs) > 1 else None)
+                       first_input_start if len(inputs) > 1 else None,
+                       offsets if len(inputs) > 1 else None)
     cmd += ["-y", "-v", "error"]
 
     # Output-side subtitle ordinal, which is what -c:s:N addresses. It
@@ -829,6 +908,7 @@ def build_restore_command(
     rebuilt_tracks: Sequence[int] = (),
     dolby_vision: Mapping[int, DolbyVision] | None = None,
     processed_start: float | None = None,
+    stream_times: Mapping[tuple[int, int], float] | None = None,
 ) -> list[str]:
     """
     Return the FFmpeg argv to rebuild the original file from the processed
@@ -842,7 +922,10 @@ def build_restore_command(
     (probe.dolby_vision), whose way back is written after the loop below.
     processed_start is the processed file's start time (probe.start_time),
     which keeps the sidecar's streams in time with its own (_input_args);
-    None when it could not be probed.
+    None when it could not be probed. stream_times is the first packet
+    time of each stream of the two files, keyed (input number, stream
+    index) (probe.first_packet_times), which with the times the manifest
+    recorded puts every stream back where it was (alignment_offsets).
 
     Input 0 is the processed file, input 1 the sidecar. Every stream in
     the manifest is mapped from whichever holds it, in the manifest's own
@@ -933,7 +1016,9 @@ def build_restore_command(
 
     cmd = [
         app_settings.FFMPEG_PATH,
-        *_input_args(paths, openings, processed_start),
+        *_input_args(paths, openings, processed_start,
+                     alignment_offsets(manifest, list(zip(streams, located)),
+                                       dict(stream_times or {}))),
         "-y",
         "-v", "error",
         "-nostats",

@@ -249,7 +249,8 @@ def test_the_stored_value_reaches_file_info(tmp_path):
 
     media = SimpleNamespace(path=str(tmp_path / "Film.mkv"), container="mkv",
                             video_codec="h264", font_attachments=0, recording_signs="",
-                            dolby_vision="", und_audio_threshold_acknowledged=False,
+                            dolby_vision="", mp4_lost_tags=None,
+                            und_audio_threshold_acknowledged=False,
                             original_language="fre")
 
     assert _file_info_for(media)["original_language"] == "fre"

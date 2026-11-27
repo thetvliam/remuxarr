@@ -8,8 +8,10 @@ is_faststart_mp4()    → True/False/None (box-level MP4 atom check)
 """
 import json
 import logging
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -321,6 +323,67 @@ def _same_second(made: str, kept: str | None) -> bool:
     return a.replace(microsecond=0) == b.replace(microsecond=0)
 
 
+def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
+                  ffprobe_bin: str | None = None) -> list[str] | None:
+    """
+    The file's own tags that a job writing it as an MP4 would lose, named
+    as lost_file_tags names them, or None when that could not be found
+    out. [] for a file with no tag beyond REWRITTEN_TAGS, without running
+    anything.
+
+    Found by writing the tags alone into a tiny MP4, through the muxer a
+    job writes an MP4 with (ffmpeg.output_muxer), and comparing what comes
+    back, rather than from a list of the tags that muxer writes. That list
+    lives in libavformat/movenc.c and can change with FFmpeg, and even the
+    two muxers of that file differ: the QuickTime muxer drops synopsis,
+    description, show and others the MP4 muxer keeps. Measured against
+    real jobs with 23 tag names, each on a Matroska converted to MP4 and on
+    an MP4 rewritten as one, it named every tag a job was refused over and
+    no other; tests/test_mp4_tag_loss.py holds part of that. It took about
+    33 ms a file, reading the result back included.
+
+    Stored on MediaFile.mp4_lost_tags at scan and at job pickup, for the
+    decision engine, which does what mp4_lost_tag_handling says with a
+    file that would lose any (decision.analyze_file).
+    """
+    from app.core.ffmpeg import output_muxer
+
+    tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
+    own = {key: value for key, value in tags.items()
+           if key.lower() not in REWRITTEN_TAGS}
+    if not own:
+        return []
+    if ffmpeg_bin is None:
+        ffmpeg_bin = app_settings.FFMPEG_PATH
+    metadata = []
+    for key, value in own.items():
+        metadata += ["-metadata", f"{key}={value}"]
+
+    fd, written = tempfile.mkstemp(prefix="remuxarr-tags-", suffix=".mp4")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-v", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=8000:cl=mono", "-t", "0.01",
+             "-c:a", "aac", *metadata, "-f", output_muxer("mp4"), written],
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+        if result.returncode != 0:
+            logger.warning("Could not find out which tags an MP4 would keep: %s",
+                           result.stderr.strip())
+            return None
+        output = probe_file(written, ffprobe_bin)
+    except (subprocess.TimeoutExpired, OSError, ProbeError) as exc:
+        logger.warning("Could not find out which tags an MP4 would keep: %s", exc)
+        return None
+    finally:
+        try:
+            os.unlink(written)
+        except OSError:
+            pass
+    return lost_file_tags(probe_data, output)
+
+
 def creation_time(probe_data: dict | None) -> str | None:
     """
     The date the file says it was made, as ffprobe shows it in the file's
@@ -606,6 +669,77 @@ def start_time(probe_data: dict) -> float:
     same start time an ffmpeg run with default options does.
     """
     return _float_or_none((probe_data.get("format") or {}).get("start_time")) or 0.0
+
+
+# How much of a file first_packet_times reads, in seconds from its start.
+# Reading every packet took 1.1 s for a ten-minute 87 MB file already in
+# the page cache, and would read a whole film from disk; the first 30 s
+# took 78 ms. A stream with nothing in that stretch gets no time.
+FIRST_PACKET_WINDOW = 30
+
+
+def first_packet_times(path: str, ffprobe_bin: str | None = None) -> dict[int, float]:
+    """
+    The earliest presentation time of each stream's packets in the first
+    FIRST_PACKET_WINDOW seconds of the file, by stream index. Empty when
+    ffprobe fails: the caller then does what it did before these times
+    were recorded (revert.build_manifest, ffmpeg.alignment_offsets).
+
+    Packet times rather than each stream's start_time, because the two
+    differ where a revert needs them to agree: an MP4's AAC reports a
+    start_time of 0 while its first packet sits 21 ms earlier at 48 kHz
+    (the priming its edit list skips), and a sidecar cut from it holds the
+    packets. Aligned on start_time, that track came back 21 ms late.
+
+    A stream whose first packet carries no time gets none. In an AVI,
+    FFmpeg gives no time to the first packets of MPEG-4 video with B-frames
+    (the first two, measured), so its earliest timed packet came a frame
+    after its first frame; in the MP4 a job converts it to, every packet
+    has one. Placed by those, an AVI's video
+    came back from a revert 80 ms late, its first frame at 0.12 s against
+    the original's 0.04 s. Without a time it does not place its file, and
+    the file's audio does (ffmpeg.alignment_offsets).
+    """
+    if ffprobe_bin is None:
+        ffprobe_bin = app_settings.FFPROBE_PATH
+    cmd = [
+        ffprobe_bin,
+        "-v", "quiet",
+        "-read_intervals", f"%+{FIRST_PACKET_WINDOW}",
+        "-show_entries", "packet=stream_index,pts_time",
+        "-print_format", "json",
+        path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            errors="replace", timeout=120,
+        )
+        packets = json.loads(result.stdout).get("packets") or []
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as exc:
+        logger.warning("Could not read packet times of %s: %s", path, exc)
+        return {}
+    if result.returncode != 0:
+        logger.warning("Could not read packet times of %s: %s",
+                       path, result.stderr.strip())
+        return {}
+
+    times: dict[int, float] = {}
+    first_seen: set[int] = set()
+    untimed: set[int] = set()
+    for packet in packets:
+        pts = _float_or_none(packet.get("pts_time"))
+        index = packet.get("stream_index")
+        if index is None:
+            continue
+        if index not in first_seen:
+            first_seen.add(index)
+            if pts is None:
+                untimed.add(index)
+        if pts is None or index in untimed:
+            continue
+        times[index] = min(times.get(index, pts), pts)
+    return times
 
 
 def extract_format_info(probe_data: dict) -> dict:

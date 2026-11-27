@@ -25,7 +25,7 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
-from app.core.probe import lost_dolby_vision, lost_file_tags
+from app.core.probe import lost_dolby_vision, lost_file_tags, mp4_lost_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
@@ -868,13 +868,18 @@ LOST_DOLBY_VISION = (
 )
 
 
-async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
+async def _lost_tags_error(input_path: str, produced_path: str,
+                           dropped=()) -> str | None:
     """
     None when the finished output keeps every one of the source's own tags,
     and every video stream's Dolby Vision record, or else the error that
     stops the run before the source is touched (probe.lost_file_tags,
     probe.lost_dolby_vision). Run in the staging hook, where both files
     exist and nothing has been written over.
+
+    dropped are tags the job may lose, a conversion to MP4 under
+    mp4_lost_tag_handling "drop_tags" (ProcessingDecision.dropped_tags):
+    exactly those, by the names lost_file_tags gives, and no other.
 
     Dolby Vision first: a refusal over tags is an accepted loss to the
     testlib explorer, and one naming both would hide this one there.
@@ -891,7 +896,7 @@ async def _lost_tags_error(input_path: str, produced_path: str) -> str | None:
     lost = lost_dolby_vision(source, output)
     if lost:
         return f"{LOST_DOLBY_VISION} It would lose: {', '.join(lost)}."
-    lost = lost_file_tags(source, output)
+    lost = [tag for tag in lost_file_tags(source, output) if tag not in dropped]
     if lost:
         return f"{LOST_TAGS} It would lose: {', '.join(lost)}."
     return None
@@ -1437,9 +1442,13 @@ async def _run_job(job_id: int, ws_manager, loop: asyncio.AbstractEventLoop) -> 
 
         # Before the capture, so a run that is refused spends nothing on a
         # revert point it would only discard.
-        lost = await _lost_tags_error(input_path, produced_path)
+        lost = await _lost_tags_error(input_path, produced_path,
+                                      dropped=decision.dropped_tags)
         if lost:
             return lost
+        if decision.dropped_tags:
+            logger.info("Job %d: dropping tags an MP4 cannot hold, as Tags an MP4 "
+                        "Can't Hold says: %s", job_id, ", ".join(decision.dropped_tags))
 
         result, error = await revert_capture.capture(
             input_path    = input_path,
@@ -2011,6 +2020,9 @@ def _load_job_data(job_id: int):
                 "Job %d: could not probe %s (%s) — deciding from the stored "
                 "tracks", job_id, media.path, exc,
             )
+        # Beside the probe, as it runs FFmpeg: the tags an MP4 would lose,
+        # stored below (probe.mp4_lost_tags).
+        lost_in_mp4 = None if probe_data is None else mp4_lost_tags(probe_data)
         if probe_data is not None:
             stored = [_track_to_dict(t) for t in
                       db.query(Track).filter(Track.file_id == media.id)]
@@ -2050,6 +2062,10 @@ def _load_job_data(job_id: int):
             fresh = extract_format_info(probe_data)
             media.recording_signs = fresh["recording_signs"]
             media.dolby_vision = fresh["dolby_vision"]
+        # The tags an MP4 would lose, from the probe above every time for
+        # the same reason. Left as stored when they could not be found out.
+        if lost_in_mp4 is not None:
+            media.mp4_lost_tags = json.dumps(lost_in_mp4)
 
         file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
         decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)

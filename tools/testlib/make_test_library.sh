@@ -3,8 +3,8 @@
 #  make_test_library.sh: build a small media library of unusual containers,
 #  codecs and tracks for explore.py to run through Remuxarr.
 #
-#  36 media files plus a folder layout of copies for the extras / exclude /
-#  existing-sidecar / name-collision rules (52 files, about 29 MB, at the
+#  38 media files plus a folder layout of copies for the extras / exclude /
+#  existing-sidecar / name-collision rules (54 files, about 30 MB, at the
 #  default 6 s length).
 #  Every file shows its own name on screen and every track says what it is
 #  ("ENG SDH", "GER 550 Hz"), so you can watch or listen to an output and
@@ -534,7 +534,24 @@ f36() {  # Dolby Vision Profile 5 in MP4: sample entry dvh1 and a dvcC box, whic
     -tag:v dvh1 -strict unofficial -movflags +faststart -f mp4 "$OUT/36 - dolby vision p5 mp4.mp4"
 }
 
-for n in $(seq -w 1 36); do
+f37() {  # Matroska with an IMDB and a TMDB ID among its own tags, which FFmpeg cannot write into an MP4 (issue #67). Tags an MP4 Can't Hold leaves it as it is, converts it without them, or keeps it Matroska with the German track still dropped; a revert of the conversion gives them back. German to drop.
+  local a=(); add a video_in "37 tagged matroska"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 \
+    -metadata title="Tagged Film" -metadata IMDB=tt0000037 -metadata TMDB=movie/37 \
+    "$OUT/37 - tagged matroska.mkv"
+}
+f38() {  # MP4 with a tag of its own kept as a QuickTime key, which an MP4 rewrite drops: left as it is whatever Tags an MP4 Can't Hold says, as a revert could not write it back either. German to drop.
+  local a=(); add a video_in "38 tagged mp4"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=ger \
+    -disposition:a:0 default -disposition:a:1 0 \
+    -metadata purchase_date=2020-01-01 -movflags +use_metadata_tags+faststart \
+    "$OUT/38 - tagged mp4.mp4"
+}
+
+for n in $(seq -w 1 38); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

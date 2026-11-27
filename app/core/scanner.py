@@ -41,6 +41,7 @@ from app.core.probe import (
     is_faststart_mp4,
     is_media_file,
     is_packed_divx,
+    mp4_lost_tags,
     probe_file,
 )
 from app.database.models import Ac3ForgeJob, AudioLanguageFlag, MediaFile, PlannedAction, PlexAnalyzeBacklog, QueueItem, RevertPoint, SubtitleLanguageFlag, Track
@@ -70,10 +71,14 @@ class ScanStats:
 # ── A probe made ahead of _process_file ───────────────────────────────────────
 
 class Probed(NamedTuple):
-    """A file's probe, with the size and mtime it had just before (probe_ahead)."""
+    """
+    A file's probe, with the size and mtime it had just before, and the
+    tags an MP4 would lose (probe_ahead).
+    """
     size:   int
     mtime:  float
     result: dict | ProbeError
+    mp4_lost_tags: list[str] | None = None
 
 
 def probe_ahead(path: str) -> Probed | None:
@@ -88,6 +93,9 @@ def probe_ahead(path: str) -> Probed | None:
     A probe that fails is kept as its error, and _process_file reports it as
     it would its own, without probing again. None when the file cannot be
     stat'ed: _process_file then stats it itself and reports that.
+
+    The tags an MP4 would lose are found here too, for the same reason:
+    finding them runs FFmpeg (probe.mp4_lost_tags).
     """
     try:
         st = os.stat(path)
@@ -96,8 +104,13 @@ def probe_ahead(path: str) -> Probed | None:
     try:
         result = probe_file(path, app_settings.FFPROBE_PATH)
     except ProbeError as exc:
-        result = exc
-    return Probed(st.st_size, st.st_mtime, result)
+        return Probed(st.st_size, st.st_mtime, exc)
+    return Probed(st.st_size, st.st_mtime, result, mp4_lost_tags(result))
+
+
+def _as_json(tags: list[str] | None) -> str | None:
+    """MediaFile.mp4_lost_tags as stored: a JSON list, or null for unknown."""
+    return None if tags is None else json.dumps(tags)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -1409,7 +1422,8 @@ def _process_file(
         # longer there. Size and mtime together are the identity revert
         # relies on as well (worker._fingerprint). A probe that failed is
         # reported here as this one failing would be, not repeated.
-        if probed is not None and (probed.size, probed.mtime) == (current_size, current_mtime):
+        ahead = probed is not None and (probed.size, probed.mtime) == (current_size, current_mtime)
+        if ahead:
             probe_result = probed.result
         else:
             try:
@@ -1421,6 +1435,10 @@ def _process_file(
             stats.errors += 1
             return
         probe_data = probe_result
+        # Beside the probe, before anything below writes, since it runs
+        # FFmpeg (probe.mp4_lost_tags); probe_ahead found it with its probe,
+        # for callers that hold a write open.
+        lost_in_mp4 = probed.mp4_lost_tags if ahead else mp4_lost_tags(probe_data)
 
         fmt_info  = extract_format_info(probe_data)
         track_list = extract_tracks(probe_data)
@@ -1445,6 +1463,7 @@ def _process_file(
             existing.font_attachments = fmt_info.get("font_attachments")
             existing.recording_signs = fmt_info.get("recording_signs")
             existing.dolby_vision  = fmt_info.get("dolby_vision")
+            existing.mp4_lost_tags = _as_json(lost_in_mp4)
             existing.last_scanned  = utcnow()
             if reevaluate:
                 existing.reevaluate_after_job = False
@@ -1462,6 +1481,7 @@ def _process_file(
                 font_attachments = fmt_info.get("font_attachments"),
                 recording_signs = fmt_info.get("recording_signs"),
                 dolby_vision = fmt_info.get("dolby_vision"),
+                mp4_lost_tags = _as_json(lost_in_mp4),
                 last_scanned = utcnow(),
             )
             db.add(media_file)
@@ -2263,6 +2283,8 @@ def _file_info_for(media_file: MediaFile) -> dict:
         "font_attachments": media_file.font_attachments,
         "recording_signs":  media_file.recording_signs,
         "dolby_vision":     media_file.dolby_vision,
+        "mp4_lost_tags":    (None if media_file.mp4_lost_tags is None
+                             else json.loads(media_file.mp4_lost_tags)),
         "und_audio_threshold_acknowledged":
             media_file.und_audio_threshold_acknowledged,
         "folder_entries":   _folder_entries(media_file.path),

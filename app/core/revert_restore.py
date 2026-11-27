@@ -63,8 +63,8 @@ from app.core.ffmpeg import (
     build_restore_command,
 )
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
-                            rebuilt_track_indices, extract_tracks, probe_file,
-                            start_time)
+                            first_packet_times, rebuilt_track_indices,
+                            extract_tracks, probe_file, start_time)
 from app.core.recycle import delete_sidecar
 from app.core.subprocess_runner import StagedOutput, run_staged_subprocess
 
@@ -475,12 +475,25 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     except ProbeError:
         processed = None
 
+    # When each stream of the two files starts now, for a point that
+    # recorded when each started in the original (ffmpeg.alignment_offsets).
+    # Read only for those: an older point is timed as it always was.
+    stream_times = None
+    if plan.manifest.get("start_time") is not None:
+        stream_times = {}
+        for number, path in enumerate((plan.current_path, plan.sidecar_path)):
+            found = await asyncio.get_running_loop().run_in_executor(
+                None, first_packet_times, path, app_settings.FFPROBE_PATH)
+            stream_times.update(
+                ((number, index), time) for index, time in found.items())
+
     try:
         cmd = build_restore_command(
             plan.current_path, plan.sidecar_path, temp_output, plan.manifest,
             rebuilt_tracks=rebuilt_track_indices(processed),
             dolby_vision=dolby_vision(processed),
             processed_start=None if processed is None else start_time(processed),
+            stream_times=stream_times,
         )
     except RestoreUnsupported as exc:
         return RestoreOutcome(success=False, error=str(exc))

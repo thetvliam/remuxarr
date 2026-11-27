@@ -60,7 +60,10 @@ An empty file — no `##` sections — means no dialog. That is the correct
 state for a cycle in which nothing user-visible has changed yet.
 -->
 
+## Added
+
+- Tags an MP4 Can't Hold, under Library: what happens to a file Prefer MP4 Container would convert when FFmpeg cannot write some of its own tags into an MP4, such as an IMDB ID in a Matroska (issue #67). By default it is left as it is, as before, but without a job failing first: History shows it as skipped and names the tags. It can instead be converted without those tags, or kept in its container with its unwanted tracks still removed. An MP4 that would lose tags when rewritten is likewise left as it is, without the failed job.
+
 ## Fixed
 
-- A revert could put subtitles back early: by as much as the time of their first line when the job had removed them together with fonts or other attachments, and, in a file that stayed TS, a subtitle or data track the job kept by the time it starts into the file. Reverts now keep them in time. Files already reverted are not repaired, and a revert point that a later job added to before this may still give such subtitles back early.
-- A job, a revert or AC3 Forge wrote every file as root, Remuxarr's user in the image, with permissions of 644, so a file owned by another user, such as Unraid's nobody:users, could no longer be changed by a program running as that user (issue #65). The files they write now keep the owner, group and permissions of the file they came from, and a subtitle extracted beside a file takes the file's. Files written before this keep the owner they were given.
+- A revert could put a track back late: a track the job had removed that started before every track it kept, by the difference, and an AAC track removed from an MP4, by 21 to 23 ms. Reverts now put such tracks back in time. This needs a revert point recorded from this version on: older points, including ones a later job adds to, are restored as before, and files already reverted are not repaired.

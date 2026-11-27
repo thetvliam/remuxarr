@@ -14,7 +14,9 @@ Each profile is checked against invariants instead:
      exception. A scan error is expected only on a file ffprobe cannot read.
      A job refused because its output would lose some of the file's own
      tags is an accepted loss, unless one of them is the date the file says
-     it was made, which a job writes back.
+     it was made, which a job writes back, or the job wrote an MP4 and which
+     tags an MP4 would lose was known before it ran: Tags an MP4 Can't Hold
+     decides about those, and the refusal is left to stop the rest.
   2. Every output probes, and its video and audio decode without an error.
   3. Every input stream is in the output, dropped by a planned action or
      extracted to a sidecar, and the chapters survive. Every stream kept
@@ -42,6 +44,18 @@ Each profile is checked against invariants instead:
      each revert below, reported under this number too.
  28. With Convert Dolby Vision Files to MP4 off, a file whose video has a
      Dolby Vision record is not converted to MP4.
+ 29. Every kept video, audio and subtitle track starts where it did against
+     the file's first video stream, to within 2 ms: video and audio at their
+     first decoded frame, subtitles at their first packet. The same goes
+     after each revert below, reported under this number too.
+ 30. Every processed file keeps its own tags, as opposed to its streams':
+     each name, matched ignoring case, with its value, but for an MP4's
+     brand and the name of the program that wrote the file, which muxers
+     write for themselves. The date the file says it was made counts as
+     kept in the same second in an MP4, which holds whole seconds. A
+     conversion to MP4 under Tags an MP4 Can't Hold's drop_tags may lose
+     the tags the worker found an MP4 would lose, an accepted loss, and no
+     others.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -84,7 +98,8 @@ revert route refuses one), and:
  11. The restored file matches the original stream for stream, in what
      each stream says it is and in what it holds (its packets, or the same
      decoded frames), and an MP4's fast-start layout matches too, as does
-     the date the file says it was made, exactly.
+     the date the file says it was made, exactly, and every other tag of
+     the file's own, as check 30 compares them, with none added.
  12. The restored file probes and decodes cleanly.
  13. The job's other files are back as they were, and nothing else moved.
  14. A revert leaves no answer or confirmation stored for the file, and a
@@ -130,6 +145,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -147,6 +163,7 @@ FORCED = {"dry_run_mode": False, "auto_start_jobs": True}
 VARIED = {
     "prefer_mp4_container":          [True, False],
     "convert_dolby_vision_to_mp4":   [False, True],
+    "mp4_lost_tag_handling":         ["leave_file", "drop_tags", "keep_container"],
     "add_faststart_to_mp4":          [True, False],
     "fix_undefined_language":        ["always_leave", "always_fix", "always_ask"],
     "fix_undefined_language_audio":  ["always_leave", "always_fix", "always_ask"],
@@ -521,6 +538,202 @@ def dovi_difference(before: dict, after: dict, when: str) -> str | None:
     return None
 
 
+# Check 29. How far a kept stream may move against the video, in seconds:
+# Matroska keeps time in whole milliseconds, so each of two streams there
+# can be half of one out. And how much of a file is read to find where
+# each stream starts.
+START_TOLERANCE = 0.002
+START_WINDOW = 30
+_ENCODER_DELAY = "README, Reverting a processed file: Limitations worth knowing"
+
+
+def stream_starts(path: str) -> dict[int, float] | None:
+    """
+    Check 29: when each video, audio and subtitle stream of a file starts,
+    in seconds, by stream index, from its first START_WINDOW seconds. None
+    when ffprobe cannot read it.
+
+    Video and audio start at their first decoded frame, which is what a
+    player shows or plays, and which their packets do not always say. The
+    first packets of an AVI's MPEG-4 with B-frames carry no time, where
+    FFmpeg still gives the first frame one (best_effort_timestamp), and a
+    revert that placed the file by the first packet that had one brought
+    its video back 80 ms late with every packet's checksum the same. And
+    an AAC, AC-3 or E-AC-3 track begins with start-up samples a decoder
+    leaves out only when the container says how many there are. Subtitles
+    start at their first packet. One ffprobe run reads every stream.
+    """
+    r = subprocess.run(
+        [FFPROBE, "-v", "error", "-read_intervals", f"%+{START_WINDOW}",
+         "-show_entries", "stream=index,codec_type:packet=stream_index,pts_time"
+         ":frame=stream_index,best_effort_timestamp_time", "-of", "json", path],
+        capture_output=True, text=True)
+    try:
+        data = json.loads(r.stdout or "{}")
+    except ValueError:
+        return None
+    if r.returncode != 0 or not data.get("streams"):
+        return None
+    types = {s.get("index"): s.get("codec_type") for s in data["streams"]}
+    starts: dict[int, float] = {}
+    for item in data.get("packets_and_frames") or []:
+        index = item.get("stream_index")
+        if item.get("type") == "frame" and types.get(index) in ("video", "audio"):
+            t = _seconds(item.get("best_effort_timestamp_time"))
+        elif item.get("type") == "packet" and types.get(index) == "subtitle":
+            t = _seconds(item.get("pts_time"))
+        else:
+            continue
+        if t is not None:
+            starts.setdefault(index, t)
+    return starts
+
+
+def _seconds(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timed(stream: dict) -> str | None:
+    """
+    The kind check 29 pairs a stream by, or None for one it does not time:
+    a cover, a still picture with no place in the playback, and so also a
+    Matroska cover a revert gave back as a plain video track, known by the
+    file name it keeps.
+    """
+    k = kind(stream)
+    if k == "video" and any(t.lower() == "filename" for t in stream.get("tags") or {}):
+        return None
+    return k if k in ("video", "audio", "text-sub", "image-sub") else None
+
+
+def moved_starts(before: list[dict], after: list[dict], was: dict[int, float],
+                 now: dict[int, float]) -> tuple[dict | None, list[tuple[dict, dict, float]]]:
+    """
+    Check 29: (reference, moved). Each stream of `before` that starts
+    somewhere else in `after` against the reference, with its stream in
+    `after` and how far it moved, in seconds, later positive. The reference
+    is the first pair with a start on both sides, video before audio before
+    subtitles: the first video stream, in a file that has one. `was` and
+    `now` are stream_starts() of the two files.
+
+    Streams are paired by kind and in order, as check 3 pairs them. A kind
+    whose count differs is left out, as another check reports that, and so
+    is a stream with no start on either side.
+    """
+    pairs = []
+    for k in ("video", "audio", "text-sub", "image-sub"):
+        a = [s for s in before if _timed(s) == k]
+        b = [s for s in after if _timed(s) == k]
+        if len(a) == len(b):
+            pairs.extend(zip(a, b))
+    timed = [(s, t) for s, t in pairs if s.get("index") in was and t.get("index") in now]
+    if not timed:
+        return None, []
+    ref, ref_now = timed[0]
+    base, base_now = was[ref["index"]], now[ref_now["index"]]
+    moved = []
+    for s, t in timed[1:]:
+        shift = (now[t["index"]] - base_now) - (was[s["index"]] - base)
+        if abs(shift) > START_TOLERANCE:
+            moved.append((s, t, shift))
+    return ref, moved
+
+
+def moved_finding(ref: dict, moved: list[tuple[dict, dict, float]],
+                  when: str, was: str) -> str:
+    """Check 29's finding for moved_starts(), in whole milliseconds, so that
+    one cause in several profiles groups as one line."""
+    names = "; ".join(
+        f"{s.get('codec_type')} stream {s['index']} ({s.get('codec_name')}) starts "
+        f"{abs(shift) * 1000:.0f} ms {'later' if shift > 0 else 'earlier'}"
+        for s, _, shift in moved)
+    return (f"against {ref.get('codec_type')} stream {ref['index']} "
+            f"({ref.get('codec_name')}), {names} {when} than {was}")
+
+
+def lost_encoder_delay(before: dict, after: dict, shift: float) -> int | None:
+    """
+    Check 29's accepted loss after a revert: how many start-up samples an
+    audio stream of the original marked as its encoder delay (what FFmpeg
+    reports as initial_padding) and the restored stream does not, when
+    playing those samples is all its move is. None otherwise.
+
+    A Matroska says how many there are in the track; an MP4 holds them in
+    its edit list, which FFmpeg reads as samples to skip rather than as the
+    stream's padding, so going back to Matroska after a conversion to MP4
+    the track says none and a decoder plays them, ahead of the same samples
+    at the same times as before. The library's AAC (1024 samples at
+    44.1 kHz) moves 23 ms and its AC-3 and E-AC-3 (256) 6 ms.
+    """
+    if before.get("codec_type") != "audio":
+        return None
+    try:
+        lost = int(before.get("initial_padding") or 0) - int(after.get("initial_padding") or 0)
+        rate = int(before.get("sample_rate") or 0)
+    except ValueError:
+        return None
+    if lost <= 0 or rate <= 0:
+        return None
+    return lost if abs(shift + lost / rate) <= START_TOLERANCE else None
+
+
+# Check 30. A file's own tags no job or revert is held to: an MP4's file
+# type box, which check 11 compares as the brand, and the name of the
+# program that wrote the file, which every muxer writes for itself.
+# Written out here rather than imported (probe.REWRITTEN_TAGS), so the
+# check does not take its answer from the code it is checking.
+_FILE_TAGS_NOT_COMPARED = frozenset({"major_brand", "minor_version", "compatible_brands",
+                                     "encoder", "software"})
+_TAGS_DROPPED = ("Tags an MP4 Can't Hold set to convert without them: README.md, "
+                 "\"Never drops a file's own tags or its Dolby Vision unless told to\"")
+
+
+def own_tags(info: dict) -> dict:
+    """A file's own tags, as opposed to its streams', by name as the file
+    has them, leaving out _FILE_TAGS_NOT_COMPARED."""
+    tags = (info.get("format") or {}).get("tags") or {}
+    return {k: v for k, v in tags.items() if k.lower() not in _FILE_TAGS_NOT_COMPARED}
+
+
+def lost_own_tags(before: dict, after: dict, whole_seconds: bool = False) -> list[str]:
+    """
+    The own tags of the file `before` that `after` lacks or holds another
+    value for, by `before`'s names, in order. Names match ignoring case, as
+    a Matroska stores them in capitals and an MP4 in lower case. With
+    whole_seconds the date the file says it was made counts as kept in the
+    same second, as an MP4 holds it in whole seconds.
+    """
+    now = {k.lower(): v for k, v in own_tags(after).items()}
+
+    def kept(name: str, value) -> bool:
+        if now.get(name) == value:
+            return True
+        return (whole_seconds and name == "creation_time"
+                and _to_the_second(value) is not None
+                and _to_the_second(value) == _to_the_second(now.get(name)))
+    return sorted(k for k, v in own_tags(before).items() if not kept(k.lower(), v))
+
+
+def _to_the_second(value):
+    try:
+        return datetime.fromisoformat(value).replace(microsecond=0)
+    except (TypeError, ValueError):
+        return None
+
+
+def stored_list(value: str | None) -> list[str] | None:
+    """A JSON list of names as the app stores one (MediaFile.mp4_lost_tags),
+    or None for none stored or one that does not read as a list."""
+    try:
+        names = json.loads(value) if value is not None else None
+    except ValueError:
+        return None
+    return names if isinstance(names, list) else None
+
+
 def is_mp4(info: dict) -> bool:
     return "mp4" in ((info.get("format") or {}).get("format_name") or "")
 
@@ -604,6 +817,18 @@ def run_child(spec_path: str) -> None:
     from app.core.probe import is_faststart_mp4
     faststart_before = {r: is_faststart_mp4(str(lib / r)) for r, info in probes_before.items()
                         if info is not None and is_mp4(info)}
+    # For check 29: where each stream of an original starts, read from the
+    # library the run was given while its checksum says it is the same file,
+    # as a job or a revert can have replaced the copy here. Once per file,
+    # and only for a file a job or a revert touched.
+    original_starts: dict[str, dict | None] = {}
+
+    def starts_before(path: str) -> dict[int, float] | None:
+        if path not in original_starts:
+            given = Path(spec["library"]) / path
+            same = given.is_file() and sha(given) == before.get(path)
+            original_starts[path] = stream_starts(str(given)) if same else None
+        return original_starts[path]
 
     S.init_db()
     timings = {}
@@ -702,8 +927,22 @@ def run_child(spec_path: str) -> None:
                     continue
                 if (j.status == "failed" and error.startswith(worker.LOST_TAGS)
                         and not _loses_its_date(error)):
+                    lost = error.split("It would lose: ")[-1]
+                    # Known before the job, the tags an MP4 would lose are
+                    # for Tags an MP4 Can't Hold to decide on, and a job
+                    # writing an MP4 is not refused over them; the refusal
+                    # stops only what could not be known beforehand.
+                    foreseen = stored_list(media.mp4_lost_tags)
+                    wrote_mp4 = (is_mp4(probes_before.get(rel(source)) or {}) or any(
+                        a.action_type == "change_container" for a in
+                        db.query(PlannedAction).filter(PlannedAction.queue_item_id == j.id)))
+                    if foreseen is not None and wrote_mp4:
+                        find(1, source, f"job refused over its own tags ({lost.rstrip('.')}), "
+                                        "though which tags an MP4 would lose was known "
+                                        f"before it ran: {', '.join(foreseen) or 'none'}")
+                        continue
                     known.append({"file": rel(source), "lost": "job refused",
-                                  "why": f"{_LOST_TAGS} ({error.split('It would lose: ')[-1]})"})
+                                  "why": f"{_LOST_TAGS} ({lost})"})
                     entry["refused"] = True
                     continue
                 find(1, source, f"job {j.status}: {error[:300]}")
@@ -723,11 +962,13 @@ def run_child(spec_path: str) -> None:
             entry["actions"] = [f"{a.action_type}:{a.stream_index}" for a in actions]
             entry["source"] = source
             entry["plan"] = _plan_of(actions)
+            # For check 30, as the worker stored it when it took the job.
+            entry["mp4_lost_tags"] = stored_list(media.mp4_lost_tags)
             _check_processed(find, known, lib, source, media.path, actions,
                              probes_before.get(rel(source)), before, after,
                              cfg, canonical, allowed_changes, entry, several,
                              hashes_before.get(rel(source)),
-                             Path(spec["library"]) / rel(source))
+                             Path(spec["library"]) / rel(source), starts_before)
             if not several:
                 _check_answers_carried_out(find, source, actions, entry.get("answered"),
                                            canonical, probes_before.get(rel(source)))
@@ -777,6 +1018,7 @@ def run_child(spec_path: str) -> None:
     reverts = _revert_round_trips(
         find, known, lib, scratch, cfg, files, before, probes_before,
         faststart_before, rel, collect, hashes_before, Path(spec["library"]),
+        starts_before,
     )
 
     result = {
@@ -1292,11 +1534,11 @@ def _without_attached_pic(sig: tuple) -> tuple:
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
                         probes_before, faststart_before, rel, collect,
-                        hashes_before, pristine) -> int:
+                        hashes_before, pristine, starts_before) -> int:
     """
     Phase 2: restore every revert point through the app's own
-    restore_revert_point, then check the round trip (checks 9 to 15).
-    Returns how many points were restored.
+    restore_revert_point, then check the round trip (checks 9 to 15, and
+    27 and 29 again). Returns how many points were restored.
     """
     import asyncio
 
@@ -1455,12 +1697,45 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
         made, made_now = _made(original), _made(info)
         if made is not None and made_now != made:
             find(11, source, f"creation date {made} in the original, {made_now} after the revert")
+        # And every other tag of the file's own, which a revert writes back
+        # from its point too, exactly, and no other: a job that converted
+        # the file to MP4 under Tags an MP4 Can't Hold's drop_tags lost the
+        # ones an MP4 cannot hold, and the revert is where they come back.
+        lost = [t for t in lost_own_tags(original, info) if t.lower() != "creation_time"]
+        if lost:
+            find(11, source, f"own tag(s) {', '.join(lost)} lost or changed after the revert")
+        had = {k.lower() for k in own_tags(original)}
+        gained = sorted(k for k in own_tags(info) if k.lower() not in had)
+        if gained:
+            find(11, source, f"own tag(s) {', '.join(gained)} appeared after the revert")
         # 27. And each video stream's Dolby Vision record: its own check
         # rather than part of the signature, so that one number covers it
         # wherever it is lost.
         dovi = dovi_difference(original, info, "after the revert")
         if dovi:
             find(27, source, dovi)
+        # 29. And where each stream starts against the video. Audio whose
+        # encoder delay did not come back is listed instead, as long as
+        # playing the samples it marked is the whole of its move.
+        was_at, now_at = starts_before(rel(source)), stream_starts(restored)
+        if was_at is None or now_at is None:
+            find(29, source, "could not read where the streams of the "
+                             f"{'original' if was_at is None else 'restored file'} start")
+            was_at = now_at = {}
+        ref, moved = moved_starts(original["streams"], info["streams"], was_at, now_at)
+        unexplained = []
+        for s, t, shift in moved:
+            delay = lost_encoder_delay(s, t, shift)
+            if delay is None:
+                unexplained.append((s, t, shift))
+                continue
+            known.append({"file": rel(source),
+                          "lost": f"audio stream {s['index']}'s encoder delay "
+                                  f"({delay} samples)",
+                          "why": _ENCODER_DELAY})
+        if unexplained:
+            find(29, source, moved_finding(ref, unexplained, "after the revert",
+                                           "in the original"))
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:
@@ -1584,7 +1859,7 @@ _MEDIA_SUFFIXES = {".mkv", ".mp4", ".m4v", ".mov", ".avi", ".ts", ".m2ts",
 
 def _check_processed(find, known, lib, source, output, actions, info_before,
                      before, after, cfg, canonical, allowed_changes, entry, several=False,
-                     source_holds=None, kept_copy=None):
+                     source_holds=None, kept_copy=None, starts_before=None):
     out_dir = Path(output).parent
     stem = Path(output).stem
     prefix = f"{out_dir.relative_to(lib).as_posix()}/{stem}." if out_dir != lib else f"{stem}."
@@ -1712,6 +1987,40 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     dovi = dovi_difference(info_before, info_after, "after the job")
     if dovi:
         find(27, source, dovi)
+
+    # 29. Every kept stream starts where it did against the video, kept
+    # streams paired as for check 3.
+    if starts_before is not None:
+        was = starts_before(Path(source).relative_to(lib).as_posix())
+        now = stream_starts(output)
+        if was is None or now is None:
+            find(29, source, "could not read where the streams of "
+                             f"{'the source' if was is None else Path(output).name} start")
+        else:
+            ref, moved = moved_starts([s for _, s in expected], info_after["streams"],
+                                      was, now)
+            if moved:
+                find(29, source, moved_finding(ref, moved, f"in {Path(output).name}",
+                                               "in the source"))
+
+    # 30. The file keeps its own tags. A conversion to MP4 under Tags an MP4
+    # Can't Hold's drop_tags may lose the ones the worker found an MP4 would
+    # lose when it took the job, and no others: never the date the file
+    # says it was made, which a job writes back, and which an MP4 holds in
+    # whole seconds.
+    to_mp4 = is_mp4(info_after) and not is_mp4(info_before)
+    lost = lost_own_tags(info_before, info_after, whole_seconds=is_mp4(info_after))
+    allowed = set()
+    if to_mp4 and cfg.get("mp4_lost_tag_handling") == "drop_tags":
+        allowed = {t.lower() for t in entry.get("mp4_lost_tags") or []} - {"creation_time"}
+    dropped = [t for t in lost if t.lower() in allowed]
+    if dropped:
+        known.append({"file": Path(source).relative_to(lib).as_posix(),
+                      "lost": f"own tag(s) {', '.join(dropped)}", "why": _TAGS_DROPPED})
+    unexplained = [t for t in lost if t.lower() not in allowed]
+    if unexplained:
+        find(30, source, f"lost or changed its own tag(s) {', '.join(unexplained)} "
+                         f"in {Path(output).name}")
 
     # 5. Sidecars.
     extracts = sum(1 for a in actions if a.action_type == "extract_subtitle")

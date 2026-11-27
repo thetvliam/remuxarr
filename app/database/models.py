@@ -69,6 +69,15 @@ class MediaFile(Base):
     # at job pickup.
     dolby_vision = Column(String)
 
+    # The file's own tags a job writing it as an MP4 would lose
+    # (probe.mp4_lost_tags), as a JSON list of their names, "[]" for none.
+    # JSON rather than joined by commas like the two above: a tag's name
+    # is whatever the tool that wrote it chose, and a comma is not ruled
+    # out. Refreshed at every job pickup, as recording_signs is. Null means
+    # not looked at since the column was added, or that the check could
+    # not run.
+    mp4_lost_tags = Column(String)
+
     # Lifecycle state
     # unprocessed | queued | processing | processed | skipped | manual_review | error
     status = Column(String, default="unprocessed", nullable=False)

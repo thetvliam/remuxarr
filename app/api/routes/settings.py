@@ -398,6 +398,7 @@ KNOWN_KEYS = {
     "keep_default_audio",
     "prefer_mp4_container",
     "convert_dolby_vision_to_mp4",
+    "mp4_lost_tag_handling",
     "dry_run_mode",
     "scan_paths",
     "skip_extras",
@@ -599,6 +600,34 @@ SETTINGS_SCHEMA = [
                        "that does not recognise it shows green and purple; other "
                        "profiles fall back to their HDR10, HLG or SDR picture. "
                        "Has no effect while Prefer MP4 Container is off.",
+    },
+    {
+        "key":     "mp4_lost_tag_handling",
+        "group":   "Library",
+        "label":   "Tags an MP4 Can't Hold",
+        "type":    "select",
+        "options": [
+            {"value": "leave_file",     "label": "Leave the file as it is"},
+            {"value": "drop_tags",      "label": "Convert to MP4 and drop them"},
+            {"value": "keep_container", "label": "Keep its container, still remove tracks"},
+        ],
+        "description": "What to do with a file Prefer MP4 Container would "
+                       "convert when an MP4 cannot hold some of its own tags, "
+                       "such as an IMDB or TMDB ID in a Matroska: FFmpeg writes "
+                       "only a fixed list of tags into an MP4. Leave the file as "
+                       "it is: nothing is done to it, and History says which "
+                       "tags kept it. Convert to MP4 and drop them: the job "
+                       "drops exactly those tags, and is refused as before if "
+                       "anything else would be lost; when the job also "
+                       "removes a track and Keep Removed Tracks is on, "
+                       "reverting it gives a Matroska its tags back. Keep its "
+                       "container: it stays as it is, a Matroska for one, and "
+                       "anything else planned for it, such as removing a "
+                       "track, still happens. A file that is already an MP4 is "
+                       "left as it is whatever this says, when rewriting it "
+                       "would lose tags: the content rating and cast of an "
+                       "iTunes-tagged file cannot be written back by a revert "
+                       "either. Has no effect while Prefer MP4 Container is off.",
     },
     {
         "key":         "add_faststart_to_mp4",
@@ -1339,6 +1368,7 @@ _DEFAULT_KINDS = {
 APPLIES_ON_RESCAN = {
     "prefer_mp4_container",
     "convert_dolby_vision_to_mp4",
+    "mp4_lost_tag_handling",
     "add_faststart_to_mp4",
     "fix_undefined_language",
     "fix_undefined_language_audio",

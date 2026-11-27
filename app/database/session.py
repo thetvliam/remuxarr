@@ -40,6 +40,12 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # install gets it off too, as _seed_defaults adds a missing key with
     # its default.
     "convert_dolby_vision_to_mp4": False,
+    # What happens to a file prefer_mp4_container would convert when an MP4
+    # cannot hold some of its own tags (MediaFile.mp4_lost_tags):
+    # "leave_file", "drop_tags" or "keep_container" (decision.analyze_file).
+    # Leave is what such a file got before the setting, without the job
+    # that failed first.
+    "mp4_lost_tag_handling": "leave_file",
     # Global dry-run toggle — no files are modified when True. Defaults to
     # True: a brand-new install's first scan should produce a complete,
     # safe preview of every planned action across the whole library
@@ -936,6 +942,11 @@ def _migrate_schema() -> None:
         # was never looked at for Dolby Vision, so it looks at pickup.
         ("media_files", "dolby_vision",
          "ALTER TABLE media_files ADD COLUMN dolby_vision TEXT"),
+        # No DEFAULT, as for recording_signs: null says the file was never
+        # looked at for the tags an MP4 would lose, which its next scan
+        # that probes it, or its next job, does.
+        ("media_files", "mp4_lost_tags",
+         "ALTER TABLE media_files ADD COLUMN mp4_lost_tags TEXT"),
         ("queue_items", "review_subtitles",
          "ALTER TABLE queue_items ADD COLUMN review_subtitles TEXT"),
         ("queue_items", "review_reason",
