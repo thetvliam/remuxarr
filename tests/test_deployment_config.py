@@ -523,11 +523,9 @@ def test_the_documented_install_commands_include_the_app_dependencies():
     position to spot that it does not.
 
     Asserted against every pip line in the file rather than one known
-    snippet, so the two-command form (requirements.txt on its own line)
-    passes too. Option B installs only the test extras on purpose — it
-    runs inside the container, where requirements.txt was installed at
-    build time — which is why this looks for one satisfying line rather
-    than requiring every line to qualify.
+    snippet, and satisfied by any one of them, so the two-command form
+    passes too: requirements.txt on one line and the test extras on
+    another.
     """
     for name in ("README.md", "tests/README.md"):
         installs = [

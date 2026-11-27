@@ -522,9 +522,9 @@ coverage is still useful as a *finder*: a block sitting at zero is a reliable
 signal that nothing exercises it, which is how most of the units above were
 picked. It is the target that is wrong, not the tool.
 
-## Running it — two options, same suite either way
+## Running it
 
-**Option A — locally.**
+From a checkout of the repository:
 
 ```bash
 pip install -r requirements.txt -r tests/requirements-test.txt
@@ -533,20 +533,9 @@ pytest
 cd frontend && npm ci && npm test
 ```
 
-**Option B — inside the deployed container**, against the real production
-environment (real ffmpeg, real file paths), as an independent check after a
-deploy:
-
-```bash
-docker exec -it remuxarr bash
-cd /app
-pip install -r tests/requirements-test.txt --break-system-packages
-pytest tests/ -v
-```
-
-`pytest` and its dependencies aren't part of the production `requirements.txt`
-on purpose — they only get installed if you actually run this, so the deployed
-image doesn't carry test tooling it never uses day to day.
+The suite runs from a checkout only. The image holds the app and its built
+frontend, not `tests/`, so there is nothing to run inside a deployed
+container.
 
 ## Release notes are part of the change, not a step after it
 

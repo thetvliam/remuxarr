@@ -396,7 +396,7 @@ Both run in CI on every push, alongside pyflakes and eslint. A few backend
 tests exercise a real FFmpeg/ffprobe and skip if the binaries are missing - CI
 installs them so they always run.
 
-See [`tests/README.md`](tests/README.md) for more detail, including how to run this same suite inside a deployed container against production FFmpeg.
+See [`tests/README.md`](tests/README.md) for more detail.
 
 ## License
 
