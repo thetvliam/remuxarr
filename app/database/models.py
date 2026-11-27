@@ -193,6 +193,12 @@ class Track(Base):
     track_type     = Column(String,  nullable=False)  # video | audio | subtitle
     codec          = Column(String)
     language       = Column(String)   # ISO 639-2/B  ("eng", "fre", "und", …)
+    # The track's BCP 47 language as mkvmerge reads it ("es-419", "zh-Hans",
+    # "en"), which ffprobe does not report: two tracks with one old code can
+    # differ only here. "" for none (every track of a file that is not
+    # Matroska); NULL for not known, as for every row stored before it was
+    # read (mkvtoolnix.bcp47_languages). A job refreshes it when it starts.
+    language_ietf  = Column(String, nullable=True)
     channels       = Column(Integer)  # audio only
     channel_layout = Column(String)   # "5.1", "stereo", …
     is_default     = Column(Boolean, default=False)

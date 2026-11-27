@@ -34,6 +34,7 @@ from app.core.decision import analyze_file
 from app.core.exclude import ExcludeRules
 from app.core.revert import positional_pairs
 from app.core.revert_capture import repoint_created_file
+from app.core.mkvtoolnix import bcp47_languages, with_bcp47
 from app.core.probe import (
     ProbeError,
     extract_format_info,
@@ -79,6 +80,7 @@ class Probed(NamedTuple):
     mtime:  float
     result: dict | ProbeError
     mp4_lost_tags: list[str] | None = None
+    bcp47: dict[int, str] | None = None
 
 
 def probe_ahead(path: str) -> Probed | None:
@@ -95,7 +97,8 @@ def probe_ahead(path: str) -> Probed | None:
     stat'ed: _process_file then stats it itself and reports that.
 
     The tags an MP4 would lose are found here too, for the same reason:
-    finding them runs FFmpeg (probe.mp4_lost_tags).
+    finding them runs FFmpeg (probe.mp4_lost_tags). So are the tracks' BCP
+    47 languages, which runs mkvmerge (mkvtoolnix.bcp47_languages).
     """
     try:
         st = os.stat(path)
@@ -105,7 +108,8 @@ def probe_ahead(path: str) -> Probed | None:
         result = probe_file(path, app_settings.FFPROBE_PATH)
     except ProbeError as exc:
         return Probed(st.st_size, st.st_mtime, exc)
-    return Probed(st.st_size, st.st_mtime, result, mp4_lost_tags(result))
+    return Probed(st.st_size, st.st_mtime, result, mp4_lost_tags(result),
+                  bcp47_languages(path, result))
 
 
 def _as_json(tags: list[str] | None) -> str | None:
@@ -1439,9 +1443,11 @@ def _process_file(
         # FFmpeg (probe.mp4_lost_tags); probe_ahead found it with its probe,
         # for callers that hold a write open.
         lost_in_mp4 = probed.mp4_lost_tags if ahead else mp4_lost_tags(probe_data)
+        # And each track's BCP 47 language, which runs mkvmerge.
+        regions = probed.bcp47 if ahead else bcp47_languages(path, probe_data)
 
         fmt_info  = extract_format_info(probe_data)
-        track_list = extract_tracks(probe_data)
+        track_list = with_bcp47(extract_tracks(probe_data), regions)
 
         # ── A file replaced by something other than Remuxarr ──────────────
         # Read before replace_track_rows below overwrites what is compared.
@@ -2318,6 +2324,7 @@ def _track_to_dict(t: Track) -> dict:
         "track_type":          t.track_type,
         "codec":               t.codec,
         "language":            t.language,
+        "language_ietf":       t.language_ietf,
         "channels":            t.channels,
         "channel_layout":      t.channel_layout or "",
         "is_default":          t.is_default,
@@ -2347,6 +2354,7 @@ def replace_track_rows(db: Session, file_id: int, track_list: list[dict]) -> Non
             track_type     = td["track_type"],
             codec          = td["codec"],
             language       = td["language"],
+            language_ietf  = td.get("language_ietf"),
             channels       = td.get("channels"),
             channel_layout = td.get("channel_layout"),
             is_default          = td.get("is_default", False),

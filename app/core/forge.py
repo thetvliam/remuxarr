@@ -40,6 +40,7 @@ from app.config import settings as app_settings
 from app.core.ffmpeg import (
     KEEP_STREAM_FLAGS, CoverArt, cover_attach_args, dolby_vision_args, find_matroska_covers,
 )
+from app.core.mkvtoolnix import bcp47_languages, with_bcp47
 from app.core.probe import (DolbyVision, ProbeError, dolby_vision, extract_tracks, is_quicktime,
                             rebuilt_track_indices, probe_file, recording_signs)
 from app.core.probe import creation_time as source_creation_time
@@ -1190,7 +1191,8 @@ def probe_tracks_after_forge(path: str) -> list[dict] | None:
     size and mtime and the stored ones are not updated here.
     """
     try:
-        return extract_tracks(probe_file(path, app_settings.FFPROBE_PATH))
+        probe_data = probe_file(path, app_settings.FFPROBE_PATH)
+        return with_bcp47(extract_tracks(probe_data), bcp47_languages(path, probe_data))
     except ProbeError as exc:
         logger.warning(
             "Could not probe %s after the forge rewrote it: %s. Its stored "

@@ -913,6 +913,10 @@ def _migrate_schema() -> None:
          "ALTER TABLE tracks ADD COLUMN is_hearing_impaired BOOLEAN DEFAULT 0"),
         ("tracks", "is_dub",
          "ALTER TABLE tracks ADD COLUMN is_dub BOOLEAN DEFAULT 0"),
+        # No DEFAULT: null is "never read", which a job refreshes when it
+        # starts and the next scan that probes the file fills in.
+        ("tracks", "language_ietf",
+         "ALTER TABLE tracks ADD COLUMN language_ietf TEXT"),
         ("media_files", "subtitle_overrides",
          "ALTER TABLE media_files ADD COLUMN subtitle_overrides TEXT"),
         ("media_files", "audio_language_overrides",

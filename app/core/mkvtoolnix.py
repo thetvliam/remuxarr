@@ -194,6 +194,51 @@ def read_matroska(path: str) -> MatroskaInfo | None:
     return MatroskaInfo(tracks=tracks, editions=editions, tags=tuple(found))
 
 
+# ── Each track's BCP 47 language, for the tracks table ──────────────────────
+
+def bcp47_languages(path: str, probe_data: dict) -> dict[int, str] | None:
+    """
+    Each track's BCP 47 language as mkvmerge reads it, by ffprobe's stream
+    index: what Track.language_ietf stores. "" for a track with none, and
+    for every track of a file that is not Matroska, where FFmpeg writes no
+    region. None when it could not be read (no mkvmerge, a failed read, or
+    tracks mkvmerge numbers differently from ffprobe, where a tag could land
+    on the wrong track): stored as unknown, and read again at the next
+    probe that stores tracks or when a job starts.
+
+    Only mkvmerge -J: the file's header, no chapters or tags.
+    """
+    if "matroska" not in ((probe_data.get("format") or {}).get("format_name") or ""):
+        return {}
+    if not shutil.which(app_settings.MKVMERGE_PATH):
+        return None
+    r = _run([app_settings.MKVMERGE_PATH, "-J", path])
+    try:
+        identified = json.loads(r.stdout) if r is not None else None
+    except ValueError:
+        identified = None
+    if not identified or (identified.get("container") or {}).get("type") != "Matroska":
+        return None
+    names = {"video": "video", "audio": "audio", "subtitles": "subtitle"}
+    tracks = identified.get("tracks", [])
+    streams = [(s.get("index"), s.get("codec_type")) for s in probe_data.get("streams", [])
+               if s.get("codec_type") in ("video", "audio", "subtitle")
+               and not (s.get("disposition") or {}).get("attached_pic")]
+    if [(t["id"], names.get(t["type"])) for t in tracks] != streams:
+        logger.info("mkvmerge numbers the tracks of %s differently from ffprobe; "
+                    "their BCP 47 languages are not stored", path)
+        return None
+    return {t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks}
+
+
+def with_bcp47(track_list: list[dict], languages: dict[int, str] | None) -> list[dict]:
+    """probe.extract_tracks' list with each track's language_ietf added from
+    bcp47_languages' answer (None for every track when it was unknown)."""
+    for t in track_list:
+        t["language_ietf"] = None if languages is None else languages.get(t["stream_index"], "")
+    return track_list
+
+
 # ── Which tracks a job keeps ─────────────────────────────────────────────────
 
 def kept_track_ids(decision, all_tracks: Sequence[dict]) -> list[int]:

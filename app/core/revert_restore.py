@@ -62,6 +62,7 @@ from app.core.ffmpeg import (
     _pick_temp_dir,
     build_restore_command,
 )
+from app.core.mkvtoolnix import bcp47_languages, with_bcp47
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
                             first_packet_times, rebuilt_track_indices,
                             extract_tracks, probe_file, start_time)
@@ -381,7 +382,8 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
     try:
         probe_data = probe_file(restored_path, app_settings.FFPROBE_PATH)
         fmt_info = extract_format_info(probe_data)
-        track_list = extract_tracks(probe_data)
+        track_list = with_bcp47(extract_tracks(probe_data),
+                                bcp47_languages(restored_path, probe_data))
 
         # The Language Review questions still open are moved to where their
         # tracks now sit, before the rows below are replaced, for the reason

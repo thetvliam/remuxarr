@@ -25,6 +25,7 @@ from app.core.email_notify import send_breaker_tripped_email, send_failure_email
 from app.core.exclude import ExcludeRules
 from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpeg, execute_ffmpeg_combined, execute_subtitle_extraction, _pick_temp_dir
 from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
+from app.core.mkvtoolnix import bcp47_languages, with_bcp47
 from app.core.probe import lost_dolby_vision, lost_file_tags, mp4_lost_tags
 from app.core import revert_lock
 from app.core.recycle import delete_sidecar
@@ -2023,6 +2024,9 @@ def _load_job_data(job_id: int):
         # Beside the probe, as it runs FFmpeg: the tags an MP4 would lose,
         # stored below (probe.mp4_lost_tags).
         lost_in_mp4 = None if probe_data is None else mp4_lost_tags(probe_data)
+        # And each track's BCP 47 language, which runs mkvmerge: stored
+        # below on the rows the check that follows finds unchanged.
+        regions = None if probe_data is None else bcp47_languages(media.path, probe_data)
         if probe_data is not None:
             stored = [_track_to_dict(t) for t in
                       db.query(Track).filter(Track.file_id == media.id)]
@@ -2066,6 +2070,12 @@ def _load_job_data(job_id: int):
         # the same reason. Left as stored when they could not be found out.
         if lost_in_mp4 is not None:
             media.mp4_lost_tags = json.dumps(lost_in_mp4)
+        # Each track's BCP 47 language, from the read above every time: a
+        # row stored before it was read holds none, and a normal scan skips
+        # an unchanged file. Left as stored when it could not be read.
+        if regions is not None:
+            for row in db.query(Track).filter(Track.file_id == media.id):
+                row.language_ietf = regions.get(row.stream_index, "")
 
         file_info, tracks, analysis_kwargs = _build_analysis_inputs(db, media)
         decision = analyze_file(file_info, tracks, app_cfg, **analysis_kwargs)
@@ -2509,7 +2519,8 @@ def _finish_job(
                     try:
                         probe_data = probe_file(final_path, app_settings.FFPROBE_PATH)
                         fmt_info   = extract_format_info(probe_data)
-                        track_list = extract_tracks(probe_data)
+                        track_list = with_bcp47(extract_tracks(probe_data),
+                                                bcp47_languages(final_path, probe_data))
 
                         # The rows about to be replaced are what the stored
                         # answers and the Language Review questions are
