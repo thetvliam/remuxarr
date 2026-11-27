@@ -778,8 +778,8 @@ _FFMPEG_MATROSKA = ("FFmpeg writes a Matroska file with no regional or script "
 _MP4_HOLDS_NONE = ("an MP4 holds one list of chapters with one name each and no tag "
                    "levels, and FFmpeg writes no regional language into one: "
                    "README.md, Features, Container remuxing")
-_REVERT_REWRITES = ("a revert writes the file with FFmpeg, and its point records none "
-                    "of these: README, Reverting a processed file: Limitations worth knowing")
+_REVERT_REWRITES = ("a revert writes the file with FFmpeg, which writes none of these "
+                    "back: README, Reverting a processed file: Limitations worth knowing")
 
 # Tags every muxer rewrites, left out of check 33 as checks 26 and 30 leave
 # them out.

@@ -231,6 +231,33 @@ def bcp47_languages(path: str, probe_data: dict) -> dict[int, str] | None:
     return {t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks}
 
 
+def matroska_record(path: str, probe_data: dict) -> dict | None:
+    """
+    What a revert point records of a Matroska original that ffprobe cannot
+    see (revert.build_manifest): each track's BCP 47 language
+    (bcp47_languages), and the chapters and the tags as mkvextract writes
+    them, verbatim, so they can be written back as they were. Nothing
+    restores them yet: a revert writes the file with FFmpeg, which keeps
+    none of them. Recorded now so that a point made from here on holds what
+    a restore that does will need.
+
+    None for a file that is not Matroska, or without MKVToolNix. A part
+    that could not be read is None; chapters or tags the file does not
+    have are "".
+    """
+    if "matroska" not in ((probe_data.get("format") or {}).get("format_name") or ""):
+        return None
+    if not available():
+        return None
+
+    def extract(what: str) -> str | None:
+        r = _run([app_settings.MKVEXTRACT_PATH, path, what, "-"])
+        return r.stdout if r is not None and r.returncode == 0 else None
+
+    return {"languages": bcp47_languages(path, probe_data),
+            "chapters": extract("chapters"), "tags": extract("tags")}
+
+
 def with_bcp47(track_list: list[dict], languages: dict[int, str] | None) -> list[dict]:
     """probe.extract_tracks' list with each track's language_ietf added from
     bcp47_languages' answer (None for every track when it was unknown)."""

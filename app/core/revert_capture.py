@@ -62,6 +62,7 @@ from app.config import settings as app_settings
 from app.core.ffmpeg import (
     _CONTAINER_FORMAT, SidecarUnsupported, alignment_offsets, build_sidecar_command,
 )
+from app.core.mkvtoolnix import matroska_record
 from app.core.probe import (
     ProbeError, extract_format_info, extract_tracks, first_packet_times,
     is_faststart_mp4, probe_file, start_time,
@@ -658,10 +659,14 @@ async def capture(
             # When each stream starts, so a restore can put it back there
             # (ffmpeg.alignment_offsets).
             first_packets = await _off_loop(first_packet_times, input_path)
+            # What only MKVToolNix reads of a Matroska original: recorded
+            # for a restore that writes it back (mkvtoolnix.matroska_record).
+            matroska = await _off_loop(matroska_record, input_path, original_probe)
             manifest = build_manifest(original_probe, original_path=input_path,
                                       original_container=container,
                                       faststart=faststart,
-                                      first_packets=first_packets)
+                                      first_packets=first_packets,
+                                      matroska=matroska)
         else:
             # A later job. The manifest is NOT rebuilt from input_path —
             # that file is already a processed version, and treating it as

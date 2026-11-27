@@ -57,7 +57,8 @@ MANIFEST_VERSION = 2
 def build_manifest(probe_data: dict, *, original_path: str,
                    original_container: str | None,
                    faststart: bool | None = None,
-                   first_packets: dict[int, float] | None = None) -> dict:
+                   first_packets: dict[int, float] | None = None,
+                   matroska: dict | None = None) -> dict:
     """
     Describe a file's full stream layout, for restoring it later.
 
@@ -70,6 +71,11 @@ def build_manifest(probe_data: dict, *, original_path: str,
     it (or with it empty, ffprobe having failed) the manifest records no
     times, and a restore times the file as it did before they were
     recorded.
+
+    matroska is mkvtoolnix.matroska_record for the same file: each stream's
+    BCP 47 language, and the chapters and tags as mkvextract writes them.
+    Recorded, not yet restored (that function says why). Without it the
+    manifest has none of them, as points recorded before it do not.
     """
     streams = []
     for stream in probe_data.get("streams", []):
@@ -129,18 +135,24 @@ def build_manifest(probe_data: dict, *, original_path: str,
             # every stream back where it was (ffmpeg.alignment_offsets).
             # None for a stream with nothing in the stretch read.
             streams[-1]["first_pts"] = first_packets.get(stream.get("index"))
+        if matroska and matroska.get("languages") is not None:
+            # The stream's BCP 47 language, which ffprobe does not report:
+            # "" for none.
+            streams[-1]["language_ietf"] = matroska["languages"].get(stream.get("index"), "")
 
     manifest = {
         "version":   MANIFEST_VERSION,
         "path":      original_path,
         "container": original_container,
         "streams":   streams,
-        # Recorded, not stored in the sidecar. Chapters survive a remux
-        # (verified against the real pipeline), so a revert that rebuilds
-        # from the processed file keeps them for free; this is here so a
-        # future check can notice if that ever stops being true. Points
-        # recorded before probe_file asked for chapters hold 0 here,
-        # whatever the file had.
+        # Recorded, not stored in the sidecar. One edition's top-level
+        # chapters, one name each, survive an FFmpeg remux, and all of a
+        # Matroska's survive mkvmerge, so a revert that rebuilds from the
+        # processed file keeps those; this count is here so a check can
+        # notice if that stops being true. What FFmpeg drops (the other
+        # editions, nested chapters, other names, chapter languages) is in
+        # "matroska" below. Points recorded before probe_file asked for
+        # chapters hold 0 here, whatever the file had.
         "chapters": len(probe_data.get("chapters") or []),
         # Runtime, for identifying the file later. Two different releases
         # of the same episode can share every codec, resolution and
@@ -156,6 +168,14 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # falls back for those. Not a version bump, which would make capture
         # replace — and so discard — every existing point.
         "format_tags": dict(probe_data.get("format", {}).get("tags") or {}),
+        # A Matroska original's chapters and tags as mkvextract writes them
+        # (mkvtoolnix.matroska_record), verbatim: what a remux through
+        # FFmpeg and every revert drop. Not restored yet. Absent from points
+        # recorded before it and from any original that is not Matroska; a
+        # part that could not be read is None. Not a version bump, for the
+        # reason format_tags gives.
+        **({"matroska": {"chapters": matroska.get("chapters"), "tags": matroska.get("tags")}}
+           if matroska else {}),
         # Whether an MP4 original had its index (moov) before the media, as
         # capture read it from the file (is_faststart_mp4): a layout, so no
         # probe shows it. Restore writes it back; without it a fast-start
