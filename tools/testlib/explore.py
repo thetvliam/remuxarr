@@ -65,14 +65,13 @@ Each profile is checked against invariants instead:
  33. A Matroska original's tags that checks 26 and 30 cannot see survive:
      those at a level other than 50, those aimed at a chapter, an edition
      or an attachment, and nested ones, in any order.
-     For 31 to 33, a job written by FFmpeg loses each of these, an MP4
-     holds none but a flat list of chapters, and a revert writes with FFmpeg
-     too, all listed as accepted losses; anything else is a finding, and so
-     is any loss in a file mkvmerge wrote. The same goes after each revert
-     below, reported under these numbers, but for regions: a revert writes
-     each track's back from its point, so one lost is a finding, unless
-     mkvmerge numbers the original's tracks differently from ffprobe and
-     the point recorded none.
+     For 31 to 33, a job written by FFmpeg loses each of these and an MP4
+     holds none but a flat list of chapters, both listed as accepted
+     losses; anything else is a finding, and so is any loss in a file
+     mkvmerge wrote. After each revert below, reported under these numbers,
+     any loss is a finding: a revert writes them all back from its point,
+     unless mkvmerge numbers the original's tracks differently from
+     ffprobe, where it writes none.
  34. A Matroska output is written by mkvmerge exactly when it keeps
      something FFmpeg drops (31 to 33) and nothing stops it: a WebM, tracks
      numbered differently from ffprobe, a kept track's old language code
@@ -84,6 +83,12 @@ Each profile is checked against invariants instead:
      narrower one under it, is kept, and one of the same language with no
      matching region is dropped unless the language is listed plainly.
      Forced, answered and retagged subtitles are left out. Worked out here.
+ 36. After a revert of a Matroska original, as mkvmerge -J reads both: the
+     track UIDs, the attachments (UID, name, size, type, in any order), the
+     segment's title and its UIDs are the original's. FFmpeg gives every
+     track and attachment a new UID and makes a film-level TITLE tag the
+     title; the revert sets them back. Unless the tracks are numbered
+     unalike, as for 31 to 33.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -800,13 +805,13 @@ _FFMPEG_MATROSKA = ("FFmpeg writes a Matroska file with no regional or script "
 _MP4_HOLDS_NONE = ("an MP4 holds one list of chapters with one name each and no tag "
                    "levels, and FFmpeg writes no regional language into one: "
                    "README.md, Features, Container remuxing")
-_REVERT_REWRITES = ("a revert writes the file with FFmpeg, which writes none of these "
-                    "back: README, Reverting a processed file: Limitations worth knowing")
-# A revert writes each track's region back from its point, which records
-# them only when mkvmerge numbers the original's tracks as ffprobe does.
+# A revert writes back each track's region and UID, the attachments' UIDs,
+# the segment's title and UIDs, the chapters and the tags, from its point,
+# but nothing at all when mkvmerge numbers the tracks differently from
+# ffprobe, where a UID or a region could land on the wrong track.
 _REVERT_UNNUMBERED = ("mkvmerge numbers the original's tracks differently from ffprobe, "
-                      "so its revert point records no regional languages to write back: "
-                      "README, Reverting a processed file: Limitations worth knowing")
+                      "so the revert writes none of these back: README, Reverting a "
+                      "processed file: Limitations worth knowing")
 
 # Tags every muxer rewrites, left out of check 33 as checks 26 and 30 leave
 # them out.
@@ -860,8 +865,19 @@ def matroska_meta(path: str) -> dict | None:
                "ietf": (t.get("properties") or {}).get("language_ietf"),
                "language": (t.get("properties") or {}).get("language")}
               for t in j.get("tracks", [])]
+    props = container.get("properties") or {}
     meta = {"tracks": tracks, "chapters": None, "tags": None,
-            "writer": (container.get("properties") or {}).get("writing_application") or ""}
+            "writer": props.get("writing_application") or "",
+            # Check 36: what a revert sets back that no muxer keeps by
+            # itself. Attachments sorted, as a revert may move a cover.
+            "identity": {
+                "track UIDs": [(t.get("properties") or {}).get("uid") for t in j.get("tracks", [])],
+                "attachments": sorted(
+                    ((a.get("properties") or {}).get("uid"), a.get("file_name"), a.get("size"),
+                     a.get("content_type")) for a in j.get("attachments") or []),
+                "title": props.get("title"),
+                "segment UIDs": [props.get(k) for k in
+                                 ("segment_uid", "previous_segment_uid", "next_segment_uid")]}}
     if container.get("type") != "Matroska":
         return meta
     root = _mkv_xml(path, "chapters")
@@ -1146,16 +1162,13 @@ def numbered_alike(was: dict, info: dict) -> bool:
     return [(t["id"], names.get(t["type"])) for t in was["tracks"]] == streams
 
 
-_SAME = object()
-
-
 def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: dict,
-                     why_all: str, kept: set[int] | None, where: str,
-                     retagged: set[int] = frozenset(), why_regions=_SAME) -> None:
+                     why: str | None, kept: set[int] | None, where: str,
+                     retagged: set[int] = frozenset()) -> None:
     """Checks 31 to 33 between a Matroska original (was) and a file made
     from it (now): each kind of loss FFmpeg is known for is listed with
-    why, anything else is a finding. why_regions, given, is check 31's
-    instead (None: any loss is a finding). kept is the original's tracks the
+    why, anything else is a finding (every loss, with why None). kept is
+    the original's tracks the
     file should still hold, by id (None for all of them), and retagged those
     of them the plan gives another language."""
     tracks = [t for t in was["tracks"] if kept is None or t["id"] in kept]
@@ -1165,7 +1178,6 @@ def _matroska_checks(find, known, rel_source: str, source: str, was: dict, now: 
                 value for _, aim, name, value, _ in was["tags"]
                 if name == "TITLE" and "chapter" in aim.split("+")))),
             (33, tag_losses(was["tags"], now["tags"]))):
-        why = why_regions if check == 31 and why_regions is not _SAME else why_all
         if losses and why is None:
             find(check, source, f"lost {', '.join(losses)} {where}")
         elif losses:
@@ -2212,12 +2224,21 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             if now is None:
                 find(31, source, "mkvmerge cannot read the restored file")
             else:
-                # Regions are written back (revert_restore); the chapters
-                # and the tags are not yet.
+                # All written back (revert_restore), so any loss is a
+                # finding, unless the tracks are numbered unalike.
+                why = None if numbered_alike(was, original) else _REVERT_UNNUMBERED
                 _matroska_checks(find, known, rel(source), source, was, now,
-                                 _REVERT_REWRITES, None, "after the revert",
-                                 why_regions=(None if numbered_alike(was, original)
-                                              else _REVERT_UNNUMBERED))
+                                 why, None, "after the revert")
+                # 36. And the UIDs and the segment's title, as they were.
+                for name, was_value in (was.get("identity") or {}).items():
+                    now_value = (now.get("identity") or {}).get(name)
+                    if now_value == was_value:
+                        continue
+                    if why:
+                        known.append({"file": rel(source), "lost": name, "why": why})
+                    else:
+                        find(36, source, f"{name} after the revert are {now_value}, "
+                                         f"were {was_value}")
 
     for rec in collect.records[first_record:]:
         if rec["exception"]:

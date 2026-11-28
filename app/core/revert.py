@@ -73,9 +73,9 @@ def build_manifest(probe_data: dict, *, original_path: str,
     recorded.
 
     matroska is mkvtoolnix.matroska_record for the same file: each stream's
-    BCP 47 language, and the chapters and tags as mkvextract writes them.
-    The languages are written back by a revert; the chapters and tags are
-    not restored yet (that function says why). Without it the
+    BCP 47 language and UID, the attachments' UIDs, the segment's title and
+    UIDs, and the chapters and tags as mkvextract writes them, all of which
+    a revert writes back (mkvtoolnix.write_matroska_record). Without it the
     manifest has none of them, as points recorded before it do not.
     """
     streams = []
@@ -140,6 +140,10 @@ def build_manifest(probe_data: dict, *, original_path: str,
             # The stream's BCP 47 language, which ffprobe does not report:
             # "" for none.
             streams[-1]["language_ietf"] = matroska["languages"].get(stream.get("index"), "")
+        if matroska and (matroska.get("track_uids") or {}).get(stream.get("index")):
+            # The track's UID, which its tags aim at: FFmpeg gives a
+            # restored track a new one (mkvtoolnix.write_matroska_record).
+            streams[-1]["uid"] = matroska["track_uids"][stream.get("index")]
 
     manifest = {
         "version":   MANIFEST_VERSION,
@@ -169,13 +173,19 @@ def build_manifest(probe_data: dict, *, original_path: str,
         # falls back for those. Not a version bump, which would make capture
         # replace — and so discard — every existing point.
         "format_tags": dict(probe_data.get("format", {}).get("tags") or {}),
-        # A Matroska original's chapters and tags as mkvextract writes them
-        # (mkvtoolnix.matroska_record), verbatim: what a remux through
-        # FFmpeg and every revert drop. Not restored yet. Absent from points
-        # recorded before it and from any original that is not Matroska; a
-        # part that could not be read is None. Not a version bump, for the
-        # reason format_tags gives.
-        **({"matroska": {"chapters": matroska.get("chapters"), "tags": matroska.get("tags")}}
+        # A Matroska original's chapters and tags as mkvextract writes them,
+        # verbatim, its attachments' UIDs (each with the name, size and type
+        # a restore finds it by) and its segment's title and UIDs
+        # (mkvtoolnix.matroska_record): what a remux through FFmpeg drops or
+        # changes, and a revert writes back (write_matroska_record). Absent
+        # from points recorded before it and from any original that is not
+        # Matroska; a part that could not be read is None. Points recorded
+        # before the attachments and the segment's properties were hold
+        # chapters and tags only. Not a version bump, for the reason
+        # format_tags gives.
+        **({"matroska": {"chapters": matroska.get("chapters"), "tags": matroska.get("tags"),
+                         "attachments": matroska.get("attachments"),
+                         "info": matroska.get("info")}}
            if matroska else {}),
         # Whether an MP4 original had its index (moov) before the media, as
         # capture read it from the file (is_faststart_mp4): a layout, so no

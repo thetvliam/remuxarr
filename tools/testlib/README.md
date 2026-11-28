@@ -212,16 +212,14 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     of a tag aimed at that chapter, which it shows as the chapter's name)
     and no chapter language, and no tag at another level. A job whose
     output FFmpeg wrote (check 34 says when that is right) lists each of
-    those losses as an accepted loss, as do a conversion to MP4, which holds
-    a flat list of chapters and no tag levels, and a revert, which writes
-    with FFmpeg too (the root README's revert limitations), but for
-    regions: a revert writes each track's back with mkvpropedit from its
-    point, so a region lost after a revert is a finding, unless mkvmerge
-    numbers the original's tracks differently from ffprobe and the point
-    recorded none. Anything else is a finding: a chapter that moved, one
-    shown under a name it never had, a tag or a region that appeared, and
-    any loss at all in a file mkvmerge wrote. The same checks run after
-    each revert.
+    those losses as an accepted loss, as does a conversion to MP4, which
+    holds a flat list of chapters and no tag levels. Anything else is a
+    finding: a chapter that moved, one shown under a name it never had, a
+    tag or a region that appeared, and any loss at all in a file mkvmerge
+    wrote. The same checks run after each revert, where every loss is a
+    finding: a revert writes the regions, the chapters and the tags back
+    with mkvpropedit from its point, unless mkvmerge numbers the original's
+    tracks differently from ffprobe, where it writes none.
 34. A Matroska output is written by mkvmerge exactly when it should be: when
     it keeps something FFmpeg drops (any of 31 to 33's losses, but a
     chapter's language alone) and nothing stops it. What stops it, as the
@@ -241,6 +239,13 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     listed plainly. Forced subtitles (by flag or title), answered ones and
     ones the plan gives a language are left out, since other rules decide
     those.
+36. After a revert of a Matroska original, as `mkvmerge -J` reads both, the
+    track UIDs, the attachments (UID, name, size and type, in any order),
+    the segment's title and its UIDs are the original's. FFmpeg gives every
+    track and attachment a new UID, which a tag aimed at one names, and
+    makes a film-level TITLE tag the segment's title; the revert sets them
+    back (`mkvtoolnix.write_matroska_record`). Unless the tracks are
+    numbered unalike, as for 31 to 33.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its

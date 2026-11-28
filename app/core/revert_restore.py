@@ -64,7 +64,7 @@ from app.core.ffmpeg import (
     copy_cover_out,
     restore_layout,
 )
-from app.core.mkvtoolnix import bcp47_languages, with_bcp47, write_languages
+from app.core.mkvtoolnix import RecordToWrite, bcp47_languages, with_bcp47, write_matroska_record
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
                             first_packet_times, rebuilt_track_indices,
                             extract_tracks, probe_file, start_time)
@@ -566,26 +566,38 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
         logger.warning("Revert point %d stopped: %s", point_id, detail)
         return f"{detail}. Nothing was changed."
 
-    # Each track's BCP 47 language, which FFmpeg writes none of, put back
-    # into the finished file before it is staged: an es-419 subtitle came
-    # back plain Spanish, and a Keep Subtitle Languages entry of es-419
-    # then matched nothing, so the next job dropped the very track the
-    # first one kept. The restored file holds the streams in the order the
-    # layout maps them, so stream k is the k-th mapped; a cover attached
-    # again carries no language. Points recorded before the languages were
-    # have none to put back.
-    languages = {k: s["language_ietf"]
-                 for k, (s, _where) in enumerate(layout.mapped)
-                 if s.get("language_ietf")}
+    # What FFmpeg changed or dropped of a Matroska original, put back into
+    # the finished file before it is staged (mkvtoolnix.write_matroska_record
+    # says what and how): each track's BCP 47 language (an es-419 subtitle
+    # came back plain Spanish, and a Keep Subtitle Languages entry of es-419
+    # then matched nothing, so the next job dropped the very track the first
+    # one kept) and UID, the attachments' UIDs, the segment's title and
+    # UIDs, the chapters (one edition, flattened, came back) and the tags.
+    # The restored file holds the streams in the order the layout maps them,
+    # so stream k is the k-th mapped; a cover attached again is found by its
+    # name, size and type. Points recorded before each part was have none of
+    # it to put back.
+    record = plan.manifest.get("matroska") or {}
+    mapped = [s for s, _where in layout.mapped]
+    uids = {k: s["uid"] for k, s in enumerate(mapped) if s.get("uid")}
+    to_write = RecordToWrite(
+        languages={k: s["language_ietf"] for k, s in enumerate(mapped) if s.get("language_ietf")},
+        track_uids=uids or None,
+        attachments=record.get("attachments"),
+        info=record.get("info"),
+        chapters=record.get("chapters"),
+        tags=record.get("tags"),
+    )
+    anything = (to_write.languages or to_write.track_uids or record) and layout.out_fmt == "matroska"
 
-    async def put_back_languages() -> str | None:
+    async def put_back_matroska() -> str | None:
         try:
             restored = await asyncio.get_running_loop().run_in_executor(
                 None, probe_file, temp_output, app_settings.FFPROBE_PATH)
         except ProbeError:
             return None
         problem = await asyncio.get_running_loop().run_in_executor(
-            None, write_languages, temp_output, restored, languages)
+            None, write_matroska_record, temp_output, restored, to_write)
         if problem:
             logger.warning("Revert point %d stopped: %s", point_id, problem)
             return f"{problem}. Nothing was changed."
@@ -602,7 +614,7 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
             stderr_tail_lines=30,
             timeout_seconds=timeout_seconds,
             timeout_label="Revert",
-            before_staging=put_back_languages if languages else None,
+            before_staging=put_back_matroska if anything else None,
             before_swap=unchanged,
             # The processed file's, which is the original's for any file a
             # job has written since jobs kept it. Capture records no owner,

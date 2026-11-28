@@ -260,7 +260,7 @@ def test_a_job_stores_the_regions_of_what_it_wrote(rig):
 
 def test_a_revert_stores_the_regions_of_what_it_restored(rig):
     """A revert writes with FFmpeg, which writes no region, then writes back
-    the ones its point recorded (mkvtoolnix.write_languages) before the file
+    the ones its point recorded (mkvtoolnix.write_matroska_record) before the file
     is swapped in: the restored file's tracks are stored with those, the
     German track's included, though the job dropped it."""
     from app.core.revert_restore import restore_revert_point

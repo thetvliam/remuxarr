@@ -6,7 +6,7 @@ them, verbatim.
 
 A revert writes the file with FFmpeg, which keeps none of them, then puts
 each track's BCP 47 language back with mkvpropedit
-(mkvtoolnix.write_languages): without it an es-419 subtitle came back plain
+(mkvtoolnix.write_matroska_record): without it an es-419 subtitle came back plain
 Spanish, a Keep Subtitle Languages entry of es-419 matched nothing, and the
 next job dropped the track the first one kept. The chapters and the tags
 are not restored yet (the root README's revert limitations): the restore
@@ -122,7 +122,11 @@ def test_the_manifest_holds_the_record(tmp_path):
                               matroska=record)
 
     assert [s.get("language_ietf") for s in manifest["streams"]] == ["", "en-GB", "de-AT"]
-    assert manifest["matroska"] == {"chapters": record["chapters"], "tags": record["tags"]}
+    assert [s.get("uid") for s in manifest["streams"]] == [
+        record["track_uids"][i] for i in range(3)]
+    assert manifest["matroska"] == {"chapters": record["chapters"], "tags": record["tags"],
+                                    "attachments": [], "info": record["info"]}
+    assert record["info"]["title"] == "A Film" and record["info"]["segment_uid"]
 
 
 def test_a_manifest_without_a_record_has_none_of_it(tmp_path):
@@ -131,7 +135,7 @@ def test_a_manifest_without_a_record_has_none_of_it(tmp_path):
     path = _original(tmp_path / "Film.mkv")
     manifest = build_manifest(_probe(path), original_path=str(path), original_container="mkv")
     assert "matroska" not in manifest
-    assert not any("language_ietf" in s for s in manifest["streams"])
+    assert not any("language_ietf" in s or "uid" in s for s in manifest["streams"])
 
 
 def test_a_job_records_the_original_not_what_it_wrote(rig):
@@ -179,6 +183,14 @@ def _languages(path):
     return mkv.bcp47_languages(str(path), _probe(path))
 
 
+def _write_languages(path, probe, languages):
+    """write_matroska_record with languages only, as a point recorded
+    before the UIDs were would give it."""
+    return mkv.write_matroska_record(path, probe, mkv.RecordToWrite(
+        languages=languages, track_uids=None, attachments=None, info=None,
+        chapters=None, tags=None))
+
+
 def _failing(tmp_path, code):
     """A stand-in mkvpropedit that says why and exits with code."""
     script = tmp_path / f"mkvpropedit-{code}"
@@ -215,7 +227,7 @@ def test_a_failed_write_stops_the_revert_and_changes_nothing(rig, tmp_path, monk
     monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 2))
     outcome = _revert(point_id)
     assert not outcome.success
-    assert "mkvpropedit could not write the tracks' BCP 47 languages" in outcome.error
+    assert "mkvpropedit could not write the original's Matroska properties back" in outcome.error
     assert "could not be opened" in outcome.error
     assert outcome.error.endswith("Nothing was changed.")
     assert source.read_bytes() == processed
@@ -227,7 +239,7 @@ def test_a_warning_from_mkvpropedit_is_not_a_failure(tmp_path, monkeypatch):
     """mkvpropedit exits 1 when it made the change but has a warning."""
     path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng",))
     monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 1))
-    assert mkv.write_languages(str(path), _probe(path), {1: "en-GB"}) is None
+    assert _write_languages(str(path), _probe(path), {1: "en-GB"}) is None
 
 
 def test_a_track_that_already_has_its_language_is_left_alone(tmp_path, monkeypatch):
@@ -235,7 +247,7 @@ def test_a_track_that_already_has_its_language_is_left_alone(tmp_path, monkeypat
     stops it."""
     path = _original(tmp_path / "Film.mkv")
     monkeypatch.setattr(app_settings, "MKVPROPEDIT_PATH", _failing(tmp_path, 2))
-    assert mkv.write_languages(str(path), _probe(path), {1: "en-GB", 2: "de-AT"}) is None
+    assert _write_languages(str(path), _probe(path), {1: "en-GB", 2: "de-AT"}) is None
 
 
 def test_tracks_numbered_differently_are_given_none(tmp_path):
@@ -243,11 +255,11 @@ def test_tracks_numbered_differently_are_given_none(tmp_path):
     path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng", "ger"))
     probe = _probe(path)
     probe["streams"][1]["index"], probe["streams"][2]["index"] = 2, 1
-    assert mkv.write_languages(str(path), probe, {1: "en-GB", 2: "de-AT"}) is None
+    assert _write_languages(str(path), probe, {1: "en-GB", 2: "de-AT"}) is None
     assert _languages(path) == {0: "", 1: "", 2: ""}
 
 
 def test_only_the_tracks_given_one_are_changed(tmp_path):
     path = _kt._file(tmp_path / "Film.mkv", "matroska", audio=("eng", "ger"))
-    assert mkv.write_languages(str(path), _probe(path), {2: "de-CH"}) is None
+    assert _write_languages(str(path), _probe(path), {2: "de-CH"}) is None
     assert _languages(path) == {0: "", 1: "", 2: "de-CH"}

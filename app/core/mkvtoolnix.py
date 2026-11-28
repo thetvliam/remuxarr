@@ -37,8 +37,8 @@ benefits counts on its own.
 
 This module decides and builds the command; ffmpeg.plan_mkvmerge and
 _run_mkvmerge put it in a job's path, with FFmpeg behind it. It also puts a
-reverted file's BCP 47 languages back with mkvpropedit (write_languages),
-which edits the track headers in place and leaves the old codes alone.
+reverted file's Matroska properties back with mkvpropedit
+(write_matroska_record), which edits the headers in place.
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ import struct
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 from app.config import settings as app_settings
 
@@ -212,16 +212,15 @@ def bcp47_languages(path: str, probe_data: dict) -> dict[int, str] | None:
     """
     if "matroska" not in ((probe_data.get("format") or {}).get("format_name") or ""):
         return {}
-    tracks = _tracks_as_probed(path, probe_data)
+    tracks = _tracks_as_probed(path, probe_data, _identify(path))
     if tracks is None:
         return None
     return {t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks}
 
 
-def _tracks_as_probed(path: str, probe_data: dict) -> list[dict] | None:
-    """mkvmerge -J's tracks of a Matroska file, each one's id being its
-    ffprobe stream index. None without mkvmerge, for a failed read, and when
-    mkvmerge numbers the tracks differently from ffprobe."""
+def _identify(path: str) -> dict | None:
+    """mkvmerge -J of a Matroska file; None without mkvmerge, for a failed
+    read, and for anything mkvmerge does not read as Matroska."""
     if not shutil.which(app_settings.MKVMERGE_PATH):
         return None
     r = _run([app_settings.MKVMERGE_PATH, "-J", path])
@@ -230,6 +229,16 @@ def _tracks_as_probed(path: str, probe_data: dict) -> list[dict] | None:
     except ValueError:
         identified = None
     if not identified or (identified.get("container") or {}).get("type") != "Matroska":
+        return None
+    return identified
+
+
+def _tracks_as_probed(path: str, probe_data: dict, identified: dict | None) -> list[dict] | None:
+    """mkvmerge -J's tracks of a Matroska file (identified, from _identify),
+    each one's id being its ffprobe stream index. None when there is no
+    identification, and when mkvmerge numbers the tracks differently from
+    ffprobe."""
+    if identified is None:
         return None
     names = {"video": "video", "audio": "audio", "subtitles": "subtitle"}
     tracks = identified.get("tracks", [])
@@ -243,38 +252,161 @@ def _tracks_as_probed(path: str, probe_data: dict) -> list[dict] | None:
     return tracks
 
 
-def write_languages(path: str, probe_data: dict, languages: dict[int, str]) -> str | None:
+class RecordToWrite(NamedTuple):
     """
-    Give each track of a Matroska file the BCP 47 language in `languages`
-    (by ffprobe's stream index), in place, with mkvpropedit. A revert writes
-    the file with FFmpeg, which writes none, and puts back the ones the
-    revert point recorded this way (revert_restore). mkvpropedit edits the
-    track headers only: the old language code FFmpeg wrote is left as it is.
+    What a revert writes back into the file it restored (revert_restore),
+    from the revert point's record: by the restored file's stream index,
+    each track's BCP 47 language and its UID; the attachments' UIDs, each
+    with its name, size and type to find it by; the segment's title and
+    UIDs; the chapters and the tags as mkvextract wrote them. None for a
+    part the point did not record: points from before UIDs were recorded
+    have languages, chapters and tags only.
+    """
+    languages: dict[int, str]
+    track_uids: dict[int, int] | None
+    attachments: list[dict] | None
+    info: dict | None
+    chapters: str | None
+    tags: str | None
 
-    None when they were written, or when none could be: no mkvpropedit or
-    mkvmerge, or tracks mkvmerge numbers differently from ffprobe, where a
+
+# The segment's own properties, as mkvmerge -J names them and as
+# mkvpropedit sets them.
+_SEGMENT_PROPERTIES = (("title", "title"), ("segment_uid", "segment-uid"),
+         ("previous_segment_uid", "prev-uid"), ("next_segment_uid", "next-uid"))
+
+
+def write_matroska_record(path: str, probe_data: dict, record: RecordToWrite) -> str | None:
+    """
+    Write back, in place, with mkvpropedit, what FFmpeg changed or dropped
+    of a Matroska original a revert rebuilt: each track's BCP 47 language
+    and UID, each attachment's UID, the segment's title and UIDs, the
+    chapters and the tags. Measured on every Matroska file in the test
+    library: chapters, tags, track UIDs, attachments and the segment's
+    properties then match the original's exactly. Header edits only, the
+    file's media untouched.
+
+    The UIDs are what tags aim at: FFmpeg gives every track and attachment
+    a new one, so tags written back without them would aim at nothing. And
+    FFmpeg turns a film-level TITLE tag into the segment's title, so the
+    title is set back, or removed when the original had none.
+
+    Chapters or tags already as recorded are not written: mkvpropedit gives
+    an edition with no UID one, and FFmpeg's own copy is exact for an
+    FFmpeg-made original's chapters. mkvpropedit adds a BCP 47 code beside
+    every old one it writes unless told not to, and then drops those that
+    were there, so the tags, whose existing codes survive it, are written
+    in a pass of their own with --disable-language-ietf, and the chapters
+    with it only when they carry no BCP 47 code. A point without UIDs
+    writes no tag or chapter aimed at a track or attachment, which would
+    aim at nothing: FFmpeg's stay.
+
+    None when written, or when nothing could be: no mkvpropedit or mkvmerge,
+    or tracks mkvmerge numbers differently from ffprobe, where a UID or a
     language could land on the wrong track. Such a file keeps what FFmpeg
-    wrote, as every revert did before. The message when mkvpropedit failed.
+    wrote. The message when mkvpropedit failed.
     """
     if not shutil.which(app_settings.MKVPROPEDIT_PATH):
-        logger.warning("No mkvpropedit, so %s keeps no BCP 47 languages", path)
+        logger.warning("No mkvpropedit, so %s keeps what FFmpeg wrote of its "
+                       "Matroska properties", path)
         return None
-    tracks = _tracks_as_probed(path, probe_data)
+    identified = _identify(path)
+    tracks = _tracks_as_probed(path, probe_data, identified)
     if tracks is None:
         return None
-    edits = []
+
+    edits: list[str] = []
     for t in tracks:
         properties = t.get("properties") or {}
-        tag = languages.get(t["id"])
+        sets = []
+        uid = (record.track_uids or {}).get(t["id"])
+        if uid and properties.get("uid") != uid:
+            sets += ["--set", f"track-uid={uid}"]
+        tag = record.languages.get(t["id"])
         if tag and properties.get("language_ietf") != tag:
-            edits += ["--edit", f"track:@{properties['number']}", "--set", f"language-ietf={tag}"]
-    if not edits:
-        return None
-    r = _run([app_settings.MKVPROPEDIT_PATH, path, *edits])
-    # 1 is a warning: the change was made.
-    if r is None or r.returncode not in (0, 1):
-        detail = "it could not be run" if r is None else (r.stdout + r.stderr).strip()[-300:]
-        return f"mkvpropedit could not write the tracks' BCP 47 languages: {detail}"
+            sets += ["--set", f"language-ietf={tag}"]
+        if sets:
+            edits += ["--edit", f"track:@{properties['number']}", *sets]
+
+    if record.attachments is not None:
+        # Each attachment's MIME type as the file holds it, which ffprobe
+        # reads in the same order mkvmerge lists them (covers among them).
+        # mkvpropedit writes the type of an attachment it updates in its
+        # modern form (font/ttf for application/x-truetype-font), which
+        # FFmpeg does not know, unless it is given the type to keep.
+        held = [(st.get("tags") or {}).get("mimetype") for st in probe_data.get("streams", [])
+                if st.get("codec_type") == "attachment"
+                or ((st.get("disposition") or {}).get("attached_pic")
+                    and (st.get("tags") or {}).get("filename"))]
+        found = identified.get("attachments") or []
+        wanted = list(record.attachments)
+        for n, a in enumerate(found if len(held) == len(found) else [], 1):
+            key = (a.get("file_name"), a.get("size"), a.get("content_type"))
+            match = next((w for w in wanted if (w["name"], w["size"], w["type"]) == key), None)
+            if match is None:
+                continue
+            wanted.remove(match)
+            if (a.get("properties") or {}).get("uid") != match["uid"]:
+                edits += ["--attachment-uid", str(match["uid"])]
+                if held[n - 1]:
+                    edits += ["--attachment-mime-type", held[n - 1]]
+                edits += ["--update-attachment", str(n)]
+
+    if record.info is not None:
+        now = identified.get("container", {}).get("properties") or {}
+        info = []
+        for key, name in _SEGMENT_PROPERTIES:
+            if now.get(key) == record.info.get(key):
+                continue
+            info += (["--set", f"{name}={record.info[key]}"] if record.info.get(key)
+                     else ["--delete", name])
+        if info:
+            edits += ["--edit", "info", *info]
+
+    def aims_without_uids(xml: str) -> bool:
+        return record.track_uids is None and any(
+            f"<{element}>" in xml for element in ("TrackUID", "AttachmentUID", "ChapterTrack"))
+
+    def changed(what: str, xml: str | None) -> bool:
+        if xml is None or aims_without_uids(xml):
+            return False
+        r = _run([app_settings.MKVEXTRACT_PATH, path, what, "-"])
+        return r is None or r.returncode != 0 or r.stdout != xml
+
+    written: list[str] = []
+
+    def xml_file(what: str, xml: str) -> str:
+        if not xml:
+            return ""
+        name = f"{path}.{what}.xml"
+        with open(name, "w", encoding="utf-8") as f:
+            f.write(xml)
+        written.append(name)
+        return name
+
+    try:
+        first = [app_settings.MKVPROPEDIT_PATH, path]
+        if changed("chapters", record.chapters):
+            if record.chapters and "<ChapLanguageIETF>" not in record.chapters:
+                first.append("--disable-language-ietf")
+            edits += ["--chapters", xml_file("chapters", record.chapters)]
+        passes = [first + edits] if edits else []
+        if changed("tags", record.tags):
+            passes.append([app_settings.MKVPROPEDIT_PATH, path, "--disable-language-ietf",
+                           "--tags", f"all:{xml_file('tags', record.tags)}"])
+        for cmd in passes:
+            r = _run(cmd)
+            # 1 is a warning: the change was made.
+            if r is None or r.returncode not in (0, 1):
+                detail = ("it could not be run" if r is None
+                          else (r.stdout + r.stderr).strip()[-300:])
+                return f"mkvpropedit could not write the original's Matroska properties back: {detail}"
+    finally:
+        for name in written:
+            try:
+                os.remove(name)
+            except OSError:
+                pass
     return None
 
 
@@ -283,11 +415,12 @@ def matroska_record(path: str, probe_data: dict) -> dict | None:
     What a revert point records of a Matroska original that ffprobe cannot
     see (revert.build_manifest): each track's BCP 47 language
     (bcp47_languages), and the chapters and the tags as mkvextract writes
-    them, verbatim, so they can be written back as they were. A revert
-    writes the file with FFmpeg, which keeps none of them, then writes the
-    languages back (write_languages). The chapters and the tags are not
-    restored yet: recorded so that a point made from here on holds what a
-    restore that does will need.
+    them, verbatim, so they can be written back as they were; each track's
+    and attachment's UID, which tags aim at; and the segment's title and
+    UIDs. A revert writes the file with FFmpeg, which keeps none of them,
+    then writes them back (write_matroska_record). A part that could not be
+    read is None, and so are the languages and the track UIDs of tracks
+    mkvmerge numbers differently from ffprobe.
 
     None for a file that is not Matroska, or without MKVToolNix. A part
     that could not be read is None; chapters or tags the file does not
@@ -302,8 +435,23 @@ def matroska_record(path: str, probe_data: dict) -> dict | None:
         r = _run([app_settings.MKVEXTRACT_PATH, path, what, "-"])
         return r.stdout if r is not None and r.returncode == 0 else None
 
-    return {"languages": bcp47_languages(path, probe_data),
-            "chapters": extract("chapters"), "tags": extract("tags")}
+    identified = _identify(path)
+    tracks = _tracks_as_probed(path, probe_data, identified)
+    return {
+        "languages": None if tracks is None else {
+            t["id"]: (t.get("properties") or {}).get("language_ietf") or "" for t in tracks},
+        # What tags aim at, and the segment FFmpeg retitles: see
+        # write_matroska_record.
+        "track_uids": None if tracks is None else {
+            t["id"]: (t.get("properties") or {}).get("uid") for t in tracks},
+        "attachments": None if identified is None else [
+            {"uid": (a.get("properties") or {}).get("uid"), "name": a.get("file_name"),
+             "size": a.get("size"), "type": a.get("content_type")}
+            for a in identified.get("attachments") or []],
+        "info": None if identified is None else {
+            key: (identified.get("container", {}).get("properties") or {}).get(key)
+            for key, _name in _SEGMENT_PROPERTIES},
+        "chapters": extract("chapters"), "tags": extract("tags")}
 
 
 def with_bcp47(track_list: list[dict], languages: dict[int, str] | None) -> list[dict]:
