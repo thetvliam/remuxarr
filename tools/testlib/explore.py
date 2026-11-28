@@ -79,16 +79,27 @@ Each profile is checked against invariants instead:
      on which mkvmerge exits 1 and the job goes back to FFmpeg. Worked out
      here, not taken from the app.
  35. In a profile whose Keep Subtitle Languages has an entry with a region
-     or script (the fixed profile r01), a subtitle with that region, or a
-     narrower one under it, is kept, and one of the same language with no
-     matching region is dropped unless the language is listed plainly.
-     Forced, answered and retagged subtitles are left out. Worked out here.
+     or script (the fixed profiles r01 and r02), a subtitle with that
+     region, or a narrower one under it, is kept, and one of the same
+     language with no matching region is dropped unless the language is
+     listed plainly. One whose file records no BCP 47 language for it is
+     kept when an entry is in its language. Forced, answered and retagged
+     subtitles are left out. Worked out here.
  36. After a revert of a Matroska original, as mkvmerge -J reads both: the
      track UIDs, the attachments (UID, name, size, type, in any order), the
      segment's title and its UIDs are the original's. FFmpeg gives every
      track and attachment a new UID and makes a film-level TITLE tag the
      title; the revert sets them back. Unless the tracks are numbered
      unalike, as for 31 to 33.
+ 37. An MP4 made from a Matroska holds the Matroska's show (TITLE at 70),
+     season (PART_NUMBER at 60), episode (PART_NUMBER at 50, as the track
+     number too, never the season's), release date (DATE_RELEASED at 50)
+     and, where FFmpeg writes none, title, under the MP4's own names, from
+     the file-level tags in no language. Check 30 counts those as kept
+     there. Worked out from mkvextract's tags here.
+ 38. A chapter named in several languages, in a file FFmpeg wrote, carries
+     the name in the first language Keep Audio then Keep Subtitle Languages
+     names that it has, or its first name. Worked out here.
 
 Every question is answered as the profile's runner choices say, through
 the app's own route functions: after the scan and after each queue run,
@@ -330,12 +341,20 @@ def _pairwise_profiles() -> list[dict]:
 
 
 # Profiles run as well as the pairwise ones, for a combination pairwise
-# cannot reach without growing every profile. r01 keeps by region (check
+# cannot reach without growing every profile. r02 is r01 converting to MP4.
+# r01 keeps by region (check
 # 35): English from Britain and Latin American Spanish, in Matroska, with
 # subtitles left in the file so the plan says what each one's fate was.
 # Adding a regional value to VARIED instead would rebuild every profile.
 FIXED_PROFILES = {
     "r01": {"prefer_mp4_container": False, "extract_text_subtitles_to_srt": False,
+            "keep_audio_languages": ["en-GB"], "keep_subtitle_languages": ["en-GB", "es-419"],
+            "revert_enabled": True},
+    # r02 converts to MP4, which holds no region: two tracks kept for their
+    # region come back plain, and a rescan must still keep both (check 7,
+    # file 42). Subtitles extracted, as a kept text subtitle holds a file
+    # in Matroska.
+    "r02": {"prefer_mp4_container": True, "extract_text_subtitles_to_srt": True,
             "keep_audio_languages": ["en-GB"], "keep_subtitle_languages": ["en-GB", "es-419"],
             "revert_enabled": True},
 }
@@ -745,18 +764,23 @@ def own_tags(info: dict) -> dict:
     return {k: v for k, v in tags.items() if k.lower() not in _FILE_TAGS_NOT_COMPARED}
 
 
-def lost_own_tags(before: dict, after: dict, whole_seconds: bool = False) -> list[str]:
+def lost_own_tags(before: dict, after: dict, whole_seconds: bool = False,
+                  moved: dict | None = None) -> list[str]:
     """
     The own tags of the file `before` that `after` lacks or holds another
     value for, by `before`'s names, in order. Names match ignoring case, as
     a Matroska stores them in capitals and an MP4 in lower case. With
     whole_seconds the date the file says it was made counts as kept in the
-    same second, as an MP4 holds it in whole seconds.
+    same second, as an MP4 holds it in whole seconds. moved names a tag an
+    MP4 holds under its own name (mp4_tag_expectations): kept there.
     """
     now = {k.lower(): v for k, v in own_tags(after).items()}
 
     def kept(name: str, value) -> bool:
         if now.get(name) == value:
+            return True
+        to = (moved or {}).get((name, value))
+        if to is not None and now.get(to[0]) == to[1]:
             return True
         return (whole_seconds and name == "creation_time"
                 and _to_the_second(value) is not None
@@ -1106,6 +1130,99 @@ def expected_muxer(was: dict, info_before: dict, kept: set[int], retagged: set[i
     return True, f"mkvmerge keeps its {', '.join(gains)} and nothing stops it"
 
 
+def mp4_tag_expectations(path: str, own_title: str | None) -> tuple[dict, dict]:
+    """
+    Checks 30 and 37, worked out from mkvextract's tags here, not taken
+    from app/core/mkvtoolnix.py: what an MP4 made from a Matroska holds of
+    its own file-level tags in no language (TagLanguage und or none), by
+    their levels. The show is TITLE at 70; the season PART_NUMBER at 60
+    and, with a show or a season, the episode PART_NUMBER at 50, each a
+    number, the episode also the track number (none with a season and no
+    episode); the date DATE_RELEASED at 50; and the title TITLE at 50 when
+    it names its level (EPISODE) and the file has no title of its own.
+    Returns (MP4 key: value, None for none), and for each source tag held
+    under another key, (its name as ffprobe shows it on the source,
+    lower-cased, its value): (that key, the value there). Each moved key
+    also comes as (level, name, value), for check 33.
+    """
+    root = _mkv_xml(path, "tags")
+    own = []
+    for tag in [] if root is None else root.findall("Tag"):
+        targets = tag.find("Targets")
+        if targets is not None and any(c.tag.endswith("UID") for c in targets):
+            continue
+        level = (targets.findtext("TargetTypeValue") if targets is not None else None) or "50"
+        kind = (targets.findtext("TargetType") if targets is not None else None) or None
+        for simple in tag.findall("Simple"):
+            value = simple.findtext("String") or ""
+            if (simple.find("Simple") is not None or not value.strip()
+                    or (simple.findtext("TagLanguage") or "und") != "und"):
+                continue
+            own.append((level, kind, simple.findtext("Name") or "", value))
+
+    def first(level, name, digits=False):
+        found = next((o for o in own if o[0] == level and o[2] == name), None)
+        return None if found is None or (digits and not found[3].strip().isdigit()) else found
+
+    def shown(o):
+        return (f"{o[1]}/{o[2]}" if o[1] else ("track" if o[2] == "PART_NUMBER" else o[2])).lower()
+
+    show, season = first("70", "TITLE"), first("60", "PART_NUMBER", True)
+    episode, title = first("50", "PART_NUMBER", True), first("50", "TITLE")
+    series = show is not None or season is not None
+    pairs = [(show, "show"), (season, "season_number"), (first("50", "DATE_RELEASED"), "date")]
+    if title is not None and title[1] and not own_title:
+        pairs.append((title, "title"))
+    if series:
+        pairs += [(episode, "episode_sort"), (episode, "track")]
+    expected, moved = {}, {}
+    for o, key in pairs:
+        if o is None:
+            continue
+        value = str(int(o[3])) if key in ("season_number", "episode_sort", "track") else o[3]
+        expected[key] = value
+        moved.setdefault((shown(o), o[3]), (key, value))
+        moved.setdefault((o[0], o[2], o[3]), (key, value))
+    if series and episode is None:
+        expected["track"] = None
+    return expected, moved
+
+
+def chapter_name_problems(was_chapters: list[dict], chapters: list[dict],
+                          preferred: list[str], canonical) -> list[str]:
+    """
+    Check 38, worked out here: each chapter FFmpeg wrote (chapters,
+    ffprobe's) whose chapter in the original's default edition, found by
+    its start, has names in several languages, carries the first name in
+    the first of the preferred languages it has, or its first name. A name
+    with no language counts as English, as Matroska reads it.
+    """
+    main = next((e for e in was_chapters if e["default"]), was_chapters[0] if was_chapters else None)
+
+    def seconds(hms):
+        h, m, sec = (hms or "0:0:0").split(":")
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+
+    atoms = [(seconds(a["start"]), a["names"]) for a in (main["atoms"] if main else [])]
+    problems = []
+    for n, chapter in enumerate(chapters):
+        start = float(chapter.get("start_time") or 0)
+        names = next((ns for at, ns in atoms if abs(at - start) < 0.001), [])
+        if len(names) < 2:
+            continue
+
+        def language(legacy, ietf):
+            return canonical((ietf or "").split("-")[0] or
+                             (legacy if legacy not in (None, "und") else "") or "eng")
+        want = next((name for lang in preferred for name, legacy, ietf in names
+                     if language(legacy, ietf) == lang), names[0][0])
+        got = (chapter.get("tags") or {}).get("title")
+        if got != want:
+            problems.append(f"chapter {n} is named {got!r}, not {want!r}, the name in "
+                            f"the first language kept of {[nm for nm, _, _ in names]}")
+    return problems
+
+
 def regional_keep_problems(was: dict, info_before: dict, by_stream: dict, cfg: dict,
                            canonical, answers: dict) -> list[str]:
     """
@@ -1113,9 +1230,11 @@ def regional_keep_problems(was: dict, info_before: dict, by_stream: dict, cfg: d
     Languages (es-419), a subtitle whose BCP 47 language is that entry, or a
     narrower tag under it, is kept (or extracted), and one of the same
     language whose region matches no entry is dropped, unless its language
-    is in the list plainly. Worked out here, not taken from the app.
-    Forced, answered, retagged and untagged tracks are left out: other
-    rules keep those.
+    is in the list plainly. A subtitle whose file records no BCP 47
+    language for it (none, or und) is kept when an entry is in its
+    language, as the file does not say where it is from. Worked out here,
+    not taken from the app. Forced, answered and retagged tracks, and ones
+    of no language, are left out: other rules keep those.
     """
     entries = cfg.get("keep_subtitle_languages") or []
     regions = [e.lower() for e in entries if "-" in e]
@@ -1124,13 +1243,13 @@ def regional_keep_problems(was: dict, info_before: dict, by_stream: dict, cfg: d
     plain = {canonical(e) for e in entries if "-" not in e}
     # Stream indexes with an answer of any kind (subtitle, language).
     answered = {int(si) for record in answers.values() if isinstance(record, dict)
-                for si in record}
+                for si in record if str(si).isdigit()}
     streams = {s["index"]: s for s in info_before["streams"]}
     problems = []
     for t in was["tracks"]:
         tag = (t["ietf"] or "").lower()
         s = streams.get(t["id"], {})
-        if t["type"] != "subtitles" or not tag or tag == "und":
+        if t["type"] != "subtitles":
             continue
         action = by_stream.get(t["id"])
         # Forced by flag or by title, as the probe reads either.
@@ -1139,14 +1258,21 @@ def regional_keep_problems(was: dict, info_before: dict, by_stream: dict, cfg: d
         if (forced or t["id"] in answered
                 or (action is not None and action.target_language)):
             continue
-        language = canonical((s.get("tags") or {}).get("language") or "und")
+        # Read as the probe reads it: these spellings are und.
+        raw = ((s.get("tags") or {}).get("language") or "").strip().lower()
+        language = "und" if raw in ("", "none", "null", "undefined") else canonical(raw)
+        if language == "und":
+            continue
         kept = action is None or action.action_type != "drop_track"
-        matched = any(tag == r or tag.startswith(r + "-") for r in regions)
+        if tag and tag != "und":
+            matched = any(tag == r or tag.startswith(r + "-") for r in regions)
+        else:
+            matched = language in {canonical(r.split("-")[0]) for r in regions}
         if matched and not kept:
-            problems.append(f"subtitle {t['id']} ({t['ietf']}) dropped, though "
+            problems.append(f"subtitle {t['id']} ({t['ietf'] or language}) dropped, though "
                             f"Keep Subtitle Languages holds {entries}")
         elif not matched and language not in plain and kept:
-            problems.append(f"subtitle {t['id']} ({t['ietf']}) kept, though "
+            problems.append(f"subtitle {t['id']} ({t['ietf'] or language}) kept, though "
                             f"Keep Subtitle Languages holds {entries}")
     return problems
 
@@ -2513,7 +2639,13 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
     # says it was made, which a job writes back, and which an MP4 holds in
     # whole seconds.
     to_mp4 = is_mp4(info_after) and not is_mp4(info_before)
-    lost = lost_own_tags(info_before, info_after, whole_seconds=is_mp4(info_after))
+    rel_source = Path(source).relative_to(lib).as_posix()
+    was_meta = meta_before(rel_source) if meta_before else None
+    expected_tags, moved = ({}, {})
+    if to_mp4 and was_meta is not None and kept_copy is not None:
+        expected_tags, moved = mp4_tag_expectations(
+            str(kept_copy), (was_meta.get("identity") or {}).get("title"))
+    lost = lost_own_tags(info_before, info_after, whole_seconds=is_mp4(info_after), moved=moved)
     allowed = set()
     if to_mp4 and cfg.get("mp4_lost_tag_handling") == "drop_tags":
         allowed = {t.lower() for t in entry.get("mp4_lost_tags") or []} - {"creation_time"}
@@ -2526,9 +2658,34 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
         find(30, source, f"lost or changed its own tag(s) {', '.join(unexplained)} "
                          f"in {Path(output).name}")
 
+    # 37. An MP4 made from a Matroska holds its show, season, episode,
+    # release date and title under the MP4's own names, the episode as the
+    # track number too, never the season.
+    held = {k.lower(): v for k, v in own_tags(info_after).items()}
+    for key, value in expected_tags.items():
+        if held.get(key) != value:
+            find(37, source, f"{Path(output).name} holds {key}={held.get(key)!r}, "
+                             f"not {value!r}, as the original's tags call for")
+
+    # 38. A chapter named in several languages, written by FFmpeg, carries
+    # the name in the first language the user keeps.
+    if was_meta is not None and was_meta.get("chapters"):
+        out_meta = None if is_mp4(info_after) else matroska_meta(output)
+        if out_meta is None or not out_meta["writer"].startswith("mkvmerge"):
+            preferred = []
+            for code in ((cfg.get("keep_audio_languages") or ["eng"])
+                         + (cfg.get("keep_subtitle_languages") or ["eng"])):
+                lang = canonical(code.split("-")[0])
+                if lang not in preferred and lang != "und":
+                    preferred.append(lang)
+            for problem in chapter_name_problems(was_meta["chapters"],
+                                                 info_after.get("chapters") or [],
+                                                 preferred, canonical):
+                find(38, source, f"{Path(output).name}: {problem}")
+
     # 31 to 33. What only MKVToolNix reads of a Matroska original: each kept
     # track's regional language, the chapters, and tags at other levels.
-    was = meta_before(Path(source).relative_to(lib).as_posix()) if meta_before else None
+    was = was_meta
     if was is not None:
         now = matroska_meta(output)
         if now is None:
@@ -2543,6 +2700,11 @@ def _check_processed(find, known, lib, source, output, actions, info_before,
             by_mkvmerge = matroska_out and now["writer"].startswith("mkvmerge")
             # What mkvmerge writes, it keeps: a loss there is a finding.
             why = None if by_mkvmerge else (_FFMPEG_MATROSKA if matroska_out else _MP4_HOLDS_NONE)
+            # A tag an MP4 holds under its own name, which check 37 checks,
+            # is no loss.
+            if moved:
+                was = {**was, "tags": [t for t in was["tags"] if not (
+                    t[1] == "file" and not t[4] and (t[0], t[2], t[3]) in moved)]}
             _matroska_checks(find, known, Path(source).relative_to(lib).as_posix(), source,
                              was, now, why, kept, f"in {Path(output).name}", retagged)
             # 34. The tool that wrote a Matroska output is the one it should

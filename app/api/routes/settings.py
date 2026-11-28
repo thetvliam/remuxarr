@@ -592,7 +592,18 @@ SETTINGS_SCHEMA = [
         "label":       "Prefer MP4 Container",
         "type":        "boolean",
         "description": "Remux to .mp4 when all tracks are compatible. "
-                       "Files with incompatible tracks (DTS, PGS subs, etc.) stay as-is.",
+                       "Files with incompatible tracks (DTS, PGS subs, etc.) stay as-is. "
+                       "An MP4 keeps a Matroska's chapters as one flat list, each "
+                       "chapter named in the first language you keep where it has "
+                       "several, and its show, season, episode, title and release "
+                       "date, but not chapter editions after the first, nested "
+                       "chapters, its other tags (see Tags an MP4 Can't Hold), "
+                       "fonts and other attachments besides a cover, a language's "
+                       "region (en-GB becomes English) or which track is the "
+                       "default (players take the first of each kind). "
+                       "When the job also removes a track or a font and Keep "
+                       "Removed Tracks is on, reverting it gives the Matroska all "
+                       "of them back.",
     },
     {
         "key":         "convert_dolby_vision_to_mp4",

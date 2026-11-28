@@ -2,7 +2,7 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 41 files
+- `make_test_library.sh` builds a small library of unusual media: 42 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
@@ -12,8 +12,9 @@ Two tools for finding behaviour nobody planned, outside the test suite:
   and a TMDB ID in a Matroska, a key of its own in an MP4), regional
   languages (en-GB beside en-US, es-419 beside es-ES), two chapter editions
   with a nested chapter and names in two languages, tags at the collection
-  level and aimed at a chapter, cover art ahead of a font, an audio-only
-  file and a zero-byte one.
+  level and aimed at a chapter, cover art ahead of a font, a series episode
+  with English audio from Britain twice, series tags and chapters named in
+  two languages, an audio-only file and a zero-byte one.
   Files 39 and 40 are put together with mkvmerge, as FFmpeg cannot write
   what they hold, so building the library needs MKVToolNix as well. A folder
   layout of copies covers the extras rules, an existing sidecar and an
@@ -93,8 +94,12 @@ ignores and does not undo.
 
 `r01` is a fixed profile run beside the pairwise ones: Keep Audio
 Languages `en-GB`, Keep Subtitle Languages `en-GB` and `es-419`, Matroska
-kept, subtitles left in the file and revert on, for check 35. A regional
-value added to the varied lists instead would rebuild every profile.
+kept, subtitles left in the file and revert on, for check 35. `r02` is the
+same converting to MP4, with subtitles extracted, as a kept text subtitle
+holds a file in Matroska: an MP4 holds no region, so file 42's two
+English tracks from Britain come back plain, and check 7 shows a rescan
+keeps both. A regional value added to the varied lists instead would
+rebuild every profile.
 
 Each profile is checked against the app's settings schema before it runs,
 so a setting or value the app no longer has stops the run instead of being
@@ -233,10 +238,11 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     `app/core/mkvtoolnix.py`, so the check does not take its answer from the
     code it checks.
 35. In a profile whose Keep Subtitle Languages holds an entry with a region
-    or script (`r01`), a subtitle whose language, as `mkvmerge -J` reads it,
-    is that entry or a narrower tag under it is kept, and one of the same
-    language matching no entry is dropped, unless its language is also
-    listed plainly. Forced subtitles (by flag or title), answered ones and
+    or script (`r01`, `r02`), a subtitle whose language, as `mkvmerge -J`
+    reads it, is that entry or a narrower tag under it is kept, and one of
+    the same language matching no entry is dropped, unless its language is
+    also listed plainly. A subtitle whose file records no BCP 47 language
+    for it is kept when an entry is in its language. Forced subtitles (by flag or title), answered ones and
     ones the plan gives a language are left out, since other rules decide
     those.
 36. After a revert of a Matroska original, as `mkvmerge -J` reads both, the
@@ -246,6 +252,16 @@ job at a time; and the Plex, Sonarr, Radarr and email paths.
     makes a film-level TITLE tag the segment's title; the revert sets them
     back (`mkvtoolnix.write_matroska_record`). Unless the tracks are
     numbered unalike, as for 31 to 33.
+37. An MP4 made from a Matroska holds, under the MP4's own names, the
+    show (TITLE at level 70), season (PART_NUMBER at 60), episode
+    (PART_NUMBER at 50, as the track number too, never the season's),
+    release date (DATE_RELEASED at 50) and, where FFmpeg writes none, the
+    title, read from the Matroska's file-level tags in no language. FFmpeg
+    alone wrote the season's number as the track number and dropped the
+    rest. Check 30 counts these as kept under their MP4 names.
+38. A chapter named in several languages, in a file FFmpeg wrote, carries
+    the name in the first language Keep Audio then Keep Subtitle Languages
+    names that it has, or its first name. FFmpeg alone took the last.
 
 Questions are answered through the app's own route functions, called with
 a database session: after the scan, so a file is processed once with its
@@ -283,7 +299,7 @@ route function, and the worker runs the Forge jobs:
     or waiting to undo, and nothing in the library changed but the forged
     files.
 
-Then, in each profile with revert on (16 of the 23; pairwise, so every value
+Then, in each profile with revert on (17 of the 24; pairwise, so every value
 of every other setting meets revert on at least once), every revert point is
 restored through the app's own `restore_revert_point`, and:
 

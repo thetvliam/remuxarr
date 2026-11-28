@@ -50,10 +50,11 @@ import shutil
 import struct
 import subprocess
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple, Sequence
 
 from app.config import settings as app_settings
+from app.core.langcodes import canonical
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,8 @@ class ChapterAtom:
     enabled: bool
     linked: bool              # plays a part of another file (ChapterSegmentUID)
     children: tuple["ChapterAtom", ...]
+    # Its ChapterUID, which ffprobe gives as the chapter's id (chapter_titles).
+    uid: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,14 @@ class Tag:
     aims: frozenset[str]      # what its targets name: "track", "chapter", "edition", "attachment"
     name: str
     nested: bool
+    # Its TargetType, which FFmpeg puts in front of the name it shows the
+    # tag under (COLLECTION/TITLE), and its value: what an MP4 gets of it
+    # (mp4_tags).
+    type: str | None = field(default=None, compare=False)
+    value: str = field(default="", compare=False)
+    # Its TagLanguage: FFmpeg shows a tag with one other than und under its
+    # name and the language (TITLE-eng).
+    language: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,7 @@ class MatroskaInfo:
     tracks: tuple[MkvTrack, ...]
     editions: tuple[Edition, ...]
     tags: tuple[Tag, ...]
+    title: str | None = None   # the segment's own title, which ffprobe shows as title
 
 
 def available() -> bool:
@@ -144,6 +156,7 @@ def _atom(element: ET.Element) -> ChapterAtom:
         enabled=element.findtext("ChapterFlagEnabled") != "0",
         linked=element.find("ChapterSegmentUID") is not None,
         children=tuple(_atom(a) for a in element.findall("ChapterAtom")),
+        uid=element.findtext("ChapterUID"),
     )
 
 
@@ -192,8 +205,150 @@ def read_matroska(path: str) -> MatroskaInfo | None:
             if name in _STATISTICS or name.startswith("_STATISTICS"):
                 continue
             found.append(Tag(level=level, aims=aims, name=name,
-                             nested=simple.find("Simple") is not None))
-    return MatroskaInfo(tracks=tracks, editions=editions, tags=tuple(found))
+                             nested=simple.find("Simple") is not None,
+                             type=(targets.findtext("TargetType") if targets is not None
+                                   else None) or None,
+                             value=simple.findtext("String") or "",
+                             language=simple.findtext("TagLanguage")))
+    return MatroskaInfo(tracks=tracks, editions=editions, tags=tuple(found),
+                        title=(container.get("properties") or {}).get("title") or None)
+
+
+# ── What an MP4 gets of a Matroska's tags and chapter names ─────────────────
+
+class Mp4Tags(NamedTuple):
+    """
+    What a job writing a Matroska as an MP4 gives it of the Matroska's own
+    tags (mp4_tags): metadata, FFmpeg's MP4 keys and the values to write
+    under them ("" to write none); kept_as, for each source tag that comes
+    back under another name, the tag as ffprobe shows it on the source
+    (name lower-cased, value) and the MP4 key and value it comes back as,
+    which the checks that refuse a lost tag count as kept
+    (probe.lost_file_tags).
+    """
+    metadata: dict[str, str]
+    kept_as: dict[tuple[str, str], tuple[str, str]]
+
+
+def mp4_tags(info: MatroskaInfo | None) -> Mp4Tags:
+    """
+    The MP4 metadata a Matroska's file-level tags call for, by the levels
+    the Matroska gives them: the show (TITLE at 70, the collection), the
+    season (PART_NUMBER at 60), the episode (PART_NUMBER at 50, in a file
+    with a show or a season), the title (TITLE at 50) and the release date
+    (DATE_RELEASED at 50), as the MP4's show, season, episode, title and
+    date. FFmpeg reads the tags without their levels: one TITLE and one
+    PART_NUMBER shown for several, the season's number written as the
+    MP4's track number while the episode's and the show's title were lost
+    (measured with 8.1.3), and, for tags that name their level (EPISODE,
+    SEASON), nothing written at all, not even the title. In a series the
+    track number is the episode's, or none. A season or episode that is not
+    a number is left out, as the MP4 holds a number there.
+
+    The title only where FFmpeg writes none: a TITLE that names its level,
+    in a file with no title of its own (the segment's), which FFmpeg writes
+    otherwise. Only tags in no particular language (TagLanguage und, or
+    none): one in a language is a translation, which FFmpeg shows as
+    TITLE-eng.
+    """
+    if info is None:
+        return Mp4Tags({}, {})
+    own = [t for t in info.tags if not t.aims and not t.nested and t.value.strip()
+           and (t.language or "und") == "und"]
+
+    def first(level: str, name: str) -> Tag | None:
+        return next((t for t in own if t.level == level and t.name == name), None)
+
+    def number(tag: Tag | None) -> Tag | None:
+        return tag if tag is not None and tag.value.strip().isdigit() else None
+
+    show, season = first("70", "TITLE"), number(first("60", "PART_NUMBER"))
+    episode = number(first("50", "PART_NUMBER"))
+    series = show is not None or season is not None
+    title = first("50", "TITLE")
+    if title is not None and (not title.type or info.title):
+        title = None
+    wanted = [(title, "title"), (show, "show"), (season, "season_number"),
+              (first("50", "DATE_RELEASED"), "date")]
+    if series:
+        wanted += [(episode, "episode_sort"), (episode, "track")]
+    metadata: dict[str, str] = {}
+    kept_as: dict[tuple[str, str], tuple[str, str]] = {}
+    for tag, key in wanted:
+        if tag is None:
+            continue
+        value = str(int(tag.value)) if key in ("season_number", "episode_sort", "track") \
+            else tag.value
+        metadata[key] = value
+        kept_as.setdefault((_shown_as(tag), tag.value), (key, value))
+    if series and episode is None:
+        metadata["track"] = ""
+    return Mp4Tags(metadata, kept_as)
+
+
+def _shown_as(tag: Tag) -> str:
+    """A file-level tag's name as ffprobe shows it, lower-cased: after its
+    TargetType, or by FFmpeg's own name for PART_NUMBER (track)."""
+    if tag.type:
+        return f"{tag.type}/{tag.name}".lower()
+    return "track" if tag.name == "PART_NUMBER" else tag.name.lower()
+
+
+def mp4_tags_of(path: str) -> Mp4Tags:
+    """mp4_tags for a file: nothing for one that is not Matroska, or without
+    MKVToolNix, which reads the levels."""
+    return mp4_tags(read_matroska(path) if available() else None)
+
+
+def chapter_titles(info: MatroskaInfo | None, chapters: Sequence[dict],
+                   preferred: Sequence[str]) -> dict[int, str]:
+    """
+    For a job writing a Matroska with FFmpeg: the name each chapter named
+    in several languages gets, by its place among the chapters FFmpeg
+    writes (ffprobe's, in order; a Matroska chapter's id is its ChapterUID),
+    where FFmpeg's own differs. FFmpeg keeps the last name (Partie un, not
+    Part one); this takes the first name in the first of the preferred
+    languages (ProcessingDecision.preferred_languages) the chapter has, or
+    its first name. A name with no language is English, as Matroska
+    reads it.
+    """
+    if info is None:
+        return {}
+    names_by_uid: dict[int, tuple] = {}
+
+    def walk(atom: ChapterAtom) -> None:
+        if atom.uid and atom.uid.strip().isdigit():
+            names_by_uid[int(atom.uid)] = atom.names
+        for child in atom.children:
+            walk(child)
+
+    for edition in info.editions:
+        for atom in edition.atoms:
+            walk(atom)
+    titles = {}
+    for n, chapter in enumerate(chapters):
+        try:
+            # FFmpeg holds the ID signed: a UID past 2^63 shows negative.
+            uid = int(chapter.get("id")) & 0xFFFFFFFFFFFFFFFF
+        except (TypeError, ValueError):
+            continue
+        names = names_by_uid.get(uid) or ()
+        if len(names) < 2:
+            continue
+        chosen = _preferred_name(names, preferred)
+        if chosen != (chapter.get("tags") or {}).get("title"):
+            titles[n] = chosen
+    return titles
+
+
+def _preferred_name(names: tuple, preferred: Sequence[str]) -> str:
+    def language(old: str | None, ietf: str | None) -> str:
+        return canonical((ietf or "").split("-")[0] or old or "eng")
+    for wanted in preferred:
+        for name, old, ietf in names:
+            if language(old, ietf) == wanted:
+                return name
+    return names[0][0]
 
 
 # ── Each track's BCP 47 language, for the tracks table ──────────────────────

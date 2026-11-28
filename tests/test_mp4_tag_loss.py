@@ -132,8 +132,11 @@ def _refused_over(error):
 
 # Lost by both kinds of job, and kept by both. synopsis and description are
 # kept by the MP4 muxer a job uses and dropped by the QuickTime muxer.
+# DATE_RELEASED is lost rewriting an MP4, and kept converting a Matroska,
+# whose job writes it as the MP4's own date (mkvtoolnix.mp4_tags).
 LOST = ["IMDB", "DATE_RELEASED", "title-eng", "Original Title"]
 KEPT = ["synopsis", "description", "comment", "genre"]
+KEPT_FROM_MATROSKA = {"DATE_RELEASED"}
 
 
 @pytest.mark.parametrize("key", LOST + KEPT)
@@ -161,7 +164,8 @@ def test_it_names_the_tags_a_job_is_refused_over(rig, monkeypatch, source, key):
 
     assert jobs[-1][0] in ("success", "failed")
     assert found == _refused_over(jobs[-1][1])
-    assert len(found) == (1 if key in LOST else 0), "the case is not what it says"
+    lost = key in LOST and not (muxer == "matroska" and key in KEPT_FROM_MATROSKA)
+    assert len(found) == (1 if lost else 0), "the case is not what it says"
 
 
 # ── What it costs, and when it cannot tell ───────────────────────────────────

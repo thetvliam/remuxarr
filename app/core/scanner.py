@@ -108,7 +108,7 @@ def probe_ahead(path: str) -> Probed | None:
         result = probe_file(path, app_settings.FFPROBE_PATH)
     except ProbeError as exc:
         return Probed(st.st_size, st.st_mtime, exc)
-    return Probed(st.st_size, st.st_mtime, result, mp4_lost_tags(result),
+    return Probed(st.st_size, st.st_mtime, result, mp4_lost_tags(result, path=path),
                   bcp47_languages(path, result))
 
 
@@ -1442,7 +1442,7 @@ def _process_file(
         # Beside the probe, before anything below writes, since it runs
         # FFmpeg (probe.mp4_lost_tags); probe_ahead found it with its probe,
         # for callers that hold a write open.
-        lost_in_mp4 = probed.mp4_lost_tags if ahead else mp4_lost_tags(probe_data)
+        lost_in_mp4 = probed.mp4_lost_tags if ahead else mp4_lost_tags(probe_data, path=path)
         # And each track's BCP 47 language, which runs mkvmerge.
         regions = probed.bcp47 if ahead else bcp47_languages(path, probe_data)
 

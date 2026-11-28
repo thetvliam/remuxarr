@@ -6,9 +6,11 @@ A plain code (spa) matches a track's old code, as before, and so keeps every
 Spanish track. An entry with a region or a script (es-419) matches the
 track's BCP 47 language, which only a Matroska file carries and which
 Track.language_ietf stores, so es-419 keeps Latin American Spanish and drops
-Spain's, which a real web release carries side by side. A track whose BCP 47
-language is unknown matches no regional entry, and nor does one the job gives
-a language of its own (a Language Review answer, the Fix pass).
+Spain's, which a real web release carries side by side. A track whose file
+records no BCP 47 language for it (an MP4, a Matroska written without them,
+one whose codes could not be read) matches a regional entry by its language,
+as does one the job gives a language of its own (a Language Review answer,
+the Fix pass), whose old region the new language replaces.
 
 Before this, an entry such as pt-BR was saved as pt-br, matched no track, and
 every Portuguese track was dropped without a word: an entry that is not a
@@ -31,6 +33,18 @@ each by the test for its behaviour:
   • an unknown two-letter code accepted; the language not shortened to two
     letters; the script or the region left in the case typed (one mutant
     each); extra subtags accepted
+
+A track whose file records no region matched by its language (item 10),
+verified by mutation, 9 applied, 9 killed. Run first against the suite as
+it stood before, that matching undone survived. Killed now: such a track
+not matched by its language; an und code taken as a region; a subtitle or
+an audio track the job retags kept by its old region (one mutant each); an
+audio track matched by the language it had rather than the one it is given
+(first surviving: the answered track it was tested with is kept whatever
+the list says, so a track the Fix pass makes English now tests it); an
+entry's language not taken from it; the preferred languages taken from Keep
+Audio Languages only, a regional entry not read as its language, or none
+carried by the decision (one mutant each).
 """
 import pytest
 from sqlalchemy import create_engine
@@ -163,10 +177,37 @@ def test_a_prefix_that_is_not_a_subtag_does_not_match(settings):
     assert _dropped(decision) == [2]
 
 
-def test_a_track_whose_region_is_unknown_matches_no_regional_entry(settings):
-    tracks = [_video(), _audio(1, "eng", "en"), _sub(2, "spa", None), _sub(3, "spa", "")]
+def test_a_track_whose_file_records_no_region_is_kept_by_its_language(settings):
+    """Unknown (None), absent ("") or und: the file does not say where its
+    Spanish is from, so es-419 keeps it. Another language still goes."""
+    tracks = [_video(), _audio(1, "eng", "en"), _sub(2, "spa", None), _sub(3, "spa", ""),
+              _sub(4, "spa", "und"), _sub(5, "fre", "")]
     decision = analyze_file(_mkv(), tracks, _settings(settings, keep_subtitle_languages=["es-419"]))
-    assert _dropped(decision) == [2, 3]
+    assert _dropped(decision) == [5]
+
+
+def test_a_recorded_bcp_47_code_without_the_region_still_decides(settings):
+    """A file that records es says Spanish from nowhere in particular, as it
+    could have said es-419: that is not Latin American Spanish."""
+    tracks = [_video(), _audio(1, "eng", "en"), _sub(2, "spa", "es")]
+    decision = analyze_file(_mkv(), tracks, _settings(settings, keep_subtitle_languages=["es-419"]))
+    assert _dropped(decision) == [2]
+
+
+def test_a_script_entry_matches_by_its_language_too(settings):
+    tracks = [_video(), _audio(1, "eng", "en"), _sub(2, "chi", ""), _sub(3, "chi", "zh-Hans")]
+    decision = analyze_file(_mkv(), tracks, _settings(settings, keep_subtitle_languages=["zh-Hant"]))
+    assert _dropped(decision) == [3]
+
+
+def test_a_subtitle_the_fix_pass_retags_is_kept_by_its_new_language(settings):
+    """An untagged subtitle the Fix pass makes English has no region of its
+    own: en-GB keeps it, by its language."""
+    tracks = [_video(), _audio(1, "eng", "en"), _sub(2, "und", "")]
+    decision = analyze_file(_mkv(), tracks, _settings(
+        settings, keep_subtitle_languages=["en-GB"], fix_undefined_language="always_fix",
+        undefined_language_value="eng"))
+    assert _dropped(decision) == []
 
 
 def test_a_subtitle_the_fix_pass_retags_is_not_kept_by_its_region(settings):
@@ -213,6 +254,54 @@ def test_an_audio_track_the_fix_pass_retags_is_not_kept_by_its_region(settings):
         settings, keep_audio_languages=["en-GB", "eng"], keep_default_audio=False,
         fix_undefined_language_audio="always_fix", undefined_language_value="jpn"))
     assert 2 in _dropped(decision)
+
+
+def test_two_regional_tracks_an_mp4_holds_are_both_kept(settings):
+    """The trap item 10 found: a job kept en-GB main and commentary audio and
+    wrote an MP4, which holds no region, so both came back plain eng, and
+    the next scan kept only the default and dropped the commentary."""
+    original = [_video(), _audio(1, "eng", "en-GB", is_default=True),
+                _audio(2, "eng", "en-GB", title="Commentary"), _audio(3, "jpn", "ja")]
+    settings = _settings(settings, keep_audio_languages=["en-GB"], prefer_mp4_container=True,
+                         extract_text_subtitles_to_srt=True)
+    assert _dropped(analyze_file(_mkv(), original, settings)) == [3]
+    converted = [_video(), _audio(1, "eng", "", is_default=True),
+                 _audio(2, "eng", "", title="Commentary")]
+    mp4 = make_file_info(path="/media/Film/Film.mp4", container="mp4")
+    decision = analyze_file(mp4, converted, settings)
+    assert _dropped(decision) == []
+    assert decision.audio_language_mismatch is None
+
+
+def test_an_answered_audio_track_is_kept_beside_a_regional_one(settings):
+    """An answered track is kept whatever the keep list says, as before; the
+    region the file recorded for its old language plays no part, and the
+    en-GB track is kept by its region beside it."""
+    tracks = [_video(), _audio(1, "eng", "en-GB", is_default=True), _audio(2, "jpn", "ja"),
+              _audio(3, "fre", "fr")]
+    decision = analyze_file(_mkv(), tracks, _settings(
+        settings, keep_audio_languages=["en-GB"], keep_default_audio=False),
+        audio_language_overrides={2: "eng"})
+    assert _dropped(decision) == [3]
+
+
+def test_an_audio_track_the_fix_pass_makes_english_is_kept_by_it(settings):
+    """An untagged audio track the Fix pass makes English has no region:
+    en-GB keeps it by the language it is given, not the und it had."""
+    tracks = [_video(), _audio(1, "eng", "en-GB", is_default=True), _audio(2, "und", ""),
+              _audio(3, "fre", "fr")]
+    decision = analyze_file(_mkv(), tracks, _settings(
+        settings, keep_audio_languages=["en-GB"], keep_default_audio=False,
+        fix_undefined_language_audio="always_fix", undefined_language_value="eng"))
+    assert _dropped(decision) == [3]
+
+
+def test_preferred_languages_follow_the_keep_lists():
+    from app.core.decision import preferred_languages
+    assert preferred_languages({"keep_audio_languages": ["en-GB", "jpn"],
+                                "keep_subtitle_languages": ["eng", "es-419", "und"]}) == (
+        "eng", "jpn", "spa")
+    assert preferred_languages({}) == ("eng",)
 
 
 def test_original_only_leaves_regional_entries_out_and_says_why(settings):

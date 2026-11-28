@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Mapping, NamedTuple
 
 from app.config import settings as app_settings
 
@@ -272,7 +272,8 @@ REWRITTEN_TAGS = frozenset({"major_brand", "minor_version", "compatible_brands",
                             "encoder", "software"})
 
 
-def lost_file_tags(source: dict | None, output: dict | None) -> list[str]:
+def lost_file_tags(source: dict | None, output: dict | None,
+                   kept_as: Mapping[tuple[str, str], tuple[str, str]] | None = None) -> list[str]:
     """
     The source's own tags, as ffprobe shows them on the file, that the
     output does not have with the same value, by the source's names. Names
@@ -296,6 +297,11 @@ def lost_file_tags(source: dict | None, output: dict | None) -> list[str]:
     writes it, so every conversion of such a file to MP4 was refused as
     losing its date (issue #61). A Matroska output keeps the fraction and
     matches as written.
+
+    kept_as names, for a Matroska written as an MP4, each source tag the MP4
+    holds under another name (mkvtoolnix.mp4_tags: the show's title, the
+    season, the episode, the release date), and the MP4 key and value it
+    comes back as: kept when the output has that.
     """
     def tags(probe_data):
         return ((probe_data or {}).get("format") or {}).get("tags") or {}
@@ -304,6 +310,9 @@ def lost_file_tags(source: dict | None, output: dict | None) -> list[str]:
     def lost(key, value):
         name = key.lower()
         if name in REWRITTEN_TAGS or kept.get(name) == value:
+            return False
+        moved = (kept_as or {}).get((name, value))
+        if moved is not None and kept.get(moved[0]) == moved[1]:
             return False
         return not (name == "creation_time" and _same_second(value, kept.get(name)))
     return [key for key, value in tags(source).items() if lost(key, value)]
@@ -324,7 +333,7 @@ def _same_second(made: str, kept: str | None) -> bool:
 
 
 def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
-                  ffprobe_bin: str | None = None) -> list[str] | None:
+                  ffprobe_bin: str | None = None, path: str | None = None) -> list[str] | None:
     """
     The file's own tags that a job writing it as an MP4 would lose, named
     as lost_file_tags names them, or None when that could not be found
@@ -345,7 +354,12 @@ def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
     Stored on MediaFile.mp4_lost_tags at scan and at job pickup, for the
     decision engine, which does what mp4_lost_tag_handling says with a
     file that would lose any (decision.analyze_file).
+
+    path, given for a Matroska, adds what a job writes of its tags under
+    the MP4's own names (mkvtoolnix.mp4_tags), as the job does, so a show,
+    season, episode or release date an MP4 holds keeps no file back.
     """
+    from app.core import mkvtoolnix
     from app.core.ffmpeg import output_muxer
 
     tags = ((probe_data or {}).get("format") or {}).get("tags") or {}
@@ -355,8 +369,11 @@ def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
         return []
     if ffmpeg_bin is None:
         ffmpeg_bin = app_settings.FFMPEG_PATH
+    mapped = mkvtoolnix.Mp4Tags({}, {})
+    if path and "matroska" in ((probe_data or {}).get("format") or {}).get("format_name", ""):
+        mapped = mkvtoolnix.mp4_tags_of(path)
     metadata = []
-    for key, value in own.items():
+    for key, value in [*own.items(), *mapped.metadata.items()]:
         metadata += ["-metadata", f"{key}={value}"]
 
     fd, written = tempfile.mkstemp(prefix="remuxarr-tags-", suffix=".mp4")
@@ -381,7 +398,7 @@ def mp4_lost_tags(probe_data: dict | None, ffmpeg_bin: str | None = None,
             os.unlink(written)
         except OSError:
             pass
-    return lost_file_tags(probe_data, output)
+    return lost_file_tags(probe_data, output, mapped.kept_as)
 
 
 def creation_time(probe_data: dict | None) -> str | None:

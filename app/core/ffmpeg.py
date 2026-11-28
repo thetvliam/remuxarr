@@ -279,9 +279,17 @@ def build_ffmpeg_command(
     data_streams: Sequence[int] = (),
     creation_time: str | None = None,
     dolby_vision: Mapping[int, DolbyVision] | None = None,
+    mp4_tags: Mapping[str, str] | None = None,
+    chapter_titles: Mapping[int, str] | None = None,
 ) -> list[str]:
     """
     Return the full FFmpeg argv for this decision.
+
+    mp4_tags are the MP4 metadata a Matroska's tags call for
+    (mkvtoolnix.mp4_tags: show, season, episode, title, date), which
+    _prepare_extra_streams hands over only for an MP4 output. chapter_titles
+    are the names chapters named in several languages get, by their place
+    among the chapters FFmpeg writes (mkvtoolnix.chapter_titles).
 
     covers are Matroska cover images already copied out of the source by
     _prepare_extra_streams, which hands over none unless the output is Matroska.
@@ -445,6 +453,15 @@ def build_ffmpeg_command(
     # date given for a single track changed nothing (tested).
     if creation_time:
         cmd += ["-metadata", f"creation_time={creation_time}"]
+    # A Matroska's show, season, episode, title and release date, under the
+    # MP4's own names, written after FFmpeg's own copy of the file's tags so
+    # they replace what it made of them (mkvtoolnix.mp4_tags says what).
+    for key, value in (mp4_tags or {}).items():
+        cmd += ["-metadata", f"{key}={value}"]
+    # A chapter named in several languages, under the name in the language
+    # the user keeps, rather than the last, which FFmpeg takes.
+    for index, title in sorted((chapter_titles or {}).items()):
+        cmd += [f"-metadata:c:{index}", f"title={title}"]
 
     # ── Output format & flags ──────────────────────────────────────────────
     # Always pass -f explicitly: the temp file ends in .remuxarr_tmp which
@@ -1329,7 +1346,9 @@ async def execute_ffmpeg(
                                mp4_covers=extra.mp4_covers,
                                data_streams=extra.data_streams,
                                creation_time=extra.creation_time,
-                               dolby_vision=extra.dolby_vision)
+                               dolby_vision=extra.dolby_vision,
+                               mp4_tags=extra.mp4_tags,
+                               chapter_titles=extra.chapter_titles)
 
     logger.info("FFmpeg command:\n  %s", " ".join(cmd))
 
@@ -1672,7 +1691,9 @@ async def execute_ffmpeg_combined(
                                     mp4_covers=extra.mp4_covers,
                                     data_streams=extra.data_streams,
                                     creation_time=extra.creation_time,
-                                    dolby_vision=extra.dolby_vision)
+                                    dolby_vision=extra.dolby_vision,
+                                    mp4_tags=extra.mp4_tags,
+                                    chapter_titles=extra.chapter_titles)
 
     # Append subtitle output specs after the main output.
     # Each gets its own temp path in the same tmp_dir. stream_idx is
@@ -2236,6 +2257,8 @@ class ExtraStreams(NamedTuple):
     error: str | None
     creation_time: str | None = None
     dolby_vision: dict[int, DolbyVision] | None = None
+    mp4_tags: dict[str, str] | None = None
+    chapter_titles: dict[int, str] | None = None
 
 
 async def copy_out_cover_art(
@@ -2327,14 +2350,23 @@ async def _prepare_extra_streams(
         return ExtraStreams([], [], [], None)
 
     made = source_creation_time(probe)
+    # A Matroska's tag levels and chapter names, which FFmpeg reads without
+    # (mkvtoolnix.mp4_tags, chapter_titles). Without MKVToolNix the job
+    # writes what FFmpeg makes of them, as before.
+    info = None
+    if ("matroska" in ((probe.get("format") or {}).get("format_name") or "")
+            and mkvtoolnix.available()):
+        info = await loop.run_in_executor(None, mkvtoolnix.read_matroska, input_path)
+    titles = mkvtoolnix.chapter_titles(info, probe.get("chapters") or [],
+                                       decision.preferred_languages)
     if fmt == "mp4":
         return ExtraStreams([], find_mp4_covers(probe), find_data_streams(probe), None, made,
-                            dolby_vision(probe))
+                            dolby_vision(probe), mkvtoolnix.mp4_tags(info).metadata, titles)
     found, attachments = find_matroska_covers(probe)
     covers, error = await copy_out_cover_art(
         input_path, found, attachments, tmp_dir,
         f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
-    return ExtraStreams(covers, [], [], error, made)
+    return ExtraStreams(covers, [], [], error, made, chapter_titles=titles)
 
 
 async def copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

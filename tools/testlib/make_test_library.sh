@@ -618,7 +618,41 @@ f41() {  # Matroska whose cover art comes before a font. A revert attaches the c
     "${MKV[@]}" "$OUT/41 - cover before a font.mkv"
 }
 
-for n in $(seq -w 1 41); do
+f42() {  # Matroska series episode: en-GB main and en-GB commentary audio, Japanese to drop, an en-GB subtitle, show, season, episode, title and release date in tags that name their levels, and chapters named in English and French. Profile r02 converts it to MP4, which holds no region: a rescan must keep both English tracks (check 7). Checks 37 and 38: the MP4's show, season, episode, track number, date and title, and each chapter's name in the language kept.
+  local a=(); add a video_in "42 series episode"; add a tone_in 440; add a tone_in 550; add a tone_in 660
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 -map 3 "${H264[@]}" -c:a aac "$A/f42.mkv"
+  srt "$A/f42_engb.srt" "EN-GB"
+  local mid; mid="$(printf '%02d:%02d:%02d.000' $(( DUR / 2 / 3600 )) $(( DUR / 2 % 3600 / 60 )) $(( DUR / 2 % 60 )))"
+  cat > "$A/f42_tags.xml" <<XML
+<?xml version="1.0"?>
+<Tags>
+ <Tag><Targets><TargetTypeValue>70</TargetTypeValue><TargetType>COLLECTION</TargetType></Targets><Simple><Name>TITLE</Name><String>The Show</String></Simple></Tag>
+ <Tag><Targets><TargetTypeValue>60</TargetTypeValue><TargetType>SEASON</TargetType></Targets><Simple><Name>PART_NUMBER</Name><String>2</String></Simple></Tag>
+ <Tag><Targets><TargetTypeValue>50</TargetTypeValue><TargetType>EPISODE</TargetType></Targets>
+  <Simple><Name>TITLE</Name><String>The Episode</String></Simple>
+  <Simple><Name>PART_NUMBER</Name><String>5</String></Simple>
+  <Simple><Name>DATE_RELEASED</Name><String>2024-10-24</String></Simple></Tag>
+</Tags>
+XML
+  cat > "$A/f42_chapters.xml" <<XML
+<?xml version="1.0"?>
+<Chapters><EditionEntry>
+ <ChapterAtom><ChapterUID>421</ChapterUID><ChapterTimeStart>00:00:00.000</ChapterTimeStart>
+  <ChapterDisplay><ChapterString>Part one</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay>
+  <ChapterDisplay><ChapterString>Partie un</ChapterString><ChapLanguageIETF>fr</ChapLanguageIETF></ChapterDisplay></ChapterAtom>
+ <ChapterAtom><ChapterUID>422</ChapterUID><ChapterTimeStart>${mid}</ChapterTimeStart>
+  <ChapterDisplay><ChapterString>Part two</ChapterString><ChapLanguageIETF>en</ChapLanguageIETF></ChapterDisplay></ChapterAtom>
+</EditionEntry></Chapters>
+XML
+  "$MKVMERGE" -q --no-date -o "$OUT/42 - series episode.mkv" --title "" \
+    --global-tags "$A/f42_tags.xml" --chapters "$A/f42_chapters.xml" \
+    --language 1:en-GB --track-name 1:Main \
+    --language 2:en-GB --track-name 2:Commentary --commentary-flag 2:1 --default-track-flag 2:0 \
+    --language 3:ja --default-track-flag 3:0 "$A/f42.mkv" \
+    --language 0:en-GB --default-track-flag 0:0 "$A/f42_engb.srt"
+}
+
+for n in $(seq -w 1 42); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

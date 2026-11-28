@@ -190,6 +190,11 @@ class ProcessingDecision:
     # these go (worker._lost_tags_error) and refuses any other loss.
     dropped_tags: list[str] = field(default_factory=list)
 
+    # The languages the user keeps, Keep Audio Languages then Keep Subtitle
+    # Languages, each once, in ISO 639-2/B: which name a job gives a chapter
+    # named in several languages (mkvtoolnix.chapter_titles).
+    preferred_languages: tuple[str, ...] = ()
+
     # Undefined-language audio tracks for Audio Language Review, one entry
     # per track, in stream order: {"stream_index": int, "origin": str}. The
     # origin is always "undefined": a track Always Fix did not tag, or any
@@ -431,7 +436,9 @@ def _keep_list(codes) -> tuple[set[str], tuple[str, ...]]:
     639-2/B, its regional entries lower-cased). A plain code matches a
     track's old code (eng, spa); a regional one (es-419, zh-Hant) matches
     its BCP 47 language (Track.language_ietf), so es-419 keeps Latin
-    American Spanish and not Spain's, which spa keeps alike.
+    American Spanish and not Spain's, which spa keeps alike, and matches a
+    track whose file records no BCP 47 language by its language
+    (_regional_match).
     """
     plain, regions = set(), []
     for code in codes:
@@ -442,14 +449,39 @@ def _keep_list(codes) -> tuple[set[str], tuple[str, ...]]:
     return plain, tuple(regions)
 
 
-def _regional_match(track: dict, regions: tuple[str, ...]) -> bool:
+def _regional_match(track: dict, regions: tuple[str, ...], language: str) -> bool:
     """
     Whether a track's BCP 47 language is one of the regional entries, or a
-    narrower tag under one (zh-Hant-TW under zh-Hant). A track whose BCP 47
-    language is unknown or absent matches none: only a Matroska file says.
+    narrower tag under one (zh-Hant-TW under zh-Hant).
+
+    A track whose file records no BCP 47 language for it, unknown or absent
+    (an MP4, which cannot; a Matroska written without them, as FFmpeg and
+    older mkvmerge write one; a file mkvmerge could not read) or und,
+    matches a regional entry by its language (language, as the caller
+    resolves it, in ISO 639-2/B): es-419 keeps its Spanish, as the file does
+    not say from where. Matching none, such a track was dropped by a list
+    of regional entries alone, and a job converting a Matroska to MP4, which
+    holds no region, kept two en-GB tracks the next scan dropped one of.
     """
     tag = (track.get("language_ietf") or "").lower()
-    return any(tag == r or tag.startswith(r + "-") for r in regions)
+    if tag and tag != "und":
+        return any(tag == r or tag.startswith(r + "-") for r in regions)
+    return any(canonical(r.split("-")[0]) == language for r in regions)
+
+
+def preferred_languages(settings: dict) -> tuple[str, ...]:
+    """ProcessingDecision.preferred_languages for these settings: each
+    language Keep Audio Languages then Keep Subtitle Languages names, a
+    regional entry by its language, once, in order."""
+    found: list[str] = []
+    for code in (list(settings.get("keep_audio_languages", ["eng"]) or [])
+                 + list(settings.get("keep_subtitle_languages", ["eng"]) or [])):
+        if not isinstance(code, str) or not code.strip():
+            continue
+        language = canonical(code.strip().split("-")[0])
+        if language not in found and language != "und":
+            found.append(language)
+    return tuple(found)
 
 def analyze_file(
     file_info: dict,
@@ -756,9 +788,10 @@ def analyze_file(
         # on that, which is the point of resolving first.
         return (
             lang in keep_sub_langs
-            # Its region, unless the job gives it a language of its own.
-            or (track["stream_index"] not in und_sub_language
-                and _regional_match(track, keep_sub_regions))
+            # Its region; by its language when the job gives it one of its
+            # own, which replaces the region.
+            or _regional_match(track if track["stream_index"] not in und_sub_language
+                               else {**track, "language_ietf": None}, keep_sub_regions, lang)
             or (keep_forced_subs and is_forced)
             or lang == "und"
             # Answered in Subtitle Language Review: see "Language Review
@@ -1038,10 +1071,12 @@ def analyze_file(
     def _in_audio_list(track: dict, langs: set, regions: tuple) -> bool:
         # Its region counts only while the track has its own language: a
         # Language Review answer or the Fix pass gives it one the job
-        # writes, which replaces the region.
+        # writes, which replaces the region, and it matches by that.
         own = (track["stream_index"] not in audio_language_overrides
                and track["stream_index"] not in und_audio_language)
-        return _audio_lang(track) in langs or (own and _regional_match(track, regions))
+        lang = _audio_lang(track)
+        return lang in langs or _regional_match(
+            track if own else {**track, "language_ietf": None}, regions, lang)
 
     # Pre-check: is there at least one audio track in the preferred language
     # list?  The keep_default_audio guard below uses this to limit its scope —
@@ -2000,6 +2035,7 @@ def analyze_file(
         subtitle_language_mismatches=subtitle_language_mismatches,
         source_already_faststart=has_faststart is True,
         faststart_enabled=add_faststart,
+        preferred_languages=preferred_languages(settings),
     )
 
 

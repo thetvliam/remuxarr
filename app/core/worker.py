@@ -27,7 +27,7 @@ from app.core.ffmpeg import FFmpegProgress, determine_output_path, execute_ffmpe
 from app.core.probe import count_font_attachments, probe_file, extract_format_info, extract_tracks, ProbeError
 from app.core.mkvtoolnix import bcp47_languages, with_bcp47
 from app.core.probe import lost_dolby_vision, lost_file_tags, mp4_lost_tags
-from app.core import revert_lock
+from app.core import mkvtoolnix, revert_lock
 from app.core.recycle import delete_sidecar
 from app.core import revert_capture
 from app.core.revert_capture import CapturedRevertPoint, _record_created_files
@@ -897,7 +897,13 @@ async def _lost_tags_error(input_path: str, produced_path: str,
     lost = lost_dolby_vision(source, output)
     if lost:
         return f"{LOST_DOLBY_VISION} It would lose: {', '.join(lost)}."
-    lost = [tag for tag in lost_file_tags(source, output) if tag not in dropped]
+    # A Matroska written as an MP4 holds some of its tags under the MP4's
+    # names (mkvtoolnix.mp4_tags), which the job wrote there.
+    kept_as = {}
+    if ("matroska" in ((source.get("format") or {}).get("format_name") or "")
+            and "mp4" in ((output.get("format") or {}).get("format_name") or "")):
+        kept_as = (await loop.run_in_executor(None, mkvtoolnix.mp4_tags_of, input_path)).kept_as
+    lost = [tag for tag in lost_file_tags(source, output, kept_as) if tag not in dropped]
     if lost:
         return f"{LOST_TAGS} It would lose: {', '.join(lost)}."
     return None
@@ -2023,7 +2029,7 @@ def _load_job_data(job_id: int):
             )
         # Beside the probe, as it runs FFmpeg: the tags an MP4 would lose,
         # stored below (probe.mp4_lost_tags).
-        lost_in_mp4 = None if probe_data is None else mp4_lost_tags(probe_data)
+        lost_in_mp4 = None if probe_data is None else mp4_lost_tags(probe_data, path=media.path)
         # And each track's BCP 47 language, which runs mkvmerge: stored
         # below on the rows the check that follows finds unchanged.
         regions = None if probe_data is None else bcp47_languages(media.path, probe_data)
