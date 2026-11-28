@@ -61,6 +61,8 @@ from app.core.ffmpeg import (
     RestoreUnsupported,
     _pick_temp_dir,
     build_restore_command,
+    copy_cover_out,
+    restore_layout,
 )
 from app.core.mkvtoolnix import bcp47_languages, with_bcp47, write_languages
 from app.core.probe import (ProbeError, dolby_vision, extract_format_info,
@@ -435,6 +437,17 @@ def _apply(db, plan: _Plan, restored_path: str) -> None:
         db.delete(point)
 
 
+def _discard(paths: list[str]) -> None:
+    """Remove a revert's copied-out covers, whatever became of it."""
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("Could not remove %s after a revert: %s", path, exc)
+
+
 async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOutcome:
     """
     Put a file back the way it was before the job that produced `point_id`.
@@ -489,15 +502,45 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
             stream_times.update(
                 ((number, index), time) for index, time in found.items())
 
+    rebuilt = rebuilt_track_indices(processed)
+    try:
+        layout = restore_layout(plan.manifest, rebuilt)
+    except RestoreUnsupported as exc:
+        return RestoreOutcome(success=False, error=str(exc))
+
+    # A Matroska original's covers, copied out of whichever file holds each
+    # to be attached again (ffmpeg.restore_layout says why). One that cannot
+    # be copied stops the revert before anything is written, as it does a
+    # job: the revert would otherwise give the file back without it.
+    cover_paths: list[str] = []
+    inputs = (plan.current_path, plan.sidecar_path)
+    for n, (stream, (number, index)) in enumerate(layout.covers):
+        dest = os.path.join(os.path.dirname(temp_output),
+                            f"revert_{point_id}_cover_{n}.remuxarr_tmp")
+        cover_paths.append(dest)
+        problem = await copy_cover_out(inputs[number], index, dest)
+        if problem:
+            _discard(cover_paths)
+            name = (stream.get("tags") or {}).get("filename")
+            logger.warning("Revert point %d stopped: could not copy the cover art %s out: %s",
+                           point_id, name, problem)
+            held_in = ("the revert point" if number == 1
+                       else os.path.basename(inputs[number]))
+            return RestoreOutcome(success=False, error=(
+                f"Could not copy the cover art {name} out of {held_in} to put it "
+                f"back: {problem}. Nothing was changed."))
+
     try:
         cmd = build_restore_command(
             plan.current_path, plan.sidecar_path, temp_output, plan.manifest,
-            rebuilt_tracks=rebuilt_track_indices(processed),
+            rebuilt_tracks=rebuilt,
             dolby_vision=dolby_vision(processed),
             processed_start=None if processed is None else start_time(processed),
             stream_times=stream_times,
+            cover_paths=cover_paths,
         )
     except RestoreUnsupported as exc:
+        _discard(cover_paths)
         return RestoreOutcome(success=False, error=str(exc))
 
     # What the revert starts from, as _run_job keeps it: the processed file,
@@ -527,12 +570,12 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     # into the finished file before it is staged: an es-419 subtitle came
     # back plain Spanish, and a Keep Subtitle Languages entry of es-419
     # then matched nothing, so the next job dropped the very track the
-    # first one kept. The restored file holds the manifest's streams in the
-    # manifest's order (build_restore_command), so stream k is the one the
-    # manifest lists k-th. Points recorded before the languages were have
-    # none to put back.
+    # first one kept. The restored file holds the streams in the order the
+    # layout maps them, so stream k is the k-th mapped; a cover attached
+    # again carries no language. Points recorded before the languages were
+    # have none to put back.
     languages = {k: s["language_ietf"]
-                 for k, s in enumerate(plan.manifest.get("streams") or [])
+                 for k, (s, _where) in enumerate(layout.mapped)
                  if s.get("language_ietf")}
 
     async def put_back_languages() -> str | None:
@@ -551,20 +594,24 @@ async def restore_revert_point(point_id: int, *, on_progress=None) -> RestoreOut
     logger.info(
         "Reverting %s → %s", plan.current_path, plan.destination,
     )
-    result = await run_staged_subprocess(
-        cmd,
-        [StagedOutput(temp_path=temp_output, final_path=plan.destination)],
-        on_progress_line=on_progress,
-        stderr_tail_lines=30,
-        timeout_seconds=timeout_seconds,
-        timeout_label="Revert",
-        before_staging=put_back_languages if languages else None,
-        before_swap=unchanged,
-        # The processed file's, which is the original's for any file a job
-        # has written since jobs kept it. Capture records no owner, so a
-        # file a job left root-owned before then is restored root-owned.
-        ownership_from=plan.current_path,
-    )
+    try:
+        result = await run_staged_subprocess(
+            cmd,
+            [StagedOutput(temp_path=temp_output, final_path=plan.destination)],
+            on_progress_line=on_progress,
+            stderr_tail_lines=30,
+            timeout_seconds=timeout_seconds,
+            timeout_label="Revert",
+            before_staging=put_back_languages if languages else None,
+            before_swap=unchanged,
+            # The processed file's, which is the original's for any file a
+            # job has written since jobs kept it. Capture records no owner,
+            # so a file a job left root-owned before then is restored
+            # root-owned.
+            ownership_from=plan.current_path,
+        )
+    finally:
+        _discard(cover_paths)
 
     if not result.success:
         return RestoreOutcome(success=False, error=result.error)

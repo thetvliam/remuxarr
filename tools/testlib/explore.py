@@ -456,7 +456,8 @@ def content_differences(streams: list[dict], was: list[str], now: list[str],
     in_place says the two files list the same streams in the same order, so
     each is compared with the one in its position. Otherwise the layouts
     differ in some way a signature check has already judged (a Matroska
-    cover that came back as a video track, or a finding of its own), and
+    cover that came back after the other attachments, or a finding of its
+    own), and
     all that is asked is that what each earlier stream held is still
     somewhere in the later file.
 
@@ -640,9 +641,9 @@ def _seconds(value) -> float | None:
 def _timed(stream: dict) -> str | None:
     """
     The kind check 29 pairs a stream by, or None for one it does not time:
-    a cover, a still picture with no place in the playback, and so also a
-    Matroska cover a revert gave back as a plain video track, known by the
-    file name it keeps.
+    a cover, a still picture with no place in the playback, known by the
+    file name it keeps, which a revert that gave one back as a plain video
+    track would leave too.
     """
     k = kind(stream)
     if k == "video" and any(t.lower() == "filename" for t in stream.get("tags") or {}):
@@ -1980,8 +1981,24 @@ def _is_matroska_cover(sig: tuple) -> bool:
     return sig[0] == "video" and sig[4] is not None and "attached_pic" in sig[6]
 
 
-def _without_attached_pic(sig: tuple) -> tuple:
-    return sig[:6] + (tuple(f for f in sig[6] if f != "attached_pic"),) + sig[7:]
+def cover_moved_after_attachments(want: list[tuple], got: list[tuple]) -> bool:
+    """
+    Whether the only difference between two files' stream signatures is
+    that each Matroska cover comes after every other attachment: how a
+    revert gives covers back (app/core/ffmpeg.py, restore_layout), attached
+    again after the attachments it maps. Worked out from the signatures,
+    not from that code. A cover back as a video track keeps no
+    attached_pic, so it is not this.
+    """
+    def attachment(sig):
+        return sig[0] == "attachment" or _is_matroska_cover(sig)
+    if sorted(want, key=repr) != sorted(got, key=repr):
+        return False
+    if [w for w in want if not attachment(w)] != [g for g in got if not attachment(g)]:
+        return False
+    moved = ([w for w in want if w[0] == "attachment"]
+             + [w for w in want if _is_matroska_cover(w)])
+    return [g for g in got if attachment(g)] == moved
 
 
 def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
@@ -2118,12 +2135,12 @@ def _revert_round_trips(find, known, lib, scratch, cfg, files, before,
             if repackaged:
                 e.setdefault("repackaged", {})["revert"] = repackaged
         if want != got:
-            # A Matroska cover comes back as a video track, which can also
-            # move it ahead of the attachments that followed it.
-            covers_only = sorted((_without_attached_pic(w) if _is_matroska_cover(w) else w
-                                  for w in want), key=repr) == sorted(got, key=repr)
-            if covers_only:
-                known.append({"file": rel(source), "lost": "cover comes back as video",
+            # A Matroska cover is attached again after the file's other
+            # attachments, so one that came before a font comes back after
+            # it. Back as a video track, it is a finding.
+            if cover_moved_after_attachments(want, got):
+                known.append({"file": rel(source),
+                              "lost": "cover comes back after the other attachments",
                               "why": "README, Reverting a processed file: "
                                      "Limitations worth knowing"})
             else:

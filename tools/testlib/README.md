@@ -2,7 +2,7 @@
 
 Two tools for finding behaviour nobody planned, outside the test suite:
 
-- `make_test_library.sh` builds a small library of unusual media: 40 files
+- `make_test_library.sh` builds a small library of unusual media: 41 files
   across MKV, MP4, M4V, MOV, AVI, TS, M2TS, WMV, FLV and WebM, with PGS,
   VobSub, DVB, ASS, WebVTT and mov_text subtitles, fonts, cover art,
   chapters, untagged and two-letter language tags, non-UTF-8 subtitles,
@@ -12,7 +12,8 @@ Two tools for finding behaviour nobody planned, outside the test suite:
   and a TMDB ID in a Matroska, a key of its own in an MP4), regional
   languages (en-GB beside en-US, es-419 beside es-ES), two chapter editions
   with a nested chapter and names in two languages, tags at the collection
-  level and aimed at a chapter, an audio-only file and a zero-byte one.
+  level and aimed at a chapter, cover art ahead of a font, an audio-only
+  file and a zero-byte one.
   Files 39 and 40 are put together with mkvmerge, as FFmpeg cannot write
   what they hold, so building the library needs MKVToolNix as well. A folder
   layout of copies covers the extras rules, an existing sidecar and an
@@ -348,8 +349,9 @@ and turn a real bug into a normal test in `tests/`.
 
 Some outcomes are decisions the project has already made: attachments and
 cover art do not go into MP4, a conversion onto a name another file already
-holds is refused, a revert gives Matroska cover art back as a video track,
-an existing subtitle file a job replaced or moved stays that way after a
+holds is refused, a revert gives Matroska cover art back after the file's
+other attachments (attached again, as a job does; back as a video track it
+is a finding, check 11), an existing subtitle file a job replaced or moved stays that way after a
 revert, a job goes ahead without a revert point when capture reports one
 unavailable and Require Revert Point is off, an answer for a track a
 revert brings back from the sidecar is asked again, a job whose audio

@@ -355,9 +355,9 @@ extracted from the same video.
 
 **Limitations worth knowing.** A job whose only casualty is an attachment -
 a font, say - stores nothing, because Matroska cannot hold a file with no
-tracks. Matroska cover art comes back as a still-image video track rather
-than an attachment, with its filename and mimetype intact; nothing is lost, but
-a player may list it as a second video stream. In an MP4 with a timecode
+tracks. Matroska cover art comes back as the attachment it was, but after the
+file's other attachments, so a cover that came before a font now follows it;
+the order of attachments makes no difference to playback. In an MP4 with a timecode
 track, the track comes back as the last one. And an MP4 whose Dolby Vision
 video is labelled `dvhe` comes back labelled `dvh1`, the other name for the
 same kind of stream, as FFmpeg cannot write `dvhe`. When a Matroska file was

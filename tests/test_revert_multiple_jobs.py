@@ -436,36 +436,33 @@ def test_cover_art_after_attachments_survives_a_round_trip(with_cover_art):
             == sorted(map(str, with_cover_art["pristine"])))
 
 
-def test_cover_art_comes_back_as_a_video_stream(with_cover_art):
+def test_cover_art_comes_back_as_an_attachment(with_cover_art):
     """
-    A known limitation, pinned so it is recorded rather than discovered.
-
-    Matroska stores cover art as an image ATTACHMENT; FFmpeg's demuxer
-    surfaces it as an attached_pic video stream. The sidecar therefore
-    holds it as a real video stream, and muxing it back produces a video
-    stream rather than an attachment — verified directly, including that
-    -disposition attached_pic does not convert it back.
-
-    So a reverted file with cover art gains a still-image video track
-    where the original had an attachment. Its filename and mimetype are
-    correct and no data is lost. Restoring it properly means extracting
-    the image and re-attaching it, which is a second pass over the file in
-    the one operation that overwrites the user's media — worth doing
-    deliberately, not as a side effect.
-
-    If this test starts failing, FFmpeg has changed and the limitation can
-    go.
+    Matroska stores cover art as an image attachment; FFmpeg's demuxer
+    surfaces it as an attached_pic video stream, and mapped back FFmpeg
+    wrote it as a still-image video track (V_MJPEG), which a player can
+    offer as a second video. The revert copies the image out and attaches
+    it again (ffmpeg.restore_layout), as a job does. ffprobe shows the two
+    alike, so mkvmerge, which reads tracks and attachments apart, says.
     """
+    original = _matroska(with_cover_art["path"])
     _run_job(with_cover_art,
              ["-map", "0:0", "-map", "0:1", "-c", "copy"], job_id=1)
-    _revert(with_cover_art)
+    assert _revert(with_cover_art).success
 
-    covers = [s for s in _streams(with_cover_art["path"])
-              if _tag(s, "filename") == "cover.jpg"]
+    restored = _matroska(with_cover_art["path"])
+    assert [t["codec"] for t in restored["tracks"]] == [
+        t["codec"] for t in original["tracks"]], "the cover came back as a track"
+    assert restored["attachments"] == original["attachments"]
 
-    assert len(covers) == 1, "the cover art did not come back at all"
-    assert covers[0]["codec_type"] == "video"
-    assert _tag(covers[0], "mimetype") == "image/jpeg"
+
+def _matroska(path):
+    """mkvmerge -J's tracks, and each attachment's name, type and size."""
+    out = json.loads(subprocess.run(["mkvmerge", "-J", str(path)], capture_output=True,
+                                    text=True, check=True).stdout)
+    return {"tracks": out["tracks"],
+            "attachments": [(a["file_name"], a["content_type"], a["size"])
+                            for a in out.get("attachments") or []]}
 
 
 def _streams(path):

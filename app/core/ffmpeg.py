@@ -901,52 +901,47 @@ class RestoreUnsupported(Exception):
     """Raised when a manifest cannot be turned into a restore command."""
 
 
-def build_restore_command(
-    processed_path: str,
-    sidecar_path: str,
-    output_path: str,
-    manifest: dict,
-    rebuilt_tracks: Sequence[int] = (),
-    dolby_vision: Mapping[int, DolbyVision] | None = None,
-    processed_start: float | None = None,
-    stream_times: Mapping[tuple[int, int], float] | None = None,
-) -> list[str]:
+class RestoreLayout(NamedTuple):
     """
-    Return the FFmpeg argv to rebuild the original file from the processed
-    one plus its sidecar.
+    What build_restore_command writes: out_fmt, the original's muxer;
+    mapped, each stream it maps, in output order, with where it comes from
+    (input 0 the processed file, 1 the sidecar, and the stream's index
+    there); covers, the Matroska covers it attaches again instead, after
+    every mapped stream, in the same form.
+    """
+    out_fmt: str
+    mapped: list[tuple[dict, tuple[int, int]]]
+    covers: list[tuple[dict, tuple[int, int]]]
 
-    rebuilt_tracks are the processed file's chapter and timecode tracks
-    (probe.rebuilt_track_indices), which are never copied: -map_chapters
-    writes the chapters, and the muxer a chapter track for them, and the
-    muxer writes the timecode track from the video's timecode.
-    dolby_vision is the processed file's Dolby Vision streams
-    (probe.dolby_vision), whose way back is written after the loop below.
-    processed_start is the processed file's start time (probe.start_time),
-    which keeps the sidecar's streams in time with its own (_input_args);
-    None when it could not be probed. stream_times is the first packet
-    time of each stream of the two files, keyed (input number, stream
-    index) (probe.first_packet_times), which with the times the manifest
-    recorded puts every stream back where it was (alignment_offsets).
 
-    Input 0 is the processed file, input 1 the sidecar. Every stream in
-    the manifest is mapped from whichever holds it, in the manifest's own
-    order — which is the ORIGINAL order, not the processed one. Getting
-    that wrong produces a file that plays but whose track order has
-    silently changed, which is the kind of difference nobody notices until
-    a player picks the wrong default.
+def is_matroska_cover(stream: dict) -> bool:
+    """A manifest stream that is a Matroska cover: an image attachment,
+    which FFmpeg's demuxer reports as a video stream with the attached_pic
+    disposition and its filename and mimetype as tags (find_matroska_covers
+    reads a probe the same way)."""
+    tags = stream.get("tags") or {}
+    return (stream.get("type") == "video"
+            and "attached_pic" in (stream.get("disposition") or [])
+            and bool(tags.get("filename")) and bool(tags.get("mimetype")))
 
-    Metadata is written back explicitly rather than left to stream copy.
-    Copying preserves whatever the processed file happens to carry, and
-    for any track a re-tagging job touched that is precisely the value
-    being reverted. Language, title and dispositions therefore all come
-    from the manifest, and are CLEARED where the manifest recorded none —
-    an absent tag is a value, and leaving the job's version in place would
-    make revert a partial undo that looks complete.
 
-    Raises RestoreUnsupported if the manifest predates the index
-    annotations or is internally inconsistent. Refusing is the only safe
-    response: a restore built on guesses would write a plausible file with
-    the wrong tracks in it.
+def restore_layout(manifest: dict, rebuilt_tracks: Sequence[int] = ()) -> RestoreLayout:
+    """
+    Where each stream of a restore comes from, and which are mapped and
+    which attached again (RestoreLayout). Raises RestoreUnsupported as
+    build_restore_command says.
+
+    A Matroska original's covers are attached again. Mapped, FFmpeg wrote
+    one back as a still-image video track (V_MJPEG, measured with 8.1.3),
+    which a player can offer as a second video, and the original's
+    attachment was gone. Attached from a copy of the image, it comes back
+    as the attachment it was, the same bytes, name and type, as a job keeps
+    it (_prepare_extra_streams). -attach adds it after every mapped stream,
+    so a cover that came before another attachment, a font, comes back
+    after it: the order of a file's attachments plays no part in playback.
+    Covers always follow the tracks, so no track moves. An MP4 or
+    QuickTime file keeps a cover as a mapped stream (find_mp4_covers), so
+    only a Matroska original's are attached.
     """
     streams = manifest.get("streams") or []
     if not streams:
@@ -1010,6 +1005,74 @@ def build_restore_command(
                 if not (where[0] == 0 and where[1] in rebuilt_tracks)]
         streams = [stream for stream, _ in kept]
         located = [where for _, where in kept]
+
+    pairs = list(zip(streams, located))
+    if out_fmt != "matroska":
+        return RestoreLayout(out_fmt, pairs, [])
+    return RestoreLayout(out_fmt,
+                         [p for p in pairs if not is_matroska_cover(p[0])],
+                         [p for p in pairs if is_matroska_cover(p[0])])
+
+
+def build_restore_command(
+    processed_path: str,
+    sidecar_path: str,
+    output_path: str,
+    manifest: dict,
+    rebuilt_tracks: Sequence[int] = (),
+    dolby_vision: Mapping[int, DolbyVision] | None = None,
+    processed_start: float | None = None,
+    stream_times: Mapping[tuple[int, int], float] | None = None,
+    cover_paths: Sequence[str] = (),
+) -> list[str]:
+    """
+    Return the FFmpeg argv to rebuild the original file from the processed
+    one plus its sidecar.
+
+    cover_paths are the Matroska covers restore_layout lists, copied out to
+    files in its order (revert_restore), which the command attaches again
+    rather than maps: see restore_layout.
+
+    rebuilt_tracks are the processed file's chapter and timecode tracks
+    (probe.rebuilt_track_indices), which are never copied: -map_chapters
+    writes the chapters, and the muxer a chapter track for them, and the
+    muxer writes the timecode track from the video's timecode.
+    dolby_vision is the processed file's Dolby Vision streams
+    (probe.dolby_vision), whose way back is written after the loop below.
+    processed_start is the processed file's start time (probe.start_time),
+    which keeps the sidecar's streams in time with its own (_input_args);
+    None when it could not be probed. stream_times is the first packet
+    time of each stream of the two files, keyed (input number, stream
+    index) (probe.first_packet_times), which with the times the manifest
+    recorded puts every stream back where it was (alignment_offsets).
+
+    Input 0 is the processed file, input 1 the sidecar. Every stream in
+    the manifest is mapped from whichever holds it, in the manifest's own
+    order — which is the ORIGINAL order, not the processed one. Getting
+    that wrong produces a file that plays but whose track order has
+    silently changed, which is the kind of difference nobody notices until
+    a player picks the wrong default.
+
+    Metadata is written back explicitly rather than left to stream copy.
+    Copying preserves whatever the processed file happens to carry, and
+    for any track a re-tagging job touched that is precisely the value
+    being reverted. Language, title and dispositions therefore all come
+    from the manifest, and are CLEARED where the manifest recorded none —
+    an absent tag is a value, and leaving the job's version in place would
+    make revert a partial undo that looks complete.
+
+    Raises RestoreUnsupported if the manifest predates the index
+    annotations or is internally inconsistent. Refusing is the only safe
+    response: a restore built on guesses would write a plausible file with
+    the wrong tracks in it.
+    """
+    layout = restore_layout(manifest, rebuilt_tracks)
+    out_fmt = layout.out_fmt
+    streams = [stream for stream, _ in layout.mapped]
+    located = [where for _, where in layout.mapped]
+    if len(cover_paths) != len(layout.covers):
+        raise RestoreUnsupported(
+            f"{len(layout.covers)} cover(s) to attach again, {len(cover_paths)} copied out.")
 
     paths = [processed_path, sidecar_path]
     openings = _sparse_openings(
@@ -1122,8 +1185,8 @@ def build_restore_command(
     # a copied tag; hvc1 passes the check, and Matroska stores no tag for
     # HEVC, so the stream comes back as the original had it, the same
     # packets and record. Whether or not it has its record, as a copy can
-    # lose that and leave the tag (probe.dolby_vision). By output index: a
-    # cover coming back as a video stream fails the mux given hvc1 too.
+    # lose that and leave the tag (probe.dolby_vision). By output index, so
+    # no other video stream is given it.
     #
     # Back into an MP4 the record needs -strict unofficial, as it did on
     # the way in. A QuickTime original is left alone: that muxer never
@@ -1137,6 +1200,16 @@ def build_restore_command(
     elif out_fmt == "mp4" and any(dv.profile is not None for _, dv in dovi_streams):
         cmd += ["-strict", "unofficial"]
     cmd += meta
+    # Each cover again, with every tag the original's had: -metadata:s:t:N
+    # counts attachments, and FFmpeg numbers an attached file after every
+    # attachment the command maps (restore_layout says why covers come back
+    # this way).
+    ordinal = sum(1 for stream in streams if stream.get("type") == "attachment")
+    for (stream, _where), path in zip(layout.covers, cover_paths):
+        cmd += ["-attach", path]
+        for key, value in (stream.get("tags") or {}).items():
+            cmd += [f"-metadata:s:t:{ordinal}", f"{key}={value}"]
+        ordinal += 1
     cmd += _format_tag_args(manifest)
     # Chapters survive a remux, so the processed file still has them. For
     # an MP4 the muxer writes their chapter track (see above).
@@ -2262,6 +2335,12 @@ async def _prepare_extra_streams(
         input_path, found, attachments, tmp_dir,
         f"job_{job_id}", ".remuxarr_tmp", f"Job {job_id}")
     return ExtraStreams(covers, [], [], error, made)
+
+
+async def copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:
+    """Copy one cover's image out of a file, byte for byte (a revert's
+    covers, restore_layout); None on success, otherwise what went wrong."""
+    return await _copy_cover_out(input_path, stream_index, dest)
 
 
 async def _copy_cover_out(input_path: str, stream_index: int, dest: str) -> str | None:

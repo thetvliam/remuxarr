@@ -541,8 +541,9 @@ def test_a_conversion_that_also_extracts_a_subtitle_keeps_the_record(rig):
 @pytest.mark.parametrize("cover", [False, True], ids=["plain", "with cover art"])
 def test_a_revert_gives_back_the_converted_matroska(rig, cover):
     """The dvh1 goes back as Matroska takes it, the record and every packet
-    as they were. A cover comes back as a video stream too (the README's
-    limitation), which an hvc1 must not reach either."""
+    as they were. A cover is attached again rather than mapped
+    (ffmpeg.restore_layout), so an hvc1 meant for the video cannot reach
+    it."""
     _convert_dolby_vision(rig)
     source = _dv_file(rig.library / "Film.mkv", cover=cover)
     before = _video(source)

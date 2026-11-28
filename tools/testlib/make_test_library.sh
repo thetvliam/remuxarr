@@ -609,7 +609,16 @@ XML
     --language 1:en --language 2:de --default-track-flag 2:0 "$A/f40.mkv"
 }
 
-for n in $(seq -w 1 40); do
+f41() {  # Matroska whose cover art comes before a font. A revert attaches the cover again after the font (ffmpeg.restore_layout): check 11 lists the move, and a cover back as a video track is a finding. French audio to drop, for a revert point.
+  local a=(); add a video_in "41 cover before a font"; add a tone_in 440; add a tone_in 550
+  "${FF[@]}" "${a[@]}" -map 0 -map 1 -map 2 "${H264[@]}" -c:a aac \
+    -metadata:s:a:0 language=eng -metadata:s:a:1 language=fre -disposition:a:1 0 \
+    -attach "$A/cover.jpg" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg \
+    -attach "$FONT" -metadata:s:t:1 mimetype=application/x-truetype-font -metadata:s:t:1 filename="Cover.$FONT_EXT" \
+    "${MKV[@]}" "$OUT/41 - cover before a font.mkv"
+}
+
+for n in $(seq -w 1 41); do
   log "Building file $n"
   "f$n" || die "file $n failed"
 done

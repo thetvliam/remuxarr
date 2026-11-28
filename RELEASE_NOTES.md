@@ -67,4 +67,5 @@ state for a cycle in which nothing user-visible has changed yet.
 
 ## Fixed
 
+- A revert gave Matroska cover art back as a still-image video track, which a player could list as a second video, instead of the attachment it was. It now comes back as an attachment again, with the same name, type and image; a cover that came before another attachment comes back after it.
 - An entry such as pt-BR in Keep Audio or Subtitle Languages matched nothing, so every Portuguese track was dropped without a word. It now keeps Brazilian Portuguese, and an entry that is not a language code is refused with a message instead of saved.
